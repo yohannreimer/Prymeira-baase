@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { readHomeRouteForRole, type BaaseRole } from "@prymeira/baase-shared";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, type RequestContext } from "../../http/auth-context";
 import type { CompanyRepository, TeamMember } from "../company/company.types";
 import type { OnboardingRepository } from "../onboarding/onboarding.types";
 
@@ -32,23 +32,33 @@ function initialsFromName(name: string) {
 }
 
 async function readWorkspaceProfile(
-  workspaceId: string,
-  role: BaaseRole,
+  context: RequestContext,
   companyRepository?: CompanyRepository
 ) {
-  const fallback = profileByRole[role];
+  const fallback = context.accountAuthenticated
+    ? accountProfileFallback(context.profileName)
+    : profileByRole[context.role];
   if (!companyRepository) return fallback;
 
-  const people = await companyRepository.listTeamMembers(workspaceId);
-  const person = people.find((member) => member.role === role && member.status === "active")
-    ?? people.find((member) => member.role === role && member.status !== "placeholder");
+  const people = await companyRepository.listTeamMembers(context.workspaceId);
+  const person = people.find((member) => member.role === context.role && member.status === "active")
+    ?? people.find((member) => member.role === context.role && member.status !== "placeholder");
   if (!person) return fallback;
 
-  const areaName = await readAreaName(workspaceId, person, companyRepository);
+  const areaName = await readAreaName(context.workspaceId, person, companyRepository);
   return {
     display_name: person.name,
     initials: initialsFromName(person.name),
     area_name: areaName
+  };
+}
+
+function accountProfileFallback(profileName: string | undefined) {
+  const displayName = profileName || "Usuário";
+  return {
+    display_name: displayName,
+    initials: initialsFromName(displayName),
+    area_name: null
   };
 }
 
@@ -69,8 +79,10 @@ export async function registerSessionRoutes(
     const onboardingSession = onboardingRepository
       ? await onboardingRepository.getCurrentSession(context.workspaceId)
       : null;
-    const profile = await readWorkspaceProfile(context.workspaceId, context.role, companyRepository);
-    const workspaceName = onboardingSession?.companyName?.trim() || "Estúdio Norte";
+    const profile = await readWorkspaceProfile(context, companyRepository);
+    const workspaceName = context.accountAuthenticated
+      ? context.workspaceName || "Empresa em configuração"
+      : onboardingSession?.companyName?.trim() || "Estúdio Norte";
 
     return {
       workspace: {

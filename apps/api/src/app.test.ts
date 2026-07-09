@@ -110,9 +110,12 @@ describe("Baase API app", () => {
         return new Response(JSON.stringify({
           allowed: true,
           workspace_id: "hub_workspace",
+          workspace_name: "Estúdio Aurora",
           workspace_role: "owner",
           product_key: "base",
           product_role: "admin",
+          customer_id: "customer_123",
+          customer_name: "Yohann Reimer",
           status: "active",
           reason: "active_entitlement"
         }), { status: 200 });
@@ -135,15 +138,99 @@ describe("Baase API app", () => {
       url: "https://hub.prymeiradigital.com.br/api/access-check?product_key=base",
       authorization: "Bearer clerk-token"
     }]);
-    expect(response.json()).toMatchObject({
+    expect(response.json()).toEqual({
       workspace: {
-        id: "hub_workspace"
+        id: "hub_workspace",
+        name: "Estúdio Aurora"
       },
       profile: {
-        id: "account_admin",
-        role: "owner"
+        id: "account_customer_123",
+        role: "owner",
+        display_name: "Yohann Reimer",
+        initials: "YR",
+        area_name: null
       },
       home_route: "/painel"
+    });
+  });
+
+  it("keeps health probes anonymous under Account runtime", async () => {
+    const runtimeConfig: BaaseRuntimeConfig = {
+      mode: "production",
+      auth: {
+        mode: "account",
+        accountApiUrl: "https://hub.prymeiradigital.com.br/api"
+      },
+      persistence: "postgres",
+      demoSeedEnabled: false,
+      ai: {
+        structured: "openai",
+        transcription: "deepgram"
+      },
+      ok: true,
+      warnings: []
+    };
+    const app = buildApp({
+      runtimeConfig,
+      accountAccessFetch: async () => {
+        throw new Error("Health probes must not call Account Hub.");
+      }
+    });
+
+    const [healthResponse, readinessResponse] = await Promise.all([
+      app.inject({ method: "GET", url: "/health" }),
+      app.inject({ method: "GET", url: "/readiness" })
+    ]);
+
+    expect(healthResponse.statusCode).toBe(200);
+    expect(readinessResponse.statusCode).toBe(200);
+  });
+
+  it("uses neutral labels when Account Hub has no workspace or customer identity", async () => {
+    const runtimeConfig: BaaseRuntimeConfig = {
+      mode: "production",
+      auth: {
+        mode: "account",
+        accountApiUrl: "https://hub.prymeiradigital.com.br/api"
+      },
+      persistence: "postgres",
+      demoSeedEnabled: false,
+      ai: {
+        structured: "openai",
+        transcription: "deepgram"
+      },
+      ok: true,
+      warnings: []
+    };
+    const app = buildApp({
+      runtimeConfig,
+      accountAccessFetch: async () => new Response(JSON.stringify({
+        allowed: true,
+        workspace_id: "hub_workspace",
+        workspace_role: "owner",
+        product_key: "base",
+        product_role: "admin",
+        status: "active",
+        reason: "active_entitlement"
+      }), { status: 200 })
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: {
+        authorization: "Bearer clerk-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      workspace: {
+        name: "Empresa em configuração"
+      },
+      profile: {
+        display_name: "Usuário"
+      }
     });
   });
 

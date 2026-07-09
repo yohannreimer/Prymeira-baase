@@ -5,8 +5,11 @@ const allowedRoles = new Set<BaaseRole>(["owner", "manager", "employee"]);
 
 export type RequestContext = {
   workspaceId: string;
+  workspaceName?: string;
   role: BaaseRole;
   profileId: string;
+  profileName?: string;
+  accountAuthenticated?: boolean;
 };
 
 export type AuthenticatedRequest = FastifyRequest & {

@@ -7,9 +7,12 @@ import type { AuthenticatedRequest, RequestContext } from "./auth-context";
 export type AccountAccessDecision = {
   allowed: boolean;
   workspace_id?: string;
+  workspace_name?: string;
   workspace_role?: string;
   product_key: string;
   product_role?: string;
+  customer_id?: string;
+  customer_name?: string;
   status: string;
   reason: string;
   upgrade_url?: string;
@@ -57,10 +60,20 @@ export async function resolveAccountRequestContext(
   }
 
   const role = mapAccountRole(decision);
+  const workspaceName = readOptionalString(decision.workspace_name);
+  const profileName = readOptionalString(decision.customer_name);
+  const profileIdentity = readOptionalString(decision.customer_id)
+    ?? readOptionalString(decision.product_role)
+    ?? readOptionalString(decision.workspace_role)
+    ?? role;
+
   return {
     workspaceId: decision.workspace_id,
+    workspaceName,
     role,
-    profileId: `account_${sanitizeProfileSuffix(decision.product_role ?? decision.workspace_role ?? role)}`
+    profileId: `account_${sanitizeProfileSuffix(profileIdentity)}`,
+    profileName,
+    accountAuthenticated: true
   };
 }
 
@@ -108,4 +121,9 @@ function mapAccountRole(decision: AccountAccessDecision): BaaseRole {
 
 function sanitizeProfileSuffix(input: string) {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "user";
+}
+
+function readOptionalString(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized || undefined;
 }
