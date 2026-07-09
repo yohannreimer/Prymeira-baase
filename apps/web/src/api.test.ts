@@ -193,6 +193,94 @@ describe("Baase web API client", () => {
     expect(bundle.session.profile.role).toBe("manager");
   });
 
+  it("keeps the workspace bundle when proactive suggestions are unavailable", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/ai/proactive-suggestions") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {}
+      };
+
+      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+    });
+
+    await expect(loadBaaseWorkspace("dono", "2026-07-07", fetcher)).resolves.toMatchObject({
+      proactiveSuggestions: []
+    });
+  });
+
+  it("rejects the bootstrap when required areas are unavailable", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/areas") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+    });
+
+    await expect(loadBaaseWorkspace("dono", "2026-07-07", fetcher)).rejects.toThrow(
+      "Baase API request failed: 500 /api/areas"
+    );
+  });
+
+  it("starts and settles optional requests when an essential bootstrap request fails", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/areas" || url === "/api/trainings" || url === "/api/invites") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+    });
+
+    await expect(loadBaaseWorkspace("dono", "2026-07-07", fetcher)).rejects.toThrow(
+      "Baase API request failed: 500 /api/areas"
+    );
+
+    expect(fetcher).toHaveBeenCalledWith("/api/trainings", expect.anything());
+    expect(fetcher).toHaveBeenCalledWith("/api/invites", expect.anything());
+  });
+
   it("uses a library template through the backend catalog endpoint", async () => {
     const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => {
       return new Response(JSON.stringify({

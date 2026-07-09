@@ -7,6 +7,7 @@ import {
   assignTraining,
   acceptInvite,
   completeOnboardingSession,
+  createOnboardingSession,
   confirmAnnouncement,
   createArea,
   createAnnouncementDraft,
@@ -32,9 +33,9 @@ import {
   generateOnboardingDiagnosis,
   generateOnboardingSetup,
   generateOnboardingSuggestion,
-  getOnboardingSession,
   getInviteByCode,
   loadBaaseWorkspace,
+  loadFirstRunState,
   patchOnboardingSession,
   publishProcess,
   publishAnnouncement,
@@ -125,6 +126,8 @@ type AppProps = {
   initialRole?: Role;
   apiEnabled?: boolean;
 };
+
+type BootstrapStatus = "loading" | "ready" | "error";
 
 type Identity = { name: string; initials: string; label: string };
 
@@ -400,13 +403,15 @@ function roleLabelFromSession(role: Role, session: BaaseSession): string {
   return `Funcionário${area ? ` · ${area}` : ""}`;
 }
 
-function identityFromSession(role: Role, session: BaaseSession | null): Identity {
-  const fallback = identities[role];
+function identityFromSession(role: Role, session: BaaseSession | null, liveWorkspaceMode: boolean): Identity {
+  const fallback = liveWorkspaceMode
+    ? { name: "Usuário", initials: "UB", label: role === "dono" ? "Dono" : role === "gestor" ? "Gestor" : "Funcionário" }
+    : identities[role];
   if (!session) return fallback;
 
   return {
-    name: session.profile.display_name ?? fallback.name,
-    initials: session.profile.initials ?? fallback.initials,
+    name: session.profile.display_name?.trim() || fallback.name,
+    initials: session.profile.initials?.trim() || fallback.initials,
     label: roleLabelFromSession(role, session)
   };
 }
@@ -1547,6 +1552,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [checks, setChecks] = useState<Record<string, boolean>>({ c1: true, c2: true, c3: false, c4: false, c5: false });
   const [apiBundle, setApiBundle] = useState<BaaseWorkspaceBundle | null>(null);
   const [apiStatus, setApiStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>(apiEnabled ? "loading" : "ready");
   const [submittedApiTasks, setSubmittedApiTasks] = useState<Record<string, boolean>>({});
   const [submittingTasks, setSubmittingTasks] = useState<Record<string, boolean>>({});
   const [actionBusy, setActionBusy] = useState(false);
@@ -1593,47 +1600,52 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [onboardingReadyDismissed, setOnboardingReadyDismissed] = useState(false);
 
   useEffect(() => {
-    if (!apiEnabled) return;
+    if (!apiEnabled) {
+      setBootstrapStatus("ready");
+      return;
+    }
 
     let cancelled = false;
 
+    setBootstrapStatus("loading");
     setApiStatus("loading");
     setApiBundle(null);
     setSubmittedApiTasks({});
     setOnboardingSession(null);
     setOnboardingReadyDismissed(false);
     setOnboardingSessionStatus(role === "dono" ? "loading" : "unavailable");
-    loadBaaseWorkspace(role, operationalDate)
-      .then((bundle) => {
+    void loadFirstRunState(role, operationalDate)
+      .then(async ({ bundle, onboardingSession }) => {
+        let session = onboardingSession;
+        const workspaceIsEmpty = role === "dono"
+          && bundle.areas.length === 0
+          && bundle.people.length === 0
+          && bundle.processes.length === 0
+          && bundle.routines.length === 0;
+
+        if (workspaceIsEmpty && !session) {
+          session = await createOnboardingSession(role);
+        }
+
         if (cancelled) return;
         setApiBundle(bundle);
+        setOnboardingSession(session);
+        setOnboardingDraft(createEmptyOnboardingDraft(session));
+        setOnboardingReadyDismissed(session?.status === "completed");
+        setOnboardingSessionStatus(role === "dono" ? "ready" : "unavailable");
         setApiStatus("ready");
+        setBootstrapStatus("ready");
       })
       .catch(() => {
         if (cancelled) return;
         setApiStatus("error");
+        setBootstrapStatus("error");
       });
-
-    if (role === "dono") {
-      getOnboardingSession(role)
-        .then((session) => {
-          if (cancelled) return;
-          setOnboardingSession(session);
-          setOnboardingDraft(createEmptyOnboardingDraft(session));
-          setOnboardingReadyDismissed(session?.status === "completed");
-          setOnboardingSessionStatus("ready");
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setOnboardingSession(null);
-          setOnboardingSessionStatus("unavailable");
-        });
-    }
 
     return () => {
       cancelled = true;
     };
-  }, [apiEnabled, role]);
+  }, [apiEnabled, bootstrapAttempt, role]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1642,10 +1654,12 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     return () => window.clearTimeout(timeout);
   }, [notice]);
 
-  const identity = identityFromSession(role, apiBundle?.session ?? null);
-  const workspaceName = apiBundle?.session.workspace.name ?? onboardingSession?.companyName ?? "Estúdio Norte";
-  const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceMode = apiEnabled;
+  const identity = identityFromSession(role, apiBundle?.session ?? null, liveWorkspaceMode);
+  const workspaceName = apiBundle?.session.workspace.name?.trim()
+    || onboardingSession?.companyName?.trim()
+    || (liveWorkspaceMode ? "Sua empresa" : "Estúdio Norte");
+  const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
   const baseNav = navByRole[role];
@@ -3103,6 +3117,27 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       });
       go("mapa");
     });
+  }
+
+  if (apiEnabled && bootstrapStatus === "loading") {
+    return (
+      <main className="bootstrap-state" aria-busy="true">
+        <div className="bootstrap-state__mark" aria-hidden="true"><Icon name="ph-spinner-gap" /></div>
+        <p className="mono">Prymeira Baase</p>
+        <h1>Carregando sua empresa</h1>
+      </main>
+    );
+  }
+
+  if (apiEnabled && bootstrapStatus === "error") {
+    return (
+      <main className="bootstrap-state">
+        <div className="bootstrap-state__mark bootstrap-state__mark--error" aria-hidden="true"><Icon name="ph-warning-circle" /></div>
+        <p className="mono">Prymeira Baase</p>
+        <h1>Não foi possível carregar sua empresa</h1>
+        <button className="accent-solid" type="button" onClick={() => setBootstrapAttempt((attempt) => attempt + 1)}>Tentar novamente</button>
+      </main>
+    );
   }
 
   if (shouldShowFirstRunOnboarding) {

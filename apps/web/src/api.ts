@@ -605,6 +605,11 @@ export type BaaseWorkspaceBundle = {
   proactiveSuggestions: ApiProactiveSuggestion[];
 };
 
+export type FirstRunState = {
+  bundle: BaaseWorkspaceBundle;
+  onboardingSession: OnboardingSession | null;
+};
+
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 type TokenProvider = () => Promise<string | null> | string | null;
 
@@ -773,21 +778,31 @@ export async function loadBaaseWorkspace(
     ? Promise.resolve<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>({ templates: [], filters: { segments: [], areas: [], kinds: [] } })
     : readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers });
   const dashboardPromise = readJson<ApiDashboard | Record<string, never>>(fetcher, `/api/dashboard?date=${encodeURIComponent(date)}`, { headers });
-  const [session, today, approvals, processes, routines, trainings, areas, roleTemplates, people, invites, templates, dashboard, proactive] = await Promise.all([
-    readJson<BaaseSession>(fetcher, "/api/me", { headers }),
-    readJson<TodayResponse>(fetcher, `/api/today?date=${encodeURIComponent(date)}`, { headers }),
+  const optionalResultsPromise = Promise.allSettled([
     approvalsPromise,
-    readJson<{ processes: ApiProcess[] }>(fetcher, "/api/processes", { headers }),
-    readJson<{ routines: ApiRoutine[] }>(fetcher, "/api/routines", { headers }),
     readJson<{ trainings: ApiTraining[] }>(fetcher, "/api/trainings", { headers }),
-    readJson<{ areas: ApiArea[] }>(fetcher, "/api/areas", { headers }),
-    readJson<{ role_templates: ApiRoleTemplate[] }>(fetcher, "/api/roles", { headers }),
-    readJson<{ people: ApiPerson[] }>(fetcher, "/api/people", { headers }),
     readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers }),
     templatesPromise,
     dashboardPromise,
     proactivePromise
   ]);
+  const [session, today, processes, routines, areas, roleTemplates, people] = await Promise.all([
+    readJson<BaaseSession>(fetcher, "/api/me", { headers }),
+    readJson<TodayResponse>(fetcher, `/api/today?date=${encodeURIComponent(date)}`, { headers }),
+    readJson<{ processes: ApiProcess[] }>(fetcher, "/api/processes", { headers }),
+    readJson<{ routines: ApiRoutine[] }>(fetcher, "/api/routines", { headers }),
+    readJson<{ areas: ApiArea[] }>(fetcher, "/api/areas", { headers }),
+    readJson<{ role_templates: ApiRoleTemplate[] }>(fetcher, "/api/roles", { headers }),
+    readJson<{ people: ApiPerson[] }>(fetcher, "/api/people", { headers })
+  ]);
+  const [approvalsResult, trainingsResult, invitesResult, templatesResult, dashboardResult, proactiveResult] = await optionalResultsPromise;
+  const optionalValue = <T>(result: PromiseSettledResult<T>, fallback: T) => result.status === "fulfilled" ? result.value : fallback;
+  const approvals = optionalValue(approvalsResult, { tasks: [] });
+  const trainings = optionalValue(trainingsResult, { trainings: [] });
+  const invites = optionalValue(invitesResult, { invites: [] });
+  const templates = optionalValue(templatesResult, { templates: [], filters: { segments: [], areas: [], kinds: [] } });
+  const dashboard = optionalValue(dashboardResult, {} as ApiDashboard | Record<string, never>);
+  const proactive = optionalValue(proactiveResult, { suggestions: [] });
 
   return {
     session,
@@ -807,6 +822,19 @@ export async function loadBaaseWorkspace(
     dashboard: isApiDashboard(dashboard) ? dashboard : null,
     proactiveSuggestions: proactive.suggestions ?? []
   };
+}
+
+export async function loadFirstRunState(
+  role: UiRole,
+  date: string,
+  fetcher: Fetcher = fetch
+): Promise<FirstRunState> {
+  const [bundle, onboardingSession] = await Promise.all([
+    loadBaaseWorkspace(role, date, fetcher),
+    role === "dono" ? getOnboardingSession(role, fetcher) : Promise.resolve(null)
+  ]);
+
+  return { bundle, onboardingSession };
 }
 
 export async function useTemplate(role: UiRole, templateId: string, fetcher: Fetcher = fetch) {

@@ -95,7 +95,19 @@ function onboardingSessionFixture(status: string, overrides: Record<string, unkn
   };
 }
 
-function mockLoadedWorkspace(dataByUrl: Record<string, unknown> = {}) {
+function responseData(dataByUrl: Record<string, unknown>, url: string) {
+  return dataByUrl[url] ?? (url === "/api/onboarding/session" ? {
+    session: onboardingSessionFixture("completed")
+  } : {});
+}
+
+function mockLoadedWorkspace(
+  dataByUrl: Record<string, unknown> = {},
+  onboardingSessionOnCreate: Record<string, unknown> = onboardingSessionFixture("completed", {
+    companyName: "Holand",
+    normalizedSegment: "Software CAD/CAM e treinamentos"
+  })
+) {
   const defaults: Record<string, unknown> = {
     "/api/me": {
       workspace: { id: "workspace_a", name: "Holand" },
@@ -117,8 +129,11 @@ function mockLoadedWorkspace(dataByUrl: Record<string, unknown> = {}) {
     "/api/ai/proactive-suggestions": { suggestions: [] }
   };
 
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === "/api/onboarding/session" && init?.method === "POST") {
+      return new Response(JSON.stringify({ session: onboardingSessionOnCreate }), { status: 201 });
+    }
     return new Response(JSON.stringify({ ...defaults, ...dataByUrl }[url] ?? {}), { status: 200 });
   });
 }
@@ -149,6 +164,9 @@ describe("Baase React app shell", () => {
       const url = String(input);
       if (url === "/api/onboarding/session" && (init?.method ?? "GET") === "GET") {
         return new Response(JSON.stringify({ session: null }), { status: 200 });
+      }
+      if (url === "/api/onboarding/session" && init?.method === "POST") {
+        return new Response(JSON.stringify({ session: onboardingSessionFixture("in_progress") }), { status: 201 });
       }
       if (url === "/api/onboarding/session/skip") {
         return new Response(JSON.stringify({
@@ -197,7 +215,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -212,12 +230,83 @@ describe("Baase React app shell", () => {
     expect(await screen.findByText(/Monte sua empresa com IA/)).toBeInTheDocument();
   });
 
+  it("creates an onboarding session for an empty owner workspace", async () => {
+    const fetchMock = mockLoadedWorkspace({
+      "/api/onboarding/session": { session: null }
+    }, onboardingSessionFixture("in_progress"));
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /Vamos montar.*empresa/ })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/onboarding/session", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("renders bootstrap recovery when a required workspace request fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "/api/areas") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": {
+          workspace: { id: "workspace_a", name: "Norte Ops" },
+          profile: { id: "profile_owner", role: "owner", display_name: "Yohann Reimer", initials: "YR" },
+          home_route: "/painel"
+        },
+        "/api/onboarding/session": { session: onboardingSessionFixture("completed") },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Não foi possível carregar sua empresa")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+    expect(screen.queryByText("Bom dia, Marina.")).not.toBeInTheDocument();
+  });
+
+  it("uses neutral identity and workspace fallbacks for a live authenticated workspace", async () => {
+    mockLoadedWorkspace({
+      "/api/me": {
+        workspace: { id: "workspace_a", name: "" },
+        profile: { id: "profile_owner", role: "owner" },
+        home_route: "/painel"
+      },
+      "/api/onboarding/session": {
+        session: onboardingSessionFixture("completed", { companyName: null, normalizedSegment: null })
+      }
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Bom dia, Usuário." })).toBeInTheDocument();
+    expect(screen.getAllByText("Sua empresa").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Marina Alves")).not.toBeInTheDocument();
+    expect(screen.queryByText("Estúdio Norte")).not.toBeInTheDocument();
+  });
+
   it("saves onboarding answers, generates diagnosis, answers follow-up, and generates setup", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
       if (url === "/api/onboarding/session" && method === "GET") {
         return new Response(JSON.stringify({ session: null }), { status: 200 });
+      }
+      if (url === "/api/onboarding/session" && method === "POST") {
+        return new Response(JSON.stringify({ session: onboardingSessionFixture("in_progress") }), { status: 201 });
       }
       if (url === "/api/onboarding/session" && method === "PATCH") {
         const body = JSON.parse(String(init?.body ?? "{}"));
@@ -278,7 +367,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -366,7 +455,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -391,6 +480,9 @@ describe("Baase React app shell", () => {
       const method = init?.method ?? "GET";
       if (url === "/api/onboarding/session" && method === "GET") {
         return new Response(JSON.stringify({ session: null }), { status: 200 });
+      }
+      if (url === "/api/onboarding/session" && method === "POST") {
+        return new Response(JSON.stringify({ session: onboardingSessionFixture("in_progress") }), { status: 201 });
       }
       if (url === "/api/onboarding/session" && method === "PATCH") {
         const body = JSON.parse(String(init?.body ?? "{}"));
@@ -426,7 +518,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -483,6 +575,9 @@ describe("Baase React app shell", () => {
       if (url === "/api/onboarding/session" && method === "GET") {
         return new Response(JSON.stringify({ session: null }), { status: 200 });
       }
+      if (url === "/api/onboarding/session" && method === "POST") {
+        return new Response(JSON.stringify({ session: onboardingSessionFixture("in_progress") }), { status: 201 });
+      }
       if (url === "/api/onboarding/session" && method === "PATCH") {
         const body = JSON.parse(String(init?.body ?? "{}"));
         patchBodies.push(body);
@@ -524,7 +619,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -576,6 +671,9 @@ describe("Baase React app shell", () => {
       if (url === "/api/onboarding/session" && method === "GET") {
         return new Response(JSON.stringify({ session: null }), { status: 200 });
       }
+      if (url === "/api/onboarding/session" && method === "POST") {
+        return new Response(JSON.stringify({ session: onboardingSessionFixture("in_progress") }), { status: 201 });
+      }
       if (url === "/api/onboarding/session" && method === "PATCH") {
         const body = JSON.parse(String(init?.body ?? "{}"));
         return new Response(JSON.stringify({
@@ -610,7 +708,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -677,7 +775,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -741,7 +839,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -787,7 +885,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -829,7 +927,7 @@ describe("Baase React app shell", () => {
         }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -882,7 +980,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -935,7 +1033,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1009,7 +1107,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -1088,7 +1186,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [{ id: "training_1", title: "Atendimento em 15 minutos", status: "published" }] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1129,7 +1227,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1166,7 +1264,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1228,7 +1326,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1283,7 +1381,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="func" />);
@@ -1332,7 +1430,7 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App initialRole="gestor" />);
@@ -1396,11 +1494,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.click(screen.getByRole("button", { name: /Gerar rascunho/ }));
 
@@ -1463,11 +1562,12 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.change(await screen.findByLabelText("Pedido para a IA"), { target: { value: "Criar processo com espera" } });
     fireEvent.click(screen.getByRole("button", { name: /Gerar rascunho/ }));
@@ -1555,11 +1655,12 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.change(screen.getByLabelText("Arquivo para Criar com IA"), {
       target: {
@@ -1623,6 +1724,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    await screen.findByRole("heading", { name: "Bom dia, Yohann." });
     fireEvent.click(await screen.findByRole("link", { name: /Treinamentos/ }));
 
     expect(await screen.findByRole("heading", { name: "Objetivo" })).toBeInTheDocument();
@@ -1717,11 +1819,12 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.click(screen.getByLabelText("Usar áudio no Criar com IA"));
     expect(await screen.findByRole("status", { name: "Gravação em andamento" })).toHaveTextContent("Ouvindo sua explicação");
@@ -1834,11 +1937,12 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.click(screen.getByRole("button", { name: /Escrever comunicado/ }));
     fireEvent.click(screen.getByLabelText("Usar áudio no Criar com IA"));
@@ -1873,11 +1977,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Equipe/ }));
     fireEvent.click(screen.getByRole("button", { name: /Convidar/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Gerar convite" }));
@@ -1909,11 +2014,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Processos/ }));
     fireEvent.click(screen.getByRole("button", { name: /Criar processos/ }));
     expect(await screen.findByRole("heading", { name: "Novo processo" })).toBeInTheDocument();
@@ -1963,11 +2069,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Rotinas/ }));
     fireEvent.click(screen.getByRole("button", { name: /Criar rotinas/ }));
     fireEvent.change(await screen.findByLabelText("Nome da rotina"), { target: { value: "Abertura da operação" } });
@@ -2046,7 +2153,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -2115,11 +2222,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Mapa da Empresa/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Nova área/ }));
     fireEvent.change(await screen.findByLabelText("Nome da área"), { target: { value: "Produto" } });
@@ -2169,7 +2277,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
@@ -2371,11 +2479,12 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Processos/ }));
     expect(await screen.findByText("Confirmar contrato")).toBeInTheDocument();
 
@@ -2420,11 +2529,12 @@ describe("Baase React app shell", () => {
         }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Modelos/ }));
     const routineTemplate = screen.getByText("Abertura do dia — Social").closest("article");
     expect(routineTemplate).not.toBeNull();
@@ -2501,11 +2611,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Processos/ }));
     await screen.findByRole("heading", { name: "Atendimento premium" });
     fireEvent.click(screen.getByRole("button", { name: /Comunicar mudança/ }));
@@ -2561,11 +2672,12 @@ describe("Baase React app shell", () => {
         "/api/trainings": { trainings: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
 
+    await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("button", { name: /Criar com IA/ }));
     fireEvent.click(screen.getByRole("button", { name: /Escrever comunicado/ }));
     fireEvent.change(screen.getByLabelText("Pedido para a IA"), { target: { value: "Avisar a equipe sobre novo padrão de evidência" } });
@@ -2594,7 +2706,7 @@ describe("Baase React app shell", () => {
         "/api/invites": { invites: [{ id: "invite_1", code: "BAASE-0001", name: "Caio Lima", role: "employee", status: "pending" }] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -2733,7 +2845,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -2802,7 +2914,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -2860,7 +2972,7 @@ describe("Baase React app shell", () => {
         "/api/invites": { invites: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -2925,7 +3037,7 @@ describe("Baase React app shell", () => {
         "/api/invites": { invites: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);
@@ -2982,7 +3094,7 @@ describe("Baase React app shell", () => {
         "/api/ai/proactive-suggestions": { suggestions: [] }
       };
 
-      return new Response(JSON.stringify(dataByUrl[url] ?? {}), { status: 200 });
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
 
     render(<App />);

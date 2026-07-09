@@ -1235,6 +1235,36 @@ button { cursor: pointer; }
 .final-bar strong, .final-bar span { display: block; }
 .final-bar span { color: var(--muted); font-size: 12.5px; }
 
+.bootstrap-state {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  padding: 28px;
+  text-align: center;
+  background: var(--bg);
+}
+
+.bootstrap-state__mark {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-line);
+  border-radius: 12px;
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+  font-size: 22px;
+}
+
+.bootstrap-state__mark i { animation: baaseSpin .9s linear infinite; }
+.bootstrap-state__mark--error { border-color: var(--danger-ink); background: var(--danger-bg); color: var(--danger-ink); }
+.bootstrap-state__mark--error i { animation: none; }
+.bootstrap-state p { margin: 0; color: var(--faint); font-size: 11px; }
+.bootstrap-state h1 { max-width: 360px; margin: 0; font-size: 24px; line-height: 1.15; }
+.bootstrap-state .accent-solid { margin-top: 6px; }
+
 .onboarding-shell {
   min-height: 100vh;
   background: var(--bg);
