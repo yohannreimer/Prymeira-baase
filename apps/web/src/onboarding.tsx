@@ -95,7 +95,10 @@ export function createEmptyOnboardingDraft(session?: OnboardingSession | null): 
 
 export function OnboardingShell({
   session,
+  sessionLoadError,
   draft,
+  onStart,
+  onRetrySession,
   onPatch,
   onSkip,
   onGenerateDiagnosis,
@@ -110,7 +113,10 @@ export function OnboardingShell({
   actionError
 }: {
   session: OnboardingSession | null;
+  sessionLoadError: boolean;
   draft: OnboardingDraftState;
+  onStart: () => void;
+  onRetrySession: () => void;
   onPatch: (patch: Partial<OnboardingDraftState> & { currentStep?: string }) => void;
   onSkip: () => void;
   onGenerateDiagnosis: () => void;
@@ -124,6 +130,25 @@ export function OnboardingShell({
   actionBusy: boolean;
   actionError: string | null;
 }) {
+  if (!session) {
+    return (
+      <main className="onboarding-shell" aria-label="Onboarding Inteligente">
+        <OnboardingHero />
+        <section className="onboarding-panel">
+          <ProgressDots stepIndex={0} />
+          <OnboardingStartStep
+            sessionLoadError={sessionLoadError}
+            onStart={onStart}
+            onRetrySession={onRetrySession}
+            onGoPanel={onGoPanel}
+            actionBusy={actionBusy}
+            actionError={actionError}
+          />
+        </section>
+      </main>
+    );
+  }
+
   const currentStep = session?.currentStep === "completed"
     || session?.currentStep === "review_map"
     || session?.currentStep === "diagnosis"
@@ -188,6 +213,45 @@ export function OnboardingShell({
         )}
       </section>
     </main>
+  );
+}
+
+function OnboardingStartStep({
+  sessionLoadError,
+  onStart,
+  onRetrySession,
+  onGoPanel,
+  actionBusy,
+  actionError
+}: {
+  sessionLoadError: boolean;
+  onStart: () => void;
+  onRetrySession: () => void;
+  onGoPanel: () => void;
+  actionBusy: boolean;
+  actionError: string | null;
+}) {
+  return (
+    <>
+      <header>
+        <small className="mono">Passo 1 de 4</small>
+        <h2>{sessionLoadError ? "Não conseguimos preparar seu onboarding" : "Vamos começar pela sua empresa"}</h2>
+        <p>{sessionLoadError
+          ? "Atualize a sessão antes de informar os dados da sua operação."
+          : "Quando estiver pronto, vamos criar um espaço para salvar cada resposta do onboarding."}</p>
+      </header>
+      <footer>
+        {sessionLoadError ? (
+          <button className="accent-solid" type="button" onClick={onRetrySession}>Tentar novamente</button>
+        ) : (
+          <>
+            <button className="ghost-btn" type="button" onClick={onGoPanel}>Configurar depois</button>
+            <button className="accent-solid" type="button" disabled={actionBusy} onClick={onStart}>Começar onboarding</button>
+          </>
+        )}
+      </footer>
+      {actionError ? <p className="onboarding-action-error" role="alert">{actionError}</p> : null}
+    </>
   );
 }
 

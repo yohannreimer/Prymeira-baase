@@ -608,6 +608,7 @@ export type BaaseWorkspaceBundle = {
 export type FirstRunState = {
   bundle: BaaseWorkspaceBundle;
   onboardingSession: OnboardingSession | null;
+  onboardingSessionLoadError: boolean;
 };
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -762,29 +763,53 @@ type TodayResponse = {
   announcements?: ApiAnnouncement[];
 };
 
+const OPTIONAL_BOOTSTRAP_TIMEOUT_MS = 1_500;
+
+function optionalBootstrapValue<T>(request: (signal: AbortSignal) => Promise<T>, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const controller = new AbortController();
+    let settled = false;
+    const finish = (value: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => {
+      controller.abort();
+      finish(fallback);
+    }, OPTIONAL_BOOTSTRAP_TIMEOUT_MS);
+
+    void request(controller.signal).then(
+      (value) => {
+        finish(value);
+      },
+      () => {
+        finish(fallback);
+      }
+    );
+  });
+}
+
 export async function loadBaaseWorkspace(
   role: UiRole,
   date: string,
   fetcher: Fetcher = fetch
 ): Promise<BaaseWorkspaceBundle> {
   const headers = createBaaseHeaders(role);
-  const approvalsPromise = role === "func"
-    ? Promise.resolve<{ tasks: ApiTask[] }>({ tasks: [] })
-    : readJson<{ tasks: ApiTask[] }>(fetcher, "/api/approvals", { headers });
-  const proactivePromise = role === "func"
-    ? Promise.resolve<{ suggestions: ApiProactiveSuggestion[] }>({ suggestions: [] })
-    : readJson<{ suggestions: ApiProactiveSuggestion[] }>(fetcher, "/api/ai/proactive-suggestions", { headers });
-  const templatesPromise = role === "func"
-    ? Promise.resolve<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>({ templates: [], filters: { segments: [], areas: [], kinds: [] } })
-    : readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers });
-  const dashboardPromise = readJson<ApiDashboard | Record<string, never>>(fetcher, `/api/dashboard?date=${encodeURIComponent(date)}`, { headers });
-  const optionalResultsPromise = Promise.allSettled([
-    approvalsPromise,
-    readJson<{ trainings: ApiTraining[] }>(fetcher, "/api/trainings", { headers }),
-    readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers }),
-    templatesPromise,
-    dashboardPromise,
-    proactivePromise
+  const optionalResultsPromise = Promise.all([
+    role === "func"
+      ? Promise.resolve<{ tasks: ApiTask[] }>({ tasks: [] })
+      : optionalBootstrapValue((signal) => readJson<{ tasks: ApiTask[] }>(fetcher, "/api/approvals", { headers, signal }), { tasks: [] }),
+    optionalBootstrapValue((signal) => readJson<{ trainings: ApiTraining[] }>(fetcher, "/api/trainings", { headers, signal }), { trainings: [] }),
+    optionalBootstrapValue((signal) => readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers, signal }), { invites: [] }),
+    role === "func"
+      ? Promise.resolve<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>({ templates: [], filters: { segments: [], areas: [], kinds: [] } })
+      : optionalBootstrapValue((signal) => readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers, signal }), { templates: [], filters: { segments: [], areas: [], kinds: [] } }),
+    optionalBootstrapValue((signal) => readJson<ApiDashboard | Record<string, never>>(fetcher, `/api/dashboard?date=${encodeURIComponent(date)}`, { headers, signal }), {} as ApiDashboard | Record<string, never>),
+    role === "func"
+      ? Promise.resolve<{ suggestions: ApiProactiveSuggestion[] }>({ suggestions: [] })
+      : optionalBootstrapValue((signal) => readJson<{ suggestions: ApiProactiveSuggestion[] }>(fetcher, "/api/ai/proactive-suggestions", { headers, signal }), { suggestions: [] })
   ]);
   const [session, today, processes, routines, areas, roleTemplates, people] = await Promise.all([
     readJson<BaaseSession>(fetcher, "/api/me", { headers }),
@@ -795,14 +820,7 @@ export async function loadBaaseWorkspace(
     readJson<{ role_templates: ApiRoleTemplate[] }>(fetcher, "/api/roles", { headers }),
     readJson<{ people: ApiPerson[] }>(fetcher, "/api/people", { headers })
   ]);
-  const [approvalsResult, trainingsResult, invitesResult, templatesResult, dashboardResult, proactiveResult] = await optionalResultsPromise;
-  const optionalValue = <T>(result: PromiseSettledResult<T>, fallback: T) => result.status === "fulfilled" ? result.value : fallback;
-  const approvals = optionalValue(approvalsResult, { tasks: [] });
-  const trainings = optionalValue(trainingsResult, { trainings: [] });
-  const invites = optionalValue(invitesResult, { invites: [] });
-  const templates = optionalValue(templatesResult, { templates: [], filters: { segments: [], areas: [], kinds: [] } });
-  const dashboard = optionalValue(dashboardResult, {} as ApiDashboard | Record<string, never>);
-  const proactive = optionalValue(proactiveResult, { suggestions: [] });
+  const [approvals, trainings, invites, templates, dashboard, proactive] = await optionalResultsPromise;
 
   return {
     session,
@@ -829,12 +847,19 @@ export async function loadFirstRunState(
   date: string,
   fetcher: Fetcher = fetch
 ): Promise<FirstRunState> {
-  const [bundle, onboardingSession] = await Promise.all([
+  const onboardingSessionPromise = role === "dono"
+    ? optionalBootstrapValue(
+      (signal) => getOnboardingSession(role, fetcher, signal)
+        .then((onboardingSession) => ({ onboardingSession, onboardingSessionLoadError: false })),
+      { onboardingSession: null, onboardingSessionLoadError: true }
+    )
+    : Promise.resolve({ onboardingSession: null, onboardingSessionLoadError: false });
+  const [bundle, onboarding] = await Promise.all([
     loadBaaseWorkspace(role, date, fetcher),
-    role === "dono" ? getOnboardingSession(role, fetcher) : Promise.resolve(null)
+    onboardingSessionPromise
   ]);
 
-  return { bundle, onboardingSession };
+  return { bundle, ...onboarding };
 }
 
 export async function useTemplate(role: UiRole, templateId: string, fetcher: Fetcher = fetch) {
@@ -1538,10 +1563,11 @@ function onboardingAnswerToPayload(answer: OnboardingAnswer) {
   };
 }
 
-export async function getOnboardingSession(role: UiRole, fetcher: Fetcher = fetch): Promise<OnboardingSession | null> {
+export async function getOnboardingSession(role: UiRole, fetcher: Fetcher = fetch, signal?: AbortSignal): Promise<OnboardingSession | null> {
   const result = await readJson<{ session: unknown | null }>(fetcher, "/api/onboarding/session", {
     method: "GET",
-    headers: createBaaseHeaders(role)
+    headers: createBaaseHeaders(role),
+    signal
   });
 
   if (!Object.prototype.hasOwnProperty.call(result, "session")) {

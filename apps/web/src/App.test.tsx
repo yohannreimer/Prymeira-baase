@@ -159,7 +159,7 @@ describe("Baase React app shell", () => {
     expect(screen.queryByRole("link", { name: /Revisão sugerida/ })).not.toBeInTheDocument();
   });
 
-  it("opens the full-screen onboarding for a new owner workspace and can skip it", async () => {
+  it("lets a new owner defer onboarding without creating a session", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "/api/onboarding/session" && (init?.method ?? "GET") === "GET") {
@@ -217,28 +217,46 @@ describe("Baase React app shell", () => {
 
       return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: /Vamos montar a primeira versão operacional/ })).toBeInTheDocument();
     expect(screen.queryByText("Painel")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === "/api/onboarding/session" && init?.method === "POST")).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: /Configurar depois/ }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/onboarding/session/skip", expect.objectContaining({ method: "POST" })));
-    expect(await screen.findByText(/Monte sua empresa com IA/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Bom dia, Marina." })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === "/api/onboarding/session" && init?.method === "POST")).toHaveLength(0);
   });
 
-  it("creates an onboarding session for an empty owner workspace", async () => {
-    const fetchMock = mockLoadedWorkspace({
-      "/api/onboarding/session": { session: null }
-    }, onboardingSessionFixture("in_progress"));
+  it("shows an actionable onboarding recovery state when an empty workspace cannot read its session", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/onboarding/session" && (init?.method ?? "GET") === "GET") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+      return new Response(JSON.stringify(responseData({
+        "/api/me": { workspace: { id: "workspace_new", name: "Nova Empresa" }, profile: { id: "profile_owner", role: "owner" }, home_route: "/painel" },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      }, url)), { status: 200 });
+    });
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: /Vamos montar.*empresa/ })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith("/api/onboarding/session", expect.objectContaining({ method: "POST" }));
+    expect(await screen.findByText("Não conseguimos preparar seu onboarding")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === "/api/onboarding/session" && init?.method === "POST")).toHaveLength(0);
   });
 
   it("renders bootstrap recovery when a required workspace request fails", async () => {
@@ -373,6 +391,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Começar onboarding" }));
     fireEvent.change(await screen.findByLabelText("Nome da empresa"), { target: { value: "Estudio Norte" } });
     fireEvent.click(screen.getByRole("button", { name: "6 a 15 pessoas" }));
     fireEvent.click(screen.getByRole("button", { name: "Organizar a equipe" }));
@@ -523,6 +542,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Começar onboarding" }));
     fireEvent.change(await screen.findByLabelText("Nome da empresa"), { target: { value: "Estudio Norte" } });
     fireEvent.click(screen.getByRole("button", { name: "6 a 15 pessoas" }));
     fireEvent.click(screen.getByRole("button", { name: "Organizar a equipe" }));
@@ -624,6 +644,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Começar onboarding" }));
     fireEvent.change(await screen.findByLabelText("Nome da empresa"), { target: { value: "Estudio Norte" } });
     fireEvent.click(screen.getByRole("button", { name: "6 a 15 pessoas" }));
     fireEvent.click(screen.getByRole("button", { name: "Organizar a equipe" }));
@@ -713,6 +734,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Começar onboarding" }));
     fireEvent.change(await screen.findByLabelText("Nome da empresa"), { target: { value: "Estudio Norte" } });
     fireEvent.click(screen.getByRole("button", { name: "6 a 15 pessoas" }));
     fireEvent.click(screen.getByRole("button", { name: "Organizar a equipe" }));

@@ -1594,6 +1594,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [onboardingSuggestion, setOnboardingSuggestion] = useState<OnboardingSuggestion | null>(null);
   const [onboardingAiRunId, setOnboardingAiRunId] = useState<string | null>(null);
   const [onboardingSession, setOnboardingSession] = useState<OnboardingSession | null>(null);
+  const [onboardingSessionLoadError, setOnboardingSessionLoadError] = useState(false);
   const [onboardingSessionStatus, setOnboardingSessionStatus] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
   const [onboardingDraft, setOnboardingDraft] = useState<OnboardingDraftState>(() => createEmptyOnboardingDraft());
   const [onboardingActionError, setOnboardingActionError] = useState<string | null>(null);
@@ -1612,26 +1613,17 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setApiBundle(null);
     setSubmittedApiTasks({});
     setOnboardingSession(null);
+    setOnboardingSessionLoadError(false);
     setOnboardingReadyDismissed(false);
     setOnboardingSessionStatus(role === "dono" ? "loading" : "unavailable");
     void loadFirstRunState(role, operationalDate)
-      .then(async ({ bundle, onboardingSession }) => {
-        let session = onboardingSession;
-        const workspaceIsEmpty = role === "dono"
-          && bundle.areas.length === 0
-          && bundle.people.length === 0
-          && bundle.processes.length === 0
-          && bundle.routines.length === 0;
-
-        if (workspaceIsEmpty && !session) {
-          session = await createOnboardingSession(role);
-        }
-
+      .then(({ bundle, onboardingSession, onboardingSessionLoadError }) => {
         if (cancelled) return;
         setApiBundle(bundle);
-        setOnboardingSession(session);
-        setOnboardingDraft(createEmptyOnboardingDraft(session));
-        setOnboardingReadyDismissed(session?.status === "completed");
+        setOnboardingSession(onboardingSession);
+        setOnboardingSessionLoadError(onboardingSessionLoadError);
+        setOnboardingDraft(createEmptyOnboardingDraft(onboardingSession));
+        setOnboardingReadyDismissed(onboardingSession?.status === "completed");
         setOnboardingSessionStatus(role === "dono" ? "ready" : "unavailable");
         setApiStatus("ready");
         setBootstrapStatus("ready");
@@ -1790,8 +1782,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     && visibleRoutines.length === 0;
   const shouldShowFirstRunOnboarding = role === "dono"
     && onboardingSessionStatus === "ready"
+    && !onboardingReadyDismissed
     && onboardingSession?.status !== "skipped"
-    && (onboardingSession?.status === "completed" ? !onboardingReadyDismissed : workspaceIsEmpty);
+    && (onboardingSession?.status === "completed" || workspaceIsEmpty);
 
   function setRole(nextRole: Role) {
     setRoleState(nextRole);
@@ -2061,6 +2054,17 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setApiBundle(bundle);
     setApiStatus("ready");
     return bundle;
+  }
+
+  function startOnboardingSession() {
+    void runAction(async () => {
+      setOnboardingActionError(null);
+      const session = await createOnboardingSession(role);
+      setOnboardingSession(session);
+      setOnboardingSessionLoadError(false);
+      setOnboardingDraft(createEmptyOnboardingDraft(session));
+      setOnboardingSessionStatus("ready");
+    }, () => setOnboardingActionError("Não conseguimos iniciar o onboarding agora. Tente novamente."));
   }
 
   function patchOnboardingDraft(patch: Partial<OnboardingDraftState> & { currentStep?: string }) {
@@ -3144,7 +3148,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     return (
       <OnboardingShell
         session={onboardingSession}
+        sessionLoadError={onboardingSessionLoadError}
         draft={onboardingDraft}
+        onStart={startOnboardingSession}
+        onRetrySession={() => setBootstrapAttempt((attempt) => attempt + 1)}
         onPatch={patchOnboardingDraft}
         onSkip={skipOnboarding}
         onGenerateDiagnosis={generateOnboardingDiagnosisFromDraft}

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptInvite,
   approveTask,
@@ -31,6 +31,7 @@ import {
   generateOnboardingSuggestion,
   getOnboardingSession,
   getInviteByCode,
+  loadFirstRunState,
   loadBaaseWorkspace,
   normalizeOnboardingSession,
   archiveRoutine,
@@ -77,6 +78,9 @@ const activationPlan: OnboardingSuggestion["activationPlan"] = [
 ] as const;
 
 describe("Baase web API client", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("maps UI roles to the backend local auth headers", () => {
     expect(createBaaseHeaders("dono")).toMatchObject({
       "x-baase-role": "owner",
@@ -220,6 +224,115 @@ describe("Baase web API client", () => {
     await expect(loadBaaseWorkspace("dono", "2026-07-07", fetcher)).resolves.toMatchObject({
       proactiveSuggestions: []
     });
+  });
+
+  it("keeps an established owner workspace available when the onboarding session read fails", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/onboarding/session") {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a", name: "Norte Ops" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [{ id: "process_1", title: "Entrega" }] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [{ id: "area_1", name: "Operações" }] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return new Response(JSON.stringify(dataByUrl[url]), { status: 200 });
+    });
+
+    await expect(loadFirstRunState("dono", "2026-07-07", fetcher)).resolves.toMatchObject({
+      bundle: {
+        areas: [{ id: "area_1", name: "Operações" }],
+        processes: [{ id: "process_1", title: "Entrega" }]
+      },
+      onboardingSession: null,
+      onboardingSessionLoadError: true
+    });
+  });
+
+  it("times out and aborts a pending onboarding session read without blocking an established workspace", async () => {
+    vi.useFakeTimers();
+    let onboardingSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/onboarding/session") {
+        onboardingSignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a", name: "Norte Ops" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [{ id: "process_1", title: "Entrega" }] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [{ id: "area_1", name: "Operações" }] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return Promise.resolve(new Response(JSON.stringify(dataByUrl[url]), { status: 200 }));
+    });
+
+    const statePromise = loadFirstRunState("dono", "2026-07-07", fetcher);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(statePromise).resolves.toMatchObject({
+      bundle: { processes: [{ id: "process_1", title: "Entrega" }] },
+      onboardingSession: null,
+      onboardingSessionLoadError: true
+    });
+    expect(onboardingSignal?.aborted).toBe(true);
+  });
+
+  it("resolves the core workspace bundle when an optional request stays pending", async () => {
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    let dashboardSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/dashboard?date=2026-07-07") {
+        dashboardSignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "owner" }, workspace: { id: "workspace_a" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+
+      return Promise.resolve(new Response(JSON.stringify(dataByUrl[url]), { status: 200 }));
+    });
+
+    void loadBaaseWorkspace("dono", "2026-07-07", fetcher).then(settled);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ dashboard: null }));
+    expect(dashboardSignal?.aborted).toBe(true);
   });
 
   it("rejects the bootstrap when required areas are unavailable", async () => {
