@@ -1,0 +1,107 @@
+version: "3.7"
+
+services:
+  prymeira_baase_postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: baase
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${BAASE_POSTGRES_PASSWORD}
+    networks:
+      prymeira_baase_internal:
+        aliases:
+          - postgres
+    volumes:
+      - prymeira_baase_postgres_data:/var/lib/postgresql/data
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+          - node.hostname == manager01
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+
+  prymeira_baase_api:
+    image: ghcr.io/yohannreimer/prymeira-baase-api:latest
+    networks:
+      prymeira_baase_internal:
+        aliases:
+          - prymeira_baase_api
+          - baase_api
+    environment:
+      DATABASE_URL: postgresql://postgres:${BAASE_POSTGRES_PASSWORD}@postgres:5432/baase
+      BAASE_RUNTIME_MODE: production
+      BAASE_AUTH_MODE: account
+      BAASE_SEED_DEMO_DATA: "false"
+      PRYMEIRA_ACCOUNT_API_URL: https://hub.prymeiradigital.com.br/api
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+      PORT: 3090
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+          - node.hostname == manager01
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 768M
+      restart_policy:
+        condition: on-failure
+
+  prymeira_baase_web:
+    image: ghcr.io/yohannreimer/prymeira-baase-web:latest
+    networks:
+      - network_swarm_public
+      - prymeira_baase_internal
+    environment:
+      BAASE_API_UPSTREAM: http://prymeira_baase_api:3090
+      VITE_BAASE_AUTH_MODE: account
+      VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+      VITE_PRYMEIRA_ACCOUNT_API_URL: https://hub.prymeiradigital.com.br/api
+      VITE_PRYMEIRA_HUB_URL: https://hub.prymeiradigital.com.br
+      VITE_PRYMEIRA_PRODUCT_KEY: base
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+          - node.hostname == manager01
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=network_swarm_public
+        - traefik.http.services.prymeira-baase.loadbalancer.server.port=80
+
+        - traefik.http.routers.prymeira-baase.rule=Host(`baase.prymeiradigital.com.br`)
+        - traefik.http.routers.prymeira-baase.entrypoints=websecure
+        - traefik.http.routers.prymeira-baase.tls=true
+        - traefik.http.routers.prymeira-baase.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.prymeira-baase.service=prymeira-baase
+
+volumes:
+  prymeira_baase_postgres_data:
+    external: true
+    name: prymeira_baase_postgres_data
+
+networks:
+  network_swarm_public:
+    external: true
+  prymeira_baase_internal:
+    driver: overlay
