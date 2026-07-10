@@ -139,6 +139,53 @@ describe("operational migration CLI", () => {
     expect(stderr.read()).toBe("");
     expect(closed).toBe(true);
   });
+
+  it("returns nonzero when pool close fails instead of escaping", async () => {
+    const stdout = captureWriter();
+    const stderr = captureWriter();
+    const pool = unusedPool(() => undefined);
+    pool.end = async () => {
+      throw new Error("pool close failure");
+    };
+
+    const exitCode = await runOperationalMigration({
+      env: { DATABASE_URL: "postgresql://example.invalid/baase" },
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+      poolFactory: () => pool,
+      ensureSchema: async () => undefined,
+      backfill: async () => emptyReport(true)
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout.read().trim().split("\n")).toHaveLength(1);
+    expect(stderr.read()).toContain("pool close failure");
+  });
+
+  it("reports both the primary operation error and a pool close error", async () => {
+    const stdout = captureWriter();
+    const stderr = captureWriter();
+    const primary = new Error("primary operation failure");
+    const pool = unusedPool(() => undefined);
+    pool.end = async () => {
+      throw new Error("pool close failure");
+    };
+
+    const exitCode = await runOperationalMigration({
+      env: { DATABASE_URL: "postgresql://example.invalid/baase" },
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+      poolFactory: () => pool,
+      ensureSchema: async () => {
+        throw primary;
+      }
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout.read()).toBe("");
+    expect(stderr.read()).toContain("primary operation failure");
+    expect(stderr.read()).toContain("pool close failure");
+  });
 });
 
 describe.skipIf(!testDatabaseUrl)("operational migration CLI on PostgreSQL 16", () => {

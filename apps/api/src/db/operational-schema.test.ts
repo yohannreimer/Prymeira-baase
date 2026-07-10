@@ -6,6 +6,7 @@ import {
   type OperationalSchemaClient,
   type OperationalSchemaPool
 } from "./operational-schema";
+import type { ErrorWithCleanup } from "./migration-cleanup-errors";
 
 let db: Pool;
 
@@ -82,6 +83,26 @@ describe("operational schema", () => {
 
     expect(checkouts).toBe(1);
     expect(releases).toBe(1);
+  });
+
+  it("preserves the primary migration error when rollback also fails", async () => {
+    const primary = new Error("primary schema failure") as ErrorWithCleanup;
+    const rollback = new Error("schema rollback failure");
+    const pool: OperationalSchemaPool = {
+      async connect() {
+        return {
+          async query<T = unknown>(text: string) {
+            if (text === "ROLLBACK") throw rollback;
+            if (/pg_advisory_xact_lock/.test(text)) throw primary;
+            return { rows: [] as T[] };
+          },
+          release() {}
+        };
+      }
+    };
+
+    await expect(ensureOperationalSchema(pool)).rejects.toBe(primary);
+    expect(primary.cleanupErrors).toEqual([rollback]);
   });
 
   it("allows manual task provenance snapshots but never manual routine references", async () => {

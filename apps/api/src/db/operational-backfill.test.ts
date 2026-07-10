@@ -2,6 +2,7 @@ import { DataType, newDb } from "pg-mem";
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { backfillOperationalData, type OperationalBackfillPool } from "./operational-backfill";
+import type { ErrorWithCleanup } from "./migration-cleanup-errors";
 import { ensureOperationalSchema } from "./operational-schema";
 import { ensurePostgresSchema } from "./postgres";
 
@@ -47,11 +48,27 @@ beforeEach(async () => {
   db = new adapter.Pool();
   await ensurePostgresSchema(db);
   await ensureOperationalSchema(db);
+  installPgMemBackfillCompatibility(db);
 });
 
 afterEach(async () => {
   await db.end();
 });
+
+function installPgMemBackfillCompatibility(pool: Pool) {
+  const connect = pool.connect.bind(pool);
+  pool.connect = (async () => {
+    const client = await connect();
+    const query = client.query.bind(client);
+    client.query = ((text: string, params?: unknown[]) => {
+      if (/^(lock table|savepoint|release savepoint|rollback to savepoint)/i.test(text.trim())) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return query(text, params);
+    }) as typeof client.query;
+    return client;
+  }) as typeof pool.connect;
+}
 
 async function seedLegacyRecord(
   kind: string,
@@ -801,6 +818,49 @@ describe("operational backfill", () => {
     expect(report.skippedRecords).toEqual([]);
     expect(report.reconciled).toBe(false);
   });
+
+  it("reports malformed primitive source data instead of coercing it", async () => {
+    await db.query(
+      `insert into baase_records (kind, workspace_id, id, data, created_at, updated_at)
+       values ($1, $2, $3, $4::jsonb, $5, $5)`,
+      ["area", "workspace_a", "area_bad", JSON.stringify("not-an-object"), timestamp]
+    );
+
+    const report = await backfillOperationalData(db);
+
+    expect(report.reconciled).toBe(false);
+    expect(report.sourceCounts.areas).toBe(1);
+    expect(report.targetCounts.areas).toBe(0);
+    expect(report.malformedRecords).toContainEqual(expect.objectContaining({
+      workspaceId: "workspace_a",
+      kind: "area",
+      entityId: "area_bad",
+      path: "data"
+    }));
+  });
+
+  it("preserves a primary error when rollback also fails", async () => {
+    const primary = new Error("primary migration failure") as ErrorWithCleanup;
+    const rollback = new Error("rollback failure");
+    const pool: OperationalBackfillPool = {
+      async query<T = unknown>() {
+        return { rows: [] as T[] };
+      },
+      async connect() {
+        return {
+          async query<T = unknown>(text: string) {
+            if (text === "ROLLBACK") throw rollback;
+            if (/pg_advisory_xact_lock/.test(text)) throw primary;
+            return { rows: [] as T[] };
+          },
+          release() {}
+        };
+      }
+    };
+
+    await expect(backfillOperationalData(pool)).rejects.toBe(primary);
+    expect(primary.cleanupErrors).toEqual([rollback]);
+  });
 });
 
 let postgresSchemaSequence = 0;
@@ -980,8 +1040,13 @@ describe.skipIf(!testDatabaseUrl)("operational backfill on PostgreSQL 16", () =>
       const report = await backfillOperationalData(racingPool);
 
       expect(injected).toBe(true);
-      expect(report.reconciled).toBe(true);
+      expect(report.reconciled).toBe(false);
       expect(report.insertedTotal).toBe(0);
+      expect(report.conflictingRecords).toContainEqual(expect.objectContaining({
+        entityType: "routine",
+        entityId: "routine_race",
+        reason: "persisted target payload differs from legacy source"
+      }));
       const routines = await postgres.query<{ count: number }>(
         "select count(*)::int as count from routines where workspace_id = $1 and id = $2",
         ["workspace_a", "routine_race"]

@@ -40,17 +40,23 @@ export async function runOperationalMigration(options: OperationalMigrationOptio
   const poolFactory = options.poolFactory
     ?? ((connectionString: string) => new Pool({ connectionString }));
   const pool = poolFactory(databaseUrl);
+  let exitCode = 1;
   try {
     await (options.ensureSchema ?? ensureOperationalSchema)(pool);
     const report = await (options.backfill ?? backfillOperationalData)(pool);
     stdout.write(`${JSON.stringify(report)}\n`);
-    return report.reconciled ? 0 : 1;
+    exitCode = report.reconciled ? 0 : 1;
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    return 1;
-  } finally {
-    await pool.end();
+    exitCode = 1;
   }
+  try {
+    await pool.end();
+  } catch (error) {
+    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    exitCode = 1;
+  }
+  return exitCode;
 }
 
 const entrypoint = process.argv[1];

@@ -1,3 +1,5 @@
+import { attachCleanupError } from "./migration-cleanup-errors";
+
 export type OperationalSchemaClient = {
   query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
   release(): void;
@@ -417,11 +419,20 @@ const migrations: Migration[] = [{
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
   const client = await pool.connect();
+  let primaryError: unknown;
 
   try {
     await migrateOperationalSchema(client);
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    client.release();
+    try {
+      client.release();
+    } catch (cleanupError) {
+      if (primaryError) attachCleanupError(primaryError, cleanupError);
+      else throw cleanupError;
+    }
   }
 }
 
@@ -461,7 +472,11 @@ async function migrateOperationalSchema(client: OperationalSchemaClient): Promis
 
     await client.query("COMMIT");
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch (cleanupError) {
+      attachCleanupError(error, cleanupError);
+    }
     throw error;
   }
 }
