@@ -65,8 +65,23 @@ export type OperationalBackfillReport = {
   }>;
   conflictingRecords?: ConflictingRecord[];
   malformedRecords?: MalformedRecord[];
+  expansionCounts?: ExpansionCounts;
   reconciled: boolean;
 };
+
+export type ExpansionCounts = {
+  individualRoutineAggregates: number;
+  generatedTaskOccurrences: number;
+  checklistProgressDispositions: number;
+};
+
+export function emptyExpansionCounts(): ExpansionCounts {
+  return {
+    individualRoutineAggregates: 0,
+    generatedTaskOccurrences: 0,
+    checklistProgressDispositions: 0
+  };
+}
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -101,6 +116,43 @@ export type PlannedRow = {
   values: JsonRecord;
 };
 
+export type RoutineOccurrenceContribution = {
+  parentId: string;
+  parentKey: string;
+  sourceTaskId: string;
+  taskId: string;
+  taskSemanticKey: string;
+  routineId: string;
+  dueDate: string;
+  audienceKey: string;
+  areaNameSnapshot: string | null;
+  routineTitleSnapshot: string;
+  status: "pending" | "in_progress" | "completed";
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkspaceReferences = {
+  areas: Map<string, JsonRecord>;
+  roleTemplateIds: Set<string>;
+  peopleIds: Set<string>;
+  processIds: Set<string>;
+  routines: Map<string, PlannedRow>;
+  routineSteps: PlannedRow[];
+};
+
+export function emptyWorkspaceReferences(): WorkspaceReferences {
+  return {
+    areas: new Map(),
+    roleTemplateIds: new Set(),
+    peopleIds: new Set(),
+    processIds: new Set(),
+    routines: new Map(),
+    routineSteps: []
+  };
+}
+
 export type OrphanReference = OperationalBackfillReport["orphanReferences"][number] & {
   workspaceId: string;
 };
@@ -118,6 +170,8 @@ export type WorkspacePlan = {
   skippedRecords: SkippedRecord[];
   conflictingRecords: ConflictingRecord[];
   malformedRecords: MalformedRecord[];
+  expansionCounts: ExpansionCounts;
+  routineOccurrenceContributions: RoutineOccurrenceContribution[];
 };
 
 export function emptyPlannedRows(): Record<EntityTable, PlannedRow[]> {

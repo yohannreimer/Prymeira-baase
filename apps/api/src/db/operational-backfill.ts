@@ -2,7 +2,14 @@ import { attachCleanupError } from "./migration-cleanup-errors";
 import { parseLegacyWorkspace } from "./operational-backfill/legacy-parse";
 import { readTargetCounts, reconcileWorkspace } from "./operational-backfill/reconcile";
 import {
+  clearRoutineOccurrenceStage,
+  finalizeRoutineOccurrenceStage,
+  initializeRoutineOccurrenceStage,
+  stageRoutineOccurrenceContributions
+} from "./operational-backfill/routine-occurrence-stage";
+import {
   emptyEntityCounts,
+  emptyExpansionCounts,
   entityTables,
   type ConflictingRecord,
   type EntityCounts,
@@ -11,10 +18,12 @@ import {
   type OperationalBackfillPool,
   type OperationalBackfillReport,
   type OrphanReference,
+  type QueryResult,
   type SkippedRecord
 } from "./operational-backfill/types";
 import { buildWorkspacePlan } from "./operational-backfill/workspace-plan";
 import { persistWorkspacePlan } from "./operational-backfill/workspace-persist";
+import { loadWorkspaceReferences } from "./operational-backfill/workspace-references";
 
 export type {
   ConflictingRecord,
@@ -25,6 +34,15 @@ export type {
 } from "./operational-backfill/types";
 
 const coordinatorLock = [1111574853, 1869636979];
+const SOURCE_PAGE_SIZE = 500;
+const legacyKinds = [
+  "area",
+  "role_template",
+  "team_member",
+  "process",
+  "routine",
+  "task_occurrence"
+] as const;
 
 export async function backfillOperationalData(
   pool: OperationalBackfillPool
@@ -35,6 +53,7 @@ export async function backfillOperationalData(
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", coordinatorLock);
     await client.query("LOCK TABLE baase_records IN SHARE MODE");
+    await initializeRoutineOccurrenceStage(client);
     const workspaceResult = await client.query<{ workspace_id: string }>(
       `select distinct workspace_id
        from baase_records
@@ -49,38 +68,60 @@ export async function backfillOperationalData(
     const skippedRecords: SkippedRecord[] = [];
     const conflictingRecords: ConflictingRecord[] = [];
     const malformedRecords: MalformedRecord[] = [];
+    const expansionCounts = emptyExpansionCounts();
     let insertedTotal = 0;
 
     for (const { workspace_id: workspaceId } of workspaceResult.rows) {
       await client.query("SAVEPOINT operational_workspace");
       try {
-        const sourceRows = await client.query<LegacyRow>(
-          `select kind, workspace_id, id, data, created_at, updated_at
-           from baase_records
-           where workspace_id = $1
-             and kind in ($2, $3, $4, $5, $6, $7)
-           order by
-             case kind
-               when 'area' then 1
-               when 'role_template' then 2
-               when 'team_member' then 3
-               when 'process' then 4
-               when 'routine' then 5
-               when 'task_occurrence' then 6
-             end,
-             created_at,
-             id`,
-          [workspaceId, "area", "role_template", "team_member", "process", "routine", "task_occurrence"]
-        );
-        const parsed = parseLegacyWorkspace(workspaceId, sourceRows.rows);
-        const plan = buildWorkspacePlan(workspaceId, parsed);
-        insertedTotal += await persistWorkspacePlan(client, plan);
-        conflictingRecords.push(...plan.conflictingRecords, ...await reconcileWorkspace(client, plan));
-        malformedRecords.push(...plan.malformedRecords);
-        orphanReferences.push(...plan.orphanReferences);
-        skippedRecords.push(...plan.skippedRecords);
-        addCounts(sourceCounts, plan.sourceCounts);
-        for (const table of entityTables) expectedCounts[table] += plan.rows[table].length;
+        await clearRoutineOccurrenceStage(client, workspaceId);
+        for (const kind of legacyKinds) {
+          let cursor: string | null = null;
+          while (true) {
+            const sourceRows: QueryResult<LegacyRow> = await client.query<LegacyRow>(
+              `select kind, workspace_id, id, data, created_at, updated_at
+               from baase_records
+               where workspace_id = $1
+                 and kind = $2
+                 and ($3::text is null or id > $3)
+               order by id
+               limit $4`,
+              [workspaceId, kind, cursor, SOURCE_PAGE_SIZE]
+            );
+            if (sourceRows.rows.length === 0) break;
+            const parsed = parseLegacyWorkspace(workspaceId, sourceRows.rows);
+            const references = await loadWorkspaceReferences(client, workspaceId, parsed);
+            const plan = buildWorkspacePlan(workspaceId, parsed, references);
+            if (kind === "task_occurrence") {
+              await stageRoutineOccurrenceContributions(
+                client,
+                workspaceId,
+                plan.routineOccurrenceContributions
+              );
+              plan.rows.routine_occurrences = [];
+              plan.sourceCounts.routine_occurrences = 0;
+              plan.conflictingRecords = plan.conflictingRecords.filter((item) => !isStagedConflict(item));
+            }
+            insertedTotal += await persistWorkspacePlan(client, plan);
+            conflictingRecords.push(...plan.conflictingRecords, ...await reconcileWorkspace(client, plan));
+            malformedRecords.push(...plan.malformedRecords);
+            orphanReferences.push(...plan.orphanReferences);
+            skippedRecords.push(...plan.skippedRecords);
+            addCounts(sourceCounts, plan.sourceCounts);
+            addExpansionCounts(expansionCounts, plan.expansionCounts);
+            for (const table of entityTables) expectedCounts[table] += plan.rows[table].length;
+            cursor = sourceRows.rows.at(-1)?.id ?? null;
+            if (sourceRows.rows.length < SOURCE_PAGE_SIZE) break;
+          }
+        }
+        const finalized = await finalizeRoutineOccurrenceStage(client, workspaceId, async (plan) => {
+          insertedTotal += await persistWorkspacePlan(client, plan);
+          conflictingRecords.push(...await reconcileWorkspace(client, plan));
+          expectedCounts.routine_occurrences += plan.rows.routine_occurrences.length;
+        });
+        sourceCounts.routine_occurrences += finalized.sourceCount;
+        conflictingRecords.push(...finalized.conflicts);
+        await clearRoutineOccurrenceStage(client, workspaceId);
         await client.query("RELEASE SAVEPOINT operational_workspace");
       } catch (error) {
         try {
@@ -102,6 +143,7 @@ export async function backfillOperationalData(
       skippedRecords: sortSkipped(skippedRecords).map(({ workspaceId: _workspaceId, table: _table, ...item }) => item),
       conflictingRecords: sortConflicts(conflictingRecords),
       malformedRecords: sortMalformed(malformedRecords),
+      expansionCounts,
       reconciled: countsMatch && conflictingRecords.length === 0 && malformedRecords.length === 0
     };
     await client.query("COMMIT");
@@ -126,6 +168,20 @@ export async function backfillOperationalData(
 
 function addCounts(target: EntityCounts, source: EntityCounts) {
   for (const table of entityTables) target[table] += source[table];
+}
+
+function addExpansionCounts(
+  target: ReturnType<typeof emptyExpansionCounts>,
+  source: ReturnType<typeof emptyExpansionCounts>
+) {
+  target.individualRoutineAggregates += source.individualRoutineAggregates;
+  target.generatedTaskOccurrences += source.generatedTaskOccurrences;
+  target.checklistProgressDispositions += source.checklistProgressDispositions;
+}
+
+function isStagedConflict(item: ConflictingRecord) {
+  return item.reason === "routine occurrence contributors disagree on parent fields"
+    || item.reason === "duplicate source routine task semantic key";
 }
 
 function sortOrphans(items: OrphanReference[]) {

@@ -195,7 +195,37 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
     reviewComment: optionalText,
     completedAt: optionalTimestamp,
     ...timestamps
-  }).passthrough()
+  }).passthrough().superRefine((data, context) => {
+    const stepId = data.taskTemplateId ?? data.routineStepId;
+    if (data.taskTemplateId && data.routineStepId && data.taskTemplateId !== data.routineStepId) {
+      context.addIssue({
+        code: "custom",
+        path: ["routineStepId"],
+        message: "Routine step references disagree"
+      });
+    }
+    if (data.origin === "manual" && (data.routineId || stepId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["origin"],
+        message: "Manual task cannot contain routine references"
+      });
+      return;
+    }
+    const expectsRoutineReferences = data.origin === "routine"
+      || (data.origin === undefined && Boolean(data.routineId || stepId));
+    if (!expectsRoutineReferences) return;
+    if (!data.routineId) {
+      context.addIssue({ code: "custom", path: ["routineId"], message: "Routine task requires routineId" });
+    }
+    if (!stepId) {
+      context.addIssue({
+        code: "custom",
+        path: ["taskTemplateId"],
+        message: "Routine task requires taskTemplateId or routineStepId"
+      });
+    }
+  })
 };
 
 export type ParsedLegacyWorkspace = {

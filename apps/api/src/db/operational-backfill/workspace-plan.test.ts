@@ -148,6 +148,90 @@ describe("operational workspace planning", () => {
       routine_title_snapshot: "Abertura"
     });
   });
+
+  it("expands a partial individual execution into deterministic per-step tasks", () => {
+    const rows = individualExecutionRows({
+      status: "in_progress",
+      checklistItems: [
+        { title: "Primeira", sortOrder: 1, done: true, completedAt: timestamp },
+        { title: "Segunda", sortOrder: 2, done: false },
+        { title: "Terceira", sortOrder: 3, done: false }
+      ],
+      evidence: { comment: "Execucao registrada", profileId: "profile_1", createdAt: timestamp },
+      submittedByProfileId: "profile_1",
+      submittedAt: timestamp,
+      reviewedByProfileId: "profile_2",
+      reviewedAt: timestamp,
+      reviewComment: "Revisao legada"
+    });
+
+    const first = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a", rows));
+    const second = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a", rows));
+
+    expect(first.sourceCounts.task_occurrences).toBe(1);
+    expect(first.sourceCounts.task_checklist_items).toBe(3);
+    expect(first.expansionCounts).toEqual({
+      individualRoutineAggregates: 1,
+      generatedTaskOccurrences: 3,
+      checklistProgressDispositions: 3
+    });
+    expect(first.rows.task_occurrences).toHaveLength(3);
+    expect(first.rows.task_checklist_items).toHaveLength(0);
+    expect(first.rows.task_occurrences.map((item) => item.values.status)).toEqual([
+      "completed", "in_progress", "in_progress"
+    ]);
+    expect(first.rows.task_occurrences.map((item) => item.entityId))
+      .toEqual(second.rows.task_occurrences.map((item) => item.entityId));
+    expect(first.rows.task_occurrences[0]?.values).toMatchObject({
+      assignee_profile_id: "profile_1",
+      approval_mode: "approval_required",
+      evidence_policy: "comment_required",
+      submitted_by_profile_id: "profile_1",
+      reviewed_by_profile_id: "profile_2",
+      review_comment: "Revisao legada"
+    });
+    expect(first.rows.task_occurrences.slice(1).every((item) =>
+      item.values.submitted_at === null && item.values.reviewed_at === null)).toBe(true);
+    expect(first.rows.task_evidence).toHaveLength(1);
+    expect(first.rows.task_evidence[0]?.values.task_occurrence_id)
+      .toBe(first.rows.task_occurrences[0]?.entityId);
+    expect(first.rows.routine_occurrences).toHaveLength(1);
+    expect(first.rows.routine_occurrences[0]?.values.status).toBe("in_progress");
+  });
+
+  it("marks every expanded step complete for a completed aggregate without a checklist", () => {
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+      individualExecutionRows({ status: "completed", checklistItems: [] })));
+
+    expect(plan.rows.task_occurrences).toHaveLength(3);
+    expect(plan.rows.task_occurrences.every((item) => item.values.status === "completed")).toBe(true);
+    expect(plan.rows.routine_occurrences[0]?.values.status).toBe("completed");
+  });
+
+  it("does not expand a malformed individual execution suffix", () => {
+    const rows = individualExecutionRows({
+      taskTemplateId: "routine_1__execution__profile_other"
+    });
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a", rows));
+
+    expect(plan.expansionCounts.individualRoutineAggregates).toBe(0);
+    expect(plan.rows.task_occurrences).toHaveLength(1);
+    expect(plan.rows.task_occurrences[0]?.values.origin).toBe("manual");
+    expect(plan.orphanReferences).toContainEqual(expect.objectContaining({
+      entityType: "task_occurrence",
+      field: "routine_step_id",
+      legacyValue: "routine_1__execution__profile_other"
+    }));
+  });
+
+  it("keeps normal shared per-step routine tasks unchanged", () => {
+    const plan = buildPlanWithRoutineTasks([routineTask("task_shared", "step_1")]);
+
+    expect(plan.expansionCounts.individualRoutineAggregates).toBe(0);
+    expect(plan.rows.task_occurrences).toHaveLength(1);
+    expect(plan.rows.task_occurrences[0]?.entityId).toBe("task_shared");
+    expect(plan.rows.task_occurrences[0]?.values.origin).toBe("routine");
+  });
 });
 
 function buildPlanWithRoutineTasks(tasks: LegacyRow[]) {
@@ -192,6 +276,58 @@ function routineTask(id: string, taskTemplateId: string, overrides: Record<strin
     updatedAt: timestamp,
     ...overrides
   });
+}
+
+function individualExecutionRows(taskOverrides: Record<string, unknown> = {}): LegacyRow[] {
+  return [
+    row("team_member", "profile_1", {
+      name: "Executora",
+      role: "employee",
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }),
+    row("team_member", "profile_2", {
+      name: "Revisora",
+      role: "manager",
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }),
+    row("routine", "routine_1", {
+      title: "Rotina individual",
+      status: "active",
+      frequency: "on_demand",
+      executionMode: "individual",
+      assigneeProfileIds: ["profile_1"],
+      taskTemplates: [
+        step("step_1", 1, "Primeira"),
+        step("step_2", 2, "Segunda"),
+        step("step_3", 3, "Terceira")
+      ],
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }),
+    row("task_occurrence", "aggregate_1", {
+      origin: "routine",
+      routineId: "routine_1",
+      taskTemplateId: "routine_1__execution__profile_1",
+      assigneeProfileId: "profile_1",
+      audienceKey: "profile:profile_1",
+      title: "Rotina individual",
+      routineTitleSnapshot: "Rotina individual",
+      status: "pending",
+      dueDate: "2026-07-10",
+      dueTime: "09:30",
+      approvalMode: "approval_required",
+      evidencePolicy: "comment_required",
+      evidenceReason: "Registrar execucao",
+      evidence: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...taskOverrides
+    })
+  ];
 }
 
 function version(id: string, versionNumber: number, body: string) {

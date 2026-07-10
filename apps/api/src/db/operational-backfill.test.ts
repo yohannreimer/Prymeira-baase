@@ -16,7 +16,7 @@ type TestQueryable = {
 };
 
 beforeEach(async () => {
-  const memoryDb = newDb();
+  const memoryDb = newDb({ noAstCoverageCheck: true });
   memoryDb.public.registerFunction({
     name: "pg_advisory_xact_lock",
     args: [DataType.integer, DataType.integer],
@@ -64,7 +64,8 @@ function installPgMemBackfillCompatibility(pool: Pool) {
       if (/^(lock table|savepoint|release savepoint|rollback to savepoint)/i.test(text.trim())) {
         return Promise.resolve({ rows: [], rowCount: 0 });
       }
-      return query(text, params);
+      const compatibleText = text.replace(/^create temporary table/i, "create table");
+      return query(compatibleText, params);
     }) as typeof client.query;
     return client;
   }) as typeof pool.connect;

@@ -191,7 +191,7 @@ describe("legacy operational parsing", () => {
       origin: "routine",
       routineId: "routine_1",
       taskTemplateId: "step_1",
-      routineStepId: "step_legacy",
+      routineStepId: "step_1",
       areaId: "area_1",
       processId: "process_1",
       assigneeProfileId: "profile_1",
@@ -230,6 +230,46 @@ describe("legacy operational parsing", () => {
 
     expect(result.malformedRecords).toEqual([]);
     expect(result.validRows[0]?.data).toMatchObject(validTask);
+  });
+
+  it.each([
+    ["absent without references", undefined, undefined, undefined, true, undefined],
+    ["absent with both references", undefined, "routine_1", "step_1", true, undefined],
+    ["absent with only routine", undefined, "routine_1", undefined, false, "data.taskTemplateId"],
+    ["absent with only step", undefined, undefined, "step_1", false, "data.routineId"],
+    ["manual without references", "manual", undefined, undefined, true, undefined],
+    ["manual with routine", "manual", "routine_1", undefined, false, "data.origin"],
+    ["manual with step", "manual", undefined, "step_1", false, "data.origin"],
+    ["manual with both references", "manual", "routine_1", "step_1", false, "data.origin"],
+    ["routine with both references", "routine", "routine_1", "step_1", true, undefined],
+    ["routine without references", "routine", undefined, undefined, false, "data.routineId"],
+    ["routine with only routine", "routine", "routine_1", undefined, false, "data.taskTemplateId"],
+    ["routine with only step", "routine", undefined, "step_1", false, "data.routineId"]
+  ])("validates origin/reference consistency: %s", (
+    _label,
+    origin,
+    routineId,
+    taskTemplateId,
+    valid,
+    malformedPath
+  ) => {
+    const result = parseLegacyWorkspace("workspace_a", [row("task_occurrence", "task_1", task({
+      origin,
+      routineId,
+      taskTemplateId
+    }))]);
+
+    expect(result.validRows).toHaveLength(valid ? 1 : 0);
+    if (malformedPath) {
+      expect(result.malformedRecords).toContainEqual(expect.objectContaining({
+        workspaceId: "workspace_a",
+        kind: "task_occurrence",
+        entityId: "task_1",
+        path: malformedPath
+      }));
+    } else {
+      expect(result.malformedRecords).toEqual([]);
+    }
   });
 });
 

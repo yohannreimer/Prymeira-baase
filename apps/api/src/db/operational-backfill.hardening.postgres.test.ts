@@ -155,22 +155,30 @@ describe.skipIf(!testDatabaseUrl)("hardened operational backfill on PostgreSQL 1
         [JSON.stringify(records.map((item, sortOrder) => ({ ...item, sort_order: sortOrder }))), timestamp]
       );
       let areaInsertQueries = 0;
-      const countedPool = wrappingPool(pool, async (text, run) => {
+      let areaSourcePageQueries = 0;
+      const countedPool = wrappingPool(pool, async (text, run, params) => {
         if (/^insert into areas/i.test(text.trim())) areaInsertQueries += 1;
+        if (/from baase_records[\s\S]*where workspace_id = \$1[\s\S]*kind = \$2/i.test(text)) {
+          if (params?.[1] === "area") areaSourcePageQueries += 1;
+        }
         return run();
       });
 
       const first = await backfillOperationalData(countedPool);
       const firstQueryCount = areaInsertQueries;
+      const firstSourcePageCount = areaSourcePageQueries;
       areaInsertQueries = 0;
+      areaSourcePageQueries = 0;
       const second = await backfillOperationalData(countedPool);
 
       expect(first.reconciled).toBe(true);
       expect(first.insertedTotal).toBe(1_100);
       expect(firstQueryCount).toBe(3);
+      expect(firstSourcePageCount).toBe(3);
       expect(second.reconciled).toBe(true);
       expect(second.insertedTotal).toBe(0);
       expect(areaInsertQueries).toBe(3);
+      expect(areaSourcePageQueries).toBe(3);
       expect(second.targetCounts.areas).toBe(1_100);
     });
   });
@@ -285,6 +293,154 @@ describe.skipIf(!testDatabaseUrl)("hardened operational backfill on PostgreSQL 1
       expect(counts.rows[0]).toEqual({ parents: 1, tasks: 2 });
     });
   });
+
+  it("detects routine parent disagreement across task source pages", async () => {
+    await withSchema(async (pool) => {
+      await seedLegacy(pool, "routine", "routine_paged", {
+        title: "Rotina paginada",
+        status: "active",
+        frequency: "on_demand",
+        taskTemplates: [step("step_1", 1), step("step_2", 2)],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      const tasks = [
+        pagedRoutineTask("task_0000_group", "step_1", "Titulo inicial"),
+        ...Array.from({ length: 499 }, (_, index) => ({
+          id: `task_${String(index + 1).padStart(4, "0")}`,
+          data: {
+            origin: "manual",
+            title: `Tarefa ${index + 1}`,
+            status: "pending",
+            dueDate: "2026-07-10",
+            approvalMode: "direct",
+            evidencePolicy: "optional",
+            evidence: null,
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        })),
+        pagedRoutineTask("task_0500_group", "step_2", "Titulo divergente")
+      ];
+      await seedTaskBatch(pool, tasks);
+      let taskSourcePages = 0;
+      const countedPool = wrappingPool(pool, async (text, run, params) => {
+        if (/from baase_records[\s\S]*where workspace_id = \$1[\s\S]*kind = \$2/i.test(text)
+          && params?.[1] === "task_occurrence") taskSourcePages += 1;
+        return run();
+      });
+
+      const report = await backfillOperationalData(countedPool);
+
+      expect(taskSourcePages).toBeGreaterThanOrEqual(2);
+      expect(report.sourceCounts.task_occurrences).toBe(501);
+      expect(report.sourceCounts.routine_occurrences).toBe(1);
+      expect(report.reconciled).toBe(false);
+      expect(report.conflictingRecords).toContainEqual(expect.objectContaining({
+        entityType: "routine_occurrence",
+        reason: "routine occurrence contributors disagree on parent fields",
+        expected: expect.objectContaining({ sourceTaskId: "task_0000_group" }),
+        actual: expect.objectContaining({ sourceTaskId: "task_0500_group" })
+      }));
+    });
+  });
+
+  it("expands an individual execution idempotently without duplicating aggregate provenance", async () => {
+    await withSchema(async (pool) => {
+      await seedLegacy(pool, "area", "area_ops", area("area_ops", "Operacoes"));
+      await seedLegacy(pool, "team_member", "profile_worker", {
+        name: "Executora",
+        role: "employee",
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      const processVersion = version("version_individual", 1);
+      await seedLegacy(pool, "process", "process_individual", {
+        title: "Processo individual",
+        status: "published",
+        areaId: "area_ops",
+        versions: [processVersion],
+        currentVersion: processVersion,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        publishedAt: timestamp
+      });
+      await seedLegacy(pool, "routine", "routine_individual", {
+        title: "Rotina individual",
+        status: "active",
+        frequency: "on_demand",
+        executionMode: "individual",
+        areaId: "area_ops",
+        assigneeProfileIds: ["profile_worker"],
+        taskTemplates: [
+          { ...step("step_1", 1), title: "Primeira", processId: "process_individual" },
+          { ...step("step_2", 2), title: "Segunda", processId: "process_individual" },
+          { ...step("step_3", 3), title: "Terceira", processId: "process_individual" }
+        ],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedLegacy(pool, "task_occurrence", "aggregate_1", {
+        origin: "routine",
+        routineId: "routine_individual",
+        taskTemplateId: "routine_individual__execution__profile_worker",
+        assigneeProfileId: "profile_worker",
+        audienceKey: "profile:profile_worker",
+        title: "Rotina individual",
+        status: "in_progress",
+        dueDate: "2026-07-10",
+        dueTime: "09:30",
+        approvalMode: "approval_required",
+        evidencePolicy: "comment_required",
+        checklistItems: [
+          { title: "Primeira", done: true, sortOrder: 1, completedAt: timestamp },
+          { title: "Segunda", done: false, sortOrder: 2 },
+          { title: "Terceira", done: false, sortOrder: 3 }
+        ],
+        evidence: { comment: "Historico agregado", profileId: "profile_worker" },
+        submittedByProfileId: "profile_worker",
+        submittedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+
+      const first = await backfillOperationalData(pool);
+      const second = await backfillOperationalData(pool);
+
+      expect(first.reconciled).toBe(true);
+      expect(first.expansionCounts).toEqual({
+        individualRoutineAggregates: 1,
+        generatedTaskOccurrences: 3,
+        checklistProgressDispositions: 3
+      });
+      expect(second.reconciled).toBe(true);
+      expect(second.insertedTotal).toBe(0);
+      expect(second.expansionCounts).toEqual(first.expansionCounts);
+      const tasks = await pool.query<{
+        status: string;
+        approval_mode: string;
+        evidence_policy: string;
+        area_id: string;
+        process_id: string;
+        area_name_snapshot: string;
+      }>(
+        `select status, approval_mode, evidence_policy, area_id, process_id, area_name_snapshot
+         from task_occurrences where workspace_id = 'workspace_a' order by title`
+      );
+      expect(tasks.rows).toHaveLength(3);
+      expect(tasks.rows.map((item) => item.status).sort()).toEqual(["completed", "in_progress", "in_progress"]);
+      expect(tasks.rows.every((item) => item.approval_mode === "approval_required"
+        && item.evidence_policy === "comment_required")).toBe(true);
+      expect(tasks.rows.every((item) => item.area_id === "area_ops"
+        && item.process_id === "process_individual"
+        && item.area_name_snapshot === "Operacoes")).toBe(true);
+      const evidence = await pool.query<{ count: number }>(
+        "select count(*)::int as count from task_evidence where workspace_id = 'workspace_a'"
+      );
+      expect(evidence.rows[0]?.count).toBe(1);
+    });
+  });
 });
 
 async function withSchema<T>(run: (pool: Pool, schemaName: string) => Promise<T>) {
@@ -361,7 +517,11 @@ async function seedCompleteGraph(pool: Pool) {
 
 function wrappingPool(
   pool: Pool,
-  intercept: (text: string, run: () => Promise<{ rows: unknown[] }>) => Promise<{ rows: unknown[] }>
+  intercept: (
+    text: string,
+    run: () => Promise<{ rows: unknown[] }>,
+    params?: unknown[]
+  ) => Promise<{ rows: unknown[] }>
 ): OperationalBackfillPool {
   return {
     query<T = unknown>(text: string, params?: unknown[]) {
@@ -373,7 +533,8 @@ function wrappingPool(
         query<T = unknown>(text: string, params?: unknown[]) {
           return intercept(
             text,
-            () => client.query(text, params) as unknown as Promise<{ rows: unknown[] }>
+            () => client.query(text, params) as unknown as Promise<{ rows: unknown[] }>,
+            params
           ) as Promise<{ rows: T[] }>;
         },
         release() {
@@ -393,6 +554,36 @@ async function seedLegacy(pool: Pool, kind: string, id: string, data: unknown, r
      values ($1, $2, $3, $4::jsonb, $5, $5)`,
     [kind, workspaceId, id, JSON.stringify(data), rowTimestamp]
   );
+}
+
+async function seedTaskBatch(pool: Pool, tasks: Array<{ id: string; data: unknown }>) {
+  await pool.query(
+    `insert into baase_records (kind, workspace_id, id, data, created_at, updated_at)
+     select 'task_occurrence', 'workspace_a', source.id, source.data, $2::timestamptz, $2::timestamptz
+     from jsonb_to_recordset($1::jsonb) as source(id text, data jsonb)`,
+    [JSON.stringify(tasks), timestamp]
+  );
+}
+
+function pagedRoutineTask(id: string, taskTemplateId: string, routineTitleSnapshot: string) {
+  return {
+    id,
+    data: {
+      origin: "routine",
+      routineId: "routine_paged",
+      taskTemplateId,
+      audienceKey: "all",
+      title: taskTemplateId,
+      routineTitleSnapshot,
+      status: "pending",
+      dueDate: "2026-07-10",
+      approvalMode: "direct",
+      evidencePolicy: "optional",
+      evidence: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }
+  };
 }
 
 function area(id: string, name: string) {
