@@ -1019,6 +1019,42 @@ describe("Baase web API client", () => {
     });
   });
 
+  it("normalizes unfinished onboarding fields before saving", async () => {
+    let requestBody = "";
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ session: {} }), { status: 200 });
+    });
+
+    await patchOnboardingSession("dono", {
+      currentStep: "identity",
+      companyName: "   ",
+      segment: "   ",
+      customSegment: "",
+      normalizedSegment: "",
+      teamSizeRange: "",
+      goals: [],
+      mainAnswers: [{
+        questionId: "operations_overview",
+        theme: "business_model",
+        question: "O que a empresa vende?",
+        answer: "   ",
+        inputMode: "text"
+      }]
+    }, fetcher);
+
+    expect(JSON.parse(requestBody)).toEqual({
+      current_step: "identity",
+      company_name: null,
+      segment: null,
+      custom_segment: null,
+      normalized_segment: null,
+      team_size_range: null,
+      goals: [],
+      main_answers: []
+    });
+  });
+
   it("generates structured AI drafts through the AI endpoint", async () => {
     let requestBody = "";
     const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {

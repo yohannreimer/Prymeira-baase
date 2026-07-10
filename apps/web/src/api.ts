@@ -1563,6 +1563,11 @@ function onboardingAnswerToPayload(answer: OnboardingAnswer) {
   };
 }
 
+function nullableOnboardingText(value: string | null | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
 export async function getOnboardingSession(role: UiRole, fetcher: Fetcher = fetch, signal?: AbortSignal): Promise<OnboardingSession | null> {
   const result = await readJson<{ session: unknown | null }>(fetcher, "/api/onboarding/session", {
     method: "GET",
@@ -1605,13 +1610,15 @@ export async function patchOnboardingSession(
     headers: createBaaseHeaders(role),
     body: JSON.stringify({
       current_step: input.currentStep,
-      company_name: input.companyName,
-      segment: input.segment,
-      custom_segment: input.customSegment,
-      normalized_segment: input.normalizedSegment,
-      team_size_range: input.teamSizeRange,
+      company_name: nullableOnboardingText(input.companyName),
+      segment: nullableOnboardingText(input.segment),
+      custom_segment: nullableOnboardingText(input.customSegment),
+      normalized_segment: nullableOnboardingText(input.normalizedSegment),
+      team_size_range: nullableOnboardingText(input.teamSizeRange),
       goals: input.goals,
-      main_answers: input.mainAnswers?.map(onboardingAnswerToPayload)
+      main_answers: input.mainAnswers
+        ?.filter((answer) => answer.answer.trim().length > 0)
+        .map(onboardingAnswerToPayload)
     })
   });
 
