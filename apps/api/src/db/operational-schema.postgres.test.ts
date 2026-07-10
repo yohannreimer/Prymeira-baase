@@ -183,7 +183,14 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
            'direct', 'photo_required', 'pending', '2026-07-10'
          )`
       );
-      const blankEvidence = [["", null], ["   ", null], [null, ""], [null, "   "]];
+      const blankEvidence = [
+        ["", null],
+        ["   ", null],
+        ["\t\n", null],
+        [null, ""],
+        [null, "   "],
+        [null, "\n\t"]
+      ];
 
       for (const [index, [photoUrl, objectKey]] of blankEvidence.entries()) {
         await expect(pool.query(
@@ -193,6 +200,62 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
           [`evidence_${index}`, "workspace_a", "task_close", "profile_a", "photo", photoUrl, objectKey]
         )).rejects.toThrow();
       }
+    });
+  });
+
+  it("rejects whitespace-only material and comment fields", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query(
+        `insert into processes
+          (id, workspace_id, title, status, created_by_profile_id)
+         values ('process_close', 'workspace_a', 'Fechamento', 'draft', 'profile_a')`
+      );
+      const invalidMaterials = [
+        ["link", "\t\n", null, null, null],
+        ["file", null, "\n\t", "application/pdf", 10],
+        ["file", null, "object-key", "\t\n", 10]
+      ];
+
+      for (const [index, [kind, url, objectKey, contentType, sizeBytes]] of invalidMaterials.entries()) {
+        await expect(pool.query(
+          `insert into process_materials
+            (id, workspace_id, process_id, kind, title, url, object_key, content_type, size_bytes)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            `material_${index}`,
+            "workspace_a",
+            "process_close",
+            kind,
+            "Material",
+            url,
+            objectKey,
+            contentType,
+            sizeBytes
+          ]
+        )).rejects.toThrow();
+      }
+
+      await pool.query(
+        `insert into people
+          (id, workspace_id, name, role, status, created_by_profile_id)
+         values ('profile_a', 'workspace_a', 'Ana', 'employee', 'active', 'profile_owner')`
+      );
+      await pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+           evidence_policy, status, due_date)
+         values (
+           'task_close', 'workspace_a', 'manual', 'Fechar caixa', 'Fechar caixa',
+           'direct', 'comment_required', 'pending', '2026-07-10'
+         )`
+      );
+      await expect(pool.query(
+        `insert into task_evidence
+          (id, workspace_id, task_occurrence_id, profile_id, kind, comment)
+         values ('evidence_comment', 'workspace_a', 'task_close', 'profile_a', 'comment', $1)`,
+        ["\t\n"]
+      )).rejects.toThrow();
     });
   });
 });

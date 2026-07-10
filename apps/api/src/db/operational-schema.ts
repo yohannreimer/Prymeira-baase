@@ -120,11 +120,11 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (kind = 'link' AND NULLIF(BTRIM(url), '') IS NOT NULL
+        (kind = 'link' AND COALESCE(url ~ '\\S', FALSE)
           AND object_key IS NULL AND content_type IS NULL AND size_bytes IS NULL)
         OR
-        (kind = 'file' AND url IS NULL AND NULLIF(BTRIM(object_key), '') IS NOT NULL
-          AND NULLIF(BTRIM(content_type), '') IS NOT NULL
+        (kind = 'file' AND url IS NULL AND COALESCE(object_key ~ '\\S', FALSE)
+          AND COALESCE(content_type ~ '\\S', FALSE)
           AND size_bytes IS NOT NULL AND size_bytes >= 0)
       ),
       FOREIGN KEY (workspace_id, process_id)
@@ -334,12 +334,12 @@ const migrations: Migration[] = [{
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (kind = 'comment' AND NULLIF(BTRIM(comment), '') IS NOT NULL
+        (kind = 'comment' AND COALESCE(comment ~ '\\S', FALSE)
           AND photo_url IS NULL AND object_key IS NULL)
         OR
         (kind = 'photo' AND (
-          NULLIF(BTRIM(photo_url), '') IS NOT NULL
-          OR NULLIF(BTRIM(object_key), '') IS NOT NULL
+          COALESCE(photo_url ~ '\\S', FALSE)
+          OR COALESCE(object_key ~ '\\S', FALSE)
         ))
       ),
       FOREIGN KEY (workspace_id, task_occurrence_id)

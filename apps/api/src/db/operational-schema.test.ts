@@ -31,18 +31,12 @@ beforeEach(() => {
       value === target ? [index + 1] : []
     ))
   });
-  memoryDb.public.registerFunction({
-    name: "btrim",
-    args: [DataType.text],
-    returns: DataType.text,
-    implementation: (value: string) => value.trim()
-  });
-  memoryDb.public.registerFunction({
-    name: "nullif",
-    args: [DataType.text, DataType.text],
-    returns: DataType.text,
-    allowNullArguments: true,
-    implementation: (value: string | null, other: string | null) => value === other ? null : value
+  memoryDb.public.registerOperator({
+    operator: "~",
+    left: DataType.text,
+    right: DataType.text,
+    returns: DataType.bool,
+    implementation: (value: string, pattern: string) => new RegExp(pattern).test(value)
   });
   const { Pool } = memoryDb.adapters.createPg();
   db = new Pool();
@@ -182,6 +176,40 @@ describe("operational schema", () => {
     )).rejects.toThrow();
   });
 
+  it.each([
+    ["link", "\t\n", null, null, null],
+    ["file", null, "\n\t", "application/pdf", 10],
+    ["file", null, "object-key", "\t\n", 10]
+  ])(
+    "rejects whitespace-only %s process material fields",
+    async (kind, url, objectKey, contentType, sizeBytes) => {
+      await ensureOperationalSchema(db);
+      await db.query(
+        `insert into processes
+          (id, workspace_id, title, status, created_by_profile_id)
+         values ($1, $2, $3, $4, $5)`,
+        ["process_close", "workspace_a", "Fechamento", "draft", "profile_a"]
+      );
+
+      await expect(db.query(
+        `insert into process_materials
+          (id, workspace_id, process_id, kind, title, url, object_key, content_type, size_bytes)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          "material_close",
+          "workspace_a",
+          "process_close",
+          kind,
+          "Material",
+          url,
+          objectKey,
+          contentType,
+          sizeBytes
+        ]
+      )).rejects.toThrow();
+    }
+  );
+
   it("prevents hard-deleting a process that has a version", async () => {
     await ensureOperationalSchema(db);
     await db.query(
@@ -300,8 +328,10 @@ describe("operational schema", () => {
   it.each([
     ["", null],
     ["   ", null],
+    ["\t\n", null],
     [null, ""],
-    [null, "   "]
+    [null, "   "],
+    [null, "\n\t"]
   ])("rejects blank photo evidence fields: photo_url=%j object_key=%j", async (photoUrl, objectKey) => {
     await ensureOperationalSchema(db);
     await db.query(
@@ -333,6 +363,40 @@ describe("operational schema", () => {
         (id, workspace_id, task_occurrence_id, profile_id, kind, photo_url, object_key)
        values ($1, $2, $3, $4, $5, $6, $7)`,
       ["evidence_close", "workspace_a", "task_close", "profile_a", "photo", photoUrl, objectKey]
+    )).rejects.toThrow();
+  });
+
+  it("rejects a whitespace-only evidence comment", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into people
+        (id, workspace_id, name, role, status, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["profile_a", "workspace_a", "Ana", "employee", "active", "profile_owner"]
+    );
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+         evidence_policy, status, due_date)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        "task_close",
+        "workspace_a",
+        "manual",
+        "Fechar caixa",
+        "Fechar caixa",
+        "direct",
+        "comment_required",
+        "pending",
+        "2026-07-10"
+      ]
+    );
+
+    await expect(db.query(
+      `insert into task_evidence
+        (id, workspace_id, task_occurrence_id, profile_id, kind, comment)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["evidence_close", "workspace_a", "task_close", "profile_a", "comment", "\t\n"]
     )).rejects.toThrow();
   });
 
