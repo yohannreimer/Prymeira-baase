@@ -8,6 +8,7 @@
     "db:init": "tsx src/db/init.ts",
     "db:reset:workspace": "tsx src/db/reset-workspace.ts",
     "test": "vitest run",
+    "test:postgres-schema": "vitest run src/db/operational-schema.postgres.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit"
   },

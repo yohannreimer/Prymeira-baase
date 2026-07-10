@@ -1,8 +1,13 @@
 import { DataType, newDb } from "pg-mem";
-import { beforeEach, describe, expect, it } from "vitest";
-import { ensureOperationalSchema, type Queryable } from "./operational-schema";
+import type { Pool } from "pg";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  ensureOperationalSchema,
+  type OperationalSchemaClient,
+  type OperationalSchemaPool
+} from "./operational-schema";
 
-let db: Queryable;
+let db: Pool;
 
 beforeEach(() => {
   const memoryDb = newDb();
@@ -12,8 +17,39 @@ beforeEach(() => {
     returns: DataType.integer,
     implementation: () => 1
   });
+  memoryDb.public.registerFunction({
+    name: "cardinality",
+    args: [memoryDb.public.getType(DataType.text).asArray()],
+    returns: DataType.integer,
+    implementation: (value: unknown[]) => value.length
+  });
+  memoryDb.public.registerFunction({
+    name: "array_positions",
+    args: [memoryDb.public.getType(DataType.text).asArray(), DataType.text],
+    returns: memoryDb.public.getType(DataType.integer).asArray(),
+    implementation: (values: string[], target: string) => values.flatMap((value, index) => (
+      value === target ? [index + 1] : []
+    ))
+  });
+  memoryDb.public.registerFunction({
+    name: "btrim",
+    args: [DataType.text],
+    returns: DataType.text,
+    implementation: (value: string) => value.trim()
+  });
+  memoryDb.public.registerFunction({
+    name: "nullif",
+    args: [DataType.text, DataType.text],
+    returns: DataType.text,
+    allowNullArguments: true,
+    implementation: (value: string | null, other: string | null) => value === other ? null : value
+  });
   const { Pool } = memoryDb.adapters.createPg();
   db = new Pool();
+});
+
+afterEach(async () => {
+  await db.end();
 });
 
 describe("operational schema", () => {
@@ -26,6 +62,50 @@ describe("operational schema", () => {
     );
 
     expect(result.rows.map((row) => row.version)).toEqual([1]);
+  });
+
+  it("checks out and releases exactly one migration client", async () => {
+    let checkouts = 0;
+    let releases = 0;
+    const trackedPool: OperationalSchemaPool = {
+      async connect() {
+        checkouts += 1;
+        const client = await db.connect();
+        const trackedClient: OperationalSchemaClient = {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() {
+            releases += 1;
+            client.release();
+          }
+        };
+        return trackedClient;
+      }
+    };
+
+    await ensureOperationalSchema(trackedPool);
+
+    expect(checkouts).toBe(1);
+    expect(releases).toBe(1);
+  });
+
+  it("rejects drifted operational objects without recording migration version 1", async () => {
+    await db.query(`
+      create table baase_schema_migrations (
+        version integer primary key,
+        name text not null,
+        applied_at timestamptz not null default now()
+      )
+    `);
+    await db.query("create table areas (id text primary key)");
+
+    await expect(ensureOperationalSchema(db)).rejects.toThrow();
+
+    const migrations = await db.query<{ version: number }>(
+      "select version from baase_schema_migrations order by version"
+    );
+    expect(migrations.rows).toEqual([]);
   });
 
   it("rejects a process that references an area in another workspace", async () => {
@@ -82,6 +162,23 @@ describe("operational schema", () => {
         (id, workspace_id, title, status, frequency, month_day, created_by_profile_id)
        values ($1, $2, $3, $4, $5, $6, $7)`,
       ["routine_close", "workspace_a", "Fechamento", "active", "monthly", null, "profile_a"]
+    )).rejects.toThrow();
+  });
+
+  it.each([
+    ["daily", []],
+    ["daily", ["mon", null, "wed"]],
+    ["daily", ["mon", "mon"]],
+    ["weekly", ["mon", "wed"]],
+    ["weekly", ["funday"]]
+  ])("rejects malformed %s weekday arrays: %j", async (frequency, weekdays) => {
+    await ensureOperationalSchema(db);
+
+    await expect(db.query(
+      `insert into routines
+        (id, workspace_id, title, status, frequency, weekdays, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6::text[], $7)`,
+      ["routine_invalid", "workspace_a", "Invalida", "active", frequency, weekdays, "profile_a"]
     )).rejects.toThrow();
   });
 
@@ -198,6 +295,45 @@ describe("operational schema", () => {
       ["workspace_a", "task_close"]
     );
     expect(evidence.rows[0]?.count).toBe(1);
+  });
+
+  it.each([
+    ["", null],
+    ["   ", null],
+    [null, ""],
+    [null, "   "]
+  ])("rejects blank photo evidence fields: photo_url=%j object_key=%j", async (photoUrl, objectKey) => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into people
+        (id, workspace_id, name, role, status, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["profile_a", "workspace_a", "Ana", "employee", "active", "profile_owner"]
+    );
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+         evidence_policy, status, due_date)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        "task_close",
+        "workspace_a",
+        "manual",
+        "Fechar caixa",
+        "Fechar caixa",
+        "direct",
+        "photo_required",
+        "pending",
+        "2026-07-10"
+      ]
+    );
+
+    await expect(db.query(
+      `insert into task_evidence
+        (id, workspace_id, task_occurrence_id, profile_id, kind, photo_url, object_key)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      ["evidence_close", "workspace_a", "task_close", "profile_a", "photo", photoUrl, objectKey]
+    )).rejects.toThrow();
   });
 
   it("rejects evidence owned by a task occurrence in another workspace", async () => {

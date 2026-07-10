@@ -1,6 +1,10 @@
-export type Queryable = {
+export type OperationalSchemaClient = {
   query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
-  connect?: () => Promise<Queryable & { release(): void }>;
+  release(): void;
+};
+
+export type OperationalSchemaPool = {
+  connect(): Promise<OperationalSchemaClient>;
 };
 
 type Migration = {
@@ -15,7 +19,7 @@ const migrations: Migration[] = [{
   version: 1,
   name: "relational_operational_schema",
   sql: `
-    CREATE TABLE IF NOT EXISTS areas (
+    CREATE TABLE areas (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -28,7 +32,7 @@ const migrations: Migration[] = [{
       UNIQUE (workspace_id, name)
     );
 
-    CREATE TABLE IF NOT EXISTS role_templates (
+    CREATE TABLE role_templates (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       area_id TEXT NOT NULL,
@@ -39,11 +43,10 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       UNIQUE (workspace_id, area_id, name),
-      UNIQUE (workspace_id, area_id, id),
       FOREIGN KEY (workspace_id, area_id) REFERENCES areas(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS people (
+    CREATE TABLE people (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -64,7 +67,7 @@ const migrations: Migration[] = [{
         REFERENCES role_templates(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS processes (
+    CREATE TABLE processes (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       area_id TEXT,
@@ -87,7 +90,7 @@ const migrations: Migration[] = [{
         REFERENCES role_templates(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS process_versions (
+    CREATE TABLE process_versions (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       process_id TEXT NOT NULL,
@@ -103,7 +106,7 @@ const migrations: Migration[] = [{
         REFERENCES processes(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS process_materials (
+    CREATE TABLE process_materials (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       process_id TEXT NOT NULL,
@@ -117,18 +120,18 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (kind = 'link' AND url IS NOT NULL AND url <> ''
+        (kind = 'link' AND NULLIF(BTRIM(url), '') IS NOT NULL
           AND object_key IS NULL AND content_type IS NULL AND size_bytes IS NULL)
         OR
-        (kind = 'file' AND url IS NULL AND object_key IS NOT NULL AND object_key <> ''
-          AND content_type IS NOT NULL AND content_type <> ''
+        (kind = 'file' AND url IS NULL AND NULLIF(BTRIM(object_key), '') IS NOT NULL
+          AND NULLIF(BTRIM(content_type), '') IS NOT NULL
           AND size_bytes IS NOT NULL AND size_bytes >= 0)
       ),
       FOREIGN KEY (workspace_id, process_id)
         REFERENCES processes(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS routines (
+    CREATE TABLE routines (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       area_id TEXT,
@@ -153,39 +156,36 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (frequency = 'daily' AND weekdays[1] IS NOT NULL AND month_day IS NULL)
-        OR (frequency = 'weekly' AND weekdays[1] IS NOT NULL
-          AND weekdays[2] IS NULL AND month_day IS NULL)
-        OR (frequency = 'monthly' AND weekdays = ARRAY[]::TEXT[]
-          AND month_day IS NOT NULL AND month_day BETWEEN 1 AND 31)
-        OR (frequency = 'on_demand' AND weekdays = ARRAY[]::TEXT[] AND month_day IS NULL)
+        CASE frequency
+          WHEN 'daily' THEN cardinality(weekdays) BETWEEN 1 AND 7 AND month_day IS NULL
+          WHEN 'weekly' THEN cardinality(weekdays) = 1 AND month_day IS NULL
+          WHEN 'monthly' THEN cardinality(weekdays) = 0
+            AND month_day IS NOT NULL AND month_day BETWEEN 1 AND 31
+          WHEN 'on_demand' THEN cardinality(weekdays) = 0 AND month_day IS NULL
+          ELSE FALSE
+        END
       ),
       CHECK (
-        weekdays[1] IS NULL OR weekdays[1] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+        cardinality(weekdays) =
+          cardinality(array_positions(weekdays, 'mon'))
+          + cardinality(array_positions(weekdays, 'tue'))
+          + cardinality(array_positions(weekdays, 'wed'))
+          + cardinality(array_positions(weekdays, 'thu'))
+          + cardinality(array_positions(weekdays, 'fri'))
+          + cardinality(array_positions(weekdays, 'sat'))
+          + cardinality(array_positions(weekdays, 'sun'))
+        AND cardinality(array_positions(weekdays, 'mon')) <= 1
+        AND cardinality(array_positions(weekdays, 'tue')) <= 1
+        AND cardinality(array_positions(weekdays, 'wed')) <= 1
+        AND cardinality(array_positions(weekdays, 'thu')) <= 1
+        AND cardinality(array_positions(weekdays, 'fri')) <= 1
+        AND cardinality(array_positions(weekdays, 'sat')) <= 1
+        AND cardinality(array_positions(weekdays, 'sun')) <= 1
       ),
-      CHECK (
-        weekdays[2] IS NULL OR weekdays[2] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (
-        weekdays[3] IS NULL OR weekdays[3] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (
-        weekdays[4] IS NULL OR weekdays[4] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (
-        weekdays[5] IS NULL OR weekdays[5] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (
-        weekdays[6] IS NULL OR weekdays[6] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (
-        weekdays[7] IS NULL OR weekdays[7] IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
-      ),
-      CHECK (weekdays[8] IS NULL),
       FOREIGN KEY (workspace_id, area_id) REFERENCES areas(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS routine_steps (
+    CREATE TABLE routine_steps (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       routine_id TEXT NOT NULL,
@@ -211,7 +211,7 @@ const migrations: Migration[] = [{
       FOREIGN KEY (workspace_id, process_id) REFERENCES processes(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS routine_assignments (
+    CREATE TABLE routine_assignments (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       routine_id TEXT NOT NULL,
@@ -234,7 +234,7 @@ const migrations: Migration[] = [{
         REFERENCES role_templates(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS routine_occurrences (
+    CREATE TABLE routine_occurrences (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       routine_id TEXT NOT NULL,
@@ -251,10 +251,10 @@ const migrations: Migration[] = [{
       FOREIGN KEY (workspace_id, routine_id) REFERENCES routines(workspace_id, id)
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS routine_occurrences_generation_uidx
+    CREATE UNIQUE INDEX routine_occurrences_generation_uidx
       ON routine_occurrences (workspace_id, routine_id, due_date, audience_key);
 
-    CREATE TABLE IF NOT EXISTS task_occurrences (
+    CREATE TABLE task_occurrences (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       origin TEXT NOT NULL CHECK (origin IN ('routine', 'manual')),
@@ -303,7 +303,7 @@ const migrations: Migration[] = [{
       FOREIGN KEY (workspace_id, assignee_profile_id) REFERENCES people(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS task_checklist_items (
+    CREATE TABLE task_checklist_items (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       task_occurrence_id TEXT NOT NULL,
@@ -319,10 +319,10 @@ const migrations: Migration[] = [{
         REFERENCES task_occurrences(workspace_id, id)
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS task_checklist_items_order_uidx
+    CREATE UNIQUE INDEX task_checklist_items_order_uidx
       ON task_checklist_items (workspace_id, task_occurrence_id, sort_order);
 
-    CREATE TABLE IF NOT EXISTS task_evidence (
+    CREATE TABLE task_evidence (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       task_occurrence_id TEXT NOT NULL,
@@ -334,17 +334,20 @@ const migrations: Migration[] = [{
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (kind = 'comment' AND comment IS NOT NULL AND comment <> ''
+        (kind = 'comment' AND NULLIF(BTRIM(comment), '') IS NOT NULL
           AND photo_url IS NULL AND object_key IS NULL)
         OR
-        (kind = 'photo' AND (photo_url IS NOT NULL OR object_key IS NOT NULL))
+        (kind = 'photo' AND (
+          NULLIF(BTRIM(photo_url), '') IS NOT NULL
+          OR NULLIF(BTRIM(object_key), '') IS NOT NULL
+        ))
       ),
       FOREIGN KEY (workspace_id, task_occurrence_id)
         REFERENCES task_occurrences(workspace_id, id),
       FOREIGN KEY (workspace_id, profile_id) REFERENCES people(workspace_id, id)
     );
 
-    CREATE TABLE IF NOT EXISTS operational_audit_log (
+    CREATE TABLE operational_audit_log (
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       entity_type TEXT NOT NULL,
@@ -355,12 +358,57 @@ const migrations: Migration[] = [{
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id)
     );
+
+    CREATE INDEX people_area_idx
+      ON people (workspace_id, area_id);
+    CREATE INDEX people_role_template_idx
+      ON people (workspace_id, role_template_id);
+    CREATE INDEX processes_area_idx
+      ON processes (workspace_id, area_id);
+    CREATE INDEX processes_owner_profile_idx
+      ON processes (workspace_id, owner_profile_id);
+    CREATE INDEX processes_owner_role_template_idx
+      ON processes (workspace_id, owner_role_template_id);
+    CREATE INDEX process_materials_process_idx
+      ON process_materials (workspace_id, process_id);
+    CREATE INDEX routines_area_idx
+      ON routines (workspace_id, area_id);
+    CREATE INDEX routine_steps_process_idx
+      ON routine_steps (workspace_id, process_id);
+    CREATE INDEX routine_assignments_step_idx
+      ON routine_assignments (workspace_id, routine_id, routine_step_id);
+    CREATE INDEX routine_assignments_profile_idx
+      ON routine_assignments (workspace_id, profile_id);
+    CREATE INDEX routine_assignments_role_template_idx
+      ON routine_assignments (workspace_id, role_template_id);
+    CREATE INDEX task_occurrences_step_idx
+      ON task_occurrences (workspace_id, routine_id, routine_step_id);
+    CREATE INDEX task_occurrences_area_idx
+      ON task_occurrences (workspace_id, area_id);
+    CREATE INDEX task_occurrences_process_idx
+      ON task_occurrences (workspace_id, process_id);
+    CREATE INDEX task_occurrences_assignee_due_idx
+      ON task_occurrences (workspace_id, assignee_profile_id, due_date);
+    CREATE INDEX task_evidence_task_idx
+      ON task_evidence (workspace_id, task_occurrence_id, created_at);
+    CREATE INDEX task_evidence_profile_idx
+      ON task_evidence (workspace_id, profile_id);
+    CREATE INDEX operational_audit_entity_idx
+      ON operational_audit_log (workspace_id, entity_type, entity_id, created_at);
   `
 }];
 
-export async function ensureOperationalSchema(db: Queryable): Promise<void> {
-  const client = db.connect ? await db.connect() : db;
+export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
+  const client = await pool.connect();
 
+  try {
+    await migrateOperationalSchema(client);
+  } finally {
+    client.release();
+  }
+}
+
+async function migrateOperationalSchema(client: OperationalSchemaClient): Promise<void> {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", operationalSchemaLock);
@@ -398,7 +446,5 @@ export async function ensureOperationalSchema(db: Queryable): Promise<void> {
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
-  } finally {
-    if ("release" in client && typeof client.release === "function") client.release();
   }
 }
