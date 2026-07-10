@@ -74,6 +74,132 @@ describe("operational schema", () => {
     )).rejects.toThrow();
   });
 
+  it("rejects a monthly routine without a month day", async () => {
+    await ensureOperationalSchema(db);
+
+    await expect(db.query(
+      `insert into routines
+        (id, workspace_id, title, status, frequency, month_day, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      ["routine_close", "workspace_a", "Fechamento", "active", "monthly", null, "profile_a"]
+    )).rejects.toThrow();
+  });
+
+  it("prevents hard-deleting a process that has a version", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into processes
+        (id, workspace_id, title, status, created_by_profile_id)
+       values ($1, $2, $3, $4, $5)`,
+      ["process_close", "workspace_a", "Fechamento", "draft", "profile_a"]
+    );
+    await db.query(
+      `insert into process_versions
+        (id, workspace_id, process_id, version_number, title, body, change_note, editor_profile_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        "process_close_v1",
+        "workspace_a",
+        "process_close",
+        1,
+        "Fechamento",
+        "Conferir e fechar o caixa.",
+        "Versao inicial",
+        "profile_a"
+      ]
+    );
+
+    await expect(db.query(
+      "delete from processes where workspace_id = $1 and id = $2",
+      ["workspace_a", "process_close"]
+    )).rejects.toThrow();
+    const versions = await db.query<{ count: number }>(
+      "select count(*)::int as count from process_versions where workspace_id = $1 and process_id = $2",
+      ["workspace_a", "process_close"]
+    );
+    expect(versions.rows[0]?.count).toBe(1);
+  });
+
+  it("prevents hard-deleting a task occurrence with checklist history", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+         evidence_policy, status, due_date)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        "task_close",
+        "workspace_a",
+        "manual",
+        "Fechar caixa",
+        "Fechar caixa",
+        "direct",
+        "comment_required",
+        "completed",
+        "2026-07-10"
+      ]
+    );
+    await db.query(
+      `insert into task_checklist_items
+        (id, workspace_id, task_occurrence_id, title, sort_order, is_completed)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["check_close", "workspace_a", "task_close", "Conferir saldo", 1, true]
+    );
+
+    await expect(db.query(
+      "delete from task_occurrences where workspace_id = $1 and id = $2",
+      ["workspace_a", "task_close"]
+    )).rejects.toThrow();
+    const checklistItems = await db.query<{ count: number }>(
+      "select count(*)::int as count from task_checklist_items where workspace_id = $1 and task_occurrence_id = $2",
+      ["workspace_a", "task_close"]
+    );
+    expect(checklistItems.rows[0]?.count).toBe(1);
+  });
+
+  it("prevents hard-deleting a task occurrence with evidence history", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into people
+        (id, workspace_id, name, role, status, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["profile_a", "workspace_a", "Ana", "employee", "active", "profile_owner"]
+    );
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+         evidence_policy, status, due_date)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        "task_close",
+        "workspace_a",
+        "manual",
+        "Fechar caixa",
+        "Fechar caixa",
+        "direct",
+        "comment_required",
+        "completed",
+        "2026-07-10"
+      ]
+    );
+    await db.query(
+      `insert into task_evidence
+        (id, workspace_id, task_occurrence_id, profile_id, kind, comment)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["evidence_close", "workspace_a", "task_close", "profile_a", "comment", "Conferido"]
+    );
+
+    await expect(db.query(
+      "delete from task_occurrences where workspace_id = $1 and id = $2",
+      ["workspace_a", "task_close"]
+    )).rejects.toThrow();
+    const evidence = await db.query<{ count: number }>(
+      "select count(*)::int as count from task_evidence where workspace_id = $1 and task_occurrence_id = $2",
+      ["workspace_a", "task_close"]
+    );
+    expect(evidence.rows[0]?.count).toBe(1);
+  });
+
   it("rejects evidence owned by a task occurrence in another workspace", async () => {
     await ensureOperationalSchema(db);
     await db.query(

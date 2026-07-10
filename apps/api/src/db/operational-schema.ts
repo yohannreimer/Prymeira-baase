@@ -100,7 +100,7 @@ const migrations: Migration[] = [{
       PRIMARY KEY (workspace_id, id),
       UNIQUE (workspace_id, process_id, version_number),
       FOREIGN KEY (workspace_id, process_id)
-        REFERENCES processes(workspace_id, id) ON DELETE CASCADE
+        REFERENCES processes(workspace_id, id)
     );
 
     CREATE TABLE IF NOT EXISTS process_materials (
@@ -125,7 +125,7 @@ const migrations: Migration[] = [{
           AND size_bytes IS NOT NULL AND size_bytes >= 0)
       ),
       FOREIGN KEY (workspace_id, process_id)
-        REFERENCES processes(workspace_id, id) ON DELETE CASCADE
+        REFERENCES processes(workspace_id, id)
     );
 
     CREATE TABLE IF NOT EXISTS routines (
@@ -157,7 +157,7 @@ const migrations: Migration[] = [{
         OR (frequency = 'weekly' AND weekdays[1] IS NOT NULL
           AND weekdays[2] IS NULL AND month_day IS NULL)
         OR (frequency = 'monthly' AND weekdays = ARRAY[]::TEXT[]
-          AND month_day BETWEEN 1 AND 31)
+          AND month_day IS NOT NULL AND month_day BETWEEN 1 AND 31)
         OR (frequency = 'on_demand' AND weekdays = ARRAY[]::TEXT[] AND month_day IS NULL)
       ),
       CHECK (
@@ -316,7 +316,7 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       FOREIGN KEY (workspace_id, task_occurrence_id)
-        REFERENCES task_occurrences(workspace_id, id) ON DELETE CASCADE
+        REFERENCES task_occurrences(workspace_id, id)
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS task_checklist_items_order_uidx
@@ -340,7 +340,7 @@ const migrations: Migration[] = [{
         (kind = 'photo' AND (photo_url IS NOT NULL OR object_key IS NOT NULL))
       ),
       FOREIGN KEY (workspace_id, task_occurrence_id)
-        REFERENCES task_occurrences(workspace_id, id) ON DELETE CASCADE,
+        REFERENCES task_occurrences(workspace_id, id),
       FOREIGN KEY (workspace_id, profile_id) REFERENCES people(workspace_id, id)
     );
 
