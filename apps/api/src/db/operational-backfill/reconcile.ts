@@ -6,6 +6,7 @@ import {
   entityTables,
   type ConflictingRecord,
   type EntityCounts,
+  type EntityTable,
   type OperationalBackfillClient,
   type WorkspacePlan
 } from "./types";
@@ -28,10 +29,13 @@ export async function reconcileWorkspace(
          where workspace_id = $1 and id in (${idParams})`,
         [plan.workspaceId, ...ids]
       );
-      const actualById = new Map(result.rows.map((row) => [String(row.id), normalizeRecord(row, spec.columns)]));
+      const actualById = new Map(result.rows.map((row) => [
+        String(row.id),
+        normalizeRecordForTable(table, row, spec.columns)
+      ]));
       for (const expected of chunk) {
         const actual = actualById.get(expected.entityId);
-        const canonicalExpected = normalizeRecord(expected.values, spec.columns);
+        const canonicalExpected = normalizeRecordForTable(table, expected.values, spec.columns);
         if (!actual) {
           conflicts.push({
             workspaceId: plan.workspaceId,
@@ -92,18 +96,51 @@ export function expectedTargetCounts(plans: WorkspacePlan[]): EntityCounts {
   return counts;
 }
 
-function normalizeRecord(record: Record<string, unknown>, columns: readonly string[]) {
-  return Object.fromEntries(columns.map((column) => [column, normalizeValue(record[column], column)]));
+export function normalizeRecordForTable(
+  table: EntityTable,
+  record: Record<string, unknown>,
+  columns: readonly string[] = Object.keys(record)
+) {
+  const columnTypes = tableSpecs[table].columnTypes ?? {};
+  return Object.fromEntries(columns.map((column) => [
+    column,
+    normalizeValue(record[column], columnTypes[column])
+  ]));
 }
 
-function normalizeValue(value: unknown, column: string): unknown {
-  if (value instanceof Date) {
-    if (column === "due_date") return value.toISOString().slice(0, 10);
-    return value.toISOString();
-  }
-  if (Array.isArray(value)) return value.map((item) => normalizeValue(item, column));
+function normalizeValue(value: unknown, columnType?: "date" | "time" | "timestamp"): unknown {
+  if (columnType) return normalizeTemporalValue(value, columnType);
+  if (Array.isArray(value)) return value.map((item) => normalizeValue(item));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeValue(item, key)]));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeValue(item)]));
   }
   return value;
+}
+
+function normalizeTemporalValue(value: unknown, columnType: "date" | "time" | "timestamp") {
+  if (value === null || value === undefined) return value;
+  if (columnType === "timestamp") {
+    const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? date.toISOString() : value;
+  }
+  if (columnType === "date") {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      if (value.getUTCHours() === 0 && value.getUTCMinutes() === 0
+        && value.getUTCSeconds() === 0 && value.getUTCMilliseconds() === 0) {
+        return value.toISOString().slice(0, 10);
+      }
+      return [value.getFullYear(), value.getMonth() + 1, value.getDate()]
+        .map((part, index) => index === 0 ? String(part).padStart(4, "0") : String(part).padStart(2, "0"))
+        .join("-");
+    }
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : value;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(11, 19);
+  }
+  if (typeof value !== "string") return value;
+  const match = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/.exec(value);
+  if (!match) return value;
+  const fraction = (match[4] ?? "").replace(/0+$/, "");
+  return `${match[1]}:${match[2]}:${match[3] ?? "00"}${fraction ? `.${fraction}` : ""}`;
 }

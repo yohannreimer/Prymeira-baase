@@ -10,6 +10,29 @@ import {
 
 type ValidRow = ParsedLegacyWorkspace["validRows"][number];
 
+type RoutineOccurrenceParentFields = {
+  routine_id: string;
+  due_date: string;
+  audience_key: string;
+  area_name_snapshot: string | null;
+  routine_title_snapshot: string;
+};
+
+type RoutineOccurrenceContribution = {
+  status: "pending" | "in_progress" | "completed";
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RoutineOccurrenceGroup = {
+  row: PlannedRow;
+  sourceTaskId: string;
+  parentFields: RoutineOccurrenceParentFields;
+  taskSourceBySemanticKey: Map<string, string>;
+  contributions: RoutineOccurrenceContribution[];
+};
+
 export function buildWorkspacePlan(
   workspaceId: string,
   parsed: ParsedLegacyWorkspace
@@ -209,11 +232,12 @@ export function buildWorkspacePlan(
     }
   }
 
-  const occurrenceByKey = new Map<string, PlannedRow>();
+  const occurrenceGroups = new Map<string, RoutineOccurrenceGroup>();
   for (const row of byKind.get("task_occurrence") ?? []) {
-    planTask(plan, row, areaById, processIds, peopleIds, routineById, stepByKey, occurrenceByKey);
+    planTask(plan, row, areaById, processIds, peopleIds, routineById, stepByKey, occurrenceGroups);
   }
-  plan.sourceCounts.routine_occurrences = occurrenceByKey.size;
+  const uniqueRoutineOccurrenceGroups = occurrenceGroups.size;
+  plan.sourceCounts.routine_occurrences = uniqueRoutineOccurrenceGroups;
 
   for (const orphan of plan.orphanReferences) {
     const id = deterministicBackfillId("legacy_unresolved", {
@@ -341,7 +365,7 @@ function planTask(
   peopleIds: Set<string>,
   routineById: Map<string, PlannedRow>,
   stepByKey: Map<string, PlannedRow>,
-  occurrenceByKey: Map<string, PlannedRow>
+  occurrenceGroups: Map<string, RoutineOccurrenceGroup>
 ) {
   const data = row.data;
   const legacyRoutineId = optionalText(data.routineId);
@@ -359,7 +383,7 @@ function planTask(
   let areaId = resolveMap(plan, areaById, "task_occurrence", row.id, "area_id", legacyAreaId);
   const unresolvedAreaId = legacyAreaId && !areaId ? legacyAreaId : null;
   if (!areaId && !legacyAreaId && routine) areaId = optionalText(routine.values.area_id);
-  const forbidden = [unresolvedAreaId, unresolvedRoutineId, unresolvedStepId];
+  const forbidden = [legacyAreaId, legacyRoutineId, legacyStepId];
   const areaSnapshot = visible(data.areaNameSnapshot, forbidden)
     ?? (areaId ? optionalText(areaById.get(areaId)?.name) : null);
   const routineSnapshot = visible(data.routineTitleSnapshot, forbidden)
@@ -430,9 +454,21 @@ function planTask(
   });
 
   if (routineOrigin && routine && audienceKey) {
-    const semanticKey = `${routine.entityId}:${dueDate}:${audienceKey}`;
-    const existing = occurrenceByKey.get(semanticKey);
-    if (!existing) {
+    const parentKey = canonicalJson({
+      entityKind: "routine_occurrence",
+      routineId: routine.entityId,
+      dueDate,
+      audienceKey
+    });
+    const parentFields: RoutineOccurrenceParentFields = {
+      routine_id: routine.entityId,
+      due_date: dueDate,
+      audience_key: audienceKey,
+      area_name_snapshot: areaSnapshot,
+      routine_title_snapshot: routineSnapshot ?? requiredText(routine.values.title)
+    };
+    let group = occurrenceGroups.get(parentKey);
+    if (!group) {
       const id = deterministicBackfillId("legacy_occurrence", {
         entityKind: "routine_occurrence",
         workspaceId: plan.workspaceId,
@@ -440,23 +476,66 @@ function planTask(
         dueDate,
         audienceKey
       });
-      occurrenceByKey.set(semanticKey, addRow(plan, "routine_occurrences", "routine_occurrence", id, {
+      const parentRow = addRow(plan, "routine_occurrences", "routine_occurrence", id, {
         id,
         workspace_id: plan.workspaceId,
-        routine_id: routine.entityId,
-        due_date: dueDate,
-        audience_key: audienceKey,
-        area_name_snapshot: areaSnapshot,
-        routine_title_snapshot: routineSnapshot ?? requiredText(routine.values.title),
-        status: occurrenceStatus(status),
-        completed_at: occurrenceStatus(status) === "completed" ? completedAt : null,
+        ...parentFields,
+        status: "pending",
+        completed_at: null,
         created_at: timestamp(data.createdAt, row.created_at),
         updated_at: timestamp(data.updatedAt, row.updated_at)
-      }));
-    } else if (existing.values.status === "completed" && occurrenceStatus(status) !== "completed") {
-      existing.values.status = occurrenceStatus(status);
-      existing.values.completed_at = null;
+      });
+      group = {
+        row: parentRow,
+        sourceTaskId: row.id,
+        parentFields,
+        taskSourceBySemanticKey: new Map(),
+        contributions: []
+      };
+      occurrenceGroups.set(parentKey, group);
+    } else {
+      const paths = parentFieldDifferences(group.parentFields, parentFields);
+      if (paths.length > 0) {
+        addConflict(
+          plan,
+          "routine_occurrence",
+          group.row.entityId,
+          parentKey,
+          "routine occurrence contributors disagree on parent fields",
+          { sourceTaskId: group.sourceTaskId, values: group.parentFields },
+          { sourceTaskId: row.id, paths, values: parentFields }
+        );
+      }
     }
+
+    const taskSemanticKey = canonicalJson({
+      entityKind: "routine_task_occurrence",
+      routineId: routine.entityId,
+      routineStepId: step?.entityId ?? null,
+      dueDate,
+      audienceKey
+    });
+    const existingTaskId = group.taskSourceBySemanticKey.get(taskSemanticKey);
+    if (existingTaskId) {
+      addConflict(
+        plan,
+        "task_occurrence",
+        row.id,
+        taskSemanticKey,
+        "duplicate source routine task semantic key",
+        { sourceTaskId: existingTaskId },
+        { sourceTaskId: row.id }
+      );
+    } else {
+      group.taskSourceBySemanticKey.set(taskSemanticKey, row.id);
+    }
+    group.contributions.push({
+      status: occurrenceStatus(status),
+      completedAt,
+      createdAt: timestamp(data.createdAt, row.created_at),
+      updatedAt: timestamp(data.updatedAt, row.updated_at)
+    });
+    applyRoutineOccurrenceSemantics(group);
   }
 
   const seenChecklistIds = new Set<string>();
@@ -718,6 +797,43 @@ function occurrenceStatus(status: string) {
   if (status === "completed" || status === "dismissed") return "completed";
   if (status === "pending" || status === "late") return "pending";
   return "in_progress";
+}
+
+function parentFieldDifferences(
+  expected: RoutineOccurrenceParentFields,
+  actual: RoutineOccurrenceParentFields
+) {
+  return (Object.keys(expected) as Array<keyof RoutineOccurrenceParentFields>)
+    .filter((field) => expected[field] !== actual[field])
+    .sort();
+}
+
+function applyRoutineOccurrenceSemantics(group: RoutineOccurrenceGroup) {
+  const statuses = group.contributions.map((item) => item.status);
+  const allCompleted = statuses.every((status) => status === "completed");
+  const allPending = statuses.every((status) => status === "pending");
+  group.row.values.status = allCompleted ? "completed" : allPending ? "pending" : "in_progress";
+  group.row.values.completed_at = allCompleted
+    ? latestTimestamp(group.contributions.map((item) => item.completedAt).filter(isString))
+    : null;
+  group.row.values.created_at = earliestTimestamp(group.contributions.map((item) => item.createdAt));
+  group.row.values.updated_at = latestTimestamp(group.contributions.map((item) => item.updatedAt));
+}
+
+function earliestTimestamp(values: string[]) {
+  return [...values].sort(compareTimestamp)[0] ?? null;
+}
+
+function latestTimestamp(values: string[]) {
+  return [...values].sort(compareTimestamp).at(-1) ?? null;
+}
+
+function compareTimestamp(left: string, right: string) {
+  return Date.parse(left) - Date.parse(right);
+}
+
+function isString(value: string | null): value is string {
+  return value !== null;
 }
 
 function visible(value: unknown, forbidden: Array<string | null>) {

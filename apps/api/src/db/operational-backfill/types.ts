@@ -87,6 +87,7 @@ export const entityTables = [
 ] as const;
 
 export type EntityTable = typeof entityTables[number];
+/** `routine_occurrences` counts unique synthesized parent groups; `task_occurrences` counts source tasks. */
 export type EntityCounts = Record<EntityTable, number>;
 
 export function emptyEntityCounts(): EntityCounts {

@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { backfillOperationalData, type OperationalBackfillPool } from "./operational-backfill";
+import { normalizeRecordForTable } from "./operational-backfill/reconcile";
 import { ensureOperationalSchema } from "./operational-schema";
 import { ensurePostgresSchema } from "./postgres";
 
@@ -173,6 +174,117 @@ describe.skipIf(!testDatabaseUrl)("hardened operational backfill on PostgreSQL 1
       expect(second.targetCounts.areas).toBe(1_100);
     });
   });
+
+  it("reconciles equivalent timestamp offsets, dates, and times but rejects a different instant", async () => {
+    await withSchema(async (pool) => {
+      const offsetTimestamp = "2026-07-10T09:00:00.123400-03:00";
+      await seedLegacy(pool, "routine", "routine_time", {
+        title: "Rotina temporal",
+        status: "active",
+        frequency: "on_demand",
+        taskTemplates: [{ ...step("step_time", 1), dueHint: "09:00" }],
+        createdAt: offsetTimestamp,
+        updatedAt: offsetTimestamp
+      }, offsetTimestamp);
+      await seedLegacy(pool, "task_occurrence", "task_time", {
+        origin: "routine",
+        routineId: "routine_time",
+        taskTemplateId: "step_time",
+        audienceKey: "all",
+        title: "Etapa temporal",
+        routineTitleSnapshot: "Rotina temporal",
+        stepTitleSnapshot: "Etapa temporal",
+        status: "completed",
+        dueDate: "2026-07-10",
+        dueTime: "09:00",
+        approvalMode: "direct",
+        evidencePolicy: "optional",
+        evidence: null,
+        submittedAt: offsetTimestamp,
+        completedAt: offsetTimestamp,
+        createdAt: offsetTimestamp,
+        updatedAt: offsetTimestamp
+      }, offsetTimestamp);
+
+      const first = await backfillOperationalData(pool);
+      const exact = await backfillOperationalData(pool);
+
+      expect(first.reconciled).toBe(true);
+      expect(exact.reconciled).toBe(true);
+      expect(exact.insertedTotal).toBe(0);
+      const stored = await pool.query<{ due_date: string | Date; due_time: string; submitted_at: Date }>(
+        "select due_date, due_time, submitted_at from task_occurrences where id = 'task_time'"
+      );
+      expect(normalizeRecordForTable("task_occurrences", {
+        due_date: stored.rows[0]?.due_date
+      })).toEqual({ due_date: "2026-07-10" });
+      expect(stored.rows[0]?.due_time).toBe("09:00:00");
+      expect(stored.rows[0]?.submitted_at.toISOString()).toBe("2026-07-10T12:00:00.123Z");
+
+      await pool.query(
+        "update task_occurrences set submitted_at = submitted_at + interval '1 second' where id = 'task_time'"
+      );
+      const conflict = await backfillOperationalData(pool);
+
+      expect(conflict.reconciled).toBe(false);
+      expect(conflict.conflictingRecords).toContainEqual(expect.objectContaining({
+        entityType: "task_occurrence",
+        entityId: "task_time",
+        reason: "persisted target payload differs from legacy source"
+      }));
+    });
+  });
+
+  it("marks disagreeing routine occurrence contributors unreconciled", async () => {
+    await withSchema(async (pool) => {
+      await seedLegacy(pool, "routine", "routine_group", {
+        title: "Abertura",
+        status: "active",
+        frequency: "on_demand",
+        taskTemplates: [step("step_1", 1), step("step_2", 2)],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      for (const [id, taskTemplateId, routineTitleSnapshot] of [
+        ["task_1", "step_1", "Abertura antiga"],
+        ["task_2", "step_2", "Abertura divergente"]
+      ] satisfies Array<[string, string, string]>) {
+        await seedLegacy(pool, "task_occurrence", id, {
+          origin: "routine",
+          routineId: "routine_group",
+          taskTemplateId,
+          audienceKey: "all",
+          title: taskTemplateId,
+          routineTitleSnapshot,
+          status: "pending",
+          dueDate: "2026-07-10",
+          approvalMode: "direct",
+          evidencePolicy: "optional",
+          evidence: null,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
+      }
+
+      const report = await backfillOperationalData(pool);
+
+      expect(report.reconciled).toBe(false);
+      expect(report.sourceCounts.routine_occurrences).toBe(1);
+      expect(report.sourceCounts.task_occurrences).toBe(2);
+      expect(report.conflictingRecords).toContainEqual(expect.objectContaining({
+        entityType: "routine_occurrence",
+        reason: "routine occurrence contributors disagree on parent fields",
+        expected: expect.objectContaining({ sourceTaskId: "task_1" }),
+        actual: expect.objectContaining({ sourceTaskId: "task_2" })
+      }));
+      const counts = await pool.query<{ parents: number; tasks: number }>(
+        `select
+          (select count(*)::int from routine_occurrences) as parents,
+          (select count(*)::int from task_occurrences) as tasks`
+      );
+      expect(counts.rows[0]).toEqual({ parents: 1, tasks: 2 });
+    });
+  });
 });
 
 async function withSchema<T>(run: (pool: Pool, schemaName: string) => Promise<T>) {
@@ -272,14 +384,14 @@ function wrappingPool(
   };
 }
 
-async function seedLegacy(pool: Pool, kind: string, id: string, data: unknown) {
+async function seedLegacy(pool: Pool, kind: string, id: string, data: unknown, rowTimestamp = timestamp) {
   const workspaceId = isObject(data) && typeof data.workspaceId === "string"
     ? data.workspaceId
     : "workspace_a";
   await pool.query(
     `insert into baase_records (kind, workspace_id, id, data, created_at, updated_at)
      values ($1, $2, $3, $4::jsonb, $5, $5)`,
-    [kind, workspaceId, id, JSON.stringify(data), timestamp]
+    [kind, workspaceId, id, JSON.stringify(data), rowTimestamp]
   );
 }
 

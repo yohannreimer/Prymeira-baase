@@ -9,7 +9,10 @@ import {
 } from "./types";
 
 const requiredText = z.string().trim().min(1);
+const optionalText = z.string().optional().nullable();
+const optionalReference = requiredText.optional().nullable();
 const optionalTimestamp = z.string().refine(isValidTimestamp, "Invalid timestamp").optional().nullable();
+const optionalTime = z.string().refine(isValidTime, "Invalid time").optional().nullable();
 const timestamps = {
   createdAt: optionalTimestamp,
   updatedAt: optionalTimestamp,
@@ -25,7 +28,7 @@ const evidencePolicy = z.enum([
 ]);
 
 const processVersionSchema = z.object({
-  id: requiredText.optional(),
+  id: optionalReference,
   version: z.number().int().positive(),
   title: requiredText,
   body: z.string(),
@@ -35,35 +38,38 @@ const processVersionSchema = z.object({
 }).passthrough();
 
 const routineStepSchema = z.object({
-  id: requiredText.optional(),
+  id: optionalReference,
   title: requiredText,
   sortOrder: z.number().int().positive().optional(),
-  processId: z.string().optional().nullable(),
-  assigneeProfileId: z.string().optional().nullable(),
-  assigneeRoleTemplateId: z.string().optional().nullable(),
+  processId: optionalReference,
+  assigneeProfileId: optionalReference,
+  assigneeRoleTemplateId: optionalReference,
+  dueHint: optionalText,
   approvalMode: approvalMode.optional(),
   evidencePolicy: evidencePolicy.optional(),
+  evidenceReason: optionalText,
   createdAt: optionalTimestamp,
   updatedAt: optionalTimestamp
 }).passthrough();
 
 const checklistSchema = z.object({
-  id: requiredText.optional(),
+  id: optionalReference,
   title: requiredText,
   sortOrder: z.number().int().positive().optional(),
   done: z.boolean().optional(),
   isCompleted: z.boolean().optional(),
+  completedByProfileId: optionalReference,
   completedAt: optionalTimestamp,
   createdAt: optionalTimestamp,
   updatedAt: optionalTimestamp
 }).passthrough();
 
 const evidenceSchema = z.object({
-  id: requiredText.optional(),
-  profileId: z.string().optional().nullable(),
-  comment: z.string().optional().nullable(),
-  photoUrl: z.string().optional().nullable(),
-  objectKey: z.string().optional().nullable(),
+  id: optionalReference,
+  profileId: optionalReference,
+  comment: optionalText,
+  photoUrl: optionalText,
+  objectKey: optionalText,
   createdAt: optionalTimestamp
 }).passthrough().superRefine((data, context) => {
   const hasComment = Boolean(data.comment?.trim());
@@ -73,41 +79,65 @@ const evidenceSchema = z.object({
   }
 });
 
+const evidenceValueSchema = z.unknown().superRefine((value, context) => {
+  const schema = Array.isArray(value) ? z.array(evidenceSchema) : evidenceSchema;
+  const result = schema.safeParse(value);
+  if (result.success) return;
+  for (const issue of result.error.issues) {
+    context.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  }
+}).optional().nullable();
+
 const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
   area: z.object({
     name: requiredText,
+    description: optionalText,
     sortOrder: z.number().int().nonnegative().optional(),
     ...timestamps
   }).passthrough(),
   role_template: z.object({
     areaId: requiredText,
     name: requiredText,
+    description: optionalText,
     ...timestamps
   }).passthrough(),
   team_member: z.object({
     name: requiredText,
+    email: optionalText,
     role: z.enum(["owner", "manager", "employee"]),
+    areaId: optionalReference,
+    roleTemplateId: optionalReference,
     status: z.enum(["active", "inactive", "placeholder", "archived"]).optional(),
+    createdByProfileId: optionalReference,
     ...timestamps
   }).passthrough(),
   process: z.object({
     title: requiredText,
+    areaId: optionalReference,
+    summary: optionalText,
     status: z.enum(["draft", "published", "archived"]).optional(),
+    ownerProfileId: optionalReference,
+    ownerRoleTemplateId: optionalReference,
+    createdByProfileId: optionalReference,
     versions: z.array(processVersionSchema).optional(),
     currentVersion: processVersionSchema.optional(),
     ...timestamps
   }).passthrough(),
   routine: z.object({
     title: requiredText,
+    areaId: optionalReference,
     status: z.enum(["active", "paused", "archived"]),
     frequency: z.enum(["daily", "weekly", "monthly", "on_demand"]).optional(),
     weekdays: z.array(z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"])).optional(),
     executionMode: z.enum(["shared", "individual"]).optional(),
     monthDay: z.number().int().min(1).max(31).optional().nullable(),
+    dueHint: optionalText,
     approvalMode: approvalMode.optional(),
     evidencePolicy: evidencePolicy.optional(),
-    assigneeProfileIds: z.array(z.string()).optional(),
-    assigneeRoleTemplateIds: z.array(z.string()).optional(),
+    evidenceReason: optionalText,
+    assigneeProfileIds: z.array(requiredText).optional(),
+    assigneeRoleTemplateIds: z.array(requiredText).optional(),
+    createdByProfileId: optionalReference,
     taskTemplates: z.array(routineStepSchema),
     ...timestamps
   }).passthrough().superRefine((data, context) => {
@@ -131,6 +161,16 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
   task_occurrence: z.object({
     title: requiredText,
     origin: z.enum(["routine", "manual"]).optional(),
+    routineId: optionalReference,
+    taskTemplateId: optionalReference,
+    routineStepId: optionalReference,
+    areaId: optionalReference,
+    processId: optionalReference,
+    assigneeProfileId: optionalReference,
+    audienceKey: optionalReference,
+    areaNameSnapshot: optionalText,
+    routineTitleSnapshot: optionalText,
+    stepTitleSnapshot: optionalText,
     status: z.enum([
       "pending",
       "in_progress",
@@ -141,12 +181,18 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
       "dismissed"
     ]),
     dueDate: z.string().refine(isValidCalendarDate, "Invalid calendar date"),
+    dueTime: optionalTime,
+    dueHint: optionalText,
     approvalMode: approvalMode,
     evidencePolicy,
+    evidenceReason: optionalText,
     checklistItems: z.array(checklistSchema).optional(),
-    evidence: z.union([evidenceSchema, z.array(evidenceSchema)]).optional().nullable(),
+    evidence: evidenceValueSchema,
+    submittedByProfileId: optionalReference,
     submittedAt: optionalTimestamp,
+    reviewedByProfileId: optionalReference,
     reviewedAt: optionalTimestamp,
+    reviewComment: optionalText,
     completedAt: optionalTimestamp,
     ...timestamps
   }).passthrough()
@@ -260,6 +306,10 @@ function isValidTimestamp(value: string) {
     && Number(match[3]) <= 59
     && Number(match[4]) <= 59
     && !Number.isNaN(Date.parse(value));
+}
+
+function isValidTime(value: string) {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(value);
 }
 
 function isValidCalendarDate(value: string) {
