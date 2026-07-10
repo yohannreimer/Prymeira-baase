@@ -289,7 +289,8 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (origin = 'manual' AND routine_id IS NULL AND routine_step_id IS NULL)
+        (origin = 'manual' AND routine_id IS NULL AND routine_step_id IS NULL
+          AND routine_title_snapshot IS NULL)
         OR
         (origin = 'routine' AND routine_id IS NOT NULL AND routine_step_id IS NOT NULL
           AND audience_key IS NOT NULL AND routine_title_snapshot IS NOT NULL)
@@ -394,6 +395,23 @@ const migrations: Migration[] = [{
       ON task_evidence (workspace_id, profile_id);
     CREATE INDEX operational_audit_entity_idx
       ON operational_audit_log (workspace_id, entity_type, entity_id, created_at);
+  `
+}, {
+  version: 2,
+  name: "allow_manual_historical_routine_snapshot",
+  sql: `
+    ALTER TABLE task_occurrences
+      DROP CONSTRAINT IF EXISTS task_occurrences_check;
+    ALTER TABLE task_occurrences
+      DROP CONSTRAINT IF EXISTS task_occurrences_constraint_5;
+    ALTER TABLE task_occurrences
+      ADD CONSTRAINT task_occurrences_origin_references_check
+      CHECK (
+        (origin = 'manual' AND routine_id IS NULL AND routine_step_id IS NULL)
+        OR
+        (origin = 'routine' AND routine_id IS NOT NULL AND routine_step_id IS NOT NULL
+          AND audience_key IS NOT NULL AND routine_title_snapshot IS NOT NULL)
+      );
   `
 }];
 

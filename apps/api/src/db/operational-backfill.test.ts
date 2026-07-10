@@ -10,6 +10,10 @@ const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
 let db: Pool;
 
+type TestQueryable = {
+  query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
+};
+
 beforeEach(async () => {
   const memoryDb = newDb();
   memoryDb.public.registerFunction({
@@ -55,7 +59,17 @@ async function seedLegacyRecord(
   id: string,
   data: Record<string, unknown>
 ) {
-  await db.query(
+  await seedLegacyRecordOn(db, kind, workspaceId, id, data);
+}
+
+async function seedLegacyRecordOn(
+  target: TestQueryable,
+  kind: string,
+  workspaceId: string,
+  id: string,
+  data: Record<string, unknown>
+) {
+  await target.query(
     `insert into baase_records
       (kind, workspace_id, id, data, created_at, updated_at)
      values ($1, $2, $3, $4::jsonb, $5, $6)`,
@@ -213,8 +227,12 @@ function taskRecord(workspaceId = "workspace_a", overrides: Record<string, unkno
 }
 
 async function seedHappyWorkspace(workspaceId = "workspace_a") {
-  await seedLegacyRecord("area", workspaceId, "area_ops", area(workspaceId));
-  await seedLegacyRecord("role_template", workspaceId, "role_lead", {
+  await seedHappyWorkspaceOn(db, workspaceId);
+}
+
+async function seedHappyWorkspaceOn(target: TestQueryable, workspaceId = "workspace_a") {
+  await seedLegacyRecordOn(target, "area", workspaceId, "area_ops", area(workspaceId));
+  await seedLegacyRecordOn(target, "role_template", workspaceId, "role_lead", {
     id: "role_lead",
     workspaceId,
     areaId: "area_ops",
@@ -223,17 +241,17 @@ async function seedHappyWorkspace(workspaceId = "workspace_a") {
     createdAt: timestamp,
     updatedAt: timestamp
   });
-  await seedLegacyRecord("team_member", workspaceId, "profile_owner", person(workspaceId));
-  await seedLegacyRecord("team_member", workspaceId, "profile_worker", person(workspaceId, {
+  await seedLegacyRecordOn(target, "team_member", workspaceId, "profile_owner", person(workspaceId));
+  await seedLegacyRecordOn(target, "team_member", workspaceId, "profile_worker", person(workspaceId, {
     id: "profile_worker",
     name: "Bruno Reis",
     email: "bruno@example.com",
     role: "employee",
     roleTemplateId: null
   }));
-  await seedLegacyRecord("process", workspaceId, "process_close", processRecord(workspaceId));
-  await seedLegacyRecord("routine", workspaceId, "routine_open", routineRecord(workspaceId));
-  await seedLegacyRecord("task_occurrence", workspaceId, "task_open", taskRecord(workspaceId));
+  await seedLegacyRecordOn(target, "process", workspaceId, "process_close", processRecord(workspaceId));
+  await seedLegacyRecordOn(target, "routine", workspaceId, "routine_open", routineRecord(workspaceId));
+  await seedLegacyRecordOn(target, "task_occurrence", workspaceId, "task_open", taskRecord(workspaceId));
 }
 
 describe("operational backfill", () => {
@@ -542,30 +560,146 @@ describe("operational backfill", () => {
     expect(audits.rows.map((row) => row.details.legacyValue)).toEqual(["area_5", "area_6"]);
   });
 
-  it("is idempotent without duplicating rows or unresolved-reference audits", async () => {
-    await seedLegacyRecord("process", "workspace_a", "process_close", processRecord("workspace_a", {
+  it("removes unresolved routine and step ids from snapshots but preserves readable names", async () => {
+    await seedLegacyRecord("task_occurrence", "workspace_a", "task_internal_snapshots", taskRecord("workspace_a", {
+      id: "task_internal_snapshots",
+      origin: "routine",
+      routineId: "routine_5",
+      taskTemplateId: "step_5",
+      title: "Executar fechamento",
+      areaId: null,
+      processId: null,
+      assigneeProfileId: null,
+      submittedByProfileId: null,
+      reviewedByProfileId: null,
+      routineTitleSnapshot: "routine_5",
+      stepTitleSnapshot: "step_5",
+      checklistItems: [],
+      evidence: null
+    }));
+    await seedLegacyRecord("task_occurrence", "workspace_a", "task_readable_snapshots", taskRecord("workspace_a", {
+      id: "task_readable_snapshots",
+      origin: "routine",
+      routineId: "routine_6",
+      taskTemplateId: "step_6",
+      title: "Executar conciliacao",
+      areaId: null,
+      processId: null,
+      assigneeProfileId: null,
+      submittedByProfileId: null,
+      reviewedByProfileId: null,
+      routineTitleSnapshot: "Rotina financeira antiga",
+      stepTitleSnapshot: "Conferir o caixa",
+      checklistItems: [],
+      evidence: null
+    }));
+    await seedLegacyRecord("task_occurrence", "workspace_a", "task_removed_step", taskRecord("workspace_a", {
+      id: "task_removed_step",
+      origin: "routine",
+      routineId: "routine_7",
+      taskTemplateId: "step_7",
+      title: "step_7",
+      areaId: null,
+      processId: null,
+      assigneeProfileId: null,
+      submittedByProfileId: null,
+      reviewedByProfileId: null,
+      routineTitleSnapshot: "routine_7",
+      stepTitleSnapshot: "step_7",
+      checklistItems: [],
+      evidence: null
+    }));
+
+    const report = await backfillOperationalData(db);
+
+    expect(report.reconciled).toBe(true);
+    const tasks = await db.query<{
+      id: string;
+      routine_title_snapshot: string | null;
+      step_title_snapshot: string;
+    }>(
+      `select id, routine_title_snapshot, step_title_snapshot
+       from task_occurrences order by id`
+    );
+    expect(tasks.rows).toEqual([
+      {
+        id: "task_internal_snapshots",
+        routine_title_snapshot: null,
+        step_title_snapshot: "Executar fechamento"
+      },
+      {
+        id: "task_readable_snapshots",
+        routine_title_snapshot: "Rotina financeira antiga",
+        step_title_snapshot: "Conferir o caixa"
+      },
+      {
+        id: "task_removed_step",
+        routine_title_snapshot: null,
+        step_title_snapshot: "Etapa removida"
+      }
+    ]);
+  });
+
+  it("is idempotent for a complete graph without duplicating children or audits", async () => {
+    await seedHappyWorkspace();
+    await seedLegacyRecord("process", "workspace_a", "process_orphan", processRecord("workspace_a", {
+      id: "process_orphan",
       areaId: "area_removed",
       ownerProfileId: null
     }));
 
     const first = await backfillOperationalData(db);
-    const firstCounts = await db.query<{ processes: number; audits: number }>(
-      `select
-        (select count(*)::int from processes) as processes,
-        (select count(*)::int from operational_audit_log) as audits`
-    );
-    const second = await backfillOperationalData(db);
-    const secondCounts = await db.query<{ processes: number; audits: number }>(
-      `select
-        (select count(*)::int from processes) as processes,
-        (select count(*)::int from operational_audit_log) as audits`
-    );
+    const secondRunInsertedTables: string[] = [];
+    const trackedPool: OperationalBackfillPool = {
+      query<T = unknown>(text: string, params?: unknown[]) {
+        return db.query(text, params) as unknown as Promise<{ rows: T[] }>;
+      },
+      async connect() {
+        const client = await db.connect();
+        return {
+          async query<T = unknown>(text: string, params?: unknown[]) {
+            const isRoutineInsert = /insert\s+into\s+routines/i.test(text);
+            // pg-mem returns the existing row from DO NOTHING RETURNING; PostgreSQL returns no rows.
+            const routineAlreadyExists = isRoutineInsert
+              ? (await client.query(
+                "select id from routines where workspace_id = $1 and id = $2",
+                [params?.[1], params?.[0]]
+              )).rows.length > 0
+              : false;
+            const result = await client.query(text, params) as unknown as { rows: T[] };
+            const insertedTable = text.match(/insert\s+into\s+([a-z_]+)/i)?.[1];
+            const rows = routineAlreadyExists ? [] : result.rows;
+            if (insertedTable && rows.length > 0) secondRunInsertedTables.push(insertedTable);
+            return { rows };
+          },
+          release() {
+            client.release();
+          }
+        };
+      }
+    };
+    const second = await backfillOperationalData(trackedPool);
 
     expect(first.insertedTotal).toBeGreaterThan(0);
+    expect(secondRunInsertedTables).toEqual([]);
     expect(second.insertedTotal).toBe(0);
     expect(second.orphanReferences).toEqual(first.orphanReferences);
     expect(second.skippedRecords).toEqual(first.skippedRecords);
-    expect(secondCounts.rows[0]).toEqual(firstCounts.rows[0]);
+    expect(second.targetCounts).toMatchObject({
+      areas: 1,
+      role_templates: 1,
+      people: 2,
+      processes: 2,
+      process_versions: 4,
+      routines: 1,
+      routine_steps: 2,
+      routine_assignments: 2,
+      routine_occurrences: 1,
+      task_occurrences: 1,
+      task_checklist_items: 2,
+      task_evidence: 2,
+      operational_audit_log: 1
+    });
   });
 
   it("explains and skips evidence whose explicit owner no longer exists", async () => {
@@ -699,6 +833,102 @@ async function withPostgresSchema<T>(run: (pool: Pool) => Promise<T>): Promise<T
 }
 
 describe.skipIf(!testDatabaseUrl)("operational backfill on PostgreSQL 16", () => {
+  it("sanitizes internal snapshot ids and preserves readable legacy snapshots", async () => {
+    await withPostgresSchema(async (postgres) => {
+      await ensurePostgresSchema(postgres);
+      await ensureOperationalSchema(postgres);
+      await seedLegacyRecordOn(postgres, "task_occurrence", "workspace_a", "task_internal", taskRecord("workspace_a", {
+        id: "task_internal",
+        origin: "routine",
+        routineId: "routine_5",
+        taskTemplateId: "step_5",
+        title: "Executar fechamento",
+        areaId: "area_5",
+        areaNameSnapshot: "area_5",
+        routineTitleSnapshot: "routine_5",
+        stepTitleSnapshot: "step_5",
+        processId: null,
+        assigneeProfileId: null,
+        submittedByProfileId: null,
+        reviewedByProfileId: null,
+        checklistItems: [],
+        evidence: null
+      }));
+      await seedLegacyRecordOn(postgres, "task_occurrence", "workspace_a", "task_readable", taskRecord("workspace_a", {
+        id: "task_readable",
+        origin: "routine",
+        routineId: "routine_6",
+        taskTemplateId: "step_6",
+        title: "Executar conciliacao",
+        areaId: "area_6",
+        areaNameSnapshot: "Financeiro antigo",
+        routineTitleSnapshot: "Rotina financeira antiga",
+        stepTitleSnapshot: "Conferir o caixa",
+        processId: null,
+        assigneeProfileId: null,
+        submittedByProfileId: null,
+        reviewedByProfileId: null,
+        checklistItems: [],
+        evidence: null
+      }));
+
+      const report = await backfillOperationalData(postgres);
+
+      expect(report.reconciled).toBe(true);
+      const snapshots = await postgres.query<{
+        id: string;
+        area_name_snapshot: string | null;
+        routine_title_snapshot: string | null;
+        step_title_snapshot: string;
+      }>(
+        `select id, area_name_snapshot, routine_title_snapshot, step_title_snapshot
+         from task_occurrences order by id`
+      );
+      expect(snapshots.rows).toEqual([
+        {
+          id: "task_internal",
+          area_name_snapshot: null,
+          routine_title_snapshot: null,
+          step_title_snapshot: "Executar fechamento"
+        },
+        {
+          id: "task_readable",
+          area_name_snapshot: "Financeiro antigo",
+          routine_title_snapshot: "Rotina financeira antiga",
+          step_title_snapshot: "Conferir o caixa"
+        }
+      ]);
+    });
+  });
+
+  it("returns zero inserts on a complete second PostgreSQL backfill", async () => {
+    await withPostgresSchema(async (postgres) => {
+      await ensurePostgresSchema(postgres);
+      await ensureOperationalSchema(postgres);
+      await seedHappyWorkspaceOn(postgres);
+      await seedLegacyRecordOn(postgres, "process", "workspace_a", "process_orphan", processRecord("workspace_a", {
+        id: "process_orphan",
+        areaId: "area_removed",
+        ownerProfileId: null
+      }));
+
+      const first = await backfillOperationalData(postgres);
+      const second = await backfillOperationalData(postgres);
+
+      expect(first.insertedTotal).toBeGreaterThan(0);
+      expect(second.insertedTotal).toBe(0);
+      expect(second.targetCounts).toMatchObject({
+        process_versions: 4,
+        routine_steps: 2,
+        routine_assignments: 2,
+        routine_occurrences: 1,
+        task_checklist_items: 2,
+        task_evidence: 2,
+        operational_audit_log: 1
+      });
+    });
+  });
+
   it("survives a routine inserted concurrently at the conflict boundary", async () => {
     await withPostgresSchema(async (postgres) => {
       await ensurePostgresSchema(postgres);

@@ -47,7 +47,7 @@ afterEach(async () => {
 });
 
 describe("operational schema", () => {
-  it("applies migration version 1 exactly once", async () => {
+  it("applies operational migrations exactly once", async () => {
     await ensureOperationalSchema(db);
     await ensureOperationalSchema(db);
 
@@ -55,7 +55,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2]);
   });
 
   it("checks out and releases exactly one migration client", async () => {

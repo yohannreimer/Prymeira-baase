@@ -602,6 +602,8 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
     const step = routine && legacyStepId
       ? stepByRoutineAndId.get(routineStepKey(routine.id, legacyStepId))
       : undefined;
+    const unresolvedRoutineId = legacyRoutineId && !routine ? legacyRoutineId : null;
+    const unresolvedStepId = legacyStepId && !step ? legacyStepId : null;
     if (requestedRoutineOrigin && legacyRoutineId && !routine) {
       addOrphan(plan, "task_occurrence", row.id, "routine_id", legacyRoutineId);
     }
@@ -619,6 +621,7 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
     });
     const unresolvedAreaId = legacyAreaId && !areaId ? legacyAreaId : null;
     if (!areaId && !legacyAreaId && routine?.areaId) areaId = routine.areaId;
+    const unresolvedVisibleIds = [unresolvedAreaId, unresolvedRoutineId, unresolvedStepId];
     const processId = resolveSetReference(plan, processIds, {
       entityType: "task_occurrence",
       entityId: row.id,
@@ -643,13 +646,15 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
       field: "reviewed_by_profile_id",
       legacyValue: optionalText(data.reviewedByProfileId)
     });
-    const areaNameSnapshot = sanitizedAreaSnapshot(data.areaNameSnapshot, unresolvedAreaId)
+    const areaNameSnapshot = sanitizedVisibleSnapshot(data.areaNameSnapshot, unresolvedVisibleIds)
       ?? (areaId ? areaById.get(areaId)?.name ?? null : null);
-    const routineTitle = optionalText(data.routineTitleSnapshot) ?? routine?.title ?? null;
-    const stepTitle = optionalText(data.stepTitleSnapshot)
+    const routineTitle = sanitizedVisibleSnapshot(data.routineTitleSnapshot, unresolvedVisibleIds)
+      ?? routine?.title
+      ?? null;
+    const stepTitle = sanitizedVisibleSnapshot(data.stepTitleSnapshot, unresolvedVisibleIds)
       ?? step?.title
-      ?? optionalText(data.title)
-      ?? row.id;
+      ?? sanitizedVisibleSnapshot(data.title, unresolvedVisibleIds)
+      ?? "Etapa removida";
     const dueDate = readDate(data.dueDate)
       ?? recordTimestamp(data.createdAt, row.created_at).slice(0, 10);
     const dueTime = readTime(optionalText(data.dueTime) ?? optionalText(data.dueHint));
@@ -1390,11 +1395,11 @@ function optionalText(value: unknown) {
   return valueText ? valueText : null;
 }
 
-function sanitizedAreaSnapshot(value: unknown, unresolvedAreaId: string | null) {
+function sanitizedVisibleSnapshot(value: unknown, unresolvedIds: Array<string | null>) {
   const snapshot = optionalText(value);
-  if (!snapshot || (unresolvedAreaId && snapshot.toLowerCase() === unresolvedAreaId.toLowerCase())) {
-    return null;
-  }
+  if (!snapshot) return null;
+  const normalized = snapshot.toLowerCase();
+  if (unresolvedIds.some((id) => id?.toLowerCase() === normalized)) return null;
   return snapshot;
 }
 

@@ -65,7 +65,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2]);
     });
   });
 
@@ -162,6 +162,84 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
            'optional', 'pending', '2026-07-10'
          )`
       )).rejects.toThrow();
+    });
+  });
+
+  it("upgrades an existing version 1 database through version 2", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query(
+        "alter table task_occurrences drop constraint task_occurrences_origin_references_check"
+      );
+      await pool.query(`
+        alter table task_occurrences add check (
+          (origin = 'manual' and routine_id is null and routine_step_id is null
+            and routine_title_snapshot is null)
+          or
+          (origin = 'routine' and routine_id is not null and routine_step_id is not null
+            and audience_key is not null and routine_title_snapshot is not null)
+        )
+      `);
+      await pool.query("delete from baase_schema_migrations where version = 2");
+
+      const before = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(before.rows.map((row) => row.version)).toEqual([1]);
+      const oldConstraint = await pool.query<{ conname: string }>(
+        `select conname
+         from pg_constraint
+         where conrelid = 'task_occurrences'::regclass
+           and conname = 'task_occurrences_check'`
+      );
+      expect(oldConstraint.rows).toEqual([{ conname: "task_occurrences_check" }]);
+
+      await ensureOperationalSchema(pool);
+
+      const after = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2]);
+      const upgradedConstraint = await pool.query<{ conname: string }>(
+        `select conname
+         from pg_constraint
+         where conrelid = 'task_occurrences'::regclass
+           and conname = 'task_occurrences_origin_references_check'`
+      );
+      expect(upgradedConstraint.rows).toEqual([{
+        conname: "task_occurrences_origin_references_check"
+      }]);
+      await pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, title, routine_title_snapshot, step_title_snapshot,
+           approval_mode, evidence_policy, status, due_date)
+         values (
+           'task_historical_upgrade', 'workspace_a', 'manual', 'Etapa preservada',
+           'Rotina removida', 'Etapa preservada', 'direct', 'optional', 'pending',
+           '2026-07-10'
+         )`
+      );
+    });
+  });
+
+  it("does not mark version 2 when its alter fails", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query("delete from baase_schema_migrations where version = 2");
+
+      await expect(ensureOperationalSchema(pool)).rejects.toThrow();
+
+      const migrations = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(migrations.rows.map((row) => row.version)).toEqual([1]);
+      const stableConstraint = await pool.query<{ count: number }>(
+        `select count(*)::int as count
+         from pg_constraint
+         where conrelid = 'task_occurrences'::regclass
+           and conname = 'task_occurrences_origin_references_check'`
+      );
+      expect(stableConstraint.rows[0]?.count).toBe(1);
     });
   });
 
