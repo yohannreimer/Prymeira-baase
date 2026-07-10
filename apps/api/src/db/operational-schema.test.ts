@@ -84,6 +84,75 @@ describe("operational schema", () => {
     expect(releases).toBe(1);
   });
 
+  it("allows manual task provenance snapshots but never manual routine references", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, title, routine_title_snapshot, step_title_snapshot,
+         approval_mode, evidence_policy, status, due_date)
+       values
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10),
+        ($11, $2, $3, $12, $13, $14, $7, $8, $9, $10)`,
+      [
+        "task_manual",
+        "workspace_a",
+        "manual",
+        "Tarefa pontual",
+        null,
+        "Tarefa pontual",
+        "direct",
+        "optional",
+        "pending",
+        "2026-07-10",
+        "task_historical",
+        "Etapa preservada",
+        "Rotina removida",
+        "Etapa preservada"
+      ]
+    );
+    const snapshots = await db.query<{ id: string; routine_title_snapshot: string | null }>(
+      "select id, routine_title_snapshot from task_occurrences order by id"
+    );
+    expect(snapshots.rows).toEqual([
+      { id: "task_historical", routine_title_snapshot: "Rotina removida" },
+      { id: "task_manual", routine_title_snapshot: null }
+    ]);
+    await db.query(
+      `insert into routines
+        (id, workspace_id, title, status, frequency, created_by_profile_id)
+       values ($1, $2, $3, $4, $5, $6)`,
+      ["routine_valid", "workspace_a", "Rotina valida", "active", "on_demand", "profile_owner"]
+    );
+    await db.query(
+      `insert into routine_steps
+        (id, workspace_id, routine_id, title, sort_order)
+       values ($1, $2, $3, $4, $5)`,
+      ["step_valid", "workspace_a", "routine_valid", "Etapa valida", 1]
+    );
+
+    await expect(db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, routine_id, routine_step_id, title,
+         routine_title_snapshot, step_title_snapshot, approval_mode, evidence_policy,
+         status, due_date)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        "task_invalid_manual",
+        "workspace_a",
+        "manual",
+        "routine_valid",
+        "step_valid",
+        "Etapa preservada",
+        "Rotina removida",
+        "Etapa preservada",
+        "direct",
+        "optional",
+        "pending",
+        "2026-07-10"
+      ]
+    )).rejects.toThrow();
+  });
+
   it("rejects drifted operational objects without recording migration version 1", async () => {
     await db.query(`
       create table baase_schema_migrations (

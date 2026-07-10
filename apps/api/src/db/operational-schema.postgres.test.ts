@@ -116,6 +116,55 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
+  it("allows manual task provenance snapshots but never manual routine references", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, title, routine_title_snapshot, step_title_snapshot,
+           approval_mode, evidence_policy, status, due_date)
+         values
+          ('task_manual', 'workspace_a', 'manual', 'Tarefa pontual', null,
+           'Tarefa pontual', 'direct', 'optional', 'pending', '2026-07-10'),
+          ('task_historical', 'workspace_a', 'manual', 'Etapa preservada',
+           'Rotina removida', 'Etapa preservada', 'direct', 'optional', 'pending',
+           '2026-07-10')`
+      );
+      const snapshots = await pool.query<{ id: string; routine_title_snapshot: string | null }>(
+        "select id, routine_title_snapshot from task_occurrences order by id"
+      );
+      expect(snapshots.rows).toEqual([
+        { id: "task_historical", routine_title_snapshot: "Rotina removida" },
+        { id: "task_manual", routine_title_snapshot: null }
+      ]);
+      await pool.query(
+        `insert into routines
+          (id, workspace_id, title, status, frequency, created_by_profile_id)
+         values (
+           'routine_valid', 'workspace_a', 'Rotina valida', 'active', 'on_demand',
+           'profile_owner'
+         )`
+      );
+      await pool.query(
+        `insert into routine_steps
+          (id, workspace_id, routine_id, title, sort_order)
+         values ('step_valid', 'workspace_a', 'routine_valid', 'Etapa valida', 1)`
+      );
+
+      await expect(pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, routine_id, routine_step_id, title,
+           routine_title_snapshot, step_title_snapshot, approval_mode, evidence_policy,
+           status, due_date)
+         values (
+           'task_invalid_manual', 'workspace_a', 'manual', 'routine_valid', 'step_valid',
+           'Etapa preservada', 'Rotina removida', 'Etapa preservada', 'direct',
+           'optional', 'pending', '2026-07-10'
+         )`
+      )).rejects.toThrow();
+    });
+  });
+
   it("rolls back partial DDL and does not record a failed migration", async () => {
     await withPostgresSchema(async (pool) => {
       await createMigrationLedger(pool);

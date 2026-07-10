@@ -610,13 +610,15 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
     }
     const isRoutineOrigin = requestedRoutineOrigin && Boolean(routine && step);
 
+    const legacyAreaId = optionalText(data.areaId);
     let areaId = resolveReference(plan, areaById, {
       entityType: "task_occurrence",
       entityId: row.id,
       field: "area_id",
-      legacyValue: optionalText(data.areaId)
+      legacyValue: legacyAreaId
     });
-    if (!areaId && !optionalText(data.areaId) && routine?.areaId) areaId = routine.areaId;
+    const unresolvedAreaId = legacyAreaId && !areaId ? legacyAreaId : null;
+    if (!areaId && !legacyAreaId && routine?.areaId) areaId = routine.areaId;
     const processId = resolveSetReference(plan, processIds, {
       entityType: "task_occurrence",
       entityId: row.id,
@@ -641,7 +643,7 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
       field: "reviewed_by_profile_id",
       legacyValue: optionalText(data.reviewedByProfileId)
     });
-    const areaNameSnapshot = optionalText(data.areaNameSnapshot)
+    const areaNameSnapshot = sanitizedAreaSnapshot(data.areaNameSnapshot, unresolvedAreaId)
       ?? (areaId ? areaById.get(areaId)?.name ?? null : null);
     const routineTitle = optionalText(data.routineTitleSnapshot) ?? routine?.title ?? null;
     const stepTitle = optionalText(data.stepTitleSnapshot)
@@ -669,7 +671,7 @@ function buildWorkspacePlan(workspaceId: string, rows: LegacyRow[]): WorkspacePl
       audienceKey,
       title: requiredText(data.title, stepTitle),
       areaNameSnapshot,
-      routineTitleSnapshot: isRoutineOrigin ? routineTitle : null,
+      routineTitleSnapshot: requestedRoutineOrigin ? routineTitle : null,
       stepTitleSnapshot: stepTitle,
       approvalMode: approvalMode(data.approvalMode),
       evidencePolicy: evidencePolicy(data.evidencePolicy),
@@ -991,17 +993,13 @@ async function insertWorkspacePlan(pool: OperationalBackfillPool, plan: Workspac
       );
     }
     for (const routine of plan.routines) {
-      const existing = await client.query<{ id: string }>(
-        "select id from routines where workspace_id = $1 and id = $2",
-        [routine.workspaceId, routine.id]
-      );
-      if (existing.rows.length > 0) continue;
       inserted += await insert(client,
         `insert into routines
           (id, workspace_id, area_id, title, status, frequency, weekdays, month_day,
            execution_mode, approval_mode, evidence_policy, evidence_reason,
            created_by_profile_id, archived_at, created_at, updated_at)
          values ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         on conflict (workspace_id, id) do nothing
          returning id`,
         [
           routine.id,
@@ -1390,6 +1388,14 @@ function textValue(value: unknown) {
 function optionalText(value: unknown) {
   const valueText = textValue(value)?.trim();
   return valueText ? valueText : null;
+}
+
+function sanitizedAreaSnapshot(value: unknown, unresolvedAreaId: string | null) {
+  const snapshot = optionalText(value);
+  if (!snapshot || (unresolvedAreaId && snapshot.toLowerCase() === unresolvedAreaId.toLowerCase())) {
+    return null;
+  }
+  return snapshot;
 }
 
 function requiredText(value: unknown, fallback: string) {

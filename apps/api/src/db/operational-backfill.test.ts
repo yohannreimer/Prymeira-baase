@@ -454,7 +454,7 @@ describe("operational backfill", () => {
         routine_id: null,
         routine_step_id: null,
         area_name_snapshot: "Operacoes antigas",
-        routine_title_snapshot: null,
+        routine_title_snapshot: "Rotina removida",
         step_title_snapshot: "Passo preservado"
       },
       {
@@ -463,7 +463,7 @@ describe("operational backfill", () => {
         routine_id: null,
         routine_step_id: null,
         area_name_snapshot: "Operacoes",
-        routine_title_snapshot: null,
+        routine_title_snapshot: "Abertura",
         step_title_snapshot: "Abrir caixa"
       }
     ]);
@@ -481,6 +481,65 @@ describe("operational backfill", () => {
         legacyValue: "step_removed"
       }
     ]));
+  });
+
+  it("removes unresolved area ids from visible snapshots but preserves readable legacy names", async () => {
+    await seedLegacyRecord("task_occurrence", "workspace_a", "task_internal_area", taskRecord("workspace_a", {
+      id: "task_internal_area",
+      origin: "manual",
+      routineId: null,
+      taskTemplateId: null,
+      areaId: "area_5",
+      areaNameSnapshot: "area_5",
+      processId: null,
+      assigneeProfileId: null,
+      submittedByProfileId: null,
+      reviewedByProfileId: null,
+      checklistItems: [],
+      evidence: null
+    }));
+    await seedLegacyRecord("task_occurrence", "workspace_a", "task_readable_area", taskRecord("workspace_a", {
+      id: "task_readable_area",
+      origin: "manual",
+      routineId: null,
+      taskTemplateId: null,
+      areaId: "area_6",
+      areaNameSnapshot: "Financeiro antigo",
+      processId: null,
+      assigneeProfileId: null,
+      submittedByProfileId: null,
+      reviewedByProfileId: null,
+      checklistItems: [],
+      evidence: null
+    }));
+
+    const report = await backfillOperationalData(db);
+
+    const tasks = await db.query<{ id: string; area_name_snapshot: string | null }>(
+      "select id, area_name_snapshot from task_occurrences order by id"
+    );
+    expect(tasks.rows).toEqual([
+      { id: "task_internal_area", area_name_snapshot: null },
+      { id: "task_readable_area", area_name_snapshot: "Financeiro antigo" }
+    ]);
+    expect(report.orphanReferences).toEqual(expect.arrayContaining([
+      {
+        entityType: "task_occurrence",
+        entityId: "task_internal_area",
+        field: "area_id",
+        legacyValue: "area_5"
+      },
+      {
+        entityType: "task_occurrence",
+        entityId: "task_readable_area",
+        field: "area_id",
+        legacyValue: "area_6"
+      }
+    ]));
+    const audits = await db.query<{ details: { legacyValue: string } }>(
+      "select details from operational_audit_log order by entity_id"
+    );
+    expect(audits.rows.map((row) => row.details.legacyValue)).toEqual(["area_5", "area_6"]);
   });
 
   it("is idempotent without duplicating rows or unresolved-reference audits", async () => {
@@ -640,6 +699,67 @@ async function withPostgresSchema<T>(run: (pool: Pool) => Promise<T>): Promise<T
 }
 
 describe.skipIf(!testDatabaseUrl)("operational backfill on PostgreSQL 16", () => {
+  it("survives a routine inserted concurrently at the conflict boundary", async () => {
+    await withPostgresSchema(async (postgres) => {
+      await ensurePostgresSchema(postgres);
+      await ensureOperationalSchema(postgres);
+      await postgres.query(
+        `insert into baase_records
+          (kind, workspace_id, id, data, created_at, updated_at)
+         values ($1, $2, $3, $4::jsonb, $5, $5)`,
+        [
+          "routine",
+          "workspace_a",
+          "routine_race",
+          JSON.stringify(routineRecord("workspace_a", {
+            id: "routine_race",
+            areaId: null,
+            assigneeProfileIds: [],
+            taskTemplates: []
+          })),
+          timestamp
+        ]
+      );
+      let injected = false;
+      const racingPool: OperationalBackfillPool = {
+        query<T = unknown>(text: string, params?: unknown[]) {
+          return postgres.query(text, params) as unknown as Promise<{ rows: T[] }>;
+        },
+        async connect() {
+          const client = await postgres.connect();
+          return {
+            async query<T = unknown>(text: string, params?: unknown[]) {
+              if (!injected && /insert\s+into\s+routines/i.test(text)) {
+                injected = true;
+                await postgres.query(
+                  `insert into routines
+                    (id, workspace_id, title, status, frequency, created_by_profile_id)
+                   values ($1, $2, $3, $4, $5, $6)`,
+                  ["routine_race", "workspace_a", "Abertura concorrente", "active", "on_demand", "profile_owner"]
+                );
+              }
+              return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+            },
+            release() {
+              client.release();
+            }
+          };
+        }
+      };
+
+      const report = await backfillOperationalData(racingPool);
+
+      expect(injected).toBe(true);
+      expect(report.reconciled).toBe(true);
+      expect(report.insertedTotal).toBe(0);
+      const routines = await postgres.query<{ count: number }>(
+        "select count(*)::int as count from routines where workspace_id = $1 and id = $2",
+        ["workspace_a", "routine_race"]
+      );
+      expect(routines.rows[0]?.count).toBe(1);
+    });
+  });
+
   it("persists a non-empty legacy weekday array", async () => {
     await withPostgresSchema(async (postgres) => {
       await ensurePostgresSchema(postgres);

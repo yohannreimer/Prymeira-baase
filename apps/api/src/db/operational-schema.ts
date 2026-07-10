@@ -289,8 +289,7 @@ const migrations: Migration[] = [{
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
-        (origin = 'manual' AND routine_id IS NULL AND routine_step_id IS NULL
-          AND routine_title_snapshot IS NULL)
+        (origin = 'manual' AND routine_id IS NULL AND routine_step_id IS NULL)
         OR
         (origin = 'routine' AND routine_id IS NOT NULL AND routine_step_id IS NOT NULL
           AND audience_key IS NOT NULL AND routine_title_snapshot IS NOT NULL)
