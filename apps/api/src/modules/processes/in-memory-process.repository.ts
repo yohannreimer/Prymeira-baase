@@ -22,9 +22,17 @@ export function createInMemoryProcessRepository(
 
     async createProcess(input) {
       const timestamp = now();
+      const processId = `process_${processes.length + 1}`;
+      const versions = input.versions.map((version) => ({
+        ...version,
+        id: `version_${processId}_${version.version}`,
+        processId
+      }));
       const process: CompanyProcess = {
         ...input,
-        id: `process_${processes.length + 1}`,
+        id: processId,
+        versions,
+        currentVersion: versions.find((version) => version.version === input.currentVersion.version)!,
         createdAt: timestamp,
         updatedAt: timestamp
       };

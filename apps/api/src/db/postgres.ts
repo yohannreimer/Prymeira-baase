@@ -444,9 +444,17 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
 
     async createProcess(input) {
       const timestamp = now();
+      const processId = await store.nextId("process", input.workspaceId, "process");
+      const versions = input.versions.map((version) => ({
+        ...version,
+        id: `version_${processId}_${version.version}`,
+        processId
+      }));
       const process = {
         ...input,
-        id: await store.nextId("process", input.workspaceId, "process"),
+        id: processId,
+        versions,
+        currentVersion: versions.find((version) => version.version === input.currentVersion.version)!,
         createdAt: timestamp,
         updatedAt: timestamp
       };

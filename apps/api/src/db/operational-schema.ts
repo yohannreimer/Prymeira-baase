@@ -424,6 +424,9 @@ const migrations: Migration[] = [{
     ALTER TABLE routines ADD COLUMN due_hint TEXT;
     ALTER TABLE routine_steps ADD COLUMN due_hint TEXT;
     ALTER TABLE task_occurrences ADD COLUMN due_hint TEXT;
+    ALTER TABLE task_occurrences ADD COLUMN source_template_key TEXT;
+    ALTER TABLE routine_occurrences ADD COLUMN routine_updated_at_snapshot TIMESTAMPTZ;
+    ALTER TABLE task_evidence ADD COLUMN archived_at TIMESTAMPTZ;
 
     ALTER TABLE routine_steps
       DROP CONSTRAINT IF EXISTS routine_steps_workspace_id_routine_id_sort_order_key;
@@ -444,11 +447,18 @@ const migrations: Migration[] = [{
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
+  return ensureOperationalSchemaThrough(pool, Number.POSITIVE_INFINITY);
+}
+
+export async function ensureOperationalSchemaThrough(
+  pool: OperationalSchemaPool,
+  maximumVersion: number
+): Promise<void> {
   const client = await pool.connect();
   let primaryError: unknown;
 
   try {
-    await migrateOperationalSchema(client);
+    await migrateOperationalSchema(client, maximumVersion);
   } catch (error) {
     primaryError = error;
     throw error;
@@ -462,7 +472,7 @@ export async function ensureOperationalSchema(pool: OperationalSchemaPool): Prom
   }
 }
 
-async function migrateOperationalSchema(client: OperationalSchemaClient): Promise<void> {
+async function migrateOperationalSchema(client: OperationalSchemaClient, maximumVersion: number): Promise<void> {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", operationalSchemaLock);
@@ -483,6 +493,7 @@ async function migrateOperationalSchema(client: OperationalSchemaClient): Promis
     }
 
     for (const migration of migrations) {
+      if (migration.version > maximumVersion) continue;
       const applied = await client.query<{ version: number }>(
         "SELECT version FROM baase_schema_migrations WHERE version = $1",
         [migration.version]

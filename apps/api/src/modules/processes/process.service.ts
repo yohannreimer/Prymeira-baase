@@ -60,7 +60,7 @@ export function createProcessService(repository: ProcessRepository) {
         version: 1
       });
 
-      const process = await repository.createProcess({
+      return repository.createProcess({
         workspaceId,
         areaId: input.areaId ?? null,
         title,
@@ -72,18 +72,6 @@ export function createProcessService(repository: ProcessRepository) {
         createdByProfileId: editorProfileId,
         publishedAt: null,
         archivedAt: null
-      });
-
-      const versionWithRealProcessId = {
-        ...currentVersion,
-        id: `version_${process.id}_1`,
-        processId: process.id
-      };
-
-      return repository.updateProcess({
-        ...process,
-        currentVersion: versionWithRealProcessId,
-        versions: [versionWithRealProcessId]
       });
     },
 

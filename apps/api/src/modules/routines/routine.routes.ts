@@ -11,6 +11,7 @@ import { createRoutineService } from "./routine.service";
 import type { RoutineRepository } from "./routine.types";
 
 const taskTemplateSchema = z.object({
+  id: z.string().min(1).optional(),
   title: z.string().min(1).max(140),
   process_id: z.string().optional().nullable(),
   assignee_profile_id: z.string().optional().nullable(),
@@ -119,6 +120,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       approvalMode: body.approval_mode,
       evidencePolicy: body.evidence_policy,
       taskTemplates: body.task_templates.map((template) => ({
+        id: template.id,
         title: template.title,
         processId: template.process_id,
         assigneeProfileId: template.assignee_profile_id,
@@ -148,6 +150,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       approvalMode: body.approval_mode,
       evidencePolicy: body.evidence_policy,
       taskTemplates: body.task_templates.map((template) => ({
+        id: template.id,
         title: template.title,
         processId: template.process_id,
         assigneeProfileId: template.assignee_profile_id,

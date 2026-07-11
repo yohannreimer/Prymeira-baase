@@ -3,6 +3,26 @@ import { createInMemoryRoutineRepository } from "./in-memory-routine.repository"
 import { createRoutineService } from "./routine.service";
 
 describe("routine service", () => {
+  it("preserves step identities across id-less removal and reorder updates", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura",
+      taskTemplates: [{ title: "Portas" }, { title: "Luzes" }, { title: "Caixa" }]
+    });
+    const ids = Object.fromEntries(routine.taskTemplates.map((step) => [step.title, step.id]));
+
+    const updated = await service.updateRoutine("workspace_a", routine.id, {
+      title: "Abertura",
+      taskTemplates: [{ title: "Caixa" }, { title: "Portas" }]
+    });
+
+    expect(updated.taskTemplates.map((step) => [step.title, step.id])).toEqual([
+      ["Caixa", ids.Caixa],
+      ["Portas", ids.Portas]
+    ]);
+    expect(updated.taskTemplates.map((step) => step.id)).not.toContain(ids.Luzes);
+  });
+
   it("creates routines with executable task templates", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
 

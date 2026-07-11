@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import {
   ensureOperationalSchema,
+  ensureOperationalSchemaThrough,
   type OperationalSchemaClient,
   type OperationalSchemaPool
 } from "./operational-schema";
@@ -224,13 +225,20 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
 
   it("upgrades versions 1 and 2 through runtime compatibility version 3", async () => {
     await withPostgresSchema(async (pool) => {
-      await ensureOperationalSchema(pool);
-      await pool.query("delete from baase_schema_migrations where version = 3");
-      await pool.query("alter table routine_steps drop column archived_at");
-      await pool.query("alter table task_occurrences drop column archived_at");
-      await pool.query("alter table routines drop column due_hint");
-      await pool.query("alter table routine_steps drop column due_hint");
-      await pool.query("alter table task_occurrences drop column due_hint");
+      await ensureOperationalSchemaThrough(pool, 2);
+      const before = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(before.rows.map((row) => row.version)).toEqual([1, 2]);
+      const v2Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; people_fks: number }>(
+        `select
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='task_evidence' and column_name='archived_at') archived_evidence,
+          (select count(*)::int from pg_constraint where contype='f'
+            and conrelid in ('task_occurrences'::regclass, 'task_evidence'::regclass)
+            and confrelid='people'::regclass) people_fks`
+      );
+      expect(v2Catalog.rows[0]).toEqual({ archived_steps: false, archived_evidence: false, people_fks: 2 });
 
       await ensureOperationalSchema(pool);
 
@@ -238,6 +246,25 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "select version from baase_schema_migrations order by version"
       );
       expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+      const v3Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; source_key: boolean; revision_snapshot: boolean; people_fks: number; active_order_index: boolean }>(
+        `select
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='task_evidence' and column_name='archived_at') archived_evidence,
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='task_occurrences' and column_name='source_template_key') source_key,
+          exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_occurrences' and column_name='routine_updated_at_snapshot') revision_snapshot,
+          (select count(*)::int from pg_constraint where contype='f'
+            and conrelid in ('task_occurrences'::regclass, 'task_evidence'::regclass)
+            and confrelid='people'::regclass) people_fks,
+          to_regclass('routine_steps_active_order_uidx') is not null active_order_index`
+      );
+      expect(v3Catalog.rows[0]).toEqual({
+        archived_steps: true,
+        archived_evidence: true,
+        source_key: true,
+        revision_snapshot: true,
+        people_fks: 0,
+        active_order_index: true
+      });
     });
   });
 

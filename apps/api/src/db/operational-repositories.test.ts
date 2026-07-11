@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createCompanyService } from "../modules/company/company.service";
 import { createProcessService } from "../modules/processes/process.service";
 import { createRoutineService } from "../modules/routines/routine.service";
+import type { RoutineRepository } from "../modules/routines/routine.types";
 import { ensureOperationalSchema } from "./operational-schema";
 import { createConfiguredPostgresRepositoryBundle, createPostgresRepositoryBundle, createRelationalOperationalRepositoryBundle, ensurePostgresSchema } from "./postgres";
 import type { OperationalClient, OperationalPool } from "./operational-repository-support";
@@ -102,7 +103,7 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
 
       await routines.updateRoutine("workspace_a", routine.id, {
         title: "Abertura atualizada", areaId: area.id, assigneeProfileIds: [person.id], executionMode: "individual",
-        taskTemplates: [{ title: "Abrir unidade" }]
+        taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Abrir unidade" }]
       });
       const preserved = await relational.routineRepository!.findTaskOccurrence("workspace_a", first[0]!.id);
       expect(preserved).toMatchObject({ title: "Abertura", routineTitleSnapshot: "Abertura" });
@@ -160,4 +161,230 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       expect(rows.rows).toEqual([]);
     });
   });
+
+  it("updates and archives scoped company records", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const company = createCompanyService(bundle.companyRepository);
+      const area = await company.createArea("workspace_a", { name: "Operacao" });
+      const role = await company.createRoleTemplate("workspace_a", { areaId: area.id, name: "Caixa" });
+      const person = await company.createTeamMember("workspace_a", {
+        name: "Ana", role: "employee", areaId: area.id, roleTemplateId: role.id,
+        createdByProfileId: "account_owner"
+      });
+
+      await company.updateArea("workspace_a", area.id, { name: "Operacao diaria", description: "Atualizada" });
+      await company.updateTeamMember("workspace_a", person.id, {
+        name: "Ana Silva", role: "manager", areaId: area.id, roleTemplateId: role.id, status: "active"
+      });
+      expect(await company.listAreas("workspace_b")).toEqual([]);
+      expect(await bundle.companyRepository.findTeamMember("workspace_b", person.id)).toBeNull();
+      expect(await company.listTeamMembers("workspace_a")).toEqual([
+        expect.objectContaining({ id: person.id, name: "Ana Silva", role: "manager" })
+      ]);
+
+      await company.deleteTeamMember("workspace_a", person.id);
+      await company.deleteRoleTemplate("workspace_a", role.id);
+      await company.deleteArea("workspace_a", area.id);
+      expect(await company.listTeamMembers("workspace_a")).toEqual([]);
+      expect(await company.listRoleTemplates("workspace_a")).toEqual([]);
+      expect(await company.listAreas("workspace_a")).toEqual([]);
+      const history = await pool.query<{ people: number; roles: number; areas: number }>(
+        `select
+          (select count(*)::int from people where workspace_id='workspace_a' and archived_at is not null) people,
+          (select count(*)::int from role_templates where workspace_id='workspace_a' and archived_at is not null) roles,
+          (select count(*)::int from areas where workspace_id='workspace_a' and archived_at is not null) areas`
+      );
+      expect(history.rows[0]).toEqual({ people: 1, roles: 1, areas: 1 });
+    });
+  });
+
+  it("creates process history atomically and rolls back the whole create on audit failure", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const service = createProcessService(bundle.processRepository);
+      const process = await service.createProcess("workspace_a", "account_owner", {
+        title: "Fechamento", body: "Conferir caixa"
+      });
+      expect(process.currentVersion).toMatchObject({ processId: process.id, version: 1 });
+      const versioned = await service.createProcessVersion("workspace_a", process.id, "account_owner", {
+        body: "Conferir caixa e comprovantes", changeNote: "Comprovantes"
+      });
+      expect(versioned.versions).toHaveLength(2);
+      await service.deleteProcess("workspace_a", process.id);
+      expect(await bundle.processRepository.findProcess("workspace_a", process.id)).toBeNull();
+      expect((await pool.query("select id from process_versions where workspace_id=$1 and process_id=$2", ["workspace_a", process.id])).rows).toHaveLength(2);
+
+      const failingPool = failOnQuery(pool, "INSERT INTO operational_audit_log", "PROCESS_AUDIT_FAILURE");
+      const failingBundle = createRelationalOperationalRepositoryBundle(failingPool, createPostgresRepositoryBundle(pool).companyRepository);
+      await expect(createProcessService(failingBundle.processRepository!).createProcess(
+        "workspace_rollback", "account_owner", { title: "Rollback", body: "Nao persistir" }
+      )).rejects.toThrow("PROCESS_AUDIT_FAILURE");
+      const rolledBack = await pool.query<{ processes: number; versions: number }>(
+        `select
+          (select count(*)::int from processes where workspace_id='workspace_rollback') processes,
+          (select count(*)::int from process_versions where workspace_id='workspace_rollback') versions`
+      );
+      expect(rolledBack.rows[0]).toEqual({ processes: 0, versions: 0 });
+    });
+  });
+
+  it("round-trips task state and replaces active checklist and evidence projections", async () => {
+    await withPostgresSchema(async (pool) => {
+      const repository = createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository;
+      const created = await repository.createTaskOccurrence({
+        workspaceId: "workspace_a", origin: "manual", routineId: null, taskTemplateId: null,
+        title: "Tarefa historica", areaNameSnapshot: "Area antiga", routineTitleSnapshot: "Rotina antiga",
+        stepTitleSnapshot: "Etapa antiga", routineRevisionSnapshot: null, areaId: null, processId: null,
+        assigneeProfileId: "account_owner", dueHint: "Ate 10h", approvalMode: "approval_required",
+        evidencePolicy: "photo_or_comment_required", checklistItems: [{ title: "Primeiro", done: true }],
+        status: "awaiting_approval", dueDate: "2026-07-15",
+        evidence: { comment: "Comentario original", photoUrl: "https://example.com/original.jpg" },
+        submittedByProfileId: "account_owner", submittedAt: "2026-07-15T12:00:00.000Z",
+        reviewedByProfileId: "account_manager", reviewedAt: "2026-07-15T13:00:00.000Z",
+        reviewComment: "Revisado"
+      });
+      expect(created).toMatchObject({
+        areaNameSnapshot: "Area antiga", routineTitleSnapshot: "Rotina antiga", stepTitleSnapshot: "Etapa antiga",
+        status: "awaiting_approval", submittedByProfileId: "account_owner", reviewedByProfileId: "account_manager",
+        reviewComment: "Revisado", evidence: { comment: "Comentario original", photoUrl: "https://example.com/original.jpg" }
+      });
+
+      const replaced = await repository.updateTaskOccurrence({
+        ...created,
+        checklistItems: [{ title: "Substituido", done: false }],
+        evidence: { comment: null, photoUrl: null },
+        reviewComment: null
+      });
+      expect(replaced.checklistItems).toEqual([{ title: "Substituido", done: false }]);
+      expect(replaced.evidence).toBeNull();
+      expect(replaced.reviewComment).toBeNull();
+      const evidenceRows = await pool.query<{ active: number; archived: number }>(
+        `select count(*) filter (where archived_at is null)::int active,
+          count(*) filter (where archived_at is not null)::int archived
+         from task_evidence where workspace_id=$1 and task_occurrence_id=$2`,
+        ["workspace_a", created.id]
+      );
+      expect(evidenceRows.rows[0]).toEqual({ active: 0, archived: 2 });
+      expect(await repository.findTaskOccurrence("workspace_b", created.id)).toBeNull();
+    });
+  });
+
+  it("preserves stable shared steps and per-step assignments through reorder and removal", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const company = createCompanyService(bundle.companyRepository);
+      const routines = createRoutineService(bundle.routineRepository);
+      const firstPerson = await company.createTeamMember("workspace_a", { name: "Ana", role: "employee", createdByProfileId: "account_owner" });
+      const secondPerson = await company.createTeamMember("workspace_a", { name: "Bia", role: "employee", createdByProfileId: "account_owner" });
+      const routine = await routines.createRoutine("workspace_a", "account_owner", {
+        title: "Abertura", executionMode: "shared", taskTemplates: [
+          { title: "Portas", assigneeProfileId: firstPerson.id },
+          { title: "Luzes", assigneeProfileId: secondPerson.id },
+          { title: "Caixa", assigneeProfileId: firstPerson.id }
+        ]
+      });
+      const byTitle = Object.fromEntries(routine.taskTemplates.map((step) => [step.title, step]));
+      const caixa = byTitle.Caixa!;
+      const portas = byTitle.Portas!;
+      const luzes = byTitle.Luzes!;
+      const updated = await routines.updateRoutine("workspace_a", routine.id, {
+        title: "Abertura", executionMode: "shared", taskTemplates: [
+          { id: caixa.id, title: "Caixa", assigneeProfileId: firstPerson.id },
+          { id: portas.id, title: "Portas", assigneeProfileId: secondPerson.id }
+        ]
+      });
+      expect(updated.taskTemplates.map((step) => step.id)).toEqual([caixa.id, portas.id]);
+      expect(updated.taskTemplates.map((step) => step.assigneeProfileId)).toEqual([firstPerson.id, secondPerson.id]);
+      const steps = await pool.query<{ id: string; archived_at: Date | null }>(
+        "select id,archived_at from routine_steps where workspace_id=$1 and routine_id=$2 order by id", ["workspace_a", routine.id]
+      );
+      expect(steps.rows.find((step) => step.id === luzes.id)?.archived_at).not.toBeNull();
+      expect(steps.rows.find((step) => step.id === caixa.id)?.archived_at).toBeNull();
+      const generated = await routines.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-16");
+      expect(generated.map((task) => task.taskTemplateId).sort()).toEqual([caixa.id, portas.id].sort());
+    });
+  });
+
+  it("persists relational submit, return, resubmit, and approval state", async () => {
+    await withPostgresSchema(async (pool) => {
+      const repository = createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository;
+      const service = createRoutineService(repository);
+      const task = await service.createManualTask("workspace_a", "account_owner", {
+        title: "Aprovar fechamento", dueDate: "2026-07-16",
+        approvalMode: "approval_required", evidencePolicy: "comment_required"
+      });
+      expect((await service.submitTask("workspace_a", task.id, "account_owner", { comment: "Primeira" })).status).toBe("awaiting_approval");
+      const returned = await service.returnTask("workspace_a", task.id, "account_manager", { comment: "Ajustar" });
+      expect(returned).toMatchObject({ status: "needs_adjustment", reviewedByProfileId: "account_manager", reviewComment: "Ajustar" });
+      expect((await service.submitTask("workspace_a", task.id, "account_owner", { comment: "Segunda" })).status).toBe("awaiting_approval");
+      const approved = await service.approveTask("workspace_a", task.id, "account_manager");
+      expect(approved).toMatchObject({ status: "completed", reviewedByProfileId: "account_manager", evidence: { comment: "Segunda" } });
+      const evidence = await pool.query<{ active: number; archived: number }>(
+        `select count(*) filter (where archived_at is null)::int active,
+          count(*) filter (where archived_at is not null)::int archived
+         from task_evidence where workspace_id=$1 and task_occurrence_id=$2`, ["workspace_a", task.id]
+      );
+      expect(evidence.rows[0]).toEqual({ active: 1, archived: 1 });
+    });
+  });
+
+  it("repairs partial generation, remains concurrent-idempotent, and freezes older revisions", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const base = bundle.routineRepository;
+      const routineService = createRoutineService(base);
+      const routine = await routineService.createRoutine("workspace_a", "account_owner", {
+        title: "Checklist", taskTemplates: [{ title: "Um" }, { title: "Dois" }]
+      });
+      let creates = 0;
+      let failed = false;
+      const partialRepository: RoutineRepository = {
+        ...base,
+        async createTaskOccurrence(input) {
+          creates += 1;
+          if (creates === 2 && !failed) {
+            failed = true;
+            throw new Error("INJECTED_PARTIAL_FAILURE");
+          }
+          return base.createTaskOccurrence(input);
+        }
+      };
+      const partialService = createRoutineService(partialRepository);
+      await expect(partialService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17")).rejects.toThrow("INJECTED_PARTIAL_FAILURE");
+      const partial = await base.listTaskOccurrences("workspace_a", { dueDate: "2026-07-17" });
+      expect(partial).toHaveLength(1);
+      expect(partial[0]?.routineRevisionSnapshot).toBe(routine.updatedAt);
+      expect(await partialService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17")).toHaveLength(2);
+
+      const concurrent = await Promise.all([
+        routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20"),
+        routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20")
+      ]);
+      expect(new Set(concurrent.flat().map((task) => task.id)).size).toBe(2);
+      const historicalIds = concurrent[0]!.map((task) => task.id).sort();
+      await routineService.updateRoutine("workspace_a", routine.id, {
+        title: "Checklist novo", taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Um novo" }]
+      });
+      const frozen = await routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20");
+      expect(frozen.map((task) => task.id).sort()).toEqual(historicalIds);
+      expect(frozen.every((task) => task.routineTitleSnapshot === "Checklist")).toBe(true);
+    });
+  });
 });
+
+function failOnQuery(pool: Pool, needle: string, message: string): OperationalPool {
+  return {
+    query: pool.query.bind(pool) as OperationalPool["query"],
+    async connect() {
+      const client = await pool.connect();
+      return {
+        query(text, params) {
+          if (text.includes(needle)) throw new Error(message);
+          return client.query(text, params) as never;
+        },
+        release: () => client.release()
+      };
+    }
+  };
+}

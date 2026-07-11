@@ -59,6 +59,7 @@ export type TaskOccurrence = {
   areaNameSnapshot?: string | null;
   routineTitleSnapshot?: string | null;
   stepTitleSnapshot?: string | null;
+  routineRevisionSnapshot?: string | null;
   areaId?: string | null;
   processId: string | null;
   assigneeProfileId: string | null;
@@ -79,6 +80,7 @@ export type TaskOccurrence = {
 };
 
 export type CreateRoutineTaskTemplateInput = {
+  id?: string;
   title: string;
   processId?: string | null;
   assigneeProfileId?: string | null;
