@@ -273,13 +273,18 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       })).rejects.toThrow();
 
       const process = await processes.createProcess("workspace_a", "account_owner", {
-        title: "Fechamento", body: "Fechar o caixa", areaId: area.id
+        title: "Fechamento", body: "Fechar o caixa", areaId: area.id,
+        owner: { type: "role", roleTemplateId: role.id },
+        materials: [{ kind: "link", title: "Planilha", url: "https://example.com/caixa" }]
       });
       const versioned = await processes.createProcessVersion("workspace_a", process.id, "account_owner", {
-        body: "Fechar e conferir o caixa", changeNote: "Inclui conferencia"
+        body: "Fechar e conferir o caixa", changeNote: "Inclui conferencia",
+        materials: [{ kind: "link", title: "Planilha revisada", url: "https://example.com/caixa-revisada" }]
       });
       expect(versioned.versions.map((version) => version.version)).toEqual([1, 2]);
       expect(versioned.currentVersion.version).toBe(2);
+      expect(versioned.owner).toEqual({ type: "role", roleTemplateId: role.id });
+      expect(versioned.materials).toMatchObject([{ title: "Planilha revisada", url: "https://example.com/caixa-revisada" }]);
       await expect(relational.processRepository!.updateProcess({
         ...versioned,
         versions: versioned.versions.map((version) => version.version === 1

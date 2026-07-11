@@ -236,6 +236,16 @@ async function assertJsonbActiveRoleTemplate(
   if (areaId && role.areaId !== areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
 }
 
+async function assertJsonbActivePerson(
+  store: JsonbRecordStore,
+  workspaceId: string,
+  personId: string | null | undefined
+) {
+  if (!personId) return;
+  const person = await store.find<TeamMember>("team_member", workspaceId, personId);
+  if (!person || person.status !== "active") throw new Error("PERSON_NOT_FOUND");
+}
+
 export function createPostgresRepositoryBundle(
   db: OperationalPool,
   options: PostgresRepositoryBundleOptions = {}
@@ -679,17 +689,23 @@ function isInviteCodeConflict(error: unknown) {
 
 function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepository {
   return {
-    listProcesses(workspaceId) {
-      return store.list<CompanyProcess>("process", workspaceId);
+    async listProcesses(workspaceId) {
+      return (await store.list<CompanyProcess>("process", workspaceId)).map(normalizeJsonbProcess);
     },
 
-    findProcess(workspaceId, processId) {
-      return store.find<CompanyProcess>("process", workspaceId, processId);
+    async findProcess(workspaceId, processId) {
+      const process = await store.find<CompanyProcess>("process", workspaceId, processId);
+      return process ? normalizeJsonbProcess(process) : null;
     },
 
     async createProcess(input) {
       return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
         await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        const owner = input.owner === undefined
+          ? input.ownerProfileId ? { type: "person" as const, personId: input.ownerProfileId } : null
+          : input.owner;
+        if (owner?.type === "person") await assertJsonbActivePerson(lockedStore, input.workspaceId, owner.personId);
+        if (owner?.type === "role") await assertJsonbActiveRoleTemplate(lockedStore, input.workspaceId, input.areaId, owner.roleTemplateId);
         const timestamp = now();
         const processId = await lockedStore.nextId("process", input.workspaceId, "process");
         const versions = input.versions.map((version) => ({
@@ -697,9 +713,17 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
           id: `version_${processId}_${version.version}`,
           processId
         }));
-        const process = {
+        const process: CompanyProcess = {
           ...input,
+          owner,
           id: processId,
+          materials: (input.materials ?? []).map((material, index) => ({
+            ...material,
+            id: `material_${processId}_${index + 1}`,
+            processId,
+            workspaceId: input.workspaceId,
+            createdAt: material.createdAt || timestamp
+          })),
           versions,
           currentVersion: versions.find((version) => version.version === input.currentVersion.version)!,
           createdAt: timestamp,
@@ -716,8 +740,14 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
         if ((persisted.areaId ?? null) !== (process.areaId ?? null)) {
           await assertJsonbActiveArea(lockedStore, process.workspaceId, process.areaId);
         }
+        const owner = Object.prototype.hasOwnProperty.call(process, "owner")
+          ? process.owner ?? null
+          : process.ownerProfileId ? { type: "person" as const, personId: process.ownerProfileId } : null;
+        if (owner?.type === "person") await assertJsonbActivePerson(lockedStore, process.workspaceId, owner.personId);
+        if (owner?.type === "role") await assertJsonbActiveRoleTemplate(lockedStore, process.workspaceId, process.areaId, owner.roleTemplateId);
         return lockedStore.update<CompanyProcess>("process", {
           ...process,
+          owner,
           updatedAt: now()
         });
       });
@@ -727,6 +757,13 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
       return store.delete("process", workspaceId, processId);
     }
   };
+}
+
+function normalizeJsonbProcess(process: CompanyProcess): CompanyProcess {
+  const owner = Object.prototype.hasOwnProperty.call(process, "owner")
+    ? process.owner ?? null
+    : process.ownerProfileId ? { type: "person" as const, personId: process.ownerProfileId } : null;
+  return { ...process, owner, materials: process.materials ?? [] };
 }
 
 function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepository {

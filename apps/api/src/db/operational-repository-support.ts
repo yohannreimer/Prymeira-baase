@@ -86,6 +86,19 @@ export async function lockActiveRoleTemplateReference(
   if (areaId && role.rows[0].area_id !== areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
 }
 
+export async function lockActivePersonReference(
+  client: OperationalClient,
+  workspaceId: string,
+  personId: string | null | undefined
+) {
+  if (!personId) return;
+  const person = await client.query<{ id: string }>(
+    "SELECT id FROM people WHERE workspace_id=$1 AND id=$2 AND status='active' AND archived_at IS NULL FOR KEY SHARE",
+    [workspaceId, personId]
+  );
+  if (!person.rows[0]) throw new Error("PERSON_NOT_FOUND");
+}
+
 const workspaceOperationalLockKey = 1095910732;
 
 export async function lockWorkspaceOperationalMutation(client: OperationalClient, workspaceId: string) {

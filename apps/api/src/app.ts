@@ -211,7 +211,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     aiRepository,
     aiProvider
   }));
-  app.register((routes) => registerProcessRoutes(routes, processRepository));
+  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     trainingRepository,
     announcementRepository

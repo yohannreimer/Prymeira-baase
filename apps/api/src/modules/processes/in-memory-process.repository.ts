@@ -13,11 +13,14 @@ export function createInMemoryProcessRepository(
 
   return {
     async listProcesses(workspaceId) {
-      return processes.filter((process) => process.workspaceId === workspaceId);
+      return processes
+        .filter((process) => process.workspaceId === workspaceId)
+        .map(normalizeProcess);
     },
 
     async findProcess(workspaceId, processId) {
-      return processes.find((process) => process.workspaceId === workspaceId && process.id === processId) ?? null;
+      const process = processes.find((item) => item.workspaceId === workspaceId && item.id === processId);
+      return process ? normalizeProcess(process) : null;
     },
 
     async createProcess(input) {
@@ -37,7 +40,7 @@ export function createInMemoryProcessRepository(
         updatedAt: timestamp
       };
       processes.push(process);
-      return process;
+      return normalizeProcess(process);
     },
 
     async updateProcess(process) {
@@ -48,7 +51,7 @@ export function createInMemoryProcessRepository(
         updatedAt: now()
       };
       processes[index] = updated;
-      return updated;
+      return normalizeProcess(updated);
     },
 
     async deleteProcess(workspaceId, processId) {
@@ -64,4 +67,11 @@ export function createInMemoryProcessRepository(
       processes.splice(0, processes.length, ...state);
     }
   };
+}
+
+function normalizeProcess(process: CompanyProcess): CompanyProcess {
+  const owner = Object.prototype.hasOwnProperty.call(process, "owner")
+    ? process.owner ?? null
+    : process.ownerProfileId ? { type: "person" as const, personId: process.ownerProfileId } : null;
+  return { ...process, owner, materials: process.materials ?? [] };
 }

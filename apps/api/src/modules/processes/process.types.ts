@@ -12,6 +12,33 @@ export type ProcessVersionRecord = {
   createdAt: string;
 };
 
+export type ProcessOwner =
+  | { type: "person"; personId: string }
+  | { type: "role"; roleTemplateId: string };
+
+export type ProcessMaterial = {
+  id: string;
+  processId: string;
+  workspaceId: string;
+  kind: "link" | "file";
+  title: string;
+  url: string | null;
+  objectKey: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  createdAt: string;
+};
+
+export type ProcessMaterialInput =
+  | { kind: "link"; title: string; url: string }
+  | {
+      kind: "file";
+      title: string;
+      objectKey: string;
+      contentType: string;
+      sizeBytes: number;
+    };
+
 export type CompanyProcess = {
   id: string;
   workspaceId: string;
@@ -19,7 +46,10 @@ export type CompanyProcess = {
   title: string;
   summary: string | null;
   status: ProcessStatus;
+  /** @deprecated Use owner. Kept while legacy JSONB records are migrated. */
   ownerProfileId: string | null;
+  owner?: ProcessOwner | null;
+  materials?: ProcessMaterial[];
   currentVersion: ProcessVersionRecord;
   versions: ProcessVersionRecord[];
   createdByProfileId: string;
@@ -35,6 +65,8 @@ export type CreateProcessInput = {
   areaId?: string | null;
   summary?: string | null;
   ownerProfileId?: string | null;
+  owner?: ProcessOwner | null;
+  materials?: ProcessMaterialInput[];
 };
 
 export type CreateProcessVersionInput = {
@@ -44,6 +76,8 @@ export type CreateProcessVersionInput = {
   summary?: string | null;
   areaId?: string | null;
   ownerProfileId?: string | null;
+  owner?: ProcessOwner | null;
+  materials?: ProcessMaterialInput[];
 };
 
 export type ProcessRepository = {
