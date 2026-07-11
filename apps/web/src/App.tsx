@@ -10,6 +10,8 @@ import {
   createOnboardingSession,
   confirmAnnouncement,
   createArea,
+  archiveArea,
+  getAreaImpact,
   createAnnouncementDraft,
   deleteArea,
   deleteAnnouncement,
@@ -62,6 +64,7 @@ import {
   useTemplate as useLibraryTemplate,
   type ApiProcess,
   type ApiArea,
+  type ApiAreaImpact,
   type ApiInvite,
   type ApiPerson,
   type ApiQuizQuestionInput,
@@ -189,6 +192,8 @@ type CrudModal =
   | { kind: "training"; mode: "edit"; training: ApiTraining }
   | { kind: "announcement"; mode: "create" }
   | { kind: "invite" };
+
+type AreaArchiveDialogState = { area: AreaDisplayRow; impact: ApiAreaImpact };
 
 type OnboardingAudioState = {
   status: "idle" | "recording" | "transcribing" | "ready" | "error";
@@ -1560,6 +1565,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [submittingTasks, setSubmittingTasks] = useState<Record<string, boolean>>({});
   const [actionBusy, setActionBusy] = useState(false);
   const [crudModal, setCrudModal] = useState<CrudModal | null>(null);
+  const [areaArchiveDialog, setAreaArchiveDialog] = useState<AreaArchiveDialogState | null>(null);
   const [executionTask, setExecutionTask] = useState<TodayTaskRow | null>(null);
   const [returningTask, setReturningTask] = useState<ApiTask | null>(null);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
@@ -2204,14 +2210,22 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   function handleDeleteArea(area: AreaDisplayRow) {
     if (!area.id) return;
     const areaId = area.id;
-    const confirmed = window.confirm(`Excluir a área "${area.name}"? Os cargos dessa área serão removidos e as pessoas ficarão sem área vinculada.`);
-    if (!confirmed) return;
-
     void runAction(async () => {
-      await deleteArea(role, areaId);
+      const impact = await getAreaImpact(role, areaId);
+      if (!impact) throw new Error("Área não encontrada.");
+      setAreaArchiveDialog({ area, impact });
+    });
+  }
+
+  function handleConfirmAreaArchive(resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" }) {
+    if (!areaArchiveDialog?.area.id) return;
+    const area = areaArchiveDialog.area;
+    void runAction(async () => {
+      await archiveArea(role, area.id!, resolution);
       await reloadWorkspaceBundle();
+      setAreaArchiveDialog(null);
       setCrudModal(null);
-      showNotice(`Área ${area.name} excluída.`);
+      showNotice(`Área ${area.name} arquivada.`);
     });
   }
 
@@ -3468,6 +3482,16 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             currentProfileName={identity.name}
           />
         ) : null}
+        {areaArchiveDialog ? (
+          <AreaArchiveDialog
+            area={areaArchiveDialog.area}
+            impact={areaArchiveDialog.impact}
+            areas={companyAreas.filter((area) => area.id !== areaArchiveDialog.area.id)}
+            actionBusy={actionBusy}
+            onClose={() => setAreaArchiveDialog(null)}
+            onConfirm={handleConfirmAreaArchive}
+          />
+        ) : null}
         {executionTask ? (
           <ExecutionModal
             task={executionTask}
@@ -4018,6 +4042,47 @@ function TodayPage({
           ))}
           {isLiveWorkspace && !announcementRows.length && !trainingRows.length ? <EmptyState icon="ph-check-circle" title="Sem pendências" text="Comunicados e treinamentos pendentes aparecem aqui." /> : null}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function AreaArchiveDialog({
+  area,
+  impact,
+  areas,
+  actionBusy,
+  onClose,
+  onConfirm
+}: {
+  area: AreaDisplayRow;
+  impact: ApiAreaImpact;
+  areas: ApiArea[];
+  actionBusy: boolean;
+  onClose: () => void;
+  onConfirm: (resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" }) => void;
+}) {
+  const affected = [
+    { label: "processo", count: impact.processes.length },
+    { label: "rotina", count: impact.routines.length },
+    { label: "cargo", count: impact.roleTemplates.length },
+    { label: "pessoa", count: impact.people.length },
+    { label: "convite", count: impact.pendingInvites.length }
+  ].filter((item) => item.count > 0);
+  const [strategy, setStrategy] = useState<"reassign" | "unassign">(affected.length ? "reassign" : "unassign");
+  const [targetAreaId, setTargetAreaId] = useState(areas[0]?.id ?? "");
+  const disabled = actionBusy || (strategy === "reassign" && !targetAreaId);
+
+  return (
+    <div className="modal-layer" role="presentation">
+      <div className="modal-card area-archive-modal" role="dialog" aria-modal="true" aria-labelledby="archive-area-title">
+        <div className="modal-form">
+          <ModalHeader title="Arquivar área" icon="ph-warning" onClose={onClose} />
+          <p className="archive-copy">Você está arquivando <strong>{area.name}</strong>. Escolha o destino dos vínculos ativos antes de continuar.</p>
+          {affected.length ? <div className="archive-impact-list">{affected.map(({ label, count }) => <span key={label}><strong>{count}</strong> {label}{count > 1 ? "s" : ""}</span>)}</div> : <p className="archive-copy">Não há vínculos ativos nesta área.</p>}
+          <fieldset className="archive-resolution"><legend>Como resolver os vínculos?</legend><label><input type="radio" checked={strategy === "reassign"} onChange={() => setStrategy("reassign")} />Transferir para outra área</label>{strategy === "reassign" ? <select aria-label="Área de destino" value={targetAreaId} onChange={(event) => setTargetAreaId(event.target.value)}><option value="">Selecionar área</option>{areas.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select> : null}<label><input type="radio" checked={strategy === "unassign"} onChange={() => setStrategy("unassign")} />Deixar sem área</label></fieldset>
+          <footer><button className="secondary-btn" type="button" disabled={actionBusy} onClick={onClose}>Cancelar</button><button className="danger-btn" type="button" disabled={disabled} onClick={() => onConfirm(strategy === "reassign" ? { strategy, targetAreaId } : { strategy })}>Arquivar área</button></footer>
+        </div>
       </div>
     </div>
   );

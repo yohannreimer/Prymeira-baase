@@ -2074,6 +2074,17 @@ button { cursor: pointer; }
 .file-picker { padding-top: 2px; }
 .file-picker input[type="file"] { padding: 8px 10px; cursor: pointer; }
 .file-picker small { display: block; margin-top: 5px; color: var(--faint); font-size: 11.5px; }
+.area-archive-modal { width: min(560px, 100%); }
+.archive-copy { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.archive-copy strong { color: var(--ink); }
+.archive-impact-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.archive-impact-list span { padding: 6px 9px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel2); color: var(--muted); font-size: 12px; }
+.archive-impact-list strong { color: var(--ink); }
+.archive-resolution { display: grid; gap: 10px; margin: 18px 0 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line2); }
+.archive-resolution legend { padding: 0; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+.archive-resolution label { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--ink); font-size: 13.5px; }
+.archive-resolution input[type="radio"] { width: 16px; min-height: 16px; margin: 0; accent-color: var(--accent); }
+.archive-resolution select { margin-top: -2px; }
 .routine-form .modal-head { margin-bottom: 18px; }
 .routine-core {
   display: grid;

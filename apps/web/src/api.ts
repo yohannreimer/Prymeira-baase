@@ -225,6 +225,15 @@ export type ApiArea = {
   description?: string | null;
 };
 
+export type ApiAreaImpact = {
+  area: ApiArea;
+  processes: Array<{ id: string; title: string }>;
+  routines: Array<{ id: string; title: string }>;
+  roleTemplates: Array<{ id: string; name: string }>;
+  people: Array<{ id: string; name: string }>;
+  pendingInvites: Array<{ id: string; name: string; email: string | null }>;
+};
+
 export type ApiRoleTemplate = {
   id: string;
   name: string;
@@ -1023,6 +1032,29 @@ export async function deleteArea(role: UiRole, areaId: string, fetcher: Fetcher 
   await readJson<{ ok: true }>(fetcher, `/api/areas/${encodeURIComponent(areaId)}`, {
     method: "DELETE",
     headers: createBaaseAuthHeaders(role)
+  });
+}
+
+export async function getAreaImpact(role: UiRole, areaId: string, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ impact: ApiAreaImpact | null }>(fetcher, `/api/areas/${encodeURIComponent(areaId)}/impact`, {
+    headers: createBaaseAuthHeaders(role)
+  });
+  return result.impact;
+}
+
+export async function archiveArea(
+  role: UiRole,
+  areaId: string,
+  resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" },
+  fetcher: Fetcher = fetch
+) {
+  const body = resolution.strategy === "reassign"
+    ? { strategy: "reassign", target_area_id: resolution.targetAreaId }
+    : { strategy: "unassign" };
+  return readJson<{ result: unknown }>(fetcher, `/api/areas/${encodeURIComponent(areaId)}/archive`, {
+    method: "POST",
+    headers: createBaaseHeaders(role),
+    body: JSON.stringify(body)
   });
 }
 
