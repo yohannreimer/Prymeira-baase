@@ -717,9 +717,9 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
           ...input,
           owner,
           id: processId,
-          materials: (input.materials ?? []).map((material, index) => ({
+          materials: (input.materials ?? []).map((material) => ({
             ...material,
-            id: `material_${processId}_${index + 1}`,
+            id: material.id.replace("material_new_", `material_${processId}_`),
             processId,
             workspaceId: input.workspaceId,
             createdAt: material.createdAt || timestamp
@@ -755,6 +755,51 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
 
     deleteProcess(workspaceId, processId) {
       return store.delete("process", workspaceId, processId);
+    },
+
+    async listProcessMaterials(workspaceId, processId) {
+      const process = await store.find<CompanyProcess>("process", workspaceId, processId);
+      return process ? normalizeJsonbProcess(process).materials! : [];
+    },
+
+    async findProcessMaterial(workspaceId, processId, materialId) {
+      const process = await store.find<CompanyProcess>("process", workspaceId, processId);
+      return process
+        ? normalizeJsonbProcess(process).materials!.find((item) => item.id === materialId) ?? null
+        : null;
+    },
+
+    async addProcessMaterial(input) {
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        const process = await lockedStore.find<CompanyProcess>("process", input.workspaceId, input.processId);
+        if (!process) throw new Error("PROCESS_NOT_FOUND");
+        const material = {
+          ...input,
+          id: await lockedStore.nextId("process_material", input.workspaceId, "material"),
+          createdAt: now()
+        };
+        await lockedStore.update<CompanyProcess>("process", {
+          ...normalizeJsonbProcess(process),
+          materials: [...(process.materials ?? []), material],
+          updatedAt: now()
+        });
+        return material;
+      });
+    },
+
+    async removeProcessMaterial(workspaceId, processId, materialId) {
+      return store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const process = await lockedStore.find<CompanyProcess>("process", workspaceId, processId);
+        if (!process) throw new Error("PROCESS_NOT_FOUND");
+        const material = process.materials?.find((item) => item.id === materialId) ?? null;
+        if (!material) return null;
+        await lockedStore.update<CompanyProcess>("process", {
+          ...normalizeJsonbProcess(process),
+          materials: process.materials!.filter((item) => item.id !== materialId),
+          updatedAt: now()
+        });
+        return material;
+      });
     }
   };
 }

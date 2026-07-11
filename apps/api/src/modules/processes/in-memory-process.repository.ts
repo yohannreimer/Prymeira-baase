@@ -10,6 +10,7 @@ export function createInMemoryProcessRepository(
 ): ProcessRepository {
   const processes: CompanyProcess[] = [...(options.initialProcesses ?? [])];
   const now = options.now ?? (() => new Date().toISOString());
+  let nextMaterialId = 0;
 
   return {
     async listProcesses(workspaceId) {
@@ -57,6 +58,46 @@ export function createInMemoryProcessRepository(
     async deleteProcess(workspaceId, processId) {
       const index = processes.findIndex((item) => item.workspaceId === workspaceId && item.id === processId);
       if (index >= 0) processes.splice(index, 1);
+    },
+
+    async listProcessMaterials(workspaceId, processId) {
+      const process = processes.find((item) => item.workspaceId === workspaceId && item.id === processId);
+      return process?.materials ?? [];
+    },
+
+    async findProcessMaterial(workspaceId, processId, materialId) {
+      const process = processes.find((item) => item.workspaceId === workspaceId && item.id === processId);
+      return process?.materials?.find((item) => item.id === materialId) ?? null;
+    },
+
+    async addProcessMaterial(input) {
+      const index = processes.findIndex((item) => item.workspaceId === input.workspaceId && item.id === input.processId);
+      if (index === -1) throw new Error("PROCESS_NOT_FOUND");
+      const material = {
+        ...input,
+        id: `material_${input.processId}_${++nextMaterialId}`,
+        createdAt: now()
+      };
+      processes[index] = {
+        ...processes[index]!,
+        materials: [...(processes[index]!.materials ?? []), material],
+        updatedAt: now()
+      };
+      return material;
+    },
+
+    async removeProcessMaterial(workspaceId, processId, materialId) {
+      const index = processes.findIndex((item) => item.workspaceId === workspaceId && item.id === processId);
+      if (index === -1) throw new Error("PROCESS_NOT_FOUND");
+      const process = processes[index]!;
+      const material = process.materials?.find((item) => item.id === materialId) ?? null;
+      if (!material) return null;
+      processes[index] = {
+        ...process,
+        materials: process.materials!.filter((item) => item.id !== materialId),
+        updatedAt: now()
+      };
+      return material;
     },
 
     getLifecycleState() {

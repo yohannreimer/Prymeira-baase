@@ -3,6 +3,8 @@ import { buildApp } from "./app";
 import type { BaaseRuntimeConfig } from "./config/runtime";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
 
+const inMemoryObjectStorage = { provider: "memory" as const, s3: null };
+
 describe("Baase API app", () => {
   it("responds to health checks", async () => {
     const app = buildApp();
@@ -30,6 +32,7 @@ describe("Baase API app", () => {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -47,6 +50,7 @@ describe("Baase API app", () => {
       },
       persistence: "postgres",
       operational_store: "jsonb",
+      object_storage: "memory",
       demo_seed_enabled: false,
       ai: {
         structured: "openai",
@@ -100,6 +104,7 @@ describe("Baase API app", () => {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -171,6 +176,7 @@ describe("Baase API app", () => {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -204,6 +210,7 @@ describe("Baase API app", () => {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -253,6 +260,7 @@ describe("Baase API app", () => {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };

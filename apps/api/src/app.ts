@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { ZodError } from "zod";
 import { BAASE_PRODUCT_KEY } from "@prymeira/baase-shared";
 import { readRuntimeConfig, type BaaseRuntimeConfig } from "./config/runtime";
@@ -23,6 +24,9 @@ import type { OnboardingRepository } from "./modules/onboarding/onboarding.types
 import { registerProcessRoutes } from "./modules/processes/process.routes";
 import { createInMemoryProcessRepository } from "./modules/processes/in-memory-process.repository";
 import type { ProcessRepository } from "./modules/processes/process.types";
+import { registerProcessMaterialRoutes } from "./modules/processes/process-material.routes";
+import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
+import type { ObjectStorage } from "./storage/object-storage";
 import { registerRoutineRoutes } from "./modules/routines/routine.routes";
 import { createInMemoryRoutineRepository } from "./modules/routines/in-memory-routine.repository";
 import type { RoutineRepository } from "./modules/routines/routine.types";
@@ -42,6 +46,7 @@ export type BuildAppOptions = {
   companyRepository?: CompanyRepository;
   areaLifecycleRepository?: AreaLifecycleRepository;
   processRepository?: ProcessRepository;
+  objectStorage?: ObjectStorage;
   routineRepository?: RoutineRepository;
   trainingRepository?: TrainingRepository;
   announcementRepository?: AnnouncementRepository;
@@ -64,6 +69,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const processRepository = options.processRepository ?? createInMemoryProcessRepository({
     initialProcesses: options.seedDemoData ? createLocalDemoProcesses() : undefined
   });
+  const objectStorage = options.objectStorage ?? createInMemoryObjectStorage();
   const routineRepository = options.routineRepository ?? createInMemoryRoutineRepository({
     initialRoutines: options.seedDemoData ? createLocalDemoRoutines() : undefined,
     initialTasks: options.seedDemoData ? createLocalDemoTasks() : undefined
@@ -86,6 +92,9 @@ export function buildApp(options: BuildAppOptions = {}) {
 
   app.register(cors, {
     origin: true
+  });
+  app.register(multipart, {
+    limits: { fileSize: 25 * 1024 * 1024, files: 1 }
   });
 
   registerAccountAuthHook(app, {
@@ -141,7 +150,7 @@ export function buildApp(options: BuildAppOptions = {}) {
 
     const fastifyError = error as { statusCode?: unknown; code?: unknown };
     const statusCode = typeof fastifyError.statusCode === "number" ? fastifyError.statusCode : null;
-    if (statusCode === 413 || fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+    if (statusCode === 413 || fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE" || fastifyError.code === "FST_REQ_FILE_TOO_LARGE") {
       return reply.status(413).send({
         error: {
           code: "PAYLOAD_TOO_LARGE",
@@ -188,6 +197,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     },
     persistence: runtimeConfig.persistence,
     operational_store: runtimeConfig.operationalStore,
+    object_storage: runtimeConfig.objectStorage.provider,
     demo_seed_enabled: runtimeConfig.demoSeedEnabled,
     ai: runtimeConfig.ai,
     warnings: runtimeConfig.warnings
@@ -212,6 +222,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     aiProvider
   }));
   app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository));
+  app.register((routes) => registerProcessMaterialRoutes(routes, processRepository, objectStorage));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     trainingRepository,
     announcementRepository

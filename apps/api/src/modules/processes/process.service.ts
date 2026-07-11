@@ -140,9 +140,7 @@ export function createProcessService(repository: ProcessRepository, dependencies
         areaId,
         ownerProfileId: owner?.type === "person" ? owner.personId : null,
         owner,
-        materials: input.materials === undefined
-          ? process.materials ?? []
-          : toProcessMaterials(process.id, workspaceId, normalizeMaterials(input.materials)),
+        materials: mergeProcessMaterials(process, workspaceId, input.materials),
         currentVersion: nextVersion,
         versions: [...process.versions, nextVersion]
       });
@@ -213,7 +211,7 @@ function toProcessMaterials(
   const createdAt = new Date().toISOString();
   return materials.map((material, index) => material.kind === "link"
     ? {
-        id: `material_${processId}_${index + 1}`,
+        id: `material_${processId}_link_${index + 1}`,
         processId,
         workspaceId,
         kind: "link" as const,
@@ -225,7 +223,7 @@ function toProcessMaterials(
         createdAt
       }
     : {
-        id: `material_${processId}_${index + 1}`,
+        id: `material_${processId}_file_${index + 1}`,
         processId,
         workspaceId,
         kind: "file" as const,
@@ -237,6 +235,18 @@ function toProcessMaterials(
         createdAt
       }
   );
+}
+
+function mergeProcessMaterials(
+  process: CompanyProcess,
+  workspaceId: string,
+  materials: CreateProcessVersionInput["materials"]
+) {
+  if (materials === undefined) return process.materials ?? [];
+  const normalized = normalizeMaterials(materials);
+  const includesFile = normalized.some((material) => material.kind === "file");
+  const preservedFiles = includesFile ? [] : (process.materials ?? []).filter((material) => material.kind === "file");
+  return [...preservedFiles, ...toProcessMaterials(process.id, workspaceId, normalized)];
 }
 
 async function readProcessOrThrow(repository: ProcessRepository, workspaceId: string, processId: string) {

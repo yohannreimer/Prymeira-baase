@@ -285,9 +285,25 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       expect(versioned.currentVersion.version).toBe(2);
       expect(versioned.owner).toEqual({ type: "role", roleTemplateId: role.id });
       expect(versioned.materials).toMatchObject([{ title: "Planilha revisada", url: "https://example.com/caixa-revisada" }]);
+      const uploadedMaterial = await relational.processRepository!.addProcessMaterial({
+        workspaceId: "workspace_a",
+        processId: process.id,
+        kind: "file",
+        title: "comprovante.pdf",
+        url: null,
+        objectKey: "workspaces/workspace_a/processes/comprovante.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 128
+      });
+      expect(await relational.processRepository!.findProcessMaterial("workspace_a", process.id, uploadedMaterial.id))
+        .toMatchObject({ objectKey: "workspaces/workspace_a/processes/comprovante.pdf" });
+      await relational.processRepository!.removeProcessMaterial("workspace_a", process.id, uploadedMaterial.id);
+      expect(await relational.processRepository!.listProcessMaterials("workspace_a", process.id))
+        .toMatchObject([{ kind: "link", title: "Planilha revisada" }]);
+      const currentProcess = await relational.processRepository!.findProcess("workspace_a", process.id);
       await expect(relational.processRepository!.updateProcess({
-        ...versioned,
-        versions: versioned.versions.map((version) => version.version === 1
+        ...currentProcess!,
+        versions: currentProcess!.versions.map((version) => version.version === 1
           ? { ...version, body: "Conflito retroativo" }
           : version)
       })).rejects.toThrow("PROCESS_VERSION_CONFLICT");

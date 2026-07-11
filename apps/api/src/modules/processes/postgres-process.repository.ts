@@ -101,6 +101,41 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
         await client.query("UPDATE processes SET status='archived',archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,processId]);
         await audit(client,workspaceId,"process",processId,"archive");
       });
+    },
+    async listProcessMaterials(workspaceId, processId) {
+      const result = await db.query<MaterialRow>("SELECT * FROM process_materials WHERE workspace_id=$1 AND process_id=$2 ORDER BY created_at,id", [workspaceId, processId]);
+      return result.rows.map(materialFromRow);
+    },
+    async findProcessMaterial(workspaceId, processId, materialId) {
+      const result = await db.query<MaterialRow>("SELECT * FROM process_materials WHERE workspace_id=$1 AND process_id=$2 AND id=$3", [workspaceId, processId, materialId]);
+      return result.rows[0] ? materialFromRow(result.rows[0]) : null;
+    },
+    async addProcessMaterial(input) {
+      return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
+        await requireActiveProcess(client, input.workspaceId, input.processId);
+        const id = generatedId("material");
+        const result = await client.query<MaterialRow>(`INSERT INTO process_materials
+          (id,workspace_id,process_id,kind,title,url,object_key,content_type,size_bytes)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [
+          id, input.workspaceId, input.processId, input.kind, input.title, input.url,
+          input.objectKey, input.contentType, input.sizeBytes
+        ]);
+        await touchProcess(client, input.workspaceId, input.processId);
+        await audit(client, input.workspaceId, "process_material", id, "create");
+        return materialFromRow(result.rows[0]!);
+      });
+    },
+    async removeProcessMaterial(workspaceId, processId, materialId) {
+      return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, workspaceId);
+        await requireActiveProcess(client, workspaceId, processId);
+        const result = await client.query<MaterialRow>("DELETE FROM process_materials WHERE workspace_id=$1 AND process_id=$2 AND id=$3 RETURNING *", [workspaceId, processId, materialId]);
+        if (!result.rows[0]) return null;
+        await touchProcess(client, workspaceId, processId);
+        await audit(client, workspaceId, "process_material", materialId, "delete");
+        return materialFromRow(result.rows[0]);
+      });
     }
   };
 }
@@ -122,4 +157,19 @@ async function replaceMaterials(client: OperationalClient, process: CompanyProce
       material.objectKey, material.contentType, material.sizeBytes, material.createdAt
     ]);
   }
+}
+
+async function requireActiveProcess(client: OperationalClient, workspaceId: string, processId: string) {
+  const process = await client.query<{ id: string }>(
+    "SELECT id FROM processes WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",
+    [workspaceId, processId]
+  );
+  if (!process.rows[0]) throw new Error("PROCESS_NOT_FOUND");
+}
+
+function touchProcess(client: OperationalClient, workspaceId: string, processId: string) {
+  return client.query(
+    "UPDATE processes SET updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond') WHERE workspace_id=$1 AND id=$2",
+    [workspaceId, processId]
+  );
 }

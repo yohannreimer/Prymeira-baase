@@ -86,6 +86,12 @@ export type ProcessRepository = {
   createProcess(input: Omit<CompanyProcess, "id" | "createdAt" | "updatedAt">): Promise<CompanyProcess>;
   updateProcess(process: CompanyProcess): Promise<CompanyProcess>;
   deleteProcess(workspaceId: string, processId: string): Promise<void>;
+  listProcessMaterials(workspaceId: string, processId: string): Promise<ProcessMaterial[]>;
+  findProcessMaterial(workspaceId: string, processId: string, materialId: string): Promise<ProcessMaterial | null>;
+  addProcessMaterial(
+    input: Omit<ProcessMaterial, "id" | "createdAt">
+  ): Promise<ProcessMaterial>;
+  removeProcessMaterial(workspaceId: string, processId: string, materialId: string): Promise<ProcessMaterial | null>;
   getLifecycleState?(): CompanyProcess[];
   commitLifecycleState?(processes: CompanyProcess[]): void;
 };

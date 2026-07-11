@@ -18,6 +18,10 @@ describe("runtime config", () => {
         structured: "mock",
         transcription: "mock"
       },
+      objectStorage: {
+        provider: "memory",
+        s3: null
+      },
       ok: true,
       warnings: []
     });
@@ -46,6 +50,10 @@ describe("runtime config", () => {
       ai: {
         structured: "openai",
         transcription: "deepgram"
+      },
+      objectStorage: {
+        provider: "memory",
+        s3: null
       },
       ok: true,
       warnings: []
@@ -90,5 +98,28 @@ describe("runtime config", () => {
     expect(config.persistence).toBe("memory");
     expect(config.ok).toBe(false);
     expect(config.warnings).toContain("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");
+  });
+
+  it("reads a path-style S3-compatible configuration for MinIO", () => {
+    const config = readRuntimeConfig({
+      S3_ENDPOINT: "http://prymeira_baase_minio:9000",
+      S3_REGION: "us-east-1",
+      S3_BUCKET: "prymeira-baase",
+      S3_ACCESS_KEY: "minio-user",
+      S3_SECRET_KEY: "minio-secret",
+      S3_FORCE_PATH_STYLE: "true"
+    });
+
+    expect(config.objectStorage).toEqual({
+      provider: "s3",
+      s3: {
+        endpoint: "http://prymeira_baase_minio:9000",
+        region: "us-east-1",
+        bucket: "prymeira-baase",
+        accessKeyId: "minio-user",
+        secretAccessKey: "minio-secret",
+        forcePathStyle: true
+      }
+    });
   });
 });

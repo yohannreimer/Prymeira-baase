@@ -3,6 +3,7 @@ import { buildApp } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
 import { createConfiguredPostgresRepositoryBundle, createPostgresPool, ensurePostgresSchema } from "./db/postgres";
 import { ensureOperationalSchema } from "./db/operational-schema";
+import { createS3ObjectStorage } from "./storage/s3-object-storage";
 
 const port = Number(process.env.PORT ?? 3090);
 const host = process.env.HOST ?? "0.0.0.0";
@@ -16,8 +17,16 @@ if (pool) {
 }
 
 const app = pool
-  ? buildApp({ ...createConfiguredPostgresRepositoryBundle(pool, runtimeConfig.operationalStore), runtimeConfig })
-  : buildApp({ seedDemoData: runtimeConfig.demoSeedEnabled, runtimeConfig });
+  ? buildApp({
+      ...createConfiguredPostgresRepositoryBundle(pool, runtimeConfig.operationalStore),
+      runtimeConfig,
+      objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
+    })
+  : buildApp({
+      seedDemoData: runtimeConfig.demoSeedEnabled,
+      runtimeConfig,
+      objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
+    });
 
 async function shutdown() {
   await app.close();
