@@ -1,5 +1,5 @@
 import type { CompanyProcess, ProcessRepository, ProcessVersionRecord } from "./process.types";
-import { audit, generatedId, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
+import { audit, generatedId, lockActiveAreaReference, lockWorkspaceOperationalMutation, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
 
 type ProcessRow = { id:string; workspace_id:string; area_id:string|null; title:string; summary:string|null; status:CompanyProcess["status"]; owner_profile_id:string|null; current_version:number; created_by_profile_id:string; published_at:string|Date|null; archived_at:string|Date|null; created_at:string|Date; updated_at:string|Date };
 type VersionRow = { id:string; workspace_id:string; process_id:string; version_number:number; title:string; body:string; change_note:string; editor_profile_id:string; created_at:string|Date };
@@ -32,6 +32,8 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
     },
     async createProcess(input) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
+        await lockActiveAreaReference(client, input.workspaceId, input.areaId);
         const id = generatedId("process");
         const versions = input.versions.map((version) => ({ ...version, id: `version_${id}_${version.version}`, processId:id }));
         await client.query(`INSERT INTO processes
@@ -45,6 +47,8 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
     },
     async updateProcess(process) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, process.workspaceId);
+        await lockActiveAreaReference(client, process.workspaceId, process.areaId);
         const parent = await client.query<ProcessRow>("SELECT * FROM processes WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[process.workspaceId,process.id]);
         if (!parent.rows[0]) throw new Error("PROCESS_NOT_FOUND");
         if (iso(parent.rows[0].updated_at) !== process.updatedAt) throw new Error("PROCESS_STALE");

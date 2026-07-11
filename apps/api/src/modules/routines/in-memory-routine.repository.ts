@@ -117,6 +117,15 @@ export function createInMemoryRoutineRepository(
     async deleteTaskOccurrence(workspaceId, taskId) {
       const index = tasks.findIndex((item) => item.workspaceId === workspaceId && item.id === taskId);
       if (index >= 0) tasks.splice(index, 1);
+    },
+
+    getLifecycleState() {
+      return structuredClone({ routines, tasks });
+    },
+
+    commitLifecycleState(state) {
+      routines.splice(0, routines.length, ...state.routines);
+      tasks.splice(0, tasks.length, ...state.tasks);
     }
   };
 }

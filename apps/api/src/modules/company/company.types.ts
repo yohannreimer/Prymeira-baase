@@ -4,8 +4,54 @@ export type Area = {
   name: string;
   description: string | null;
   sortOrder: number;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type AreaImpact = {
+  area: Area;
+  processes: Array<{ id: string; title: string }>;
+  routines: Array<{ id: string; title: string }>;
+  roleTemplates: Array<{ id: string; name: string }>;
+  people: Array<{ id: string; name: string }>;
+  pendingInvites: Array<{ id: string; name: string; email: string | null }>;
+};
+
+export type ArchiveAreaInput =
+  | { strategy: "reassign"; targetAreaId: string }
+  | { strategy: "unassign" };
+
+export type AreaAffectedCounts = {
+  processes: number;
+  routines: number;
+  roleTemplates: number;
+  people: number;
+  pendingInvites: number;
+};
+
+export type ArchiveAreaResult = {
+  area: Area;
+  reassigned: AreaAffectedCounts;
+  unassigned: Omit<AreaAffectedCounts, "roleTemplates">;
+  archived: { areas: number; roleTemplates: number };
+};
+
+export type AreaLifecycleRepository = {
+  getImpact(workspaceId: string, areaId: string): Promise<AreaImpact | null>;
+  archive(input: {
+    workspaceId: string;
+    areaId: string;
+    actorProfileId: string;
+    resolution?: ArchiveAreaInput;
+  }): Promise<ArchiveAreaResult>;
+};
+
+export type InMemoryCompanyLifecycleState = {
+  areas: Area[];
+  roleTemplates: RoleTemplate[];
+  teamMembers: TeamMember[];
+  invites: TeamInvite[];
 };
 
 export type RoleTemplate = {
@@ -14,6 +60,7 @@ export type RoleTemplate = {
   areaId: string;
   name: string;
   description: string | null;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -128,4 +175,6 @@ export type CompanyRepository = {
     invite: TeamInvite,
     member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">
   ): Promise<{ invite: TeamInvite; person: TeamMember }>;
+  getLifecycleState?(): InMemoryCompanyLifecycleState;
+  commitLifecycleState?(state: InMemoryCompanyLifecycleState): void;
 };

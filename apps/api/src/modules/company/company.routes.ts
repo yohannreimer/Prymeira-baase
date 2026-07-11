@@ -4,7 +4,8 @@ import { canEditCompanyBase } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import { createCompanyService } from "./company.service";
-import type { CompanyRepository } from "./company.types";
+import { createAreaLifecycleService } from "./area-lifecycle.service";
+import type { AreaLifecycleRepository, CompanyRepository } from "./company.types";
 
 const createAreaSchema = z.object({
   name: z.string().min(1).max(80),
@@ -46,6 +47,12 @@ const idParamsSchema = z.object({
   id: z.string().min(1)
 });
 
+const archiveAreaSchema = z.union([
+  z.object({ strategy: z.literal("reassign"), target_area_id: z.string().min(1) }).strict(),
+  z.object({ strategy: z.literal("unassign") }).strict(),
+  z.object({}).strict()
+]);
+
 const acceptInviteSchema = z.object({
   name: z.string().min(1).max(120).optional().nullable(),
   email: z.string().email().optional().nullable()
@@ -77,11 +84,25 @@ function companyMutationError(error: unknown) {
   if (error instanceof Error && error.message === "ROLE_TEMPLATE_AREA_MISMATCH") {
     return new ApiError(400, "ROLE_TEMPLATE_AREA_MISMATCH", "Este cargo não pertence à área selecionada.");
   }
+  if (error instanceof Error && error.message === "AREA_ARCHIVE_RESOLUTION_REQUIRED") {
+    return new ApiError(409, "AREA_ARCHIVE_RESOLUTION_REQUIRED", "Resolva os vínculos ativos antes de arquivar esta área.");
+  }
+  if (error instanceof Error && error.message === "AREA_ARCHIVE_TARGET_SAME") {
+    return new ApiError(400, "AREA_ARCHIVE_TARGET_SAME", "A área de destino deve ser diferente da área arquivada.");
+  }
+  if (error instanceof Error && error.message === "AREA_ARCHIVE_TARGET_NOT_FOUND") {
+    return new ApiError(400, "AREA_ARCHIVE_TARGET_NOT_FOUND", "A área de destino não existe ou está arquivada.");
+  }
   return error;
 }
 
-export async function registerCompanyRoutes(app: FastifyInstance, repository: CompanyRepository) {
+export async function registerCompanyRoutes(
+  app: FastifyInstance,
+  repository: CompanyRepository,
+  areaLifecycleRepository: AreaLifecycleRepository
+) {
   const service = createCompanyService(repository);
+  const areaLifecycle = createAreaLifecycleService(areaLifecycleRepository);
 
   app.get("/areas", async (request) => {
     const context = readRequestContext(request);
@@ -120,8 +141,34 @@ export async function registerCompanyRoutes(app: FastifyInstance, repository: Co
     const params = idParamsSchema.parse(request.params);
 
     try {
-      await service.deleteArea(context.workspaceId, params.id);
+      await areaLifecycle.archive(context.workspaceId, params.id, context.profileId);
       return { ok: true };
+    } catch (error) {
+      throw companyMutationError(error);
+    }
+  });
+
+  app.get("/areas/:id/impact", async (request) => {
+    const context = readRequestContext(request);
+    if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    const params = idParamsSchema.parse(request.params);
+    try {
+      return { impact: await areaLifecycle.getImpact(context.workspaceId, params.id) };
+    } catch (error) {
+      throw companyMutationError(error);
+    }
+  });
+
+  app.post("/areas/:id/archive", async (request) => {
+    const context = readRequestContext(request);
+    if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    const params = idParamsSchema.parse(request.params);
+    const body = archiveAreaSchema.parse(request.body ?? {});
+    const resolution = body.strategy === "reassign"
+      ? { strategy: "reassign" as const, targetAreaId: body.target_area_id }
+      : body.strategy === "unassign" ? { strategy: "unassign" as const } : undefined;
+    try {
+      return { result: await areaLifecycle.archive(context.workspaceId, params.id, context.profileId, resolution) };
     } catch (error) {
       throw companyMutationError(error);
     }

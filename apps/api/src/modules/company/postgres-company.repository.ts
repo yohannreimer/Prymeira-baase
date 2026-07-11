@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Area, CompanyRepository, RoleTemplate, TeamInvite, TeamMember } from "./company.types";
-import { audit, generatedId, withOperationalTransaction, iso, type OperationalPool } from "../../db/operational-repository-support";
+import { audit, generatedId, lockActiveAreaReference, lockActiveRoleTemplateReference, lockWorkspaceOperationalMutation, withOperationalTransaction, iso, type OperationalPool } from "../../db/operational-repository-support";
 
 type AreaRow = { id: string; workspace_id: string; name: string; description: string | null; sort_order: number; created_at: string | Date; updated_at: string | Date };
 type RoleRow = { id: string; workspace_id: string; area_id: string; name: string; description: string | null; created_at: string | Date; updated_at: string | Date };
@@ -22,6 +23,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async createArea(input) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
         const id = generatedId("area");
         const result = await client.query<AreaRow>(`INSERT INTO areas (id, workspace_id, name, description, sort_order)
           VALUES ($1, $2, $3, $4, COALESCE((SELECT MAX(sort_order) + 1 FROM areas WHERE workspace_id = $2), 1)) RETURNING *`, [id, input.workspaceId, input.name, input.description]);
@@ -31,6 +33,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async updateArea(area) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, area.workspaceId);
         const result = await client.query<AreaRow>(`UPDATE areas SET name = $3, description = $4, sort_order = $5, updated_at = NOW()
           WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL RETURNING *`, [area.workspaceId, area.id, area.name, area.description, area.sortOrder]);
         if (!result.rows[0]) throw new Error("AREA_NOT_FOUND");
@@ -40,6 +43,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async deleteArea(workspaceId, areaId) {
       await withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, workspaceId);
         await client.query("UPDATE areas SET archived_at = NOW(), updated_at = NOW() WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL", [workspaceId, areaId]);
         await audit(client, workspaceId, "area", areaId, "archive");
       });
@@ -50,6 +54,8 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async createRoleTemplate(input) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
+        await lockActiveAreaReference(client, input.workspaceId, input.areaId);
         const id = generatedId("role");
         const result = await client.query<RoleRow>(`INSERT INTO role_templates (id, workspace_id, area_id, name, description)
           VALUES ($1, $2, $3, $4, $5) RETURNING *`, [id, input.workspaceId, input.areaId, input.name, input.description]);
@@ -59,6 +65,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async deleteRoleTemplate(workspaceId, roleTemplateId) {
       await withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, workspaceId);
         await client.query("UPDATE role_templates SET archived_at = NOW(), updated_at = NOW() WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL", [workspaceId, roleTemplateId]);
         await audit(client, workspaceId, "role_template", roleTemplateId, "archive");
       });
@@ -73,6 +80,9 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async createTeamMember(input) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
+        await lockActiveAreaReference(client, input.workspaceId, input.areaId);
+        await lockActiveRoleTemplateReference(client, input.workspaceId, input.areaId, input.roleTemplateId);
         const id = generatedId("person");
         const result = await client.query<PersonRow>(`INSERT INTO people
           (id, workspace_id, name, email, role, area_id, role_template_id, status, created_by_profile_id)
@@ -83,6 +93,9 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async updateTeamMember(person) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, person.workspaceId);
+        await lockActiveAreaReference(client, person.workspaceId, person.areaId);
+        await lockActiveRoleTemplateReference(client, person.workspaceId, person.areaId, person.roleTemplateId);
         const result = await client.query<PersonRow>(`UPDATE people SET name=$3,email=$4,role=$5,area_id=$6,role_template_id=$7,status=$8,updated_at=NOW()
           WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`, [person.workspaceId, person.id, person.name, person.email, person.role, person.areaId, person.roleTemplateId, person.status]);
         if (!result.rows[0]) throw new Error("TEAM_MEMBER_NOT_FOUND");
@@ -92,17 +105,41 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
     },
     async deleteTeamMember(workspaceId, personId) {
       await withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, workspaceId);
         await client.query("UPDATE people SET status='archived', archived_at=NOW(), updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL", [workspaceId, personId]);
         await audit(client, workspaceId, "person", personId, "archive");
       });
     },
     listTeamInvites: inviteRepository.listTeamInvites.bind(inviteRepository),
     findTeamInviteByCode: inviteRepository.findTeamInviteByCode.bind(inviteRepository),
-    createTeamInvite: inviteRepository.createTeamInvite.bind(inviteRepository),
+    async createTeamInvite(input) {
+      return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, input.workspaceId);
+        await lockActiveAreaReference(client, input.workspaceId, input.areaId);
+        await lockActiveRoleTemplateReference(client, input.workspaceId, input.areaId, input.roleTemplateId);
+        const timestamp = new Date().toISOString();
+        const invite: TeamInvite = {
+          ...input,
+          id: `invite_${randomUUID()}`,
+          code: `BAASE-${randomUUID().replaceAll("-", "").toUpperCase()}`,
+          status: "pending",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
+        await client.query(
+          `INSERT INTO baase_records (kind,workspace_id,id,data,created_at,updated_at)
+           VALUES ('team_invite',$1,$2,$3::jsonb,$4,$4)`,
+          [invite.workspaceId, invite.id, JSON.stringify(invite), timestamp]
+        );
+        await audit(client, invite.workspaceId, "team_invite", invite.id, "create", invite.createdByProfileId);
+        return invite;
+      });
+    },
     updateTeamInvite: inviteRepository.updateTeamInvite.bind(inviteRepository),
     deleteTeamInvite: inviteRepository.deleteTeamInvite.bind(inviteRepository),
     async acceptTeamInviteAtomically(invite, member) {
       return withOperationalTransaction(db, async (client) => {
+        await lockWorkspaceOperationalMutation(client, invite.workspaceId);
         const locked = await client.query<InviteRecordRow>(
           `SELECT data FROM baase_records
            WHERE kind='team_invite' AND workspace_id=$1 AND id=$2 FOR UPDATE`,

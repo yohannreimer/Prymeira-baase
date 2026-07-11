@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { createCompanyService } from "../modules/company/company.service";
+import { createAreaLifecycleService } from "../modules/company/area-lifecycle.service";
 import { createProcessService } from "../modules/processes/process.service";
 import type { ProcessRepository } from "../modules/processes/process.types";
 import { createRoutineService } from "../modules/routines/routine.service";
@@ -507,38 +508,10 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
-  it("keeps accepted invites accepted when delegated area and archive writers are stale", async () => {
+  it("keeps accepted invites accepted when delegated invite archive writers are stale", async () => {
     await withPostgresSchema(async (pool) => {
       const base = createConfiguredPostgresRepositoryBundle(pool, "relational").companyRepository;
       const setup = createCompanyService(base);
-      const area = await setup.createArea("workspace_a", { name: "Operacao" });
-      const areaInvite = await setup.createTeamInvite("workspace_a", {
-        name: "Pessoa area", role: "employee", areaId: area.id, accessScope: "area",
-        createdByProfileId: "account_owner"
-      });
-
-      let releaseAreaWrite!: () => void;
-      let areaWriteStarted!: () => void;
-      const areaWriteGate = new Promise<void>((resolve) => { releaseAreaWrite = resolve; });
-      const areaWriteObserved = new Promise<void>((resolve) => { areaWriteStarted = resolve; });
-      const staleAreaRepository = {
-        ...base,
-        async updateTeamInvite(invite: Parameters<typeof base.updateTeamInvite>[0]) {
-          areaWriteStarted();
-          await areaWriteGate;
-          return base.updateTeamInvite(invite);
-        }
-      };
-      const deletingArea = createCompanyService(staleAreaRepository).deleteArea("workspace_a", area.id);
-      await areaWriteObserved;
-      await setup.acceptTeamInvite(areaInvite.code, { acceptedByProfileId: "account_acceptor" });
-      releaseAreaWrite();
-      await expect(deletingArea).rejects.toThrow("INVITE_STALE");
-      expect(await base.findTeamInviteByCode(areaInvite.code)).toMatchObject({
-        status: "accepted", areaId: area.id
-      });
-      expect(await base.findAreaById("workspace_a", area.id)).not.toBeNull();
-
       const archiveInvite = await setup.createTeamInvite("workspace_a", {
         name: "Pessoa arquivo", role: "employee", createdByProfileId: "account_owner"
       });
@@ -598,7 +571,8 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
         acceptedByProfileId: "account_acceptor"
       });
       await acceptanceObserved;
-      await setup.deleteArea("workspace_a", area.id);
+      await createAreaLifecycleService(createConfiguredPostgresRepositoryBundle(pool, "relational").areaLifecycleRepository)
+        .archive("workspace_a", area.id, "account_owner", { strategy: "unassign" });
       releaseAcceptance();
       await expect(accepting).rejects.toThrow("INVITE_STALE");
       expect((await pool.query("SELECT id FROM people WHERE workspace_id=$1", ["workspace_a"])).rows).toEqual([]);

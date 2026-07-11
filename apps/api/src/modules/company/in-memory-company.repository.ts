@@ -17,11 +17,12 @@ export function createInMemoryCompanyRepository(
     async listAreas(workspaceId) {
       return areas
         .filter((area) => area.workspaceId === workspaceId)
+        .filter((area) => !area.archivedAt)
         .sort((a, b) => a.sortOrder - b.sortOrder);
     },
 
     async findAreaById(workspaceId, areaId) {
-      return areas.find((area) => area.workspaceId === workspaceId && area.id === areaId) ?? null;
+      return areas.find((area) => area.workspaceId === workspaceId && area.id === areaId && !area.archivedAt) ?? null;
     },
 
     async createArea(input) {
@@ -51,12 +52,12 @@ export function createInMemoryCompanyRepository(
     },
 
     async deleteArea(workspaceId, areaId) {
-      const index = areas.findIndex((area) => area.workspaceId === workspaceId && area.id === areaId);
-      if (index >= 0) areas.splice(index, 1);
+      const index = areas.findIndex((area) => area.workspaceId === workspaceId && area.id === areaId && !area.archivedAt);
+      if (index >= 0) areas[index] = { ...areas[index]!, archivedAt: now(), updatedAt: now() };
     },
 
     async listRoleTemplates(workspaceId) {
-      return roleTemplates.filter((roleTemplate) => roleTemplate.workspaceId === workspaceId);
+      return roleTemplates.filter((roleTemplate) => roleTemplate.workspaceId === workspaceId && !roleTemplate.archivedAt);
     },
 
     async createRoleTemplate(input) {
@@ -73,9 +74,9 @@ export function createInMemoryCompanyRepository(
 
     async deleteRoleTemplate(workspaceId, roleTemplateId) {
       const index = roleTemplates.findIndex((roleTemplate) => {
-        return roleTemplate.workspaceId === workspaceId && roleTemplate.id === roleTemplateId;
+        return roleTemplate.workspaceId === workspaceId && roleTemplate.id === roleTemplateId && !roleTemplate.archivedAt;
       });
-      if (index >= 0) roleTemplates.splice(index, 1);
+      if (index >= 0) roleTemplates[index] = { ...roleTemplates[index]!, archivedAt: now(), updatedAt: now() };
     },
 
     async listTeamMembers(workspaceId) {
@@ -153,6 +154,17 @@ export function createInMemoryCompanyRepository(
     async deleteTeamInvite(workspaceId, inviteId) {
       const index = invites.findIndex((invite) => invite.workspaceId === workspaceId && invite.id === inviteId);
       if (index >= 0) invites.splice(index, 1);
+    },
+
+    getLifecycleState() {
+      return structuredClone({ areas, roleTemplates, teamMembers, invites });
+    },
+
+    commitLifecycleState(state) {
+      areas.splice(0, areas.length, ...state.areas);
+      roleTemplates.splice(0, roleTemplates.length, ...state.roleTemplates);
+      teamMembers.splice(0, teamMembers.length, ...state.teamMembers);
+      invites.splice(0, invites.length, ...state.invites);
     }
   };
 }

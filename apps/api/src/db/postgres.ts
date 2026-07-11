@@ -10,9 +10,13 @@ import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../modul
 import { normalizeRoutineRecurrence } from "../modules/routines/routine-recurrence";
 import type { QuizAttempt, Training, TrainingAssignment, TrainingRepository } from "../modules/trainings/training.types";
 import { createPostgresCompanyRepository as createRelationalCompanyRepository } from "../modules/company/postgres-company.repository";
+import {
+  createJsonbAreaLifecycleRepository,
+  createRelationalAreaLifecycleRepository
+} from "../modules/company/area-lifecycle.repository";
 import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
 import { createPostgresRoutineRepository as createRelationalRoutineRepository } from "../modules/routines/postgres-routine.repository";
-import { withOperationalTransaction, type OperationalClient, type OperationalPool } from "./operational-repository-support";
+import { lockWorkspaceOperationalMutation, withOperationalTransaction, type OperationalClient, type OperationalPool } from "./operational-repository-support";
 import type { BaaseOperationalStore } from "../config/runtime";
 
 type Queryable = {
@@ -199,18 +203,46 @@ class JsonbRecordStore {
     );
     return result.rows[0]?.data ?? null;
   }
+
+  async withWorkspaceOperationalMutation<T>(workspaceId: string, run: (store: JsonbRecordStore) => Promise<T>) {
+    const pool = this.db as OperationalPool;
+    if (typeof pool.connect !== "function") return run(this);
+    return withOperationalTransaction(pool, async (client) => {
+      await lockWorkspaceOperationalMutation(client, workspaceId);
+      return run(new JsonbRecordStore(client));
+    });
+  }
 }
 
 export type PostgresRepositoryBundleOptions = {
   inviteCodeGenerator?: () => string;
 };
 
+async function assertJsonbActiveArea(store: JsonbRecordStore, workspaceId: string, areaId: string | null | undefined) {
+  if (!areaId) return;
+  const area = await store.find<Area>("area", workspaceId, areaId);
+  if (!area || area.archivedAt) throw new Error("AREA_NOT_FOUND");
+}
+
+async function assertJsonbActiveRoleTemplate(
+  store: JsonbRecordStore,
+  workspaceId: string,
+  areaId: string | null | undefined,
+  roleTemplateId: string | null | undefined
+) {
+  if (!roleTemplateId) return;
+  const role = await store.find<RoleTemplate>("role_template", workspaceId, roleTemplateId);
+  if (!role || role.archivedAt) throw new Error("ROLE_TEMPLATE_NOT_FOUND");
+  if (areaId && role.areaId !== areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
+}
+
 export function createPostgresRepositoryBundle(
-  db: Queryable,
+  db: OperationalPool,
   options: PostgresRepositoryBundleOptions = {}
 ): Required<Pick<
   BuildAppOptions,
   | "companyRepository"
+  | "areaLifecycleRepository"
   | "processRepository"
   | "routineRepository"
   | "trainingRepository"
@@ -221,6 +253,7 @@ export function createPostgresRepositoryBundle(
   const store = new JsonbRecordStore(db);
   return {
     companyRepository: createJsonbCompanyRepository(store, options.inviteCodeGenerator ?? generateInviteCode),
+    areaLifecycleRepository: createJsonbAreaLifecycleRepository(db),
     processRepository: createJsonbProcessRepository(store),
     routineRepository: createJsonbRoutineRepository(store),
     trainingRepository: createPostgresTrainingRepository(store),
@@ -233,9 +266,10 @@ export function createPostgresRepositoryBundle(
 export function createRelationalOperationalRepositoryBundle(
   db: OperationalPool,
   jsonbCompanyRepository: CompanyRepository
-): Pick<BuildAppOptions, "companyRepository" | "processRepository" | "routineRepository"> {
+): Pick<BuildAppOptions, "companyRepository" | "areaLifecycleRepository" | "processRepository" | "routineRepository"> {
   return {
     companyRepository: createRelationalCompanyRepository(db, jsonbCompanyRepository),
+    areaLifecycleRepository: createRelationalAreaLifecycleRepository(db),
     processRepository: createRelationalProcessRepository(db),
     routineRepository: createRelationalRoutineRepository(db)
   };
@@ -350,53 +384,67 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
   return {
     async listAreas(workspaceId) {
       const areas = await store.list<Area>("area", workspaceId);
-      return areas.sort((a, b) => a.sortOrder - b.sortOrder);
+      return areas.filter((area) => !area.archivedAt).sort((a, b) => a.sortOrder - b.sortOrder);
     },
 
-    findAreaById(workspaceId, areaId) {
-      return store.find<Area>("area", workspaceId, areaId);
+    async findAreaById(workspaceId, areaId) {
+      const area = await store.find<Area>("area", workspaceId, areaId);
+      return area?.archivedAt ? null : area;
     },
 
     async createArea(input) {
-      const timestamp = now();
-      const existingAreas = await store.list<Area>("area", input.workspaceId);
-      const sortOrder = existingAreas.reduce((max, area) => Math.max(max, area.sortOrder), 0) + 1;
-      return store.insert<Area>("area", {
-        ...input,
-        id: await store.nextId("area", input.workspaceId, "area"),
-        sortOrder,
-        createdAt: timestamp,
-        updatedAt: timestamp
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        const timestamp = now();
+        const existingAreas = await lockedStore.list<Area>("area", input.workspaceId);
+        const sortOrder = existingAreas.reduce((max, area) => Math.max(max, area.sortOrder), 0) + 1;
+        return lockedStore.insert<Area>("area", {
+          ...input,
+          id: await lockedStore.nextId("area", input.workspaceId, "area"),
+          sortOrder,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
       });
     },
 
     updateArea(area) {
-      return store.update<Area>("area", {
+      return store.withWorkspaceOperationalMutation(area.workspaceId, (lockedStore) => lockedStore.update<Area>("area", {
         ...area,
         updatedAt: now()
-      });
+      }));
     },
 
-    deleteArea(workspaceId, areaId) {
-      return store.delete("area", workspaceId, areaId);
+    async deleteArea(workspaceId, areaId) {
+      await store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const area = await lockedStore.find<Area>("area", workspaceId, areaId);
+        if (!area || area.archivedAt) return;
+        await lockedStore.update<Area>("area", { ...area, archivedAt: now(), updatedAt: now() });
+      });
     },
 
     listRoleTemplates(workspaceId) {
-      return store.list<RoleTemplate>("role_template", workspaceId);
+      return store.list<RoleTemplate>("role_template", workspaceId).then((roles) => roles.filter((role) => !role.archivedAt));
     },
 
     async createRoleTemplate(input) {
-      const timestamp = now();
-      return store.insert<RoleTemplate>("role_template", {
-        ...input,
-        id: await store.nextId("role_template", input.workspaceId, "role"),
-        createdAt: timestamp,
-        updatedAt: timestamp
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        const timestamp = now();
+        return lockedStore.insert<RoleTemplate>("role_template", {
+          ...input,
+          id: await lockedStore.nextId("role_template", input.workspaceId, "role"),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
       });
     },
 
-    deleteRoleTemplate(workspaceId, roleTemplateId) {
-      return store.delete("role_template", workspaceId, roleTemplateId);
+    async deleteRoleTemplate(workspaceId, roleTemplateId) {
+      await store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const role = await lockedStore.find<RoleTemplate>("role_template", workspaceId, roleTemplateId);
+        if (!role || role.archivedAt) return;
+        await lockedStore.update<RoleTemplate>("role_template", { ...role, archivedAt: now(), updatedAt: now() });
+      });
     },
 
     listTeamMembers(workspaceId) {
@@ -408,13 +456,17 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
     },
 
     async createTeamMember(input) {
-      const timestamp = now();
-      return store.insert<TeamMember>("team_member", {
-        ...input,
-        id: await store.nextId("team_member", input.workspaceId, "person"),
-        status: input.status ?? "active",
-        createdAt: timestamp,
-        updatedAt: timestamp
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        await assertJsonbActiveRoleTemplate(lockedStore, input.workspaceId, input.areaId, input.roleTemplateId);
+        const timestamp = now();
+        return lockedStore.insert<TeamMember>("team_member", {
+          ...input,
+          id: await lockedStore.nextId("team_member", input.workspaceId, "person"),
+          status: input.status ?? "active",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
       });
     },
 
@@ -423,9 +475,13 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
     },
 
     updateTeamMember(person) {
-      return store.update<TeamMember>("team_member", {
-        ...person,
-        updatedAt: now()
+      return store.withWorkspaceOperationalMutation(person.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, person.workspaceId, person.areaId);
+        await assertJsonbActiveRoleTemplate(lockedStore, person.workspaceId, person.areaId, person.roleTemplateId);
+        return lockedStore.update<TeamMember>("team_member", {
+          ...person,
+          updatedAt: now()
+        });
       });
     },
 
@@ -438,20 +494,24 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
     },
 
     async createTeamInvite(input) {
-      const timestamp = now();
-      try {
-        return await store.insert<TeamInvite>("team_invite", {
-          ...input,
-          id: `invite_${randomUUID()}`,
-          code: inviteCodeGenerator().trim().toUpperCase(),
-          status: "pending",
-          createdAt: timestamp,
-          updatedAt: timestamp
-        });
-      } catch (error) {
-        if (isInviteCodeConflict(error)) throw new Error("INVITE_CODE_CONFLICT");
-        throw error;
-      }
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        await assertJsonbActiveRoleTemplate(lockedStore, input.workspaceId, input.areaId, input.roleTemplateId);
+        const timestamp = now();
+        try {
+          return await lockedStore.insert<TeamInvite>("team_invite", {
+            ...input,
+            id: `invite_${randomUUID()}`,
+            code: inviteCodeGenerator().trim().toUpperCase(),
+            status: "pending",
+            createdAt: timestamp,
+            updatedAt: timestamp
+          });
+        } catch (error) {
+          if (isInviteCodeConflict(error)) throw new Error("INVITE_CODE_CONFLICT");
+          throw error;
+        }
+      });
     },
 
     async updateTeamInvite(invite, expected) {
@@ -476,6 +536,50 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
         snapshot.status
       );
       if (!deleted) throw new Error("INVITE_STALE");
+    },
+
+    async acceptTeamInviteAtomically(invite, member) {
+      return store.withWorkspaceOperationalMutation(invite.workspaceId, async (lockedStore) => {
+        const persisted = await lockedStore.find<TeamInvite>("team_invite", invite.workspaceId, invite.id);
+        if (!persisted || persisted.status === "revoked") throw new Error("INVITE_NOT_FOUND");
+        const personId = `person_${persisted.id}`;
+
+        if (persisted.status === "accepted") {
+          const person = await lockedStore.find<TeamMember>("team_member", persisted.workspaceId, personId);
+          if (!person) throw new Error("INVITE_ACCEPTANCE_INCOMPLETE");
+          return { invite: persisted, person };
+        }
+        if (persisted.updatedAt !== invite.updatedAt) throw new Error("INVITE_STALE");
+
+        await assertJsonbActiveArea(lockedStore, persisted.workspaceId, persisted.areaId);
+        await assertJsonbActiveRoleTemplate(lockedStore, persisted.workspaceId, persisted.areaId, persisted.roleTemplateId);
+        const existing = await lockedStore.find<TeamMember>("team_member", persisted.workspaceId, personId);
+        if (existing) throw new Error("INVITE_ACCEPTANCE_INCOMPLETE");
+
+        const person: TeamMember = {
+          ...member,
+          id: personId,
+          workspaceId: persisted.workspaceId,
+          role: persisted.role,
+          areaId: persisted.areaId,
+          roleTemplateId: persisted.roleTemplateId,
+          createdAt: now(),
+          updatedAt: now()
+        };
+        await lockedStore.insert<TeamMember>("team_member", person);
+        const acceptedInvite: TeamInvite = {
+          ...persisted,
+          status: "accepted",
+          updatedAt: nextTimestamp(persisted.updatedAt)
+        };
+        const updated = await lockedStore.updateTeamInviteIfCurrent(
+          acceptedInvite,
+          persisted.updatedAt,
+          "pending"
+        );
+        if (!updated) throw new Error("INVITE_STALE");
+        return { invite: updated, person };
+      });
     }
   };
 }
@@ -584,28 +688,38 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
     },
 
     async createProcess(input) {
-      const timestamp = now();
-      const processId = await store.nextId("process", input.workspaceId, "process");
-      const versions = input.versions.map((version) => ({
-        ...version,
-        id: `version_${processId}_${version.version}`,
-        processId
-      }));
-      const process = {
-        ...input,
-        id: processId,
-        versions,
-        currentVersion: versions.find((version) => version.version === input.currentVersion.version)!,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      };
-      return store.insert<CompanyProcess>("process", process);
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        const timestamp = now();
+        const processId = await lockedStore.nextId("process", input.workspaceId, "process");
+        const versions = input.versions.map((version) => ({
+          ...version,
+          id: `version_${processId}_${version.version}`,
+          processId
+        }));
+        const process = {
+          ...input,
+          id: processId,
+          versions,
+          currentVersion: versions.find((version) => version.version === input.currentVersion.version)!,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
+        return lockedStore.insert<CompanyProcess>("process", process);
+      });
     },
 
     updateProcess(process) {
-      return store.update<CompanyProcess>("process", {
-        ...process,
-        updatedAt: now()
+      return store.withWorkspaceOperationalMutation(process.workspaceId, async (lockedStore) => {
+        const persisted = await lockedStore.find<CompanyProcess>("process", process.workspaceId, process.id);
+        if (!persisted) throw new Error("PROCESS_NOT_FOUND");
+        if ((persisted.areaId ?? null) !== (process.areaId ?? null)) {
+          await assertJsonbActiveArea(lockedStore, process.workspaceId, process.areaId);
+        }
+        return lockedStore.update<CompanyProcess>("process", {
+          ...process,
+          updatedAt: now()
+        });
       });
     },
 
@@ -626,30 +740,40 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     },
 
     async createRoutine(input) {
-      const timestamp = now();
-      const routineId = await store.nextId("routine", input.workspaceId, "routine");
-      const recurrence = normalizeRoutineRecurrence(input);
-      const routine: CompanyRoutine = {
-        ...input,
-        ...recurrence,
-        id: routineId,
-        taskTemplates: input.taskTemplates.map((template) => ({
-          ...template,
-          id: template.id.replace("__routine__", routineId),
-          routineId
-        })),
-        createdAt: timestamp,
-        updatedAt: timestamp
-      };
-      return store.insert<CompanyRoutine>("routine", routine);
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        const timestamp = now();
+        const routineId = await lockedStore.nextId("routine", input.workspaceId, "routine");
+        const recurrence = normalizeRoutineRecurrence(input);
+        const routine: CompanyRoutine = {
+          ...input,
+          ...recurrence,
+          id: routineId,
+          taskTemplates: input.taskTemplates.map((template) => ({
+            ...template,
+            id: template.id.replace("__routine__", routineId),
+            routineId
+          })),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
+        return lockedStore.insert<CompanyRoutine>("routine", routine);
+      });
     },
 
     updateRoutine(routine) {
-      const recurrence = normalizeRoutineRecurrence(routine);
-      return store.update<CompanyRoutine>("routine", {
-        ...routine,
-        ...recurrence,
-        updatedAt: nextTimestamp(routine.updatedAt)
+      return store.withWorkspaceOperationalMutation(routine.workspaceId, async (lockedStore) => {
+        const persisted = await lockedStore.find<CompanyRoutine>("routine", routine.workspaceId, routine.id);
+        if (!persisted) throw new Error("ROUTINE_NOT_FOUND");
+        if ((persisted.areaId ?? null) !== (routine.areaId ?? null)) {
+          await assertJsonbActiveArea(lockedStore, routine.workspaceId, routine.areaId);
+        }
+        const recurrence = normalizeRoutineRecurrence(routine);
+        return lockedStore.update<CompanyRoutine>("routine", {
+          ...routine,
+          ...recurrence,
+          updatedAt: nextTimestamp(routine.updatedAt)
+        });
       });
     },
 
@@ -680,20 +804,30 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     },
 
     async createTaskOccurrence(input) {
-      const timestamp = now();
-      return store.insert<TaskOccurrence>("task_occurrence", {
-        ...input,
-        origin: input.origin ?? (input.routineId ? "routine" : "manual"),
-        id: await store.nextId("task_occurrence", input.workspaceId, "task"),
-        createdAt: timestamp,
-        updatedAt: timestamp
+      return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
+        await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
+        const timestamp = now();
+        return lockedStore.insert<TaskOccurrence>("task_occurrence", {
+          ...input,
+          origin: input.origin ?? (input.routineId ? "routine" : "manual"),
+          id: await lockedStore.nextId("task_occurrence", input.workspaceId, "task"),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
       });
     },
 
     updateTaskOccurrence(task) {
-      return store.update<TaskOccurrence>("task_occurrence", {
-        ...task,
-        updatedAt: now()
+      return store.withWorkspaceOperationalMutation(task.workspaceId, async (lockedStore) => {
+        const persisted = await lockedStore.find<TaskOccurrence>("task_occurrence", task.workspaceId, task.id);
+        if (!persisted) throw new Error("TASK_NOT_FOUND");
+        if ((persisted.areaId ?? null) !== (task.areaId ?? null)) {
+          await assertJsonbActiveArea(lockedStore, task.workspaceId, task.areaId);
+        }
+        return lockedStore.update<TaskOccurrence>("task_occurrence", {
+          ...task,
+          updatedAt: now()
+        });
       });
     },
 

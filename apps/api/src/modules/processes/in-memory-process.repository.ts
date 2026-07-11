@@ -54,6 +54,14 @@ export function createInMemoryProcessRepository(
     async deleteProcess(workspaceId, processId) {
       const index = processes.findIndex((item) => item.workspaceId === workspaceId && item.id === processId);
       if (index >= 0) processes.splice(index, 1);
+    },
+
+    getLifecycleState() {
+      return structuredClone(processes);
+    },
+
+    commitLifecycleState(state) {
+      processes.splice(0, processes.length, ...state);
     }
   };
 }

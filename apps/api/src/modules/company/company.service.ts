@@ -58,40 +58,17 @@ export function createCompanyService(repository: CompanyRepository) {
       if (!area) throw new Error("AREA_NOT_FOUND");
 
       const roleTemplates = await repository.listRoleTemplates(workspaceId);
-      const roleTemplateIds = new Set(
-        roleTemplates.filter((roleTemplate) => roleTemplate.areaId === areaId).map((roleTemplate) => roleTemplate.id)
-      );
+      const roleTemplateIds = new Set(roleTemplates
+        .filter((roleTemplate) => roleTemplate.areaId === areaId)
+        .map((roleTemplate) => roleTemplate.id));
       const teamMembers = await repository.listTeamMembers(workspaceId);
       const teamInvites = await repository.listTeamInvites(workspaceId);
-
-      await Promise.all(teamMembers.map((member) => {
-        const hasDeletedArea = member.areaId === areaId;
-        const hasDeletedRole = member.roleTemplateId ? roleTemplateIds.has(member.roleTemplateId) : false;
-        if (!hasDeletedArea && !hasDeletedRole) return Promise.resolve(member);
-
-        return repository.updateTeamMember({
-          ...member,
-          areaId: hasDeletedArea ? null : member.areaId,
-          roleTemplateId: hasDeletedRole ? null : member.roleTemplateId
-        });
-      }));
-
-      await Promise.all(teamInvites.map((invite) => {
-        const hasDeletedArea = invite.areaId === areaId;
-        const hasDeletedRole = invite.roleTemplateId ? roleTemplateIds.has(invite.roleTemplateId) : false;
-        if (!hasDeletedArea && !hasDeletedRole) return Promise.resolve(invite);
-
-        return repository.updateTeamInvite({
-          ...invite,
-          areaId: hasDeletedArea ? null : invite.areaId,
-          roleTemplateId: hasDeletedRole ? null : invite.roleTemplateId,
-          accessScope: (hasDeletedArea && invite.accessScope === "area") || (hasDeletedRole && invite.accessScope === "assigned_only")
-            ? "workspace"
-            : invite.accessScope
-        });
-      }));
-
-      await Promise.all([...roleTemplateIds].map((roleTemplateId) => repository.deleteRoleTemplate(workspaceId, roleTemplateId)));
+      const hasCompanyLinks = roleTemplateIds.size > 0
+        || teamMembers.some((member) => member.areaId === areaId
+          || Boolean(member.roleTemplateId && roleTemplateIds.has(member.roleTemplateId)))
+        || teamInvites.some((invite) => invite.status === "pending" && (invite.areaId === areaId
+          || Boolean(invite.roleTemplateId && roleTemplateIds.has(invite.roleTemplateId))));
+      if (hasCompanyLinks) throw new Error("AREA_ARCHIVE_RESOLUTION_REQUIRED");
       await repository.deleteArea(workspaceId, areaId);
 
       return area;
@@ -208,6 +185,17 @@ export function createCompanyService(repository: CompanyRepository) {
     },
 
     async createTeamInvite(workspaceId: string, input: CreateTeamInviteInput) {
+      if (input.areaId) {
+        const area = await repository.findAreaById(workspaceId, input.areaId);
+        if (!area) throw new Error("AREA_NOT_FOUND");
+      }
+
+      if (input.roleTemplateId) {
+        const roleTemplate = (await repository.listRoleTemplates(workspaceId)).find((item) => item.id === input.roleTemplateId);
+        if (!roleTemplate) throw new Error("ROLE_TEMPLATE_NOT_FOUND");
+        if (input.areaId && roleTemplate.areaId !== input.areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
+      }
+
       return repository.createTeamInvite({
         workspaceId,
         name: normalizeRequiredName(input.name, "INVITE_NAME_REQUIRED"),

@@ -64,4 +64,19 @@ describe("company service", () => {
       })
     ).rejects.toThrow("AREA_NOT_FOUND");
   });
+
+  it("rejects invites with a missing area or a role from another area", async () => {
+    const service = createCompanyService(createInMemoryCompanyRepository());
+    const operations = await service.createArea("workspace_a", { name: "Operações" });
+    const finance = await service.createArea("workspace_a", { name: "Financeiro" });
+    const role = await service.createRoleTemplate("workspace_a", { areaId: operations.id, name: "Analista" });
+
+    await expect(service.createTeamInvite("workspace_a", {
+      name: "Ana", role: "employee", areaId: "area_missing", createdByProfileId: "owner_1"
+    })).rejects.toThrow("AREA_NOT_FOUND");
+
+    await expect(service.createTeamInvite("workspace_a", {
+      name: "Ana", role: "employee", areaId: finance.id, roleTemplateId: role.id, createdByProfileId: "owner_1"
+    })).rejects.toThrow("ROLE_TEMPLATE_AREA_MISMATCH");
+  });
 });

@@ -13,8 +13,9 @@ import { registerAnnouncementRoutes } from "./modules/announcements/announcement
 import { createInMemoryAnnouncementRepository } from "./modules/announcements/in-memory-announcement.repository";
 import type { AnnouncementRepository } from "./modules/announcements/announcement.types";
 import { registerCompanyRoutes } from "./modules/company/company.routes";
+import { createInMemoryAreaLifecycleRepository } from "./modules/company/area-lifecycle.service";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
-import type { CompanyRepository } from "./modules/company/company.types";
+import type { AreaLifecycleRepository, CompanyRepository } from "./modules/company/company.types";
 import { registerDashboardRoutes } from "./modules/dashboard/dashboard.routes";
 import { registerOnboardingRoutes } from "./modules/onboarding/onboarding.routes";
 import { createInMemoryOnboardingRepository } from "./modules/onboarding/in-memory-onboarding.repository";
@@ -39,6 +40,7 @@ import {
 
 export type BuildAppOptions = {
   companyRepository?: CompanyRepository;
+  areaLifecycleRepository?: AreaLifecycleRepository;
   processRepository?: ProcessRepository;
   routineRepository?: RoutineRepository;
   trainingRepository?: TrainingRepository;
@@ -65,6 +67,11 @@ export function buildApp(options: BuildAppOptions = {}) {
   const routineRepository = options.routineRepository ?? createInMemoryRoutineRepository({
     initialRoutines: options.seedDemoData ? createLocalDemoRoutines() : undefined,
     initialTasks: options.seedDemoData ? createLocalDemoTasks() : undefined
+  });
+  const areaLifecycleRepository = options.areaLifecycleRepository ?? createInMemoryAreaLifecycleRepository({
+    companyRepository,
+    processRepository,
+    routineRepository
   });
   const trainingRepository = options.trainingRepository ?? createInMemoryTrainingRepository({
     initialTrainings: options.seedDemoData ? createLocalDemoTrainings() : undefined
@@ -187,7 +194,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   }));
 
   app.register((routes) => registerSessionRoutes(routes, onboardingRepository, companyRepository));
-  app.register((routes) => registerCompanyRoutes(routes, companyRepository));
+  app.register((routes) => registerCompanyRoutes(routes, companyRepository, areaLifecycleRepository));
   app.register((routes) => registerDashboardRoutes(routes, {
     companyRepository,
     processRepository,

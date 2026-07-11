@@ -399,6 +399,13 @@ describe("Baase API app", () => {
       "x-baase-profile-id": "profile_owner",
       "x-baase-role": "owner"
     };
+    const areaResponse = await app.inject({
+      method: "POST",
+      url: "/areas",
+      headers,
+      payload: { name: "Criação" }
+    });
+    expect(areaResponse.statusCode).toBe(201);
 
     const createResponse = await app.inject({
       method: "POST",
@@ -408,7 +415,7 @@ describe("Baase API app", () => {
         name: "Bianca Ramos",
         email: "bianca@estudionorte.com",
         role: "employee",
-        area_id: "area_criacao"
+        area_id: areaResponse.json().area.id
       }
     });
     const listResponse = await app.inject({ method: "GET", url: "/invites", headers });

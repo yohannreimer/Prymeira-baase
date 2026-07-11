@@ -1,6 +1,6 @@
 import type { CompanyRoutine, RoutineRepository, RoutineTaskTemplate, TaskChecklistItem, TaskOccurrence } from "./routine.types";
 import { normalizeRoutineRecurrence } from "./routine-recurrence";
-import { audit, generatedId, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
+import { audit, generatedId, lockActiveAreaReference, lockWorkspaceOperationalMutation, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
 
 type RoutineRow = { id:string;workspace_id:string;area_id:string|null;title:string;status:"active"|"archived";frequency:CompanyRoutine["frequency"];weekdays:string[];execution_mode:CompanyRoutine["executionMode"];approval_mode:CompanyRoutine["approvalMode"];evidence_policy:CompanyRoutine["evidencePolicy"];due_hint:string|null;created_by_profile_id:string;created_at:string|Date;updated_at:string|Date };
 type StepRow = { id:string;workspace_id:string;routine_id:string;title:string;process_id:string|null;due_hint:string|null;approval_mode:RoutineTaskTemplate["approvalMode"];evidence_policy:RoutineTaskTemplate["evidencePolicy"];sort_order:number };
@@ -65,6 +65,8 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
     async listRoutines(workspaceId){const r=await db.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND archived_at IS NULL ORDER BY created_at,id",[workspaceId]);return hydrateRoutines(db,r.rows);},
     async findRoutine(workspaceId,routineId){const r=await db.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);return (await hydrateRoutines(db,r.rows))[0]??null;},
     async createRoutine(input){return withOperationalTransaction(db,async client=>{
+      await lockWorkspaceOperationalMutation(client,input.workspaceId);
+      await lockActiveAreaReference(client,input.workspaceId,input.areaId);
       const id=generatedId("routine");
       const recurrence=normalizeRoutineRecurrence(input);
       await client.query(`INSERT INTO routines (id,workspace_id,area_id,title,status,frequency,weekdays,month_day,execution_mode,approval_mode,evidence_policy,due_hint,created_by_profile_id)
@@ -76,6 +78,8 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateRoutines(client,row.rows))[0]!;
     });},
     async updateRoutine(routine){return withOperationalTransaction(db,async client=>{
+      await lockWorkspaceOperationalMutation(client,routine.workspaceId);
+      await lockActiveAreaReference(client,routine.workspaceId,routine.areaId);
       const persisted=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[routine.workspaceId,routine.id]);
       if(!persisted.rows[0])throw new Error("ROUTINE_NOT_FOUND");
       if(iso(persisted.rows[0].updated_at)!==routine.updatedAt)throw new Error("ROUTINE_STALE");
@@ -103,11 +107,13 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
         : await db.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND routine_step_id=$3 AND due_date=$4 AND archived_at IS NULL",[workspaceId,routineId,taskTemplateId,dueDate]);
       return (await hydrateTasks(db,r.rows))[0]??null;
     },
-    async createTaskOccurrence(input){return withOperationalTransaction(db,async client=>createOrReuseTask(client,input));},
+    async createTaskOccurrence(input){return withOperationalTransaction(db,async client=>{await lockWorkspaceOperationalMutation(client,input.workspaceId);return createOrReuseTask(client,input);});},
     async updateTaskOccurrence(task){return withOperationalTransaction(db,async client=>{
+      await lockWorkspaceOperationalMutation(client,task.workspaceId);
       const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[task.workspaceId,task.id]);
       if(!persisted.rows[0])throw new Error("TASK_NOT_FOUND");
       if(iso(persisted.rows[0].updated_at)!==task.updatedAt)throw new Error("TASK_OCCURRENCE_STALE");
+      if((persisted.rows[0].area_id??null)!==(task.areaId??null))await lockActiveAreaReference(client,task.workspaceId,task.areaId);
       const result=await client.query<TaskRow>(`UPDATE task_occurrences SET title=$3,area_id=$4,process_id=$5,assignee_profile_id=$6,due_hint=$7,approval_mode=$8,evidence_policy=$9,status=$10,due_date=$11,submitted_by_profile_id=$12,submitted_at=$13,reviewed_by_profile_id=$14,reviewed_at=$15,review_comment=$16,completed_at=CASE WHEN $10='completed' THEN COALESCE(completed_at,NOW()) ELSE completed_at END,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
         WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[task.workspaceId,task.id,task.title,task.areaId??null,task.processId,task.assigneeProfileId,task.dueHint??null,task.approvalMode,task.evidencePolicy,task.status,task.dueDate,task.submittedByProfileId,task.submittedAt,task.reviewedByProfileId,task.reviewedAt,task.reviewComment]);
       await replaceChecklist(client,task.workspaceId,task.id,task.checklistItems??[]);
@@ -125,6 +131,7 @@ async function upsertStepAndAssignment(client:OperationalClient,step:RoutineTask
 async function replaceGeneralAssignments(client:OperationalClient,workspaceId:string,routineId:string,ids:string[]){await client.query("DELETE FROM routine_assignments WHERE workspace_id=$1 AND routine_id=$2 AND routine_step_id IS NULL",[workspaceId,routineId]);for(const id of ids)await client.query(`INSERT INTO routine_assignments (id,workspace_id,routine_id,profile_id) VALUES ($1,$2,$3,$4)`,[generatedId("assignment"),workspaceId,routineId,id]);}
 
 async function createOrReuseTask(client:OperationalClient,input:Omit<TaskOccurrence,"id"|"createdAt"|"updatedAt">){
+  await lockActiveAreaReference(client,input.workspaceId,input.areaId);
   const origin=input.origin??(input.routineId?"routine":"manual");
   const sourceTemplateKey=input.taskTemplateId;
   let stepId=sourceTemplateKey,audienceKey:string|null=null;

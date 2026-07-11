@@ -52,4 +52,6 @@ export type ProcessRepository = {
   createProcess(input: Omit<CompanyProcess, "id" | "createdAt" | "updatedAt">): Promise<CompanyProcess>;
   updateProcess(process: CompanyProcess): Promise<CompanyProcess>;
   deleteProcess(workspaceId: string, processId: string): Promise<void>;
+  getLifecycleState?(): CompanyProcess[];
+  commitLifecycleState?(processes: CompanyProcess[]): void;
 };
