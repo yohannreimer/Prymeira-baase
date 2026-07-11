@@ -57,11 +57,27 @@ export type ApiProcess = {
   status: string;
   summary?: string | null;
   areaId?: string | null;
+  owner?: ApiProcessOwner | null;
+  materials?: ApiProcessMaterial[];
   versions?: ApiProcessVersion[];
   currentVersion?: {
     body?: string;
     version?: number;
   };
+};
+
+export type ApiProcessOwner =
+  | { type: "person"; personId: string }
+  | { type: "role"; roleTemplateId: string };
+
+export type ApiProcessMaterial = {
+  id: string;
+  kind: "link" | "file";
+  title: string;
+  url: string | null;
+  objectKey: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
 };
 
 export type ApiProcessVersion = {
@@ -1144,6 +1160,70 @@ export async function createProcessVersion(
   });
 
   return result.process;
+}
+
+export async function updateProcess(
+  role: UiRole,
+  processId: string,
+  input: {
+    title?: string | null;
+    body: string;
+    changeNote: string;
+    summary?: string | null;
+    areaId?: string | null;
+    owner?: ApiProcessOwner | null;
+    links?: Array<{ title: string; url: string }>;
+  },
+  fetcher: Fetcher = fetch
+) {
+  const owner = input.owner === undefined ? undefined : input.owner === null ? null : input.owner.type === "person"
+    ? { type: "person", person_id: input.owner.personId }
+    : { type: "role", role_template_id: input.owner.roleTemplateId };
+  const result = await readJson<{ process: ApiProcess }>(fetcher, `/api/processes/${processId}`, {
+    method: "PATCH",
+    headers: createBaaseHeaders(role),
+    body: JSON.stringify({
+      title: input.title ?? null,
+      body: input.body,
+      change_note: input.changeNote,
+      summary: input.summary ?? null,
+      area_id: input.areaId ?? null,
+      owner,
+      materials: input.links?.map((link) => ({ kind: "link", title: link.title, url: link.url }))
+    })
+  });
+
+  return result.process;
+}
+
+export async function uploadProcessMaterial(
+  role: UiRole,
+  processId: string,
+  file: File,
+  fetcher: Fetcher = fetch
+) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  const result = await readJson<{ material: ApiProcessMaterial }>(fetcher, `/api/processes/${processId}/materials/files`, {
+    method: "POST",
+    headers: createBaaseAuthHeaders(role),
+    body: formData
+  });
+  return result.material;
+}
+
+export async function deleteProcessMaterial(role: UiRole, processId: string, materialId: string, fetcher: Fetcher = fetch) {
+  await readJson<{ ok: true }>(fetcher, `/api/processes/${processId}/materials/${materialId}`, {
+    method: "DELETE",
+    headers: createBaaseAuthHeaders(role)
+  });
+}
+
+export async function getProcessMaterialDownloadUrl(role: UiRole, processId: string, materialId: string, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ url: string }>(fetcher, `/api/processes/${processId}/materials/${materialId}/download`, {
+    headers: createBaaseAuthHeaders(role)
+  });
+  return result.url;
 }
 
 export async function unpublishProcess(role: UiRole, processId: string, fetcher: Fetcher = fetch) {
