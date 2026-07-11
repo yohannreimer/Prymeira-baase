@@ -42,6 +42,50 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("upgrades duplicate legacy invite codes before enforcing global uniqueness", async () => {
+    await withPostgresSchema(async (pool) => {
+      await pool.query("DROP INDEX baase_records_team_invite_code_uidx");
+      const legacyInvite = (workspaceId: string, id: string) => ({
+        id,
+        workspaceId,
+        name: workspaceId,
+        email: null,
+        role: "employee",
+        areaId: null,
+        roleTemplateId: null,
+        accessScope: "workspace",
+        code: "BAASE-0001",
+        status: "pending",
+        createdByProfileId: "account_owner",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z"
+      });
+      for (const [workspaceId, id] of [["workspace_a", "invite_a"], ["workspace_b", "invite_b"]]) {
+        const invite = legacyInvite(workspaceId!, id!);
+        await pool.query(
+          `INSERT INTO baase_records (kind,workspace_id,id,data,created_at,updated_at)
+           VALUES ('team_invite',$1,$2,$3::jsonb,$4,$4)`,
+          [workspaceId, id, JSON.stringify(invite), invite.createdAt]
+        );
+      }
+
+      await ensurePostgresSchema(pool);
+      const upgraded = await pool.query<{ code: string }>(
+        "SELECT data ->> 'code' code FROM baase_records WHERE kind='team_invite' ORDER BY workspace_id"
+      );
+      expect(upgraded.rows.map((row) => row.code)).toEqual([
+        expect.stringMatching(/^BAASE-[A-F0-9]{32}$/),
+        expect.stringMatching(/^BAASE-[A-F0-9]{32}$/)
+      ]);
+      expect(new Set(upgraded.rows.map((row) => row.code)).size).toBe(2);
+      await expect(pool.query(
+        `INSERT INTO baase_records (kind,workspace_id,id,data)
+         VALUES ('team_invite','workspace_c','invite_c',$1::jsonb)`,
+        [JSON.stringify({ ...legacyInvite("workspace_c", "invite_c"), code: upgraded.rows[0]!.code })]
+      )).rejects.toMatchObject({ code: "23505", constraint: "baase_records_team_invite_code_uidx" });
+    });
+  });
+
   it("infers direct repository task origin consistently across storage modes", async () => {
     await withPostgresSchema(async (pool) => {
       const relational = createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository;
@@ -316,6 +360,126 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("uses globally unique invite codes and resolves lookup and acceptance across workspaces", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const company = createCompanyService(bundle.companyRepository);
+      const [inviteA, inviteB] = await Promise.all([
+        company.createTeamInvite("workspace_a", {
+          name: "Pessoa A", role: "employee", createdByProfileId: "account_owner_a"
+        }),
+        company.createTeamInvite("workspace_b", {
+          name: "Pessoa B", role: "employee", createdByProfileId: "account_owner_b"
+        })
+      ]);
+
+      expect(inviteA.code).toMatch(/^BAASE-[A-F0-9]{32}$/);
+      expect(inviteB.code).toMatch(/^BAASE-[A-F0-9]{32}$/);
+      expect(inviteA.code).not.toBe(inviteB.code);
+      expect(await company.findTeamInviteByCode(inviteA.code)).toMatchObject({
+        id: inviteA.id, workspaceId: "workspace_a"
+      });
+      expect(await company.findTeamInviteByCode(inviteB.code)).toMatchObject({
+        id: inviteB.id, workspaceId: "workspace_b"
+      });
+
+      const accepted = await company.acceptTeamInvite(inviteB.code, {
+        acceptedByProfileId: "account_acceptor_b"
+      });
+      expect(accepted.person.workspaceId).toBe("workspace_b");
+      expect(await bundle.companyRepository.listTeamMembers("workspace_a")).toEqual([]);
+      expect(await bundle.companyRepository.listTeamMembers("workspace_b")).toHaveLength(1);
+
+      const jsonbCompany = createCompanyService(createConfiguredPostgresRepositoryBundle(pool, "jsonb").companyRepository);
+      const jsonbInvite = await jsonbCompany.createTeamInvite("workspace_jsonb", {
+        name: "Pessoa JSONB", role: "employee", createdByProfileId: "account_owner_jsonb"
+      });
+      await expect(jsonbCompany.acceptTeamInvite(jsonbInvite.code)).resolves.toMatchObject({
+        invite: { status: "accepted" },
+        person: { workspaceId: "workspace_jsonb" }
+      });
+    });
+  });
+
+  it("rejects invite code collisions deterministically at the database boundary", async () => {
+    await withPostgresSchema(async (pool) => {
+      const fixedCode = "BAASE-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      const repository = createPostgresRepositoryBundle(pool, {
+        inviteCodeGenerator: () => fixedCode
+      }).companyRepository;
+
+      await repository.createTeamInvite({
+        workspaceId: "workspace_a", name: "Pessoa A", email: null, role: "employee",
+        areaId: null, roleTemplateId: null, accessScope: "workspace", createdByProfileId: "owner_a"
+      });
+      await expect(repository.createTeamInvite({
+        workspaceId: "workspace_b", name: "Pessoa B", email: null, role: "employee",
+        areaId: null, roleTemplateId: null, accessScope: "workspace", createdByProfileId: "owner_b"
+      })).rejects.toThrow("INVITE_CODE_CONFLICT");
+    });
+  });
+
+  it("keeps accepted invites accepted when delegated area and archive writers are stale", async () => {
+    await withPostgresSchema(async (pool) => {
+      const base = createConfiguredPostgresRepositoryBundle(pool, "relational").companyRepository;
+      const setup = createCompanyService(base);
+      const area = await setup.createArea("workspace_a", { name: "Operacao" });
+      const areaInvite = await setup.createTeamInvite("workspace_a", {
+        name: "Pessoa area", role: "employee", areaId: area.id, accessScope: "area",
+        createdByProfileId: "account_owner"
+      });
+
+      let releaseAreaWrite!: () => void;
+      let areaWriteStarted!: () => void;
+      const areaWriteGate = new Promise<void>((resolve) => { releaseAreaWrite = resolve; });
+      const areaWriteObserved = new Promise<void>((resolve) => { areaWriteStarted = resolve; });
+      const staleAreaRepository = {
+        ...base,
+        async updateTeamInvite(invite: Parameters<typeof base.updateTeamInvite>[0]) {
+          areaWriteStarted();
+          await areaWriteGate;
+          return base.updateTeamInvite(invite);
+        }
+      };
+      const deletingArea = createCompanyService(staleAreaRepository).deleteArea("workspace_a", area.id);
+      await areaWriteObserved;
+      await setup.acceptTeamInvite(areaInvite.code, { acceptedByProfileId: "account_acceptor" });
+      releaseAreaWrite();
+      await expect(deletingArea).rejects.toThrow("INVITE_STALE");
+      expect(await base.findTeamInviteByCode(areaInvite.code)).toMatchObject({
+        status: "accepted", areaId: area.id
+      });
+      expect(await base.findAreaById("workspace_a", area.id)).not.toBeNull();
+
+      const archiveInvite = await setup.createTeamInvite("workspace_a", {
+        name: "Pessoa arquivo", role: "employee", createdByProfileId: "account_owner"
+      });
+      let releaseArchive!: () => void;
+      let archiveStarted!: () => void;
+      const archiveGate = new Promise<void>((resolve) => { releaseArchive = resolve; });
+      const archiveObserved = new Promise<void>((resolve) => { archiveStarted = resolve; });
+      const staleArchiveRepository = {
+        ...base,
+        async deleteTeamInvite(
+          workspaceId: string,
+          inviteId: string,
+          expected?: { updatedAt: string; status: "pending" | "accepted" | "revoked" }
+        ) {
+          archiveStarted();
+          await archiveGate;
+          return base.deleteTeamInvite(workspaceId, inviteId, expected);
+        }
+      };
+      const deletingInvite = createCompanyService(staleArchiveRepository)
+        .deleteTeamInvite("workspace_a", archiveInvite.id);
+      await archiveObserved;
+      await setup.acceptTeamInvite(archiveInvite.code, { acceptedByProfileId: "account_acceptor" });
+      releaseArchive();
+      await expect(deletingInvite).rejects.toThrow("INVITE_STALE");
+      expect(await base.findTeamInviteByCode(archiveInvite.code)).toMatchObject({ status: "accepted" });
+    });
+  });
+
   it("creates process history atomically and rolls back the whole create on audit failure", async () => {
     await withPostgresSchema(async (pool) => {
       const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
@@ -542,6 +706,52 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("rejects one concurrent whole-routine edit without mixing steps or assignments", async () => {
+    await withPostgresSchema(async (pool) => {
+      const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const company = createCompanyService(bundle.companyRepository);
+      const [personA, personB] = await Promise.all([
+        company.createTeamMember("workspace_a", {
+          name: "Pessoa A", role: "employee", createdByProfileId: "account_owner"
+        }),
+        company.createTeamMember("workspace_a", {
+          name: "Pessoa B", role: "employee", createdByProfileId: "account_owner"
+        })
+      ]);
+      const base = bundle.routineRepository;
+      const setup = createRoutineService(base);
+      const routine = await setup.createRoutine("workspace_a", "account_owner", {
+        title: "Original", assigneeProfileIds: [personA.id],
+        taskTemplates: [{ title: "Etapa original", assigneeProfileId: personA.id }]
+      });
+      const concurrent = createRoutineService(barrierRoutineAggregateRepository(base));
+      const results = await Promise.allSettled([
+        concurrent.updateRoutine("workspace_a", routine.id, {
+          title: "Edicao A", assigneeProfileIds: [personA.id],
+          taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Etapa A", assigneeProfileId: personA.id }]
+        }),
+        concurrent.updateRoutine("workspace_a", routine.id, {
+          title: "Edicao B", assigneeProfileIds: [personB.id],
+          taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Etapa B", assigneeProfileId: personB.id }]
+        })
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(rejectionMessages(results)).toEqual(["ROUTINE_STALE"]);
+      const final = await base.findRoutine("workspace_a", routine.id);
+      expect([
+        { title: "Edicao A", stepTitle: "Etapa A", generalAssignee: personA.id, stepAssignee: personA.id },
+        { title: "Edicao B", stepTitle: "Etapa B", generalAssignee: personB.id, stepAssignee: personB.id }
+      ]).toContainEqual({
+        title: final?.title,
+        stepTitle: final?.taskTemplates[0]?.title,
+        generalAssignee: final?.assigneeProfileIds?.[0],
+        stepAssignee: final?.taskTemplates[0]?.assigneeProfileId
+      });
+      expect(final?.taskTemplates).toHaveLength(1);
+    });
+  });
+
   it("repairs partial generation, remains concurrent-idempotent, and freezes older revisions", async () => {
     await withPostgresSchema(async (pool) => {
       const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
@@ -614,6 +824,22 @@ function barrierRoutineRepository(base: RoutineRepository): RoutineRepository {
       if (reads === 2) releaseReads();
       await gate;
       return task;
+    }
+  };
+}
+
+function barrierRoutineAggregateRepository(base: RoutineRepository): RoutineRepository {
+  let reads = 0;
+  let releaseReads!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseReads = resolve; });
+  return {
+    ...base,
+    async findRoutine(workspaceId, routineId) {
+      const routine = await base.findRoutine(workspaceId, routineId);
+      reads += 1;
+      if (reads === 2) releaseReads();
+      await gate;
+      return routine;
     }
   };
 }

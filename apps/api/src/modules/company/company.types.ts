@@ -115,8 +115,15 @@ export type CompanyRepository = {
   listTeamInvites(workspaceId: string): Promise<TeamInvite[]>;
   findTeamInviteByCode(code: string): Promise<TeamInvite | null>;
   createTeamInvite(input: Omit<TeamInvite, "id" | "code" | "status" | "createdAt" | "updatedAt">): Promise<TeamInvite>;
-  updateTeamInvite(invite: TeamInvite): Promise<TeamInvite>;
-  deleteTeamInvite(workspaceId: string, inviteId: string): Promise<void>;
+  updateTeamInvite(
+    invite: TeamInvite,
+    expected?: Pick<TeamInvite, "updatedAt" | "status">
+  ): Promise<TeamInvite>;
+  deleteTeamInvite(
+    workspaceId: string,
+    inviteId: string,
+    expected?: Pick<TeamInvite, "updatedAt" | "status">
+  ): Promise<void>;
   acceptTeamInviteAtomically?(
     invite: TeamInvite,
     member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">

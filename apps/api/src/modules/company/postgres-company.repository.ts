@@ -130,11 +130,14 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
         ]);
         const acceptedAt = nextTimestamp(persisted.updatedAt);
         const acceptedInvite: TeamInvite = { ...persisted, status: "accepted", updatedAt: acceptedAt };
-        await client.query(
+        const updated = await client.query<{ id: string }>(
           `UPDATE baase_records SET data=$3::jsonb,updated_at=$4
-           WHERE kind='team_invite' AND workspace_id=$1 AND id=$2`,
-          [persisted.workspaceId, persisted.id, JSON.stringify(acceptedInvite), acceptedAt]
+           WHERE kind='team_invite' AND workspace_id=$1 AND id=$2
+             AND data ->> 'updatedAt'=$5 AND data ->> 'status'='pending'
+           RETURNING id`,
+          [persisted.workspaceId, persisted.id, JSON.stringify(acceptedInvite), acceptedAt, persisted.updatedAt]
         );
+        if (!updated.rows[0]) throw new Error("INVITE_STALE");
         await audit(client, member.workspaceId, "person", personId, "create", member.createdByProfileId);
         await audit(client, persisted.workspaceId, "team_invite", persisted.id, "accept", member.createdByProfileId);
         return { invite: acceptedInvite, person: personFromRow(created.rows[0]!) };

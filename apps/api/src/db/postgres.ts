@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import type { BuildAppOptions } from "../app";
 import type { AiRepository, AiRun } from "../modules/ai/ai.types";
@@ -37,6 +38,9 @@ export async function ensurePostgresSchema(db: Queryable) {
     )
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS baase_records_workspace_kind_idx ON ${tableName} (workspace_id, kind)`);
+  await rotateLegacyAndDuplicateInviteCodes(db);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS baase_records_team_invite_code_uidx
+    ON ${tableName} ((data ->> 'code')) WHERE kind = 'team_invite'`);
 }
 
 export function createPostgresPool(connectionString: string) {
@@ -126,6 +130,34 @@ class JsonbRecordStore {
     ]);
   }
 
+  async updateTeamInviteIfCurrent(record: TeamInvite, expectedUpdatedAt: string, expectedStatus: TeamInvite["status"]) {
+    const result = await this.db.query<RecordRow<TeamInvite>>(
+      `UPDATE ${tableName}
+       SET data = $3::jsonb, updated_at = $4
+       WHERE kind = 'team_invite' AND workspace_id = $1 AND id = $2
+         AND data ->> 'updatedAt' = $5 AND data ->> 'status' = $6
+       RETURNING data`,
+      [record.workspaceId, record.id, JSON.stringify(record), record.updatedAt, expectedUpdatedAt, expectedStatus]
+    );
+    return result.rows[0]?.data ?? null;
+  }
+
+  async deleteTeamInviteIfCurrent(
+    workspaceId: string,
+    inviteId: string,
+    expectedUpdatedAt: string,
+    expectedStatus: TeamInvite["status"]
+  ) {
+    const result = await this.db.query<{ id: string }>(
+      `DELETE FROM ${tableName}
+       WHERE kind = 'team_invite' AND workspace_id = $1 AND id = $2
+         AND data ->> 'updatedAt' = $3 AND data ->> 'status' = $4
+       RETURNING id`,
+      [workspaceId, inviteId, expectedUpdatedAt, expectedStatus]
+    );
+    return Boolean(result.rows[0]);
+  }
+
   async updateOnboardingSessionIfCurrent(record: OnboardingSession, expectedUpdatedAt: string) {
     const result = await this.db.query<RecordRow<OnboardingSession>>(
       `
@@ -177,7 +209,14 @@ class JsonbRecordStore {
   }
 }
 
-export function createPostgresRepositoryBundle(db: Queryable): Required<Pick<
+export type PostgresRepositoryBundleOptions = {
+  inviteCodeGenerator?: () => string;
+};
+
+export function createPostgresRepositoryBundle(
+  db: Queryable,
+  options: PostgresRepositoryBundleOptions = {}
+): Required<Pick<
   BuildAppOptions,
   | "companyRepository"
   | "processRepository"
@@ -189,7 +228,7 @@ export function createPostgresRepositoryBundle(db: Queryable): Required<Pick<
 >> {
   const store = new JsonbRecordStore(db);
   return {
-    companyRepository: createJsonbCompanyRepository(store),
+    companyRepository: createJsonbCompanyRepository(store, options.inviteCodeGenerator ?? generateInviteCode),
     processRepository: createJsonbProcessRepository(store),
     routineRepository: createJsonbRoutineRepository(store),
     trainingRepository: createPostgresTrainingRepository(store),
@@ -315,7 +354,7 @@ function createPostgresAiRepository(store: JsonbRecordStore): AiRepository {
   };
 }
 
-function createJsonbCompanyRepository(store: JsonbRecordStore): CompanyRepository {
+function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerator: () => string): CompanyRepository {
   return {
     async listAreas(workspaceId) {
       const areas = await store.list<Area>("area", workspaceId);
@@ -408,29 +447,83 @@ function createJsonbCompanyRepository(store: JsonbRecordStore): CompanyRepositor
 
     async createTeamInvite(input) {
       const timestamp = now();
-      const inviteId = await store.nextId("team_invite", input.workspaceId, "invite");
-      const inviteNumber = readNumericIdSuffix(inviteId);
-      return store.insert<TeamInvite>("team_invite", {
-        ...input,
-        id: inviteId,
-        code: `BAASE-${String(inviteNumber).padStart(4, "0")}`,
-        status: "pending",
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
+      try {
+        return await store.insert<TeamInvite>("team_invite", {
+          ...input,
+          id: `invite_${randomUUID()}`,
+          code: inviteCodeGenerator().trim().toUpperCase(),
+          status: "pending",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
+      } catch (error) {
+        if (isInviteCodeConflict(error)) throw new Error("INVITE_CODE_CONFLICT");
+        throw error;
+      }
     },
 
-    updateTeamInvite(invite) {
-      return store.update<TeamInvite>("team_invite", {
+    async updateTeamInvite(invite, expected) {
+      const snapshot = expected ?? { updatedAt: invite.updatedAt, status: invite.status };
+      const updated = await store.updateTeamInviteIfCurrent({
         ...invite,
-        updatedAt: now()
-      });
+        updatedAt: nextTimestamp(snapshot.updatedAt)
+      }, snapshot.updatedAt, snapshot.status);
+      if (updated) return updated;
+      if (await store.find<TeamInvite>("team_invite", invite.workspaceId, invite.id)) throw new Error("INVITE_STALE");
+      throw new Error("INVITE_NOT_FOUND");
     },
 
-    deleteTeamInvite(workspaceId, inviteId) {
-      return store.delete("team_invite", workspaceId, inviteId);
+    async deleteTeamInvite(workspaceId, inviteId, expected) {
+      const persisted = await store.find<TeamInvite>("team_invite", workspaceId, inviteId);
+      if (!persisted) return;
+      const snapshot = expected ?? { updatedAt: persisted.updatedAt, status: persisted.status };
+      const deleted = await store.deleteTeamInviteIfCurrent(
+        workspaceId,
+        inviteId,
+        snapshot.updatedAt,
+        snapshot.status
+      );
+      if (!deleted) throw new Error("INVITE_STALE");
     }
   };
+}
+
+function generateInviteCode() {
+  return `BAASE-${randomUUID().replaceAll("-", "").toUpperCase()}`;
+}
+
+async function rotateLegacyAndDuplicateInviteCodes(db: Queryable) {
+  const records = await db.query<{ workspace_id: string; id: string; data: TeamInvite }>(
+    `SELECT workspace_id, id, data FROM ${tableName}
+     WHERE kind = 'team_invite' ORDER BY created_at, workspace_id, id`
+  );
+  const usedCodes = new Set<string>();
+  for (const record of records.rows) {
+    const code = record.data.code?.toUpperCase();
+    const needsRotation = !code || /^BAASE-[0-9]{4}$/.test(code) || usedCodes.has(code);
+    if (!needsRotation) {
+      usedCodes.add(code);
+      continue;
+    }
+
+    let replacement = generateInviteCode();
+    while (usedCodes.has(replacement)) replacement = generateInviteCode();
+    const updatedAt = nextTimestamp(record.data.updatedAt);
+    const data = { ...record.data, code: replacement, updatedAt };
+    const updated = await db.query<{ id: string }>(
+      `UPDATE ${tableName} SET data = $3::jsonb, updated_at = $4
+       WHERE kind = 'team_invite' AND workspace_id = $1 AND id = $2
+         AND data ->> 'code' = $5 RETURNING id`,
+      [record.workspace_id, record.id, JSON.stringify(data), updatedAt, record.data.code]
+    );
+    if (updated.rows[0]) usedCodes.add(replacement);
+  }
+}
+
+function isInviteCodeConflict(error: unknown) {
+  return typeof error === "object" && error !== null
+    && "code" in error && error.code === "23505"
+    && "constraint" in error && error.constraint === "baase_records_team_invite_code_uidx";
 }
 
 function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepository {

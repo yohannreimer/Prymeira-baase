@@ -13,6 +13,25 @@ const employeeHeaders = {
 };
 
 describe("company routes", () => {
+  it("returns 409 for a deterministic invite code collision", async () => {
+    const base = createInMemoryCompanyRepository();
+    const app = buildApp({
+      companyRepository: {
+        ...base,
+        createTeamInvite: async () => { throw new Error("INVITE_CODE_CONFLICT"); }
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers: ownerHeaders,
+      payload: { name: "Carla Dias", role: "employee", access_scope: "workspace" }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("INVITE_CODE_CONFLICT");
+  });
+
   it("lists areas for the current workspace", async () => {
     const app = buildApp({ companyRepository: createInMemoryCompanyRepository() });
 
@@ -542,5 +561,29 @@ describe("company routes", () => {
         code: "INVITE_ALREADY_ACCEPTED"
       }
     });
+  });
+
+  it("returns 409 when an invite changes during deletion", async () => {
+    const base = createInMemoryCompanyRepository();
+    const app = buildApp({
+      companyRepository: {
+        ...base,
+        deleteTeamInvite: async () => { throw new Error("INVITE_STALE"); }
+      }
+    });
+    const inviteResponse = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers: ownerHeaders,
+      payload: { name: "Carla Dias", role: "employee", access_scope: "workspace" }
+    });
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/invites/${inviteResponse.json().invite.id}`,
+      headers: ownerHeaders
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("INVITE_STALE");
   });
 });

@@ -107,7 +107,7 @@ export function buildApp(options: BuildAppOptions = {}) {
       });
     }
 
-    if (error instanceof Error && (error.message === "PROCESS_STALE" || error.message === "TASK_OCCURRENCE_STALE")) {
+    if (error instanceof Error && ["INVITE_CODE_CONFLICT", "INVITE_STALE", "PROCESS_STALE", "ROUTINE_STALE", "TASK_OCCURRENCE_STALE"].includes(error.message)) {
       return reply.status(409).send({
         error: {
           code: error.message,

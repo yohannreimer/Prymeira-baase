@@ -244,6 +244,9 @@ export function createCompanyService(repository: CompanyRepository) {
       const acceptedInvite = await repository.updateTeamInvite({
         ...invite,
         status: "accepted"
+      }, {
+        updatedAt: invite.updatedAt,
+        status: invite.status
       });
 
       return {
@@ -256,7 +259,10 @@ export function createCompanyService(repository: CompanyRepository) {
       const invite = (await repository.listTeamInvites(workspaceId)).find((item) => item.id === inviteId);
       if (!invite) throw new Error("INVITE_NOT_FOUND");
 
-      await repository.deleteTeamInvite(workspaceId, inviteId);
+      await repository.deleteTeamInvite(workspaceId, inviteId, {
+        updatedAt: invite.updatedAt,
+        status: invite.status
+      });
       return invite;
     }
   };

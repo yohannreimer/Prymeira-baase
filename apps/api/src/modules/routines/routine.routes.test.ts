@@ -15,6 +15,38 @@ const employeeHeaders = {
 };
 
 describe("routine routes", () => {
+  it("returns 409 when a routine aggregate changes during update", async () => {
+    const base = createInMemoryRoutineRepository();
+    const app = buildApp({
+      routineRepository: {
+        ...base,
+        updateRoutine: async () => { throw new Error("ROUTINE_STALE"); }
+      }
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: managerHeaders,
+      payload: { title: "Original", task_templates: [{ title: "Executar" }] }
+    });
+    const routine = created.json().routine;
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/routines/${routine.id}`,
+      headers: managerHeaders,
+      payload: {
+        title: "Atualizada",
+        task_templates: routine.taskTemplates.map((step: { id: string; title: string }) => ({
+          id: step.id,
+          title: step.title
+        }))
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("ROUTINE_STALE");
+  });
+
   it.each([undefined, [], ["mon", "tue"]])(
     "returns a deterministic 400 for an invalid weekly weekday selection: %j",
     async (weekdays) => {

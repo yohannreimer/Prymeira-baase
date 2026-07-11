@@ -76,6 +76,9 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateRoutines(client,row.rows))[0]!;
     });},
     async updateRoutine(routine){return withOperationalTransaction(db,async client=>{
+      const persisted=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[routine.workspaceId,routine.id]);
+      if(!persisted.rows[0])throw new Error("ROUTINE_NOT_FOUND");
+      if(iso(persisted.rows[0].updated_at)!==routine.updatedAt)throw new Error("ROUTINE_STALE");
       const recurrence=normalizeRoutineRecurrence(routine);
       const result=await client.query<RoutineRow>(`UPDATE routines SET area_id=$3,title=$4,status=$5,frequency=$6,weekdays=$7,month_day=$8,execution_mode=$9,approval_mode=$10,evidence_policy=$11,due_hint=$12,archived_at=CASE WHEN $5='archived' THEN COALESCE(archived_at,NOW()) ELSE archived_at END,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
         WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[routine.workspaceId,routine.id,routine.areaId,routine.title,routine.status,recurrence.frequency,recurrence.weekdays,recurrence.frequency==="monthly"?1:null,routine.executionMode??"shared",routine.approvalMode??"direct",routine.evidencePolicy??"optional",routine.dueHint??null]);
