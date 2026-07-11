@@ -1,4 +1,5 @@
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "./routine.types";
+import { normalizeRoutineRecurrence } from "./routine-recurrence";
 
 type InMemoryRoutineRepositoryOptions = {
   now?: () => string;
@@ -25,8 +26,10 @@ export function createInMemoryRoutineRepository(
     async createRoutine(input) {
       const timestamp = now();
       const routineId = `routine_${routines.length + 1}`;
+      const recurrence = normalizeRoutineRecurrence(input);
       const routine: CompanyRoutine = {
         ...input,
+        ...recurrence,
         id: routineId,
         taskTemplates: input.taskTemplates.map((template) => ({
           ...template,
@@ -43,8 +46,10 @@ export function createInMemoryRoutineRepository(
     async updateRoutine(routine) {
       const index = routines.findIndex((item) => item.workspaceId === routine.workspaceId && item.id === routine.id);
       if (index === -1) throw new Error("ROUTINE_NOT_FOUND");
+      const recurrence = normalizeRoutineRecurrence(routine);
       const updated = {
         ...routine,
+        ...recurrence,
         updatedAt: nextTimestamp(now(), routine.updatedAt)
       };
       routines[index] = updated;

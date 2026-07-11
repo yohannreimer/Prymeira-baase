@@ -74,6 +74,46 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("normalizes omitted direct routine recurrence consistently on create and update", async () => {
+    await withPostgresSchema(async (pool) => {
+      const repositories = [
+        createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository,
+        createConfiguredPostgresRepositoryBundle(pool, "jsonb").routineRepository,
+        createInMemoryRoutineRepository()
+      ];
+      for (const [index, repository] of repositories.entries()) {
+        const workspaceId = `workspace_recurrence_${index}`;
+        const created = await repository.createRoutine({
+          workspaceId,
+          areaId: null,
+          title: "Recorrencia padrao",
+          status: "active",
+          createdByProfileId: "account_owner",
+          taskTemplates: [{
+            id: `step_recurrence_${index}`,
+            routineId: "__routine__",
+            workspaceId,
+            title: "Executar",
+            processId: null,
+            assigneeProfileId: null,
+            approvalMode: "direct",
+            evidencePolicy: "optional",
+            sortOrder: 1
+          }]
+        });
+        expect(created).toMatchObject({ frequency: "daily", weekdays: ["mon", "tue", "wed", "thu", "fri"] });
+
+        const updated = await repository.updateRoutine({
+          ...created,
+          title: "Recorrencia atualizada",
+          frequency: undefined,
+          weekdays: []
+        });
+        expect(updated).toMatchObject({ frequency: "daily", weekdays: ["mon", "tue", "wed", "thu", "fri"] });
+      }
+    });
+  });
+
   it("preserves scoped operational history while JSONB invites remain available", async () => {
     await withPostgresSchema(async (pool) => {
       const jsonb = createPostgresRepositoryBundle(pool);

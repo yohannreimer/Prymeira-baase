@@ -6,6 +6,7 @@ import type { Area, CompanyRepository, RoleTemplate, TeamInvite, TeamMember } fr
 import type { OnboardingRepository, OnboardingSession } from "../modules/onboarding/onboarding.types";
 import type { CompanyProcess, ProcessRepository } from "../modules/processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../modules/routines/routine.types";
+import { normalizeRoutineRecurrence } from "../modules/routines/routine-recurrence";
 import type { QuizAttempt, Training, TrainingAssignment, TrainingRepository } from "../modules/trainings/training.types";
 import { createPostgresCompanyRepository as createRelationalCompanyRepository } from "../modules/company/postgres-company.repository";
 import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
@@ -487,8 +488,10 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     async createRoutine(input) {
       const timestamp = now();
       const routineId = await store.nextId("routine", input.workspaceId, "routine");
+      const recurrence = normalizeRoutineRecurrence(input);
       const routine: CompanyRoutine = {
         ...input,
+        ...recurrence,
         id: routineId,
         taskTemplates: input.taskTemplates.map((template) => ({
           ...template,
@@ -502,8 +505,10 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     },
 
     updateRoutine(routine) {
+      const recurrence = normalizeRoutineRecurrence(routine);
       return store.update<CompanyRoutine>("routine", {
         ...routine,
+        ...recurrence,
         updatedAt: nextTimestamp(routine.updatedAt)
       });
     },

@@ -1,4 +1,5 @@
 import type { CompanyRoutine, RoutineRepository, RoutineTaskTemplate, TaskChecklistItem, TaskOccurrence } from "./routine.types";
+import { normalizeRoutineRecurrence } from "./routine-recurrence";
 import { audit, generatedId, inTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
 
 type RoutineRow = { id:string;workspace_id:string;area_id:string|null;title:string;status:"active"|"archived";frequency:CompanyRoutine["frequency"];weekdays:string[];execution_mode:CompanyRoutine["executionMode"];approval_mode:CompanyRoutine["approvalMode"];evidence_policy:CompanyRoutine["evidencePolicy"];due_hint:string|null;created_by_profile_id:string;created_at:string|Date;updated_at:string|Date };
@@ -65,8 +66,9 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
     async findRoutine(workspaceId,routineId){const r=await db.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);return (await hydrateRoutines(db,r.rows))[0]??null;},
     async createRoutine(input){return inTransaction(db,async client=>{
       const id=generatedId("routine");
+      const recurrence=normalizeRoutineRecurrence(input);
       await client.query(`INSERT INTO routines (id,workspace_id,area_id,title,status,frequency,weekdays,month_day,execution_mode,approval_mode,evidence_policy,due_hint,created_by_profile_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,[id,input.workspaceId,input.areaId,input.title,input.status,input.frequency??"daily",input.weekdays??[],input.frequency==="monthly"?1:null,input.executionMode??"shared",input.approvalMode??"direct",input.evidencePolicy??"optional",input.dueHint??null,input.createdByProfileId]);
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,[id,input.workspaceId,input.areaId,input.title,input.status,recurrence.frequency,recurrence.weekdays,recurrence.frequency==="monthly"?1:null,input.executionMode??"shared",input.approvalMode??"direct",input.evidencePolicy??"optional",input.dueHint??null,input.createdByProfileId]);
       for(const template of input.taskTemplates) await insertStepAndAssignment(client,id,{...template,id:template.id.replace("__routine__",id),routineId:id});
       await replaceGeneralAssignments(client,input.workspaceId,id,input.assigneeProfileIds??[]);
       await audit(client,input.workspaceId,"routine",id,"create",input.createdByProfileId);
@@ -74,8 +76,9 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateRoutines(client,row.rows))[0]!;
     });},
     async updateRoutine(routine){return inTransaction(db,async client=>{
+      const recurrence=normalizeRoutineRecurrence(routine);
       const result=await client.query<RoutineRow>(`UPDATE routines SET area_id=$3,title=$4,status=$5,frequency=$6,weekdays=$7,month_day=$8,execution_mode=$9,approval_mode=$10,evidence_policy=$11,due_hint=$12,archived_at=CASE WHEN $5='archived' THEN COALESCE(archived_at,NOW()) ELSE archived_at END,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
-        WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[routine.workspaceId,routine.id,routine.areaId,routine.title,routine.status,routine.frequency??"daily",routine.weekdays??[],routine.frequency==="monthly"?1:null,routine.executionMode??"shared",routine.approvalMode??"direct",routine.evidencePolicy??"optional",routine.dueHint??null]);
+        WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[routine.workspaceId,routine.id,routine.areaId,routine.title,routine.status,recurrence.frequency,recurrence.weekdays,recurrence.frequency==="monthly"?1:null,routine.executionMode??"shared",routine.approvalMode??"direct",routine.evidencePolicy??"optional",routine.dueHint??null]);
       if(!result.rows[0])throw new Error("ROUTINE_NOT_FOUND");
       const activeIds=routine.taskTemplates.map(item=>item.id);
       const ownedSteps=await client.query<{id:string;routine_id:string}>("SELECT id,routine_id FROM routine_steps WHERE workspace_id=$1 AND id=ANY($2::text[])",[routine.workspaceId,activeIds]);

@@ -1,5 +1,6 @@
 import { canSubmitTask, readNextTaskStatus } from "@prymeira/baase-shared";
 import { randomUUID } from "node:crypto";
+import { normalizeRoutineRecurrence } from "./routine-recurrence";
 import type {
   CompanyRoutine,
   CreateManualTaskInput,
@@ -17,7 +18,6 @@ import type {
   UpdateRoutineInput
 } from "./routine.types";
 
-const BUSINESS_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri"] as const;
 const WEEKDAY_BY_DATE_INDEX: RoutineWeekday[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 function requiredText(value: string, errorCode: string) {
@@ -120,28 +120,15 @@ function sameTemplate(current: RoutineTaskTemplate, input: CreateRoutineTaskTemp
     && current.evidencePolicy === (input.evidencePolicy ?? "optional");
 }
 
-function normalizedFrequency(input: CreateRoutineInput) {
-  return input.frequency ?? "daily";
-}
-
-function normalizedWeekdays(input: CreateRoutineInput) {
-  if (normalizedFrequency(input) === "weekly") {
-    if (input.weekdays?.length !== 1) throw new Error("ROUTINE_WEEKLY_WEEKDAY_INVALID");
-    return [input.weekdays[0]!];
-  }
-  if (input.weekdays?.length) return [...new Set(input.weekdays)];
-  return normalizedFrequency(input) === "daily" ? [...BUSINESS_WEEKDAYS] : [];
-}
-
 function normalizedExecutionMode(input: CreateRoutineInput) {
   if (input.executionMode) return input.executionMode;
   return uniqueOptionalTexts(input.assigneeProfileIds).length > 1 ? "individual" : "shared";
 }
 
 function normalizedRoutineFields(input: CreateRoutineInput) {
+  const recurrence = normalizeRoutineRecurrence(input);
   return {
-    frequency: normalizedFrequency(input),
-    weekdays: normalizedWeekdays(input),
+    ...recurrence,
     dueHint: optionalText(input.dueHint),
     assigneeProfileIds: uniqueOptionalTexts(input.assigneeProfileIds),
     executionMode: normalizedExecutionMode(input),
