@@ -441,6 +441,174 @@ describe.skipIf(!testDatabaseUrl)("hardened operational backfill on PostgreSQL 1
       expect(evidence.rows[0]?.count).toBe(1);
     });
   });
+
+  it.each([
+    {
+      name: "duplicate sort order",
+      checklistItems: [
+        { title: "Primeira", sortOrder: 1, done: true },
+        { title: "Segunda", sortOrder: 1, done: false }
+      ],
+      reason: "duplicate individual routine checklist sort order"
+    },
+    {
+      name: "zero sort order",
+      checklistItems: [{ title: "Primeira", sortOrder: 0, done: true }],
+      malformedPath: "data.checklistItems.0.sortOrder"
+    },
+    {
+      name: "negative sort order",
+      checklistItems: [{ title: "Primeira", sortOrder: -1, done: true }],
+      malformedPath: "data.checklistItems.0.sortOrder"
+    },
+    {
+      name: "ambiguous duplicate titles",
+      checklistItems: [
+        { title: "Primeira", done: true },
+        { title: "Primeira", done: false },
+        { title: "Terceira", done: false }
+      ],
+      reason: "ambiguous individual routine checklist title"
+    }
+  ])("rejects $name in an aggregate checklist", async ({ checklistItems, reason, malformedPath }) => {
+    await withSchema(async (pool) => {
+      await seedIndividualAggregate(pool, checklistItems);
+
+      const report = await backfillOperationalData(pool);
+
+      expect(report.reconciled).toBe(false);
+      if (reason) {
+        expect(report.conflictingRecords).toContainEqual(expect.objectContaining({
+          entityId: "aggregate_ordering",
+          reason
+        }));
+      }
+      if (malformedPath) {
+        expect(report.malformedRecords).toContainEqual(expect.objectContaining({
+          entityId: "aggregate_ordering",
+          path: malformedPath
+        }));
+      }
+    });
+  });
+
+  it("maps a valid explicitly ordered aggregate checklist deterministically", async () => {
+    await withSchema(async (pool) => {
+      await seedIndividualAggregate(pool, [
+        { title: "Terceira", sortOrder: 3, done: false },
+        { title: "Primeira", sortOrder: 1, done: true, completedAt: timestamp },
+        { title: "Segunda", sortOrder: 2, done: false }
+      ]);
+
+      const report = await backfillOperationalData(pool);
+      const statuses = await pool.query<{ title: string; status: string }>(
+        "select title, status from task_occurrences order by routine_step_id"
+      );
+
+      expect(report.reconciled).toBe(true);
+      expect(statuses.rows).toEqual([
+        { title: "Primeira", status: "completed" },
+        { title: "Segunda", status: "in_progress" },
+        { title: "Terceira", status: "in_progress" }
+      ]);
+    });
+  });
+
+  it("pages more than 1,100 individual routine steps with bounded reference and insert batches", async () => {
+    await withSchema(async (pool) => {
+      const stepCount = 1_101;
+      const taskTemplates = Array.from({ length: stepCount }, (_, index) => ({
+        ...step(`paged_step_${String(index + 1).padStart(4, "0")}`, index + 1),
+        title: `Etapa ${index + 1}`
+      }));
+      await seedLegacy(pool, "team_member", "profile_paged", {
+        name: "Executora paginada",
+        role: "employee",
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedLegacy(pool, "routine", "routine_individual_paged", {
+        title: "Rotina individual paginada",
+        status: "active",
+        frequency: "on_demand",
+        executionMode: "individual",
+        assigneeProfileIds: ["profile_paged"],
+        taskTemplates,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedLegacy(pool, "task_occurrence", "aggregate_paged", {
+        origin: "routine",
+        routineId: "routine_individual_paged",
+        taskTemplateId: "routine_individual_paged__execution__profile_paged",
+        assigneeProfileId: "profile_paged",
+        audienceKey: "profile:profile_paged",
+        title: "Rotina individual paginada",
+        status: "late",
+        dueDate: "2026-07-10",
+        approvalMode: "approval_required",
+        evidencePolicy: "comment_required",
+        checklistItems: taskTemplates.map((item, index) => ({
+          title: item.title,
+          sortOrder: item.sortOrder,
+          done: index < 550,
+          completedAt: index < 550 ? timestamp : undefined
+        })),
+        evidence: { comment: "Historico paginado", profileId: "profile_paged" },
+        submittedByProfileId: "profile_paged",
+        submittedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+
+      let stepReferencePages = 0;
+      let taskInsertQueries = 0;
+      let largestTaskInsertBatch = 0;
+      const countedPool = wrappingPool(pool, async (text, run, params) => {
+        if (/from routine_steps[\s\S]*where workspace_id = \$1[\s\S]*routine_id = \$2[\s\S]*order by sort_order, id[\s\S]*limit/i.test(text)) {
+          stepReferencePages += 1;
+        }
+        if (/^insert into task_occurrences/i.test(text.trim())) {
+          taskInsertQueries += 1;
+          largestTaskInsertBatch = Math.max(largestTaskInsertBatch, Number(params?.length ?? 0) / 27);
+        }
+        return run();
+      });
+
+      const first = await backfillOperationalData(countedPool);
+      const firstReferencePages = stepReferencePages;
+      const firstInsertQueries = taskInsertQueries;
+      const firstLargestInsertBatch = largestTaskInsertBatch;
+      stepReferencePages = 0;
+      taskInsertQueries = 0;
+      largestTaskInsertBatch = 0;
+      const second = await backfillOperationalData(countedPool);
+      const counts = await pool.query<{ completed: number; late: number; evidence: number }>(
+        `select
+          count(*) filter (where status = 'completed')::int as completed,
+          count(*) filter (where status = 'late')::int as late,
+          (select count(*)::int from task_evidence) as evidence
+         from task_occurrences`
+      );
+
+      expect(first.reconciled).toBe(true);
+      expect(first.expansionCounts).toEqual({
+        individualRoutineAggregates: 1,
+        generatedTaskOccurrences: stepCount,
+        checklistProgressDispositions: stepCount
+      });
+      expect(firstReferencePages).toBe(3);
+      expect(firstInsertQueries).toBe(3);
+      expect(firstLargestInsertBatch).toBeLessThanOrEqual(500);
+      expect(counts.rows[0]).toEqual({ completed: 550, late: 551, evidence: 1 });
+      expect(second.reconciled).toBe(true);
+      expect(second.insertedTotal).toBe(0);
+      expect(stepReferencePages).toBe(3);
+      expect(taskInsertQueries).toBe(3);
+      expect(largestTaskInsertBatch).toBeLessThanOrEqual(500);
+    });
+  });
 });
 
 async function withSchema<T>(run: (pool: Pool, schemaName: string) => Promise<T>) {
@@ -510,6 +678,46 @@ async function seedCompleteGraph(pool: Pool) {
     evidence: { comment: "Conferido", photoUrl: "https://files.example/photo.jpg" },
     submittedByProfileId: "profile_worker",
     submittedAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  });
+}
+
+async function seedIndividualAggregate(pool: Pool, checklistItems: unknown[]) {
+  await seedLegacy(pool, "team_member", "profile_ordering", {
+    name: "Executora",
+    role: "employee",
+    status: "active",
+    createdAt: timestamp,
+    updatedAt: timestamp
+  });
+  await seedLegacy(pool, "routine", "routine_ordering", {
+    title: "Rotina ordenada",
+    status: "active",
+    frequency: "on_demand",
+    executionMode: "individual",
+    assigneeProfileIds: ["profile_ordering"],
+    taskTemplates: [
+      { ...step("ordering_step_1", 1), title: "Primeira" },
+      { ...step("ordering_step_2", 2), title: "Segunda" },
+      { ...step("ordering_step_3", 3), title: "Terceira" }
+    ],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  });
+  await seedLegacy(pool, "task_occurrence", "aggregate_ordering", {
+    origin: "routine",
+    routineId: "routine_ordering",
+    taskTemplateId: "routine_ordering__execution__profile_ordering",
+    assigneeProfileId: "profile_ordering",
+    audienceKey: "profile:profile_ordering",
+    title: "Rotina ordenada",
+    status: "in_progress",
+    dueDate: "2026-07-10",
+    approvalMode: "approval_required",
+    evidencePolicy: "optional",
+    checklistItems,
+    evidence: null,
     createdAt: timestamp,
     updatedAt: timestamp
   });

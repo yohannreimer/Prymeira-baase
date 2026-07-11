@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { TaskStatus } from "@prymeira/baase-shared";
 import { parseLegacyWorkspace } from "./legacy-parse";
 import type { LegacyRow } from "./types";
 import { buildWorkspacePlan } from "./workspace-plan";
@@ -206,6 +207,140 @@ describe("operational workspace planning", () => {
     expect(plan.rows.task_occurrences).toHaveLength(3);
     expect(plan.rows.task_occurrences.every((item) => item.values.status === "completed")).toBe(true);
     expect(plan.rows.routine_occurrences[0]?.values.status).toBe("completed");
+  });
+
+  const statusMatrix: Array<{
+    status: TaskStatus;
+    partial: TaskStatus[];
+    full: TaskStatus[];
+    missing: TaskStatus[];
+  }> = [
+    { status: "pending", partial: ["completed", "pending", "pending"], full: ["completed", "completed", "completed"], missing: ["pending", "pending", "pending"] },
+    { status: "in_progress", partial: ["completed", "in_progress", "in_progress"], full: ["completed", "completed", "completed"], missing: ["in_progress", "in_progress", "in_progress"] },
+    { status: "late", partial: ["completed", "late", "late"], full: ["completed", "completed", "completed"], missing: ["late", "late", "late"] },
+    { status: "completed", partial: ["completed", "completed", "completed"], full: ["completed", "completed", "completed"], missing: ["completed", "completed", "completed"] },
+    { status: "awaiting_approval", partial: ["awaiting_approval", "awaiting_approval", "awaiting_approval"], full: ["awaiting_approval", "awaiting_approval", "awaiting_approval"], missing: ["awaiting_approval", "awaiting_approval", "awaiting_approval"] },
+    { status: "needs_adjustment", partial: ["needs_adjustment", "needs_adjustment", "needs_adjustment"], full: ["needs_adjustment", "needs_adjustment", "needs_adjustment"], missing: ["needs_adjustment", "needs_adjustment", "needs_adjustment"] },
+    { status: "dismissed", partial: ["dismissed", "dismissed", "dismissed"], full: ["dismissed", "dismissed", "dismissed"], missing: ["dismissed", "dismissed", "dismissed"] }
+  ];
+  const checklistCases = [
+    {
+      name: "partial",
+      checklistItems: [
+        { title: "Primeira", sortOrder: 1, done: true, completedAt: timestamp },
+        { title: "Segunda", sortOrder: 2, done: false },
+        { title: "Terceira", sortOrder: 3, done: false }
+      ]
+    },
+    {
+      name: "full",
+      checklistItems: [
+        { title: "Primeira", sortOrder: 1, done: true, completedAt: timestamp },
+        { title: "Segunda", sortOrder: 2, done: true, completedAt: timestamp },
+        { title: "Terceira", sortOrder: 3, done: true, completedAt: timestamp }
+      ]
+    },
+    { name: "missing", checklistItems: [] }
+  ] as const;
+
+  it.each(statusMatrix.flatMap((entry) => checklistCases.map((checklist) => ({
+    status: entry.status,
+    checklist: checklist.name,
+    checklistItems: checklist.checklistItems,
+    expected: entry[checklist.name]
+  }))))("maps $status with $checklist checklist exactly", ({ status, checklistItems, expected }) => {
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+      individualExecutionRows({ status, checklistItems })));
+
+    expect(plan.rows.task_occurrences.map((item) => item.values.status)).toEqual(expected);
+  });
+
+  it.each(["awaiting_approval", "needs_adjustment"] as const)(
+    "preserves submission and review provenance on every %s step",
+    (status) => {
+      const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+        individualExecutionRows({
+          status,
+          submittedByProfileId: "profile_1",
+          submittedAt: timestamp,
+          reviewedByProfileId: "profile_2",
+          reviewedAt: timestamp,
+          reviewComment: "Corrigir comprovante",
+          checklistItems: []
+        })));
+
+      expect(plan.rows.task_occurrences.every((item) =>
+        item.values.approval_mode === "approval_required"
+        && item.values.submitted_by_profile_id === "profile_1"
+        && item.values.submitted_at === timestamp
+        && item.values.reviewed_by_profile_id === "profile_2"
+        && item.values.reviewed_at === timestamp
+        && item.values.review_comment === "Corrigir comprovante")).toBe(true);
+    }
+  );
+
+  it("rejects duplicate aggregate checklist sort orders without positional progress", () => {
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+      individualExecutionRows({
+        status: "in_progress",
+        checklistItems: [
+          { title: "Primeira", sortOrder: 1, done: true },
+          { title: "Segunda", sortOrder: 1, done: false }
+        ]
+      })));
+
+    expect(plan.conflictingRecords).toContainEqual(expect.objectContaining({
+      entityId: "aggregate_1",
+      reason: "duplicate individual routine checklist sort order"
+    }));
+    expect(plan.rows.task_occurrences.map((item) => item.values.status))
+      .toEqual(["in_progress", "in_progress", "in_progress"]);
+  });
+
+  it.each([0, -1])("marks aggregate checklist sort order %s malformed", (sortOrder) => {
+    const parsed = parseLegacyWorkspace("workspace_a", individualExecutionRows({
+      checklistItems: [{ title: "Primeira", sortOrder, done: true }]
+    }));
+
+    expect(parsed.malformedRecords).toContainEqual(expect.objectContaining({
+      entityId: "aggregate_1",
+      path: "data.checklistItems.0.sortOrder"
+    }));
+  });
+
+  it("rejects ambiguous duplicate aggregate checklist titles", () => {
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+      individualExecutionRows({
+        status: "in_progress",
+        checklistItems: [
+          { title: "Primeira", done: true },
+          { title: "Primeira", done: false },
+          { title: "Terceira", done: false }
+        ]
+      })));
+
+    expect(plan.conflictingRecords).toContainEqual(expect.objectContaining({
+      entityId: "aggregate_1",
+      reason: "ambiguous individual routine checklist title"
+    }));
+    expect(plan.rows.task_occurrences.map((item) => item.values.status))
+      .toEqual(["in_progress", "in_progress", "in_progress"]);
+  });
+
+  it("uses valid explicit aggregate checklist ordering instead of array position", () => {
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a",
+      individualExecutionRows({
+        status: "in_progress",
+        checklistItems: [
+          { title: "Terceira", sortOrder: 3, done: false },
+          { title: "Primeira", sortOrder: 1, done: true },
+          { title: "Segunda", sortOrder: 2, done: false }
+        ]
+      })));
+
+    expect(plan.conflictingRecords).toEqual([]);
+    expect(plan.rows.task_occurrences.map((item) => item.values.status))
+      .toEqual(["completed", "in_progress", "in_progress"]);
   });
 
   it("does not expand a malformed individual execution suffix", () => {

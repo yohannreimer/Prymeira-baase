@@ -1,3 +1,4 @@
+import type { TaskStatus } from "@prymeira/baase-shared";
 import { canonicalJson, deterministicBackfillId } from "./deterministic-ids";
 import type { ParsedLegacyWorkspace } from "./legacy-parse";
 import {
@@ -13,6 +14,18 @@ import {
 } from "./types";
 
 type ValidRow = ParsedLegacyWorkspace["validRows"][number];
+
+export type IndividualExpansionPage = {
+  stepOffset: number;
+  totalSteps: number;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  matchedChecklistItems: number;
+};
+
+type BuildWorkspacePlanOptions = {
+  individualExpansionPage?: IndividualExpansionPage;
+};
 
 type RoutineOccurrenceParentFields = {
   routine_id: string;
@@ -40,7 +53,8 @@ type RoutineOccurrenceGroup = {
 export function buildWorkspacePlan(
   workspaceId: string,
   parsed: ParsedLegacyWorkspace,
-  references: WorkspaceReferences = emptyWorkspaceReferences()
+  references: WorkspaceReferences = emptyWorkspaceReferences(),
+  options: BuildWorkspacePlanOptions = {}
 ): WorkspacePlan {
   const plan: WorkspacePlan = {
     workspaceId,
@@ -259,7 +273,8 @@ export function buildWorkspacePlan(
       peopleIds,
       routineById,
       stepByKey,
-      occurrenceGroups
+      occurrenceGroups,
+      options.individualExpansionPage
     )) continue;
     planTask(plan, row, areaById, processIds, peopleIds, routineById, stepByKey, occurrenceGroups, row.id);
   }
@@ -297,7 +312,8 @@ function planIndividualRoutineExecution(
   peopleIds: Set<string>,
   routineById: Map<string, PlannedRow>,
   stepByKey: Map<string, PlannedRow>,
-  occurrenceGroups: Map<string, RoutineOccurrenceGroup>
+  occurrenceGroups: Map<string, RoutineOccurrenceGroup>,
+  expansionPage?: IndividualExpansionPage
 ) {
   const data = row.data;
   const routineId = optionalText(data.routineId);
@@ -314,14 +330,32 @@ function planIndividualRoutineExecution(
   if (steps.length === 0) return false;
 
   const checklist = recordArray(data.checklistItems);
-  const usedChecklistItems = new Set<JsonRecord>();
+  const page = expansionPage ?? {
+    stepOffset: 0,
+    totalSteps: steps.length,
+    isFirstPage: true,
+    isLastPage: true,
+    matchedChecklistItems: 0
+  };
+  const checklistIsDeterministic = validateAggregateChecklist(
+    plan,
+    row,
+    checklist,
+    page.isFirstPage
+  );
   const matchedChecklist = steps.map((step, index) => {
+    if (!checklistIsDeterministic) return null;
     const sortOrder = Number(step.values.sort_order);
     const bySort = checklist.find((item) => positiveInteger(item.sortOrder) === sortOrder);
-    const byPosition = checklist[index];
-    const item = bySort ?? byPosition;
+    const globalIndex = page.stepOffset + index;
+    const byPosition = checklist[globalIndex];
+    const positionalMatch = byPosition && positiveInteger(byPosition.sortOrder) === null
+      && optionalText(byPosition.title) === optionalText(step.values.title)
+      ? byPosition
+      : undefined;
+    const item = bySort ?? positionalMatch;
     if (!item) return null;
-    usedChecklistItems.add(item);
+    page.matchedChecklistItems += 1;
     if (optionalText(item.title) !== optionalText(step.values.title)) {
       addConflict(
         plan,
@@ -335,41 +369,34 @@ function planIndividualRoutineExecution(
     }
     return item;
   });
-  if (usedChecklistItems.size !== checklist.length) {
+  if (checklistIsDeterministic && page.isLastPage && page.matchedChecklistItems !== checklist.length) {
     addConflict(
       plan,
       "task_occurrence",
       row.id,
       canonicalJson({ entityKind: "individual_execution_checklist", sourceTaskId: row.id }),
       "individual routine checklist contains unmatched items",
-      { routineStepCount: steps.length },
+      { routineStepCount: page.totalSteps },
       { checklistItemCount: checklist.length }
     );
   }
 
-  const aggregateStatus = requiredText(data.status);
-  const checklistFullyDone = checklist.length === steps.length
-    && matchedChecklist.every((item) => item && checklistItemCompleted(item));
-  const completeEveryStep = aggregateStatus === "completed" && (checklist.length === 0 || checklistFullyDone);
-  if (aggregateStatus === "completed" && checklist.length > 0 && !checklistFullyDone) {
-    addConflict(
-      plan,
-      "task_occurrence",
-      row.id,
-      canonicalJson({ entityKind: "individual_execution_status", sourceTaskId: row.id }),
-      "completed individual execution has incomplete checklist progress"
-    );
-  }
+  const aggregateStatus = requiredText(data.status) as TaskStatus;
 
-  plan.expansionCounts.individualRoutineAggregates += 1;
+  plan.expansionCounts.individualRoutineAggregates += page.isFirstPage ? 1 : 0;
   plan.expansionCounts.generatedTaskOccurrences += steps.length;
   plan.expansionCounts.checklistProgressDispositions += steps.length;
 
   for (const [index, step] of steps.entries()) {
     const checklistItem = matchedChecklist[index];
-    const completed = completeEveryStep || Boolean(checklistItem && checklistItemCompleted(checklistItem));
-    const expandedStatus = completed ? "completed" : incompleteExpandedStatus(aggregateStatus);
-    const ownsAggregateProvenance = index === 0;
+    const expandedStatus = expandedTaskStatus(
+      aggregateStatus,
+      Boolean(checklistItem && checklistItemCompleted(checklistItem))
+    );
+    const completed = expandedStatus === "completed";
+    const ownsAggregateProvenance = page.stepOffset + index === 0;
+    const preservesStateProvenance = aggregateStatus === "awaiting_approval"
+      || aggregateStatus === "needs_adjustment";
     const expandedId = deterministicBackfillId("legacy_individual_execution_step", {
       entityKind: "task_occurrence",
       workspaceId: plan.workspaceId,
@@ -395,11 +422,15 @@ function planIndividualRoutineExecution(
           ?? timestamp(data.updatedAt, row.updated_at)
         : null,
       evidence: ownsAggregateProvenance ? data.evidence : null,
-      submittedByProfileId: ownsAggregateProvenance ? data.submittedByProfileId : null,
-      submittedAt: ownsAggregateProvenance ? data.submittedAt : null,
-      reviewedByProfileId: ownsAggregateProvenance ? data.reviewedByProfileId : null,
-      reviewedAt: ownsAggregateProvenance ? data.reviewedAt : null,
-      reviewComment: ownsAggregateProvenance ? data.reviewComment : null
+      submittedByProfileId: ownsAggregateProvenance || preservesStateProvenance
+        ? data.submittedByProfileId
+        : null,
+      submittedAt: ownsAggregateProvenance || preservesStateProvenance ? data.submittedAt : null,
+      reviewedByProfileId: ownsAggregateProvenance || preservesStateProvenance
+        ? data.reviewedByProfileId
+        : null,
+      reviewedAt: ownsAggregateProvenance || preservesStateProvenance ? data.reviewedAt : null,
+      reviewComment: ownsAggregateProvenance || preservesStateProvenance ? data.reviewComment : null
     };
     planTask(
       plan,
@@ -420,8 +451,70 @@ function checklistItemCompleted(item: JsonRecord) {
   return item.done === true || item.isCompleted === true;
 }
 
-function incompleteExpandedStatus(status: string) {
-  return status === "pending" || status === "late" ? status : "in_progress";
+function validateAggregateChecklist(
+  plan: WorkspacePlan,
+  row: ValidRow,
+  checklist: JsonRecord[],
+  reportConflicts: boolean
+) {
+  let deterministic = true;
+  const orderIndexes = new Map<number, number>();
+  const unorderedTitleIndexes = new Map<string, number>();
+  for (const [index, item] of checklist.entries()) {
+    const sortOrder = positiveInteger(item.sortOrder);
+    if (sortOrder !== null) {
+      const previousIndex = orderIndexes.get(sortOrder);
+      if (previousIndex !== undefined) {
+        deterministic = false;
+        if (reportConflicts) addConflict(
+          plan,
+          "task_occurrence",
+          row.id,
+          canonicalJson({ entityKind: "individual_execution_checklist", sourceTaskId: row.id, sortOrder }),
+          "duplicate individual routine checklist sort order",
+          { path: `checklistItems.${previousIndex}.sortOrder`, sortOrder },
+          { path: `checklistItems.${index}.sortOrder`, sortOrder }
+        );
+      } else {
+        orderIndexes.set(sortOrder, index);
+      }
+      continue;
+    }
+    const title = requiredText(item.title);
+    const previousIndex = unorderedTitleIndexes.get(title);
+    if (previousIndex !== undefined) {
+      deterministic = false;
+      if (reportConflicts) addConflict(
+        plan,
+        "task_occurrence",
+        row.id,
+        canonicalJson({ entityKind: "individual_execution_checklist", sourceTaskId: row.id, title }),
+        "ambiguous individual routine checklist title",
+        { path: `checklistItems.${previousIndex}.title`, title },
+        { path: `checklistItems.${index}.title`, title }
+      );
+    } else {
+      unorderedTitleIndexes.set(title, index);
+    }
+  }
+  return deterministic;
+}
+
+function expandedTaskStatus(status: TaskStatus, checklistCompleted: boolean): TaskStatus {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "awaiting_approval":
+      return "awaiting_approval";
+    case "needs_adjustment":
+      return "needs_adjustment";
+    case "dismissed":
+      return "dismissed";
+    case "pending":
+    case "in_progress":
+    case "late":
+      return checklistCompleted ? "completed" : status;
+  }
 }
 
 function planProcess(

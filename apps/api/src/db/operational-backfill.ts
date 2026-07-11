@@ -1,5 +1,5 @@
 import { attachCleanupError } from "./migration-cleanup-errors";
-import { parseLegacyWorkspace } from "./operational-backfill/legacy-parse";
+import { parseLegacyWorkspace, type ParsedLegacyWorkspace } from "./operational-backfill/legacy-parse";
 import { readTargetCounts, reconcileWorkspace } from "./operational-backfill/reconcile";
 import {
   clearRoutineOccurrenceStage,
@@ -19,11 +19,16 @@ import {
   type OperationalBackfillReport,
   type OrphanReference,
   type QueryResult,
-  type SkippedRecord
+  type SkippedRecord,
+  type WorkspacePlan,
+  type WorkspaceReferences
 } from "./operational-backfill/types";
 import { buildWorkspacePlan } from "./operational-backfill/workspace-plan";
 import { persistWorkspacePlan } from "./operational-backfill/workspace-persist";
-import { loadWorkspaceReferences } from "./operational-backfill/workspace-references";
+import {
+  loadRoutineStepReferencePage,
+  loadWorkspaceReferences
+} from "./operational-backfill/workspace-references";
 
 export type {
   ConflictingRecord,
@@ -75,6 +80,26 @@ export async function backfillOperationalData(
       await client.query("SAVEPOINT operational_workspace");
       try {
         await clearRoutineOccurrenceStage(client, workspaceId);
+        const consumePlan = async (plan: WorkspacePlan, stageTaskContributions: boolean) => {
+          if (stageTaskContributions) {
+            await stageRoutineOccurrenceContributions(
+              client,
+              workspaceId,
+              plan.routineOccurrenceContributions
+            );
+            plan.rows.routine_occurrences = [];
+            plan.sourceCounts.routine_occurrences = 0;
+            plan.conflictingRecords = plan.conflictingRecords.filter((item) => !isStagedConflict(item));
+          }
+          insertedTotal += await persistWorkspacePlan(client, plan);
+          conflictingRecords.push(...plan.conflictingRecords, ...await reconcileWorkspace(client, plan));
+          malformedRecords.push(...plan.malformedRecords);
+          orphanReferences.push(...plan.orphanReferences);
+          skippedRecords.push(...plan.skippedRecords);
+          addCounts(sourceCounts, plan.sourceCounts);
+          addExpansionCounts(expansionCounts, plan.expansionCounts);
+          for (const table of entityTables) expectedCounts[table] += plan.rows[table].length;
+        };
         for (const kind of legacyKinds) {
           let cursor: string | null = null;
           while (true) {
@@ -91,25 +116,26 @@ export async function backfillOperationalData(
             if (sourceRows.rows.length === 0) break;
             const parsed = parseLegacyWorkspace(workspaceId, sourceRows.rows);
             const references = await loadWorkspaceReferences(client, workspaceId, parsed);
-            const plan = buildWorkspacePlan(workspaceId, parsed, references);
-            if (kind === "task_occurrence") {
-              await stageRoutineOccurrenceContributions(
-                client,
-                workspaceId,
-                plan.routineOccurrenceContributions
-              );
-              plan.rows.routine_occurrences = [];
-              plan.sourceCounts.routine_occurrences = 0;
-              plan.conflictingRecords = plan.conflictingRecords.filter((item) => !isStagedConflict(item));
+            if (kind !== "task_occurrence") {
+              await consumePlan(buildWorkspacePlan(workspaceId, parsed, references), false);
+            } else {
+              const individualRows = parsed.validRows.filter((row) =>
+                isIndividualAggregate(row, references));
+              const regularParsed: ParsedLegacyWorkspace = {
+                ...parsed,
+                validRows: parsed.validRows.filter((row) => !individualRows.includes(row))
+              };
+              await consumePlan(buildWorkspacePlan(workspaceId, regularParsed, references), true);
+              for (const row of individualRows) {
+                await expandIndividualAggregate(
+                  client,
+                  workspaceId,
+                  row,
+                  references,
+                  consumePlan
+                );
+              }
             }
-            insertedTotal += await persistWorkspacePlan(client, plan);
-            conflictingRecords.push(...plan.conflictingRecords, ...await reconcileWorkspace(client, plan));
-            malformedRecords.push(...plan.malformedRecords);
-            orphanReferences.push(...plan.orphanReferences);
-            skippedRecords.push(...plan.skippedRecords);
-            addCounts(sourceCounts, plan.sourceCounts);
-            addExpansionCounts(expansionCounts, plan.expansionCounts);
-            for (const table of entityTables) expectedCounts[table] += plan.rows[table].length;
             cursor = sourceRows.rows.at(-1)?.id ?? null;
             if (sourceRows.rows.length < SOURCE_PAGE_SIZE) break;
           }
@@ -164,6 +190,79 @@ export async function backfillOperationalData(
       else throw cleanupError;
     }
   }
+}
+
+async function expandIndividualAggregate(
+  client: Parameters<typeof loadRoutineStepReferencePage>[0],
+  workspaceId: string,
+  row: ParsedLegacyWorkspace["validRows"][number],
+  baseReferences: WorkspaceReferences,
+  consumePlan: (plan: WorkspacePlan, stageTaskContributions: boolean) => Promise<void>
+) {
+  const routineId = String(row.data.routineId);
+  const parsed: ParsedLegacyWorkspace = {
+    validRows: [row],
+    malformedRecords: [],
+    sourceCounts: emptyEntityCounts()
+  };
+  let cursor: Parameters<typeof loadRoutineStepReferencePage>[3] = null;
+  let totalSteps: number | undefined;
+  let stepOffset = 0;
+  let matchedChecklistItems = 0;
+  while (true) {
+    const referencePage = await loadRoutineStepReferencePage(
+      client,
+      workspaceId,
+      routineId,
+      cursor,
+      totalSteps
+    );
+    totalSteps = referencePage.totalSteps;
+    if (referencePage.steps.length === 0) {
+      if (stepOffset === 0) {
+        await consumePlan(buildWorkspacePlan(workspaceId, parsed, {
+          ...baseReferences,
+          routineSteps: []
+        }), true);
+      }
+      break;
+    }
+    const pageState = {
+      stepOffset,
+      totalSteps,
+      isFirstPage: stepOffset === 0,
+      isLastPage: stepOffset + referencePage.steps.length >= totalSteps,
+      matchedChecklistItems
+    };
+    const plan = buildWorkspacePlan(workspaceId, parsed, {
+      ...baseReferences,
+      processIds: new Set([...baseReferences.processIds, ...referencePage.processIds]),
+      routineSteps: referencePage.steps
+    }, { individualExpansionPage: pageState });
+    matchedChecklistItems = pageState.matchedChecklistItems;
+    await consumePlan(plan, true);
+    stepOffset += referencePage.steps.length;
+    if (pageState.isLastPage) break;
+    cursor = referencePage.nextCursor;
+  }
+}
+
+function isIndividualAggregate(
+  row: ParsedLegacyWorkspace["validRows"][number],
+  references: WorkspaceReferences
+) {
+  const routineId = typeof row.data.routineId === "string" ? row.data.routineId : null;
+  const assigneeProfileId = typeof row.data.assigneeProfileId === "string"
+    ? row.data.assigneeProfileId
+    : null;
+  const stepId = typeof row.data.taskTemplateId === "string"
+    ? row.data.taskTemplateId
+    : typeof row.data.routineStepId === "string" ? row.data.routineStepId : null;
+  const routine = routineId ? references.routines.get(routineId) : undefined;
+  return Boolean(routineId
+    && assigneeProfileId
+    && routine?.values.execution_mode === "individual"
+    && stepId === `${routineId}__execution__${assigneeProfileId}`);
 }
 
 function addCounts(target: EntityCounts, source: EntityCounts) {
