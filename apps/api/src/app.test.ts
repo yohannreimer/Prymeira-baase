@@ -24,6 +24,7 @@ describe("Baase API app", () => {
         accountApiUrl: null
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
@@ -45,6 +46,7 @@ describe("Baase API app", () => {
         account_api_configured: false
       },
       persistence: "postgres",
+      operational_store: "jsonb",
       demo_seed_enabled: false,
       ai: {
         structured: "openai",
@@ -92,6 +94,7 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
@@ -162,6 +165,7 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
@@ -194,6 +198,7 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
@@ -242,6 +247,7 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",

@@ -1,7 +1,8 @@
 import "dotenv/config";
 import { buildApp } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
-import { createPostgresPool, createPostgresRepositoryBundle, ensurePostgresSchema } from "./db/postgres";
+import { createConfiguredPostgresRepositoryBundle, createPostgresPool, ensurePostgresSchema } from "./db/postgres";
+import { ensureOperationalSchema } from "./db/operational-schema";
 
 const port = Number(process.env.PORT ?? 3090);
 const host = process.env.HOST ?? "0.0.0.0";
@@ -11,10 +12,11 @@ const runtimeConfig = readRuntimeConfig(process.env);
 const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
 if (pool) {
   await ensurePostgresSchema(pool);
+  if (runtimeConfig.operationalStore === "relational") await ensureOperationalSchema(pool);
 }
 
 const app = pool
-  ? buildApp({ ...createPostgresRepositoryBundle(pool), runtimeConfig })
+  ? buildApp({ ...createConfiguredPostgresRepositoryBundle(pool, runtimeConfig.operationalStore), runtimeConfig })
   : buildApp({ seedDemoData: runtimeConfig.demoSeedEnabled, runtimeConfig });
 
 async function shutdown() {

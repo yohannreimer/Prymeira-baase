@@ -7,6 +7,11 @@ import type { OnboardingRepository, OnboardingSession } from "../modules/onboard
 import type { CompanyProcess, ProcessRepository } from "../modules/processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../modules/routines/routine.types";
 import type { QuizAttempt, Training, TrainingAssignment, TrainingRepository } from "../modules/trainings/training.types";
+import { createPostgresCompanyRepository as createRelationalCompanyRepository } from "../modules/company/postgres-company.repository";
+import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
+import { createPostgresRoutineRepository as createRelationalRoutineRepository } from "../modules/routines/postgres-routine.repository";
+import type { OperationalPool } from "./operational-repository-support";
+import type { BaaseOperationalStore } from "../config/runtime";
 
 type Queryable = {
   query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
@@ -183,13 +188,36 @@ export function createPostgresRepositoryBundle(db: Queryable): Required<Pick<
 >> {
   const store = new JsonbRecordStore(db);
   return {
-    companyRepository: createPostgresCompanyRepository(store),
-    processRepository: createPostgresProcessRepository(store),
-    routineRepository: createPostgresRoutineRepository(store),
+    companyRepository: createJsonbCompanyRepository(store),
+    processRepository: createJsonbProcessRepository(store),
+    routineRepository: createJsonbRoutineRepository(store),
     trainingRepository: createPostgresTrainingRepository(store),
     announcementRepository: createPostgresAnnouncementRepository(store),
     onboardingRepository: createPostgresOnboardingRepository(store),
     aiRepository: createPostgresAiRepository(store)
+  };
+}
+
+export function createRelationalOperationalRepositoryBundle(
+  db: OperationalPool,
+  jsonbCompanyRepository: CompanyRepository
+): Pick<BuildAppOptions, "companyRepository" | "processRepository" | "routineRepository"> {
+  return {
+    companyRepository: createRelationalCompanyRepository(db, jsonbCompanyRepository),
+    processRepository: createRelationalProcessRepository(db),
+    routineRepository: createRelationalRoutineRepository(db)
+  };
+}
+
+export function createConfiguredPostgresRepositoryBundle(
+  db: OperationalPool,
+  operationalStore: BaaseOperationalStore
+): ReturnType<typeof createPostgresRepositoryBundle> {
+  const jsonbBundle = createPostgresRepositoryBundle(db);
+  if (operationalStore === "jsonb") return jsonbBundle;
+  return {
+    ...jsonbBundle,
+    ...createRelationalOperationalRepositoryBundle(db, jsonbBundle.companyRepository)
   };
 }
 
@@ -286,7 +314,7 @@ function createPostgresAiRepository(store: JsonbRecordStore): AiRepository {
   };
 }
 
-function createPostgresCompanyRepository(store: JsonbRecordStore): CompanyRepository {
+function createJsonbCompanyRepository(store: JsonbRecordStore): CompanyRepository {
   return {
     async listAreas(workspaceId) {
       const areas = await store.list<Area>("area", workspaceId);
@@ -404,7 +432,7 @@ function createPostgresCompanyRepository(store: JsonbRecordStore): CompanyReposi
   };
 }
 
-function createPostgresProcessRepository(store: JsonbRecordStore): ProcessRepository {
+function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepository {
   return {
     listProcesses(workspaceId) {
       return store.list<CompanyProcess>("process", workspaceId);
@@ -438,7 +466,7 @@ function createPostgresProcessRepository(store: JsonbRecordStore): ProcessReposi
   };
 }
 
-function createPostgresRoutineRepository(store: JsonbRecordStore): RoutineRepository {
+function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepository {
   return {
     listRoutines(workspaceId) {
       return store.list<CompanyRoutine>("routine", workspaceId);

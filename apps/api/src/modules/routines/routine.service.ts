@@ -17,7 +17,6 @@ import type {
 
 const BUSINESS_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri"] as const;
 const WEEKDAY_BY_DATE_INDEX: RoutineWeekday[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-const MUTABLE_OCCURRENCE_STATUSES = new Set<TaskOccurrence["status"]>(["pending", "in_progress", "needs_adjustment", "late"]);
 
 function requiredText(value: string, errorCode: string) {
   const text = value.trim();
@@ -152,10 +151,6 @@ function shouldAutoGenerateRoutine(routine: CompanyRoutine) {
   return routine.status === "active" && Boolean(routine.frequency);
 }
 
-function isMutableOccurrence(task: TaskOccurrence) {
-  return MUTABLE_OCCURRENCE_STATUSES.has(task.status);
-}
-
 function buildRoutineOccurrenceInputs(
   routine: CompanyRoutine,
   dueDate: string
@@ -210,33 +205,15 @@ function buildRoutineOccurrenceInputs(
   }));
 }
 
-function mergeOccurrenceTemplate(
-  current: TaskOccurrence,
-  next: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">
-): TaskOccurrence {
-  return {
-    ...current,
-    origin: next.origin,
-    routineId: next.routineId,
-    taskTemplateId: next.taskTemplateId,
-    title: next.title,
-    areaId: next.areaId,
-    processId: next.processId,
-    assigneeProfileId: next.assigneeProfileId,
-    dueHint: next.dueHint,
-    approvalMode: next.approvalMode,
-    evidencePolicy: next.evidencePolicy,
-    checklistItems: next.checklistItems
-      ? normalizedChecklistItems(next.checklistItems.map((item) => item.title), current.checklistItems)
-      : undefined
-  };
-}
-
 async function createOrReuseRoutineOccurrences(
   repository: RoutineRepository,
   routine: CompanyRoutine,
   dueDate: string
 ) {
+  const existingForDate = (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
+    .filter((task) => task.routineId === routine.id);
+  if (existingForDate.length > 0) return existingForDate;
+
   const generated: TaskOccurrence[] = [];
   for (const input of buildRoutineOccurrenceInputs(routine, dueDate)) {
     if (!input.taskTemplateId) continue;
@@ -256,38 +233,6 @@ async function ensureTodayOccurrences(repository: RoutineRepository, workspaceId
   const routines = await repository.listRoutines(workspaceId);
   for (const routine of routines.filter(shouldAutoGenerateRoutine)) {
     await createOrReuseRoutineOccurrences(repository, routine, dueDate);
-  }
-}
-
-async function syncMutableRoutineOccurrences(repository: RoutineRepository, routine: CompanyRoutine) {
-  const existingTasks = (await repository.listTaskOccurrences(routine.workspaceId))
-    .filter((task) => task.routineId === routine.id);
-  const dates = [...new Set(existingTasks.map((task) => task.dueDate))];
-
-  for (const dueDate of dates) {
-    const desiredInputs = buildRoutineOccurrenceInputs(routine, dueDate);
-    const desiredByTemplateId = new Map(desiredInputs
-      .filter((input) => input.taskTemplateId)
-      .map((input) => [input.taskTemplateId as string, input]));
-    const tasksForDate = existingTasks.filter((task) => task.dueDate === dueDate);
-
-    for (const task of tasksForDate) {
-      if (!isMutableOccurrence(task)) continue;
-      const desired = task.taskTemplateId ? desiredByTemplateId.get(task.taskTemplateId) : null;
-      if (!desired) {
-        await repository.deleteTaskOccurrence(routine.workspaceId, task.id);
-        continue;
-      }
-      await repository.updateTaskOccurrence(mergeOccurrenceTemplate(task, desired));
-    }
-
-    const taskByTemplateId = new Map(tasksForDate
-      .filter((task) => task.taskTemplateId)
-      .map((task) => [task.taskTemplateId as string, task]));
-    for (const desired of desiredInputs) {
-      if (!desired.taskTemplateId || taskByTemplateId.has(desired.taskTemplateId)) continue;
-      await repository.createTaskOccurrence(desired);
-    }
   }
 }
 
@@ -316,15 +261,13 @@ export function createRoutineService(repository: RoutineRepository) {
       const routine = await readRoutineOrThrow(repository, workspaceId, routineId);
       const title = requiredText(input.title, "ROUTINE_TITLE_REQUIRED");
 
-      const updatedRoutine = await repository.updateRoutine({
+      return repository.updateRoutine({
         ...routine,
         title,
         areaId: input.areaId ?? null,
         ...normalizedRoutineFields(input),
         taskTemplates: buildTemplates(workspaceId, routine.id, input.taskTemplates)
       });
-      await syncMutableRoutineOccurrences(repository, updatedRoutine);
-      return updatedRoutine;
     },
 
     async archiveRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine> {

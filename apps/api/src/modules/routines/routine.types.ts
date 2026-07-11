@@ -56,6 +56,9 @@ export type TaskOccurrence = {
   routineId: string | null;
   taskTemplateId: string | null;
   title: string;
+  areaNameSnapshot?: string | null;
+  routineTitleSnapshot?: string | null;
+  stepTitleSnapshot?: string | null;
   areaId?: string | null;
   processId: string | null;
   assigneeProfileId: string | null;

@@ -415,6 +415,32 @@ const migrations: Migration[] = [{
           AND audience_key IS NOT NULL AND routine_title_snapshot IS NOT NULL)
       );
   `
+}, {
+  version: 3,
+  name: "operational_repository_runtime_compatibility",
+  sql: `
+    ALTER TABLE routine_steps ADD COLUMN archived_at TIMESTAMPTZ;
+    ALTER TABLE task_occurrences ADD COLUMN archived_at TIMESTAMPTZ;
+    ALTER TABLE routines ADD COLUMN due_hint TEXT;
+    ALTER TABLE routine_steps ADD COLUMN due_hint TEXT;
+    ALTER TABLE task_occurrences ADD COLUMN due_hint TEXT;
+
+    ALTER TABLE routine_steps
+      DROP CONSTRAINT IF EXISTS routine_steps_workspace_id_routine_id_sort_order_key;
+    CREATE UNIQUE INDEX routine_steps_active_order_uidx
+      ON routine_steps (workspace_id, routine_id, sort_order)
+      WHERE archived_at IS NULL;
+
+    ALTER TABLE task_occurrences
+      DROP CONSTRAINT IF EXISTS task_occurrences_assignee_profile_id_fkey;
+    ALTER TABLE task_occurrences
+      DROP CONSTRAINT IF EXISTS task_occurrences_workspace_id_assignee_profile_id_fkey;
+    ALTER TABLE task_evidence
+      DROP CONSTRAINT IF EXISTS task_evidence_profile_id_fkey;
+    ALTER TABLE task_evidence
+      DROP CONSTRAINT IF EXISTS task_evidence_workspace_id_profile_id_fkey;
+
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

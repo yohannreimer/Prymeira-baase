@@ -202,7 +202,7 @@ describe("routine routes", () => {
     });
   });
 
-  it("moves pending routine occurrences to the edited responsible people", async () => {
+  it("keeps existing occurrences immutable when responsible people are edited", async () => {
     const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
 
     const routineResponse = await app.inject({
@@ -258,9 +258,21 @@ describe("routine routes", () => {
       headers: employeeHeaders
     });
 
-    expect(oldResponsibleToday.json().tasks).toEqual([]);
-    expect(newResponsibleToday.json().tasks).toHaveLength(1);
-    expect(newResponsibleToday.json().tasks[0]).toMatchObject({
+    expect(oldResponsibleToday.json().tasks).toHaveLength(1);
+    expect(oldResponsibleToday.json().tasks[0]).toMatchObject({
+      title: "Atualizar orquestrador",
+      assigneeProfileId: "profile_manager",
+      dueHint: "Até 09:00",
+      checklistItems: [{ title: "Conferir dia anterior", done: false }]
+    });
+    expect(newResponsibleToday.json().tasks).toEqual([]);
+
+    const newResponsibleFuture = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-09",
+      headers: employeeHeaders
+    });
+    expect(newResponsibleFuture.json().tasks[0]).toMatchObject({
       title: "Atualizar orquestrador revisado",
       assigneeProfileId: "profile_employee",
       dueHint: "Até 10:00",

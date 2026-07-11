@@ -170,6 +170,7 @@ export function buildApp(options: BuildAppOptions = {}) {
       account_api_configured: Boolean(runtimeConfig.auth.accountApiUrl)
     },
     persistence: runtimeConfig.persistence,
+    operational_store: runtimeConfig.operationalStore,
     demo_seed_enabled: runtimeConfig.demoSeedEnabled,
     ai: runtimeConfig.ai,
     warnings: runtimeConfig.warnings

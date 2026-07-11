@@ -12,6 +12,7 @@ describe("runtime config", () => {
         accountApiUrl: null
       },
       persistence: "memory",
+      operationalStore: "jsonb",
       demoSeedEnabled: true,
       ai: {
         structured: "mock",
@@ -28,6 +29,7 @@ describe("runtime config", () => {
       BAASE_AUTH_MODE: "account",
       PRYMEIRA_ACCOUNT_API_URL: "https://hub.prymeiradigital.com.br/api",
       DATABASE_URL: "postgres://baase:baase@localhost:5432/baase",
+      BAASE_OPERATIONAL_STORE: "relational",
       OPENAI_API_KEY: "sk-test",
       DEEPGRAM_API_KEY: "dg-test"
     });
@@ -39,6 +41,7 @@ describe("runtime config", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "relational",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
@@ -62,5 +65,30 @@ describe("runtime config", () => {
       "OPENAI_API_KEY ausente: sugestoes estruturadas vao usar mock.",
       "DEEPGRAM_API_KEY ausente: transcricao de audio vai usar mock."
     ]);
+  });
+
+  it("keeps jsonb as the safe pilot fallback", () => {
+    const config = readRuntimeConfig({ BAASE_RUNTIME_MODE: "pilot" });
+    expect(config.operationalStore).toBe("jsonb");
+  });
+
+  it.each([undefined, "invalid"])("rejects %s operational store in production", (value) => {
+    const config = readRuntimeConfig({
+      BAASE_RUNTIME_MODE: "production",
+      BAASE_OPERATIONAL_STORE: value
+    });
+    expect(config.ok).toBe(false);
+    expect(config.operationalStore).toBe("jsonb");
+    expect(config.warnings).toContain(
+      "BAASE_OPERATIONAL_STORE deve ser definido como jsonb ou relational em produção."
+    );
+  });
+
+  it("does not select relational storage without a database", () => {
+    const config = readRuntimeConfig({ BAASE_OPERATIONAL_STORE: "relational" });
+    expect(config.operationalStore).toBe("relational");
+    expect(config.persistence).toBe("memory");
+    expect(config.ok).toBe(false);
+    expect(config.warnings).toContain("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");
   });
 });

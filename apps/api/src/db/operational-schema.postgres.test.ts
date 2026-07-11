@@ -65,7 +65,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3]);
     });
   });
 
@@ -185,7 +185,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const before = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(before.rows.map((row) => row.version)).toEqual([1]);
+      expect(before.rows.map((row) => row.version)).toEqual([1, 3]);
       const oldConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -199,7 +199,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3]);
       const upgradedConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -222,6 +222,44 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
+  it("upgrades versions 1 and 2 through runtime compatibility version 3", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query("delete from baase_schema_migrations where version = 3");
+      await pool.query("alter table routine_steps drop column archived_at");
+      await pool.query("alter table task_occurrences drop column archived_at");
+      await pool.query("alter table routines drop column due_hint");
+      await pool.query("alter table routine_steps drop column due_hint");
+      await pool.query("alter table task_occurrences drop column due_hint");
+
+      await ensureOperationalSchema(pool);
+
+      const versions = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+    });
+  });
+
+  it("allows account actors without shadow people rows", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, title, step_title_snapshot, approval_mode,
+           evidence_policy, status, due_date, assignee_profile_id, submitted_by_profile_id)
+         values ('task_account', 'workspace_a', 'manual', 'Tarefa', 'Tarefa', 'direct',
+           'optional', 'pending', '2026-07-10', 'account_owner', 'account_owner')`
+      );
+      await pool.query(
+        `insert into task_evidence
+          (id, workspace_id, task_occurrence_id, profile_id, kind, comment)
+         values ('evidence_account', 'workspace_a', 'task_account', 'account_owner',
+           'comment', 'feito')`
+      );
+    });
+  });
+
   it("does not mark version 2 when its alter fails", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchema(pool);
@@ -232,7 +270,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const migrations = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(migrations.rows.map((row) => row.version)).toEqual([1]);
+      expect(migrations.rows.map((row) => row.version)).toEqual([1, 3]);
       const stableConstraint = await pool.query<{ count: number }>(
         `select count(*)::int as count
          from pg_constraint
