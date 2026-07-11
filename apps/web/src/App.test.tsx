@@ -2024,8 +2024,8 @@ describe("Baase React app shell", () => {
       if (url === "/api/processes/process_9/publish") {
         return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas", status: "published", summary: "Fluxo de revisão" } }), { status: 200 });
       }
-      if (url === "/api/processes/process_9/versions") {
-        return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas v2", status: "published", summary: "Fluxo revisado" } }), { status: 201 });
+      if (url === "/api/processes/process_9" && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas v2", status: "published", summary: "Fluxo revisado" } }), { status: 200 });
       }
 
       const dataByUrl: Record<string, unknown> = {
@@ -2059,10 +2059,11 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /Editar/ }));
     fireEvent.change(screen.getByLabelText("Nome do processo"), { target: { value: "Aprovação de campanhas v2" } });
     fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "Fluxo revisado" } });
+    fireEvent.change(screen.getByLabelText("O que mudou?"), { target: { value: "Atualiza o fluxo de revisão." } });
     fireEvent.click(screen.getByRole("button", { name: "Salvar alterações" }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/processes/process_9/versions", expect.objectContaining({ method: "POST" }));
+      expect(fetchMock).toHaveBeenCalledWith("/api/processes/process_9", expect.objectContaining({ method: "PATCH" }));
       expect(screen.getAllByText("Aprovação de campanhas v2").length).toBeGreaterThan(0);
     });
   });

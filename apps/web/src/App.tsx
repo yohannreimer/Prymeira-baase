@@ -23,6 +23,8 @@ import {
   createPerson,
   createProcessDraft,
   createProcessVersion,
+  updateProcess,
+  uploadProcessMaterial,
   createRoutine,
   createRoleTemplate,
   createTask,
@@ -2610,24 +2612,47 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleSaveProcess(input: { id?: string; title: string; summary: string; body: string; publish: boolean }) {
+  function handleSaveProcess(input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) {
     void runAction(async () => {
+      let process: ApiProcess;
       if (input.id) {
-        const process = await createProcessVersion(role, input.id, {
+        process = await updateProcess(role, input.id, {
           title: input.title,
           summary: input.summary,
           body: input.body,
-          changeNote: "Atualização feita pelo painel."
+          areaId: input.areaId,
+          owner: input.owner,
+          changeNote: input.changeNote,
+          links: input.links
         });
-        appendOperationalContent({ process });
       } else {
         const draft = await createProcessDraft(role, {
           title: input.title,
           body: input.body,
-          summary: input.summary
+          summary: input.summary,
+          areaId: input.areaId
         });
-        appendOperationalContent({ process: input.publish ? await publishProcess(role, draft.id) : draft });
+        process = input.owner || input.links.length
+          ? await updateProcess(role, draft.id, {
+            title: input.title,
+            summary: input.summary,
+            body: input.body,
+            areaId: input.areaId,
+            owner: input.owner,
+            links: input.links,
+            changeNote: "Define a configuração inicial do processo."
+          })
+          : draft;
+        if (input.publish) process = await publishProcess(role, process.id);
       }
+      for (const file of input.files) {
+        const material = await uploadProcessMaterial(role, process.id, file);
+        process = { ...process, materials: [...(process.materials ?? []), material] };
+      }
+      appendOperationalContent({ process });
       setCrudModal(null);
     });
   }
@@ -5409,7 +5434,10 @@ function CrudModalView({
   onSaveRoleTemplate: (input: { areaId: string; name: string; description: string }) => void;
   onSavePerson: (input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; roleTemplateId?: string | null; status?: string }) => void;
   onDeletePerson: (person: ApiPerson) => void;
-  onSaveProcess: (input: { id?: string; title: string; summary: string; body: string; publish: boolean }) => void;
+  onSaveProcess: (input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) => void;
   onSaveRoutine: (input: RoutineFormInput) => void;
   onSaveTraining: (input: TrainingFormInput) => void;
   onSaveAnnouncement: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; publish: boolean }) => void;
@@ -5437,7 +5465,7 @@ function CrudModalView({
           <PersonForm modal={modal} areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onSavePerson} onDelete={onDeletePerson} />
         ) : null}
         {modal.kind === "process" ? (
-          <ProcessForm modal={modal} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
+          <ProcessForm modal={modal} areas={areas} roleTemplates={roleTemplates} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
         ) : null}
         {modal.kind === "routine" ? (
           <RoutineForm modal={modal} areas={areas} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveRoutine} />
@@ -5716,35 +5744,66 @@ function AnnouncementForm({
 
 function ProcessForm({
   modal,
+  areas,
+  roleTemplates,
+  people,
   actionBusy,
   onClose,
   onSubmit
 }: {
   modal: Extract<CrudModal, { kind: "process" }>;
+  areas: ApiArea[];
+  roleTemplates: ApiRoleTemplate[];
+  people: ApiPerson[];
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { id?: string; title: string; summary: string; body: string; publish: boolean }) => void;
+  onSubmit: (input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) => void;
 }) {
   const process = modal.mode === "edit" ? modal.process : null;
   const [title, setTitle] = useState(process?.title ?? "");
   const [summary, setSummary] = useState(process?.summary ?? "");
   const [body, setBody] = useState(process?.currentVersion?.body ?? defaultProcessSopBody("Novo processo"));
+  const [areaId, setAreaId] = useState(process?.areaId ?? areas[0]?.id ?? "");
+  const [ownerMode, setOwnerMode] = useState<"none" | "person" | "role">(process?.owner?.type ?? "none");
+  const [ownerId, setOwnerId] = useState(process?.owner?.type === "person" ? process.owner.personId : process?.owner?.type === "role" ? process.owner.roleTemplateId : "");
+  const [changeNote, setChangeNote] = useState("");
+  const [links, setLinks] = useState(() => (process?.materials ?? []).filter((material) => material.kind === "link" && material.url).map((material) => ({ title: material.title, url: material.url! })));
+  const [files, setFiles] = useState<File[]>([]);
+  const ownerOptions = ownerMode === "role"
+    ? roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId).map((roleTemplate) => ({ id: roleTemplate.id, name: roleTemplate.name }))
+    : people.filter((person) => person.status !== "inactive" && (!areaId || person.areaId === areaId)).map((person) => ({ id: person.id, name: person.name }));
+  const owner = ownerMode === "person" && ownerId ? { type: "person" as const, personId: ownerId }
+    : ownerMode === "role" && ownerId ? { type: "role" as const, roleTemplateId: ownerId }
+    : null;
+  const validLinks = links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url);
+  const save = (publish: boolean) => onSubmit({ id: process?.id, title, summary, body, publish, areaId: areaId || null, owner, changeNote, links: validLinks, files });
 
   return (
     <form className="modal-form" onSubmit={(event) => event.preventDefault()}>
       <ModalHeader title={modal.mode === "edit" ? "Editar processo" : "Novo processo"} icon="ph-file-text" onClose={onClose} />
       <label>Nome do processo<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>Resumo<input value={summary} onChange={(event) => setSummary(event.target.value)} /></label>
+      <div className="form-row two-cols">
+        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setOwnerId(""); }}><option value="">Sem área</option>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
+        <label>Responsável<select value={ownerMode} onChange={(event) => { setOwnerMode(event.target.value as "none" | "person" | "role"); setOwnerId(""); }}><option value="none">Sem responsável</option><option value="person">Pessoa</option><option value="role">Cargo</option></select></label>
+      </div>
+      {ownerMode !== "none" ? <label>{ownerMode === "person" ? "Pessoa responsável" : "Cargo responsável"}<select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">Selecionar</option>{ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label> : null}
       <label>Manual do processo<textarea value={body} onChange={(event) => setBody(event.target.value)} /></label>
+      {modal.mode === "edit" ? <label>O que mudou?<input value={changeNote} onChange={(event) => setChangeNote(event.target.value)} placeholder="Descreva a alteração desta versão" /></label> : null}
+      <fieldset className="material-editor"><legend>Links de apoio</legend>{links.map((link, index) => <div className="inline-input-row" key={`${index}-${link.title}`}><input value={link.title} placeholder="Título" onChange={(event) => setLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item))} /><input value={link.url} placeholder="https://" onChange={(event) => setLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} /><button className="tiny-icon" type="button" aria-label="Remover link" onClick={() => setLinks((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Icon name="ph-x" /></button></div>)}<button className="text-action" type="button" onClick={() => setLinks((current) => [...current, { title: "", url: "" }])}><Icon name="ph-plus" />Adicionar link</button></fieldset>
+      <label className="file-picker">Anexar arquivos<input type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /><small>{files.length ? `${files.length} arquivo(s) pronto(s) para enviar` : "PDFs, planilhas e outros materiais de apoio"}</small></label>
       <footer>
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
         {modal.mode === "create" ? (
           <>
-            <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, summary, body, publish: false })}>Salvar rascunho</button>
-            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, summary, body, publish: true })}>Salvar e publicar</button>
+            <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => save(false)}>Salvar rascunho</button>
+            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => save(true)}>Salvar e publicar</button>
           </>
         ) : (
-          <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ id: process?.id, title, summary, body, publish: false })}>Salvar alterações</button>
+          <button className="accent-solid" type="button" disabled={actionBusy || !changeNote.trim()} onClick={() => save(false)}>Salvar alterações</button>
         )}
       </footer>
     </form>
