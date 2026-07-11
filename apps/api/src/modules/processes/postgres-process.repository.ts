@@ -1,5 +1,5 @@
 import type { CompanyProcess, ProcessRepository, ProcessVersionRecord } from "./process.types";
-import { audit, generatedId, inTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
+import { audit, generatedId, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
 
 type ProcessRow = { id:string; workspace_id:string; area_id:string|null; title:string; summary:string|null; status:CompanyProcess["status"]; owner_profile_id:string|null; current_version:number; created_by_profile_id:string; published_at:string|Date|null; archived_at:string|Date|null; created_at:string|Date; updated_at:string|Date };
 type VersionRow = { id:string; workspace_id:string; process_id:string; version_number:number; title:string; body:string; change_note:string; editor_profile_id:string; created_at:string|Date };
@@ -31,7 +31,7 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
       return (await hydrate(db, result.rows))[0] ?? null;
     },
     async createProcess(input) {
-      return inTransaction(db, async (client) => {
+      return withOperationalTransaction(db, async (client) => {
         const id = generatedId("process");
         const versions = input.versions.map((version) => ({ ...version, id: `version_${id}_${version.version}`, processId:id }));
         await client.query(`INSERT INTO processes
@@ -44,7 +44,10 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
       });
     },
     async updateProcess(process) {
-      return inTransaction(db, async (client) => {
+      return withOperationalTransaction(db, async (client) => {
+        const parent = await client.query<ProcessRow>("SELECT * FROM processes WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[process.workspaceId,process.id]);
+        if (!parent.rows[0]) throw new Error("PROCESS_NOT_FOUND");
+        if (iso(parent.rows[0].updated_at) !== process.updatedAt) throw new Error("PROCESS_STALE");
         const persisted = await client.query<VersionRow>("SELECT * FROM process_versions WHERE workspace_id=$1 AND process_id=$2",[process.workspaceId,process.id]);
         const known = new Set(persisted.rows.map((row)=>row.version_number));
         const incomingByNumber = new Map(process.versions.map((version)=>[version.version,version]));
@@ -53,15 +56,14 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
           if (incoming && (incoming.body !== row.body || incoming.title !== row.title || incoming.changeNote !== row.change_note)) throw new Error("PROCESS_VERSION_CONFLICT");
         }
         for (const version of process.versions.filter((item)=>!known.has(item.version))) await insertVersion(client,version);
-        const result = await client.query<ProcessRow>(`UPDATE processes SET area_id=$3,title=$4,summary=$5,status=$6,owner_profile_id=$7,current_version=$8,published_at=$9,archived_at=$10,updated_at=NOW()
+        const result = await client.query<ProcessRow>(`UPDATE processes SET area_id=$3,title=$4,summary=$5,status=$6,owner_profile_id=$7,current_version=$8,published_at=$9,archived_at=$10,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
           WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[process.workspaceId,process.id,process.areaId,process.title,process.summary,process.status,process.ownerProfileId,process.currentVersion.version,process.publishedAt,process.archivedAt]);
-        if (!result.rows[0]) throw new Error("PROCESS_NOT_FOUND");
         await audit(client,process.workspaceId,"process",process.id,"update",process.currentVersion.editorProfileId);
         return (await hydrate(client,result.rows))[0]!;
       });
     },
     async deleteProcess(workspaceId, processId) {
-      await inTransaction(db, async (client)=>{
+      await withOperationalTransaction(db, async (client)=>{
         await client.query("UPDATE processes SET status='archived',archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,processId]);
         await audit(client,workspaceId,"process",processId,"archive");
       });

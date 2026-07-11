@@ -107,6 +107,16 @@ export function buildApp(options: BuildAppOptions = {}) {
       });
     }
 
+    if (error instanceof Error && (error.message === "PROCESS_STALE" || error.message === "TASK_OCCURRENCE_STALE")) {
+      return reply.status(409).send({
+        error: {
+          code: error.message,
+          message: "O registro mudou durante a operação. Atualize e tente novamente.",
+          details: {}
+        }
+      });
+    }
+
     if (error instanceof ZodError) {
       return reply.status(400).send({
         error: {

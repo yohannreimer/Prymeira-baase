@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { attachCleanupError } from "./migration-cleanup-errors";
 
 export type SqlResult<T> = { rows: T[]; rowCount?: number | null };
 export type OperationalClient = {
@@ -14,18 +15,29 @@ export function generatedId(prefix: string) {
   return `${prefix}_${randomUUID()}`;
 }
 
-export async function inTransaction<T>(db: OperationalPool, run: (client: OperationalClient) => Promise<T>) {
+export async function withOperationalTransaction<T>(db: OperationalPool, run: (client: OperationalClient) => Promise<T>) {
   const client = await db.connect();
+  let primaryError: unknown;
   try {
     await client.query("BEGIN");
     const result = await run(client);
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    primaryError = error;
+    try {
+      await client.query("ROLLBACK");
+    } catch (cleanupError) {
+      attachCleanupError(error, cleanupError);
+    }
     throw error;
   } finally {
-    client.release();
+    try {
+      client.release();
+    } catch (cleanupError) {
+      if (primaryError) attachCleanupError(primaryError, cleanupError);
+      else throw cleanupError;
+    }
   }
 }
 

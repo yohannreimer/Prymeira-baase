@@ -444,6 +444,25 @@ const migrations: Migration[] = [{
       DROP CONSTRAINT IF EXISTS task_evidence_workspace_id_profile_id_fkey;
 
   `
+}, {
+  version: 4,
+  name: "active_company_uniqueness",
+  sql: `
+    ALTER TABLE areas
+      DROP CONSTRAINT IF EXISTS areas_workspace_id_name_key;
+    ALTER TABLE role_templates
+      DROP CONSTRAINT IF EXISTS role_templates_workspace_id_area_id_name_key;
+    ALTER TABLE people
+      DROP CONSTRAINT IF EXISTS people_workspace_id_email_key;
+
+    CREATE UNIQUE INDEX areas_active_name_uidx
+      ON areas (workspace_id, name) WHERE archived_at IS NULL;
+    CREATE UNIQUE INDEX role_templates_active_name_uidx
+      ON role_templates (workspace_id, area_id, name) WHERE archived_at IS NULL;
+    CREATE UNIQUE INDEX people_active_email_uidx
+      ON people (workspace_id, email)
+      WHERE archived_at IS NULL AND email IS NOT NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

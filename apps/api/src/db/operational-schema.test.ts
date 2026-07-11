@@ -56,7 +56,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
   });
 
   it("checks out and releases exactly one migration client", async () => {

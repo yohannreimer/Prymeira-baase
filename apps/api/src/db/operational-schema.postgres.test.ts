@@ -66,7 +66,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
     });
   });
 
@@ -186,7 +186,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const before = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(before.rows.map((row) => row.version)).toEqual([1, 3]);
+      expect(before.rows.map((row) => row.version)).toEqual([1, 3, 4]);
       const oldConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -200,7 +200,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
       const upgradedConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -245,7 +245,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
       const v3Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; source_key: boolean; revision_snapshot: boolean; people_fks: number; active_order_index: boolean }>(
         `select
           exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
@@ -265,6 +265,39 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         people_fks: 0,
         active_order_index: true
       });
+    });
+  });
+
+  it("upgrades a genuine version 3 schema to active-only company uniqueness", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 3);
+      const before = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(before.rows.map((row) => row.version)).toEqual([1, 2, 3]);
+
+      await ensureOperationalSchema(pool);
+
+      const after = await pool.query<{ version: number }>(
+        "select version from baase_schema_migrations order by version"
+      );
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+      const catalog = await pool.query<{ full_constraints: number; partial_indexes: number }>(
+        `select
+          (select count(*)::int from pg_constraint c join pg_namespace n on n.oid=c.connamespace
+            where n.nspname=current_schema() and c.conname in (
+              'areas_workspace_id_name_key',
+              'role_templates_workspace_id_area_id_name_key',
+              'people_workspace_id_email_key'
+            )) full_constraints,
+          (select count(*)::int from pg_class c join pg_namespace n on n.oid=c.relnamespace
+            where n.nspname=current_schema() and c.relkind='i' and c.relname in (
+              'areas_active_name_uidx',
+              'role_templates_active_name_uidx',
+              'people_active_email_uidx'
+            )) partial_indexes`
+      );
+      expect(catalog.rows[0]).toEqual({ full_constraints: 0, partial_indexes: 3 });
     });
   });
 
@@ -297,7 +330,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const migrations = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(migrations.rows.map((row) => row.version)).toEqual([1, 3]);
+      expect(migrations.rows.map((row) => row.version)).toEqual([1, 3, 4]);
       const stableConstraint = await pool.query<{ count: number }>(
         `select count(*)::int as count
          from pg_constraint

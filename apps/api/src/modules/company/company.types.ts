@@ -117,4 +117,8 @@ export type CompanyRepository = {
   createTeamInvite(input: Omit<TeamInvite, "id" | "code" | "status" | "createdAt" | "updatedAt">): Promise<TeamInvite>;
   updateTeamInvite(invite: TeamInvite): Promise<TeamInvite>;
   deleteTeamInvite(workspaceId: string, inviteId: string): Promise<void>;
+  acceptTeamInviteAtomically?(
+    invite: TeamInvite,
+    member: Omit<TeamMember, "id" | "createdAt" | "updatedAt">
+  ): Promise<{ invite: TeamInvite; person: TeamMember }>;
 };

@@ -1,6 +1,6 @@
 import type { CompanyRoutine, RoutineRepository, RoutineTaskTemplate, TaskChecklistItem, TaskOccurrence } from "./routine.types";
 import { normalizeRoutineRecurrence } from "./routine-recurrence";
-import { audit, generatedId, inTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
+import { audit, generatedId, withOperationalTransaction, iso, type OperationalClient, type OperationalPool } from "../../db/operational-repository-support";
 
 type RoutineRow = { id:string;workspace_id:string;area_id:string|null;title:string;status:"active"|"archived";frequency:CompanyRoutine["frequency"];weekdays:string[];execution_mode:CompanyRoutine["executionMode"];approval_mode:CompanyRoutine["approvalMode"];evidence_policy:CompanyRoutine["evidencePolicy"];due_hint:string|null;created_by_profile_id:string;created_at:string|Date;updated_at:string|Date };
 type StepRow = { id:string;workspace_id:string;routine_id:string;title:string;process_id:string|null;due_hint:string|null;approval_mode:RoutineTaskTemplate["approvalMode"];evidence_policy:RoutineTaskTemplate["evidencePolicy"];sort_order:number };
@@ -64,7 +64,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
   return {
     async listRoutines(workspaceId){const r=await db.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND archived_at IS NULL ORDER BY created_at,id",[workspaceId]);return hydrateRoutines(db,r.rows);},
     async findRoutine(workspaceId,routineId){const r=await db.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);return (await hydrateRoutines(db,r.rows))[0]??null;},
-    async createRoutine(input){return inTransaction(db,async client=>{
+    async createRoutine(input){return withOperationalTransaction(db,async client=>{
       const id=generatedId("routine");
       const recurrence=normalizeRoutineRecurrence(input);
       await client.query(`INSERT INTO routines (id,workspace_id,area_id,title,status,frequency,weekdays,month_day,execution_mode,approval_mode,evidence_policy,due_hint,created_by_profile_id)
@@ -75,7 +75,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       const row=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2",[input.workspaceId,id]);
       return (await hydrateRoutines(client,row.rows))[0]!;
     });},
-    async updateRoutine(routine){return inTransaction(db,async client=>{
+    async updateRoutine(routine){return withOperationalTransaction(db,async client=>{
       const recurrence=normalizeRoutineRecurrence(routine);
       const result=await client.query<RoutineRow>(`UPDATE routines SET area_id=$3,title=$4,status=$5,frequency=$6,weekdays=$7,month_day=$8,execution_mode=$9,approval_mode=$10,evidence_policy=$11,due_hint=$12,archived_at=CASE WHEN $5='archived' THEN COALESCE(archived_at,NOW()) ELSE archived_at END,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
         WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[routine.workspaceId,routine.id,routine.areaId,routine.title,routine.status,recurrence.frequency,recurrence.weekdays,recurrence.frequency==="monthly"?1:null,routine.executionMode??"shared",routine.approvalMode??"direct",routine.evidencePolicy??"optional",routine.dueHint??null]);
@@ -90,7 +90,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       await audit(client,routine.workspaceId,"routine",routine.id,routine.status==="archived"?"archive":"update",routine.createdByProfileId);
       return (await hydrateRoutines(client,result.rows))[0]!;
     });},
-    async deleteRoutine(workspaceId,routineId){await inTransaction(db,async client=>{await client.query("UPDATE routines SET status='archived',archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);await audit(client,workspaceId,"routine",routineId,"archive");});},
+    async deleteRoutine(workspaceId,routineId){await withOperationalTransaction(db,async client=>{await client.query("UPDATE routines SET status='archived',archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);await audit(client,workspaceId,"routine",routineId,"archive");});},
     async listTaskOccurrences(workspaceId,filters={}){const params:unknown[]=[workspaceId];let sql="SELECT * FROM task_occurrences WHERE workspace_id=$1 AND archived_at IS NULL";if(filters.dueDate){params.push(filters.dueDate);sql+=` AND due_date=$${params.length}`;}if(filters.profileId){params.push(filters.profileId);sql+=` AND (assignee_profile_id IS NULL OR assignee_profile_id=$${params.length})`;}sql+=" ORDER BY created_at,id";const r=await db.query<TaskRow>(sql,params);return hydrateTasks(db,r.rows);},
     async findTaskOccurrence(workspaceId,taskId){const r=await db.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,taskId]);return (await hydrateTasks(db,r.rows))[0]??null;},
     async findTaskOccurrenceForTemplate(workspaceId,routineId,taskTemplateId,dueDate){
@@ -100,11 +100,12 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
         : await db.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND routine_step_id=$3 AND due_date=$4 AND archived_at IS NULL",[workspaceId,routineId,taskTemplateId,dueDate]);
       return (await hydrateTasks(db,r.rows))[0]??null;
     },
-    async createTaskOccurrence(input){return inTransaction(db,async client=>createOrReuseTask(client,input));},
-    async updateTaskOccurrence(task){return inTransaction(db,async client=>{
-      const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[task.workspaceId,task.id]);
+    async createTaskOccurrence(input){return withOperationalTransaction(db,async client=>createOrReuseTask(client,input));},
+    async updateTaskOccurrence(task){return withOperationalTransaction(db,async client=>{
+      const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[task.workspaceId,task.id]);
       if(!persisted.rows[0])throw new Error("TASK_NOT_FOUND");
-      const result=await client.query<TaskRow>(`UPDATE task_occurrences SET title=$3,area_id=$4,process_id=$5,assignee_profile_id=$6,due_hint=$7,approval_mode=$8,evidence_policy=$9,status=$10,due_date=$11,submitted_by_profile_id=$12,submitted_at=$13,reviewed_by_profile_id=$14,reviewed_at=$15,review_comment=$16,completed_at=CASE WHEN $10='completed' THEN COALESCE(completed_at,NOW()) ELSE completed_at END,updated_at=NOW()
+      if(iso(persisted.rows[0].updated_at)!==task.updatedAt)throw new Error("TASK_OCCURRENCE_STALE");
+      const result=await client.query<TaskRow>(`UPDATE task_occurrences SET title=$3,area_id=$4,process_id=$5,assignee_profile_id=$6,due_hint=$7,approval_mode=$8,evidence_policy=$9,status=$10,due_date=$11,submitted_by_profile_id=$12,submitted_at=$13,reviewed_by_profile_id=$14,reviewed_at=$15,review_comment=$16,completed_at=CASE WHEN $10='completed' THEN COALESCE(completed_at,NOW()) ELSE completed_at END,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
         WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[task.workspaceId,task.id,task.title,task.areaId??null,task.processId,task.assigneeProfileId,task.dueHint??null,task.approvalMode,task.evidencePolicy,task.status,task.dueDate,task.submittedByProfileId,task.submittedAt,task.reviewedByProfileId,task.reviewedAt,task.reviewComment]);
       await replaceChecklist(client,task.workspaceId,task.id,task.checklistItems??[]);
       await replaceEvidence(client,task);
@@ -112,7 +113,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       await audit(client,task.workspaceId,"task_occurrence",task.id,attribution.action,attribution.actorProfileId);
       return (await hydrateTasks(client,result.rows))[0]!;
     });},
-    async deleteTaskOccurrence(workspaceId,taskId){await inTransaction(db,async client=>{await client.query("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,taskId]);await audit(client,workspaceId,"task_occurrence",taskId,"archive");});}
+    async deleteTaskOccurrence(workspaceId,taskId){await withOperationalTransaction(db,async client=>{await client.query("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,taskId]);await audit(client,workspaceId,"task_occurrence",taskId,"archive");});}
   };
 }
 

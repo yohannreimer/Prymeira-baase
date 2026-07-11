@@ -6,7 +6,8 @@ import type {
   CreateTeamInviteInput,
   CreateTeamMemberInput,
   UpdateAreaInput,
-  UpdateTeamMemberInput
+  UpdateTeamMemberInput,
+  TeamMember
 } from "./company.types";
 
 function normalizeRequiredName(value: string, errorCode: string) {
@@ -222,9 +223,7 @@ export function createCompanyService(repository: CompanyRepository) {
     async acceptTeamInvite(code: string, input: AcceptTeamInviteInput = {}) {
       const invite = await repository.findTeamInviteByCode(code.trim().toUpperCase());
       if (!invite) throw new Error("INVITE_NOT_FOUND");
-      if (invite.status !== "pending") throw new Error("INVITE_ALREADY_ACCEPTED");
-
-      const member = await repository.createTeamMember({
+      const memberInput = {
         workspaceId: invite.workspaceId,
         name: normalizeRequiredName(input.name ?? invite.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email ?? invite.email),
@@ -233,7 +232,14 @@ export function createCompanyService(repository: CompanyRepository) {
         roleTemplateId: invite.roleTemplateId,
         status: "active",
         createdByProfileId: normalizeOptionalText(input.acceptedByProfileId) ?? invite.createdByProfileId
-      });
+      } satisfies Omit<TeamMember, "id" | "createdAt" | "updatedAt">;
+
+      if (repository.acceptTeamInviteAtomically) {
+        return repository.acceptTeamInviteAtomically(invite, memberInput);
+      }
+      if (invite.status !== "pending") throw new Error("INVITE_ALREADY_ACCEPTED");
+
+      const member = await repository.createTeamMember(memberInput);
 
       const acceptedInvite = await repository.updateTeamInvite({
         ...invite,

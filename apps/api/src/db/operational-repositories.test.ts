@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { createCompanyService } from "../modules/company/company.service";
 import { createProcessService } from "../modules/processes/process.service";
+import type { ProcessRepository } from "../modules/processes/process.types";
 import { createRoutineService } from "../modules/routines/routine.service";
 import type { RoutineRepository } from "../modules/routines/routine.types";
 import { createInMemoryRoutineRepository } from "../modules/routines/in-memory-routine.repository";
@@ -126,7 +127,7 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       const otherArea = await company.createArea("workspace_b", { name: "Outra" });
       const role = await company.createRoleTemplate("workspace_a", { areaId: area.id, name: "Analista" });
       const person = await company.createTeamMember("workspace_a", {
-        name: "Ana", role: "employee", areaId: area.id, roleTemplateId: role.id,
+        name: "Ana", email: "ana@example.com", role: "employee", areaId: area.id, roleTemplateId: role.id,
         createdByProfileId: "account_owner"
       });
       const invite = await company.createTeamInvite("workspace_a", {
@@ -243,13 +244,14 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       const area = await company.createArea("workspace_a", { name: "Operacao" });
       const role = await company.createRoleTemplate("workspace_a", { areaId: area.id, name: "Caixa" });
       const person = await company.createTeamMember("workspace_a", {
-        name: "Ana", role: "employee", areaId: area.id, roleTemplateId: role.id,
+        name: "Ana", email: "ana@example.com", role: "employee", areaId: area.id, roleTemplateId: role.id,
         createdByProfileId: "account_owner"
       });
 
       await company.updateArea("workspace_a", area.id, { name: "Operacao diaria", description: "Atualizada" });
       await company.updateTeamMember("workspace_a", person.id, {
-        name: "Ana Silva", role: "manager", areaId: area.id, roleTemplateId: role.id, status: "active"
+        name: "Ana Silva", email: "ana@example.com", role: "manager",
+        areaId: area.id, roleTemplateId: role.id, status: "active"
       });
       expect(await company.listAreas("workspace_b")).toEqual([]);
       expect(await bundle.companyRepository.findTeamMember("workspace_b", person.id)).toBeNull();
@@ -270,6 +272,47 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
           (select count(*)::int from areas where workspace_id='workspace_a' and archived_at is not null) areas`
       );
       expect(history.rows[0]).toEqual({ people: 1, roles: 1, areas: 1 });
+
+      const replacementArea = await company.createArea("workspace_a", { name: "Operacao diaria" });
+      const replacementRole = await company.createRoleTemplate("workspace_a", { areaId: replacementArea.id, name: "Caixa" });
+      const replacementPerson = await company.createTeamMember("workspace_a", {
+        name: "Outra Ana", email: "ana@example.com", role: "employee",
+        areaId: replacementArea.id, roleTemplateId: replacementRole.id,
+        createdByProfileId: "account_owner"
+      });
+      expect(replacementPerson.email).toBe("ana@example.com");
+    });
+  });
+
+  it("accepts delegated JSONB invites atomically with retry and concurrent idempotency", async () => {
+    await withPostgresSchema(async (pool) => {
+      const jsonb = createPostgresRepositoryBundle(pool);
+      const normalRepository = createRelationalOperationalRepositoryBundle(pool, jsonb.companyRepository).companyRepository!;
+      const normalService = createCompanyService(normalRepository);
+      const invite = await normalService.createTeamInvite("workspace_a", {
+        name: "Convidada", email: "invite@example.com", role: "employee",
+        createdByProfileId: "account_owner"
+      });
+
+      const failingRepository = createRelationalOperationalRepositoryBundle(
+        failOnQuery(pool, "UPDATE baase_records", "INJECTED_INVITE_UPDATE_FAILURE"),
+        jsonb.companyRepository
+      ).companyRepository!;
+      await expect(createCompanyService(failingRepository).acceptTeamInvite(invite.code, {
+        acceptedByProfileId: "account_acceptor"
+      })).rejects.toThrow("INJECTED_INVITE_UPDATE_FAILURE");
+      expect((await pool.query("SELECT id FROM people WHERE workspace_id=$1", ["workspace_a"])).rows).toEqual([]);
+      expect((await jsonb.companyRepository.listTeamInvites("workspace_a"))[0]?.status).toBe("pending");
+
+      const accepted = await Promise.all([
+        normalService.acceptTeamInvite(invite.code, { acceptedByProfileId: "account_acceptor" }),
+        normalService.acceptTeamInvite(invite.code, { acceptedByProfileId: "account_acceptor" })
+      ]);
+      expect(accepted[0].person.id).toBe(accepted[1].person.id);
+      expect(accepted[0].invite.status).toBe("accepted");
+      const retry = await normalService.acceptTeamInvite(invite.code, { acceptedByProfileId: "account_acceptor" });
+      expect(retry.person.id).toBe(accepted[0].person.id);
+      expect((await pool.query("SELECT id FROM people WHERE workspace_id=$1", ["workspace_a"])).rows).toHaveLength(1);
     });
   });
 
@@ -415,6 +458,90 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("rejects stale concurrent checklist/submit and approve/return task mutations", async () => {
+    await withPostgresSchema(async (pool) => {
+      const base = createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository;
+      const setup = createRoutineService(base);
+      const checklistTask = await setup.createManualTask("workspace_a", "account_owner", {
+        title: "Concorrente", dueDate: "2026-07-22", checklistItems: ["Original"]
+      });
+      const concurrentService = createRoutineService(barrierRoutineRepository(base));
+      const checklistSubmit = await Promise.allSettled([
+        concurrentService.updateTaskChecklist("workspace_a", checklistTask.id, "account_owner", {
+          checklistItems: [{ title: "Alterado", done: true }]
+        }),
+        concurrentService.submitTask("workspace_a", checklistTask.id, "account_owner", { comment: "Enviado" })
+      ]);
+      expect(checklistSubmit.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(rejectionMessages(checklistSubmit)).toEqual(["TASK_OCCURRENCE_STALE"]);
+      const checklistFinal = await base.findTaskOccurrence("workspace_a", checklistTask.id);
+      if (checklistFinal?.status === "completed") {
+        expect(checklistFinal.checklistItems).toEqual([{ title: "Original", done: false }]);
+      } else {
+        expect(checklistFinal).toMatchObject({
+          status: "pending",
+          checklistItems: [{ title: "Alterado", done: true }],
+          submittedByProfileId: null
+        });
+      }
+
+      const reviewTask = await setup.createManualTask("workspace_a", "account_owner", {
+        title: "Revisao concorrente", dueDate: "2026-07-22", approvalMode: "approval_required"
+      });
+      await setup.submitTask("workspace_a", reviewTask.id, "account_owner", {});
+      const reviewService = createRoutineService(barrierRoutineRepository(base));
+      const reviewResults = await Promise.allSettled([
+        reviewService.approveTask("workspace_a", reviewTask.id, "reviewer_approve"),
+        reviewService.returnTask("workspace_a", reviewTask.id, "reviewer_return", { comment: "Ajustar" })
+      ]);
+      expect(reviewResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(rejectionMessages(reviewResults)).toEqual(["TASK_OCCURRENCE_STALE"]);
+      const reviewFinal = await base.findTaskOccurrence("workspace_a", reviewTask.id);
+      expect(["completed", "needs_adjustment"]).toContain(reviewFinal?.status);
+      expect(["reviewer_approve", "reviewer_return"]).toContain(reviewFinal?.reviewedByProfileId);
+    });
+  });
+
+  it("serializes concurrent process versions and publish/version transitions", async () => {
+    await withPostgresSchema(async (pool) => {
+      const base = createConfiguredPostgresRepositoryBundle(pool, "relational").processRepository;
+      const setup = createProcessService(base);
+      const process = await setup.createProcess("workspace_a", "account_owner", {
+        title: "Concorrencia", body: "Versao inicial"
+      });
+      const versionService = createProcessService(barrierProcessRepository(base));
+      const versionResults = await Promise.allSettled([
+        versionService.createProcessVersion("workspace_a", process.id, "editor_a", {
+          body: "Versao A", changeNote: "A"
+        }),
+        versionService.createProcessVersion("workspace_a", process.id, "editor_b", {
+          body: "Versao B", changeNote: "B"
+        })
+      ]);
+      expect(versionResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(rejectionMessages(versionResults)).toEqual(["PROCESS_STALE"]);
+      expect((await base.findProcess("workspace_a", process.id))?.versions).toHaveLength(2);
+
+      const transition = await setup.createProcess("workspace_a", "account_owner", {
+        title: "Publicacao", body: "Inicial"
+      });
+      const transitionService = createProcessService(barrierProcessRepository(base));
+      const transitionResults = await Promise.allSettled([
+        transitionService.publishProcess("workspace_a", transition.id),
+        transitionService.createProcessVersion("workspace_a", transition.id, "editor", {
+          body: "Nova versao", changeNote: "Mudanca"
+        })
+      ]);
+      expect(transitionResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(rejectionMessages(transitionResults)).toEqual(["PROCESS_STALE"]);
+      const final = await base.findProcess("workspace_a", transition.id);
+      expect([
+        { status: "published", version: 1 },
+        { status: "draft", version: 2 }
+      ]).toContainEqual({ status: final?.status, version: final?.currentVersion.version });
+    });
+  });
+
   it("repairs partial generation, remains concurrent-idempotent, and freezes older revisions", async () => {
     await withPostgresSchema(async (pool) => {
       const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
@@ -473,4 +600,42 @@ function failOnQuery(pool: Pool, needle: string, message: string): OperationalPo
       };
     }
   };
+}
+
+function barrierRoutineRepository(base: RoutineRepository): RoutineRepository {
+  let reads = 0;
+  let releaseReads!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseReads = resolve; });
+  return {
+    ...base,
+    async findTaskOccurrence(workspaceId, taskId) {
+      const task = await base.findTaskOccurrence(workspaceId, taskId);
+      reads += 1;
+      if (reads === 2) releaseReads();
+      await gate;
+      return task;
+    }
+  };
+}
+
+function barrierProcessRepository(base: ProcessRepository): ProcessRepository {
+  let reads = 0;
+  let releaseReads!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseReads = resolve; });
+  return {
+    ...base,
+    async findProcess(workspaceId, processId) {
+      const process = await base.findProcess(workspaceId, processId);
+      reads += 1;
+      if (reads === 2) releaseReads();
+      await gate;
+      return process;
+    }
+  };
+}
+
+function rejectionMessages(results: PromiseSettledResult<unknown>[]) {
+  return results.flatMap((result) => result.status === "rejected" && result.reason instanceof Error
+    ? [result.reason.message]
+    : []);
 }
