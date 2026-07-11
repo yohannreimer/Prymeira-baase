@@ -65,6 +65,16 @@ export type OperationalBackfillReport = {
   }>;
   conflictingRecords?: ConflictingRecord[];
   malformedRecords?: MalformedRecord[];
+  diagnostics?: {
+    categories: Record<"orphanReferences" | "skippedRecords" | "conflictingRecords" | "malformedRecords", {
+      total: number;
+      sampled: number;
+      truncated: boolean;
+    }>;
+    global: { total: number; sampled: number; truncated: boolean };
+    categorySampleCap: number;
+    globalSampleCap: number;
+  };
   expansionCounts?: ExpansionCounts;
   reconciled: boolean;
 };
@@ -170,6 +180,8 @@ export type WorkspacePlan = {
   skippedRecords: SkippedRecord[];
   conflictingRecords: ConflictingRecord[];
   malformedRecords: MalformedRecord[];
+  diagnosticTotals: import("./diagnostics").DiagnosticTotals;
+  stagedConflictTotal: number;
   expansionCounts: ExpansionCounts;
   routineOccurrenceContributions: RoutineOccurrenceContribution[];
 };

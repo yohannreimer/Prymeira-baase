@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { appendDiagnosticSample } from "./diagnostics";
 import {
   emptyEntityCounts,
   type EntityCounts,
@@ -8,8 +9,9 @@ import {
   type MalformedRecord
 } from "./types";
 
-const requiredText = z.string().trim().min(1);
+const requiredText = z.string().refine((value) => value.trim().length > 0, "Required");
 const optionalText = z.string().optional().nullable();
+const optionalNonBlankText = requiredText.optional().nullable();
 const optionalReference = requiredText.optional().nullable();
 const optionalTimestamp = z.string().refine(isValidTimestamp, "Invalid timestamp").optional().nullable();
 const optionalTime = z.string().refine(isValidTime, "Invalid time").optional().nullable();
@@ -67,9 +69,9 @@ const checklistSchema = z.object({
 const evidenceSchema = z.object({
   id: optionalReference,
   profileId: optionalReference,
-  comment: optionalText,
-  photoUrl: optionalText,
-  objectKey: optionalText,
+  comment: optionalNonBlankText,
+  photoUrl: optionalNonBlankText,
+  objectKey: optionalNonBlankText,
   createdAt: optionalTimestamp
 }).passthrough().superRefine((data, context) => {
   const hasComment = Boolean(data.comment?.trim());
@@ -168,9 +170,9 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
     processId: optionalReference,
     assigneeProfileId: optionalReference,
     audienceKey: optionalReference,
-    areaNameSnapshot: optionalText,
-    routineTitleSnapshot: optionalText,
-    stepTitleSnapshot: optionalText,
+    areaNameSnapshot: optionalNonBlankText,
+    routineTitleSnapshot: optionalNonBlankText,
+    stepTitleSnapshot: optionalNonBlankText,
     status: z.enum([
       "pending",
       "in_progress",
@@ -192,7 +194,7 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
     submittedAt: optionalTimestamp,
     reviewedByProfileId: optionalReference,
     reviewedAt: optionalTimestamp,
-    reviewComment: optionalText,
+    reviewComment: optionalNonBlankText,
     completedAt: optionalTimestamp,
     ...timestamps
   }).passthrough().superRefine((data, context) => {
@@ -231,6 +233,7 @@ const schemas: Record<LegacyKind, z.ZodType<JsonRecord>> = {
 export type ParsedLegacyWorkspace = {
   validRows: Array<LegacyRow & { data: JsonRecord }>;
   malformedRecords: MalformedRecord[];
+  malformedTotal: number;
   sourceCounts: EntityCounts;
 };
 
@@ -240,6 +243,7 @@ export function parseLegacyWorkspace(
 ): ParsedLegacyWorkspace {
   const validRows: ParsedLegacyWorkspace["validRows"] = [];
   const malformedRecords: MalformedRecord[] = [];
+  let malformedTotal = 0;
   const sourceCounts = emptyEntityCounts();
 
   for (const row of rows) {
@@ -250,7 +254,8 @@ export function parseLegacyWorkspace(
       continue;
     }
     for (const issue of result.error.issues) {
-      malformedRecords.push({
+      malformedTotal += 1;
+      appendDiagnosticSample(malformedRecords, {
         workspaceId,
         kind: row.kind,
         entityId: row.id,
@@ -260,7 +265,7 @@ export function parseLegacyWorkspace(
     }
   }
 
-  return { validRows, malformedRecords, sourceCounts };
+  return { validRows, malformedRecords, malformedTotal, sourceCounts };
 }
 
 function addRawSourceCounts(counts: EntityCounts, row: LegacyRow) {

@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import type { ErrorWithCleanup } from "./migration-cleanup-errors";
 import {
   backfillOperationalData,
   type OperationalBackfillPool,
@@ -47,16 +48,25 @@ export async function runOperationalMigration(options: OperationalMigrationOptio
     stdout.write(`${JSON.stringify(report)}\n`);
     exitCode = report.reconciled ? 0 : 1;
   } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    writeError(stderr, error);
     exitCode = 1;
   }
   try {
     await pool.end();
   } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    writeError(stderr, error);
     exitCode = 1;
   }
   return exitCode;
+}
+
+function writeError(stderr: Writer, error: unknown, label = "Migration error") {
+  const rendered = error instanceof Error ? error.stack ?? error.message : String(error);
+  stderr.write(`${label}: ${rendered}\n`);
+  if (!(error instanceof Error)) return;
+  for (const cleanup of (error as ErrorWithCleanup).cleanupErrors ?? []) {
+    writeError(stderr, cleanup, "Cleanup error");
+  }
 }
 
 const entrypoint = process.argv[1];

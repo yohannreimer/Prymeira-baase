@@ -26,7 +26,21 @@ export function canonicalJson(value: unknown) {
   return JSON.stringify(canonicalize(value));
 }
 
-export function deterministicBackfillId(prefix: string, identity: Record<string, unknown>) {
+export type DeterministicIdentityByPrefix = {
+  legacy_step: { entityKind: "routine_step"; workspaceId: string; routineId: string; sortOrder: number };
+  legacy_unresolved: { entityKind: "operational_audit"; workspaceId: string; entityType: string; entityId: string; field: string; legacyValue: string };
+  legacy_individual_execution_step: { entityKind: "task_occurrence"; workspaceId: string; sourceTaskOccurrenceId: string; routineId: string; routineStepId: string; assigneeProfileId: string };
+  legacy_process_version: { entityKind: "process_version"; workspaceId: string; processId: string; versionNumber: number };
+  legacy_occurrence: { entityKind: "routine_occurrence"; workspaceId: string; routineId: string; dueDate: string; audienceKey: string };
+  legacy_checklist: { entityKind: "task_checklist_item"; workspaceId: string; taskOccurrenceId: string; sortOrder: number };
+  legacy_evidence: { entityKind: "task_evidence"; workspaceId: string; taskOccurrenceId: string; sourceEvidenceId: string | null; sourceIndex: number; evidenceKind: string };
+  legacy_assignment: { entityKind: "routine_assignment"; workspaceId: string; routineId: string; scope: { type: "general" } | { type: "step"; stepId: string }; assignee: { type: "profile" | "role"; id: string } };
+};
+
+export function deterministicBackfillId<P extends keyof DeterministicIdentityByPrefix>(
+  prefix: P,
+  identity: DeterministicIdentityByPrefix[P]
+): `${P}_${string}` {
   const digest = createHash("sha256")
     .update(canonicalJson({ prefix, identity }))
     .digest("hex")

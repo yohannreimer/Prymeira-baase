@@ -228,7 +228,7 @@ function plannedReference(
 }
 
 function addString(target: Set<string>, value: unknown) {
-  if (typeof value === "string" && value.trim()) target.add(value.trim());
+  if (typeof value === "string" && value.trim()) target.add(value);
 }
 
 function addStringArray(target: Set<string>, value: unknown) {
@@ -237,7 +237,7 @@ function addStringArray(target: Set<string>, value: unknown) {
 }
 
 function string(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function objectArray(value: unknown): JsonRecord[] {

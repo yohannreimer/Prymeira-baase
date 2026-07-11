@@ -1,6 +1,8 @@
 import type { TaskStatus } from "@prymeira/baase-shared";
+import { appendDiagnosticSample, emptyDiagnosticTotals } from "./diagnostics";
 import { canonicalJson, deterministicBackfillId } from "./deterministic-ids";
 import type { ParsedLegacyWorkspace } from "./legacy-parse";
+import { indexedRow, indexOrphan, indexRow } from "./planner-indexes";
 import {
   emptyExpansionCounts,
   emptyPlannedRows,
@@ -64,6 +66,11 @@ export function buildWorkspacePlan(
     skippedRecords: [],
     conflictingRecords: [],
     malformedRecords: [...parsed.malformedRecords],
+    diagnosticTotals: {
+      ...emptyDiagnosticTotals(),
+      malformedRecords: parsed.malformedTotal
+    },
+    stagedConflictTotal: 0,
     expansionCounts: emptyExpansionCounts(),
     routineOccurrenceContributions: []
   };
@@ -281,26 +288,7 @@ export function buildWorkspacePlan(
   const uniqueRoutineOccurrenceGroups = occurrenceGroups.size;
   plan.sourceCounts.routine_occurrences = uniqueRoutineOccurrenceGroups;
 
-  for (const orphan of plan.orphanReferences) {
-    const id = deterministicBackfillId("legacy_unresolved", {
-      entityKind: "operational_audit",
-      workspaceId,
-      entityType: orphan.entityType,
-      entityId: orphan.entityId,
-      field: orphan.field,
-      legacyValue: orphan.legacyValue
-    });
-    addRow(plan, "operational_audit_log", "operational_audit", id, {
-      id,
-      workspace_id: workspaceId,
-      entity_type: orphan.entityType,
-      entity_id: orphan.entityId,
-      action: "legacy_reference_unresolved",
-      actor_profile_id: null,
-      details: { field: orphan.field, legacyValue: orphan.legacyValue }
-    });
-  }
-  plan.sourceCounts.operational_audit_log = plan.orphanReferences.length;
+  plan.sourceCounts.operational_audit_log = plan.diagnosticTotals.orphanReferences;
   return plan;
 }
 
@@ -401,7 +389,7 @@ function planIndividualRoutineExecution(
       entityKind: "task_occurrence",
       workspaceId: plan.workspaceId,
       sourceTaskOccurrenceId: row.id,
-      routineId,
+      routineId: routine.entityId,
       routineStepId: step.entityId,
       assigneeProfileId
     });
@@ -959,7 +947,7 @@ function addRow(
   entityId: string,
   values: JsonRecord
 ) {
-  const existing = plan.rows[table].find((row) => row.entityId === entityId);
+  const existing = indexedRow(plan, table, entityId);
   if (existing) {
     addConflict(
       plan,
@@ -974,13 +962,32 @@ function addRow(
   }
   const row = { table, entityType, entityId, values };
   plan.rows[table].push(row);
+  indexRow(plan, row);
   return row;
 }
 
 function addOrphan(plan: WorkspacePlan, entityType: string, entityId: string, field: string, legacyValue: string) {
-  if (plan.orphanReferences.some((item) => item.entityType === entityType
-    && item.entityId === entityId && item.field === field && item.legacyValue === legacyValue)) return;
-  plan.orphanReferences.push({ workspaceId: plan.workspaceId, entityType, entityId, field, legacyValue });
+  const key = `${entityType}\u0000${entityId}\u0000${field}\u0000${legacyValue}`;
+  if (!indexOrphan(plan, key)) return;
+  plan.diagnosticTotals.orphanReferences += 1;
+  appendDiagnosticSample(plan.orphanReferences, { workspaceId: plan.workspaceId, entityType, entityId, field, legacyValue });
+  const id = deterministicBackfillId("legacy_unresolved", {
+    entityKind: "operational_audit",
+    workspaceId: plan.workspaceId,
+    entityType,
+    entityId,
+    field,
+    legacyValue
+  });
+  addRow(plan, "operational_audit_log", "operational_audit", id, {
+    id,
+    workspace_id: plan.workspaceId,
+    entity_type: entityType,
+    entity_id: entityId,
+    action: "legacy_reference_unresolved",
+    actor_profile_id: null,
+    details: { field, legacyValue }
+  });
 }
 
 function addSkipped(
@@ -990,7 +997,8 @@ function addSkipped(
   entityId: string,
   reason: string
 ) {
-  plan.skippedRecords.push({ workspaceId: plan.workspaceId, table, entityType, entityId, reason });
+  plan.diagnosticTotals.skippedRecords += 1;
+  appendDiagnosticSample(plan.skippedRecords, { workspaceId: plan.workspaceId, table, entityType, entityId, reason });
 }
 
 function addConflict(
@@ -1002,7 +1010,10 @@ function addConflict(
   expected?: unknown,
   actual?: unknown
 ) {
-  plan.conflictingRecords.push({
+  plan.diagnosticTotals.conflictingRecords += 1;
+  if (reason === "routine occurrence contributors disagree on parent fields"
+    || reason === "duplicate source routine task semantic key") plan.stagedConflictTotal += 1;
+  appendDiagnosticSample(plan.conflictingRecords, {
     workspaceId: plan.workspaceId,
     entityType,
     entityId,
@@ -1151,8 +1162,8 @@ function text(value: unknown) {
 }
 
 function optionalText(value: unknown) {
-  const result = text(value)?.trim();
-  return result || null;
+  const result = text(value);
+  return result && result.trim().length > 0 ? result : null;
 }
 
 function requiredText(value: unknown) {

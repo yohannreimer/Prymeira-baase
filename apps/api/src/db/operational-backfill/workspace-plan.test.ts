@@ -3,6 +3,7 @@ import type { TaskStatus } from "@prymeira/baase-shared";
 import { parseLegacyWorkspace } from "./legacy-parse";
 import type { LegacyRow } from "./types";
 import { buildWorkspacePlan } from "./workspace-plan";
+import { plannerIndexOperationCount } from "./planner-indexes";
 
 const timestamp = "2026-07-10T12:00:00.000Z";
 
@@ -366,6 +367,19 @@ describe("operational workspace planning", () => {
     expect(plan.rows.task_occurrences).toHaveLength(1);
     expect(plan.rows.task_occurrences[0]?.entityId).toBe("task_shared");
     expect(plan.rows.task_occurrences[0]?.values.origin).toBe("routine");
+  });
+
+  it("indexes duplicate target ids with linear lookup operations", () => {
+    const count = 5_000;
+    const rows = Array.from({ length: count }, (_, index) => row("area", `area_${index}`, {
+      name: `Area ${index}`,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
+    const plan = buildWorkspacePlan("workspace_a", parseLegacyWorkspace("workspace_a", rows));
+
+    expect(plan.rows.areas).toHaveLength(count);
+    expect(plannerIndexOperationCount(plan)).toBe(count * 2);
   });
 });
 

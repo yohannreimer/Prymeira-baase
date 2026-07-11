@@ -1,4 +1,5 @@
 import { BACKFILL_BATCH_SIZE } from "./workspace-persist";
+import { emptyDiagnosticTotals } from "./diagnostics";
 import {
   emptyEntityCounts,
   emptyExpansionCounts,
@@ -12,6 +13,7 @@ import {
 } from "./types";
 
 const stageTable = "operational_backfill_occurrence_stage";
+const STAGE_CONFLICT_SAMPLE_ROW_LIMIT = 200;
 
 export async function initializeRoutineOccurrenceStage(client: OperationalBackfillClient) {
   await client.query(
@@ -93,10 +95,9 @@ export async function finalizeRoutineOccurrenceStage(
   workspaceId: string,
   consume: (plan: WorkspacePlan) => Promise<void>
 ) {
-  const conflicts = [
-    ...await readParentFieldConflicts(client, workspaceId),
-    ...await readDuplicateTaskConflicts(client, workspaceId)
-  ];
+  const parentConflicts = await readParentFieldConflicts(client, workspaceId);
+  const duplicateConflicts = await readDuplicateTaskConflicts(client, workspaceId);
+  const conflicts = [...parentConflicts.samples, ...duplicateConflicts.samples];
   const countResult = await client.query<{ count: number }>(
     `select count(distinct parent_id)::int as count
      from operational_backfill_occurrence_stage where workspace_id = $1`,
@@ -147,10 +148,25 @@ export async function finalizeRoutineOccurrenceStage(
     cursor = String(result.rows.at(-1)?.id);
     if (result.rows.length < BACKFILL_BATCH_SIZE) break;
   }
-  return { sourceCount, conflicts };
+  return { sourceCount, conflicts, conflictTotal: parentConflicts.total + duplicateConflicts.total };
 }
 
 async function readParentFieldConflicts(client: OperationalBackfillClient, workspaceId: string) {
+  const countResult = await client.query<{ count: number; first_parent_id: string | null }>(
+    `select count(*)::int as count, min(parent_id) as first_parent_id from (
+      select parent_id
+      from operational_backfill_occurrence_stage
+      where workspace_id = $1
+      group by parent_id
+      having count(distinct routine_id) > 1
+        or count(distinct due_date) > 1
+        or count(distinct audience_key) > 1
+        or count(distinct area_name_snapshot) > 1
+        or (count(area_name_snapshot) > 0 and count(area_name_snapshot) < count(*))
+        or count(distinct routine_title_snapshot) > 1
+    ) conflicts`,
+    [workspaceId]
+  );
   const result = await client.query<JsonRecord>(
     `with inconsistent as (
       select parent_id
@@ -168,8 +184,9 @@ async function readParentFieldConflicts(client: OperationalBackfillClient, works
     from operational_backfill_occurrence_stage stage
     join inconsistent using (parent_id)
     where stage.workspace_id = $1
-    order by stage.parent_id, stage.source_task_id, stage.task_id`,
-    [workspaceId]
+    order by stage.parent_id, stage.source_task_id, stage.task_id
+    limit $2`,
+    [workspaceId, STAGE_CONFLICT_SAMPLE_ROW_LIMIT]
   );
   const byParent = groupRows(result.rows, "parent_id");
   const conflicts: ConflictingRecord[] = [];
@@ -191,10 +208,18 @@ async function readParentFieldConflicts(client: OperationalBackfillClient, works
       }
     });
   }
-  return conflicts;
+  return {
+    samples: conflicts,
+    total: Math.max(Number(countResult.rows[0]?.count ?? 0), conflicts.length)
+  };
 }
 
 async function readDuplicateTaskConflicts(client: OperationalBackfillClient, workspaceId: string) {
+  const countResult = await client.query<{ count: number }>(
+    `select (count(*) - count(distinct task_semantic_key))::int as count
+     from operational_backfill_occurrence_stage where workspace_id = $1`,
+    [workspaceId]
+  );
   const result = await client.query<JsonRecord>(
     `with duplicates as (
       select parent_id, task_semantic_key
@@ -207,8 +232,9 @@ async function readDuplicateTaskConflicts(client: OperationalBackfillClient, wor
     from operational_backfill_occurrence_stage stage
     join duplicates using (parent_id, task_semantic_key)
     where stage.workspace_id = $1
-    order by stage.parent_id, stage.task_semantic_key, stage.source_task_id, stage.task_id`,
-    [workspaceId]
+    order by stage.parent_id, stage.task_semantic_key, stage.source_task_id, stage.task_id
+    limit $2`,
+    [workspaceId, STAGE_CONFLICT_SAMPLE_ROW_LIMIT]
   );
   const grouped = groupRows(result.rows, "task_semantic_key");
   const conflicts: ConflictingRecord[] = [];
@@ -226,7 +252,7 @@ async function readDuplicateTaskConflicts(client: OperationalBackfillClient, wor
       });
     }
   }
-  return conflicts;
+  return { samples: conflicts, total: Number(countResult.rows[0]?.count ?? 0) };
 }
 
 function emptyStagePlan(workspaceId: string): WorkspacePlan {
@@ -238,6 +264,8 @@ function emptyStagePlan(workspaceId: string): WorkspacePlan {
     skippedRecords: [],
     conflictingRecords: [],
     malformedRecords: [],
+    diagnosticTotals: emptyDiagnosticTotals(),
+    stagedConflictTotal: 0,
     expansionCounts: emptyExpansionCounts(),
     routineOccurrenceContributions: []
   };

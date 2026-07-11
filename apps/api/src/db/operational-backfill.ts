@@ -1,4 +1,5 @@
 import { attachCleanupError } from "./migration-cleanup-errors";
+import { DiagnosticCollector } from "./operational-backfill/diagnostics";
 import { parseLegacyWorkspace, type ParsedLegacyWorkspace } from "./operational-backfill/legacy-parse";
 import { readTargetCounts, reconcileWorkspace } from "./operational-backfill/reconcile";
 import {
@@ -73,6 +74,7 @@ export async function backfillOperationalData(
     const skippedRecords: SkippedRecord[] = [];
     const conflictingRecords: ConflictingRecord[] = [];
     const malformedRecords: MalformedRecord[] = [];
+    const diagnostics = new DiagnosticCollector();
     const expansionCounts = emptyExpansionCounts();
     let insertedTotal = 0;
 
@@ -89,13 +91,21 @@ export async function backfillOperationalData(
             );
             plan.rows.routine_occurrences = [];
             plan.sourceCounts.routine_occurrences = 0;
-            plan.conflictingRecords = plan.conflictingRecords.filter((item) => !isStagedConflict(item));
+            const retained = plan.conflictingRecords.filter((item) => !isStagedConflict(item));
+            plan.diagnosticTotals.conflictingRecords -= plan.stagedConflictTotal;
+            plan.conflictingRecords = retained;
           }
           insertedTotal += await persistWorkspacePlan(client, plan);
-          conflictingRecords.push(...plan.conflictingRecords, ...await reconcileWorkspace(client, plan));
-          malformedRecords.push(...plan.malformedRecords);
-          orphanReferences.push(...plan.orphanReferences);
-          skippedRecords.push(...plan.skippedRecords);
+          diagnostics.add("conflictingRecords", conflictingRecords, plan.conflictingRecords,
+            plan.diagnosticTotals.conflictingRecords);
+          const reconcileConflicts = await reconcileWorkspace(client, plan);
+          diagnostics.add("conflictingRecords", conflictingRecords, reconcileConflicts);
+          diagnostics.add("malformedRecords", malformedRecords, plan.malformedRecords,
+            plan.diagnosticTotals.malformedRecords);
+          diagnostics.add("orphanReferences", orphanReferences, plan.orphanReferences,
+            plan.diagnosticTotals.orphanReferences);
+          diagnostics.add("skippedRecords", skippedRecords, plan.skippedRecords,
+            plan.diagnosticTotals.skippedRecords);
           addCounts(sourceCounts, plan.sourceCounts);
           addExpansionCounts(expansionCounts, plan.expansionCounts);
           for (const table of entityTables) expectedCounts[table] += plan.rows[table].length;
@@ -142,11 +152,11 @@ export async function backfillOperationalData(
         }
         const finalized = await finalizeRoutineOccurrenceStage(client, workspaceId, async (plan) => {
           insertedTotal += await persistWorkspacePlan(client, plan);
-          conflictingRecords.push(...await reconcileWorkspace(client, plan));
+          diagnostics.add("conflictingRecords", conflictingRecords, await reconcileWorkspace(client, plan));
           expectedCounts.routine_occurrences += plan.rows.routine_occurrences.length;
         });
         sourceCounts.routine_occurrences += finalized.sourceCount;
-        conflictingRecords.push(...finalized.conflicts);
+        diagnostics.add("conflictingRecords", conflictingRecords, finalized.conflicts, finalized.conflictTotal);
         await clearRoutineOccurrenceStage(client, workspaceId);
         await client.query("RELEASE SAVEPOINT operational_workspace");
       } catch (error) {
@@ -161,6 +171,7 @@ export async function backfillOperationalData(
 
     const targetCounts = await readTargetCounts(client);
     const countsMatch = entityTables.every((table) => targetCounts[table] === expectedCounts[table]);
+    const diagnosticSamples = { orphanReferences, skippedRecords, conflictingRecords, malformedRecords };
     const report: OperationalBackfillReport = {
       sourceCounts,
       targetCounts,
@@ -170,7 +181,10 @@ export async function backfillOperationalData(
       conflictingRecords: sortConflicts(conflictingRecords),
       malformedRecords: sortMalformed(malformedRecords),
       expansionCounts,
-      reconciled: countsMatch && conflictingRecords.length === 0 && malformedRecords.length === 0
+      diagnostics: diagnostics.metadata(diagnosticSamples),
+      reconciled: countsMatch
+        && diagnostics.totals.conflictingRecords === 0
+        && diagnostics.totals.malformedRecords === 0
     };
     await client.query("COMMIT");
     return report;
@@ -203,6 +217,7 @@ async function expandIndividualAggregate(
   const parsed: ParsedLegacyWorkspace = {
     validRows: [row],
     malformedRecords: [],
+    malformedTotal: 0,
     sourceCounts: emptyEntityCounts()
   };
   let cursor: Parameters<typeof loadRoutineStepReferencePage>[3] = null;

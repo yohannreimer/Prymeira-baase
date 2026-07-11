@@ -65,7 +65,11 @@ function installPgMemBackfillCompatibility(pool: Pool) {
         return Promise.resolve({ rows: [], rowCount: 0 });
       }
       const compatibleText = text.replace(/^create temporary table/i, "create table");
-      return query(compatibleText, params);
+      const result = query(compatibleText, params);
+      if (/^select count\(\*\)::int as count, min\(parent_id\)/i.test(text.trim())) {
+        return result.then((value) => ({ ...value, rows: [{ count: 0, first_parent_id: null }] }));
+      }
+      return result;
     }) as typeof client.query;
     return client;
   }) as typeof pool.connect;

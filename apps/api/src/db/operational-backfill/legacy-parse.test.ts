@@ -16,6 +16,36 @@ function row(kind: LegacyRow["kind"], id: string, data: unknown): LegacyRow {
 }
 
 describe("legacy operational parsing", () => {
+  it("preserves valid strings and exact references while rejecting whitespace-only text", () => {
+    const valid = row("task_occurrence", "task_spaced", task({
+      title: "  Conferir caixa  ",
+      areaId: " area exact ",
+      areaNameSnapshot: "  Financeiro antigo  ",
+      stepTitleSnapshot: "  Conferir comprovante  ",
+      reviewComment: "  manter espacos  ",
+      evidence: { comment: "  comentario exato  " }
+    }));
+    const parsed = parseLegacyWorkspace("workspace_a", [
+      row("area", "area_spaced", { name: "  Financeiro  " }),
+      valid,
+      row("area", "area_blank", { name: "   " }),
+      row("task_occurrence", "task_blank_ref", task({ areaId: "   " })),
+      row("task_occurrence", "task_blank_comment", task({ evidence: { comment: "   " } }))
+    ]);
+
+    expect(parsed.validRows[0]?.data.name).toBe("  Financeiro  ");
+    expect(parsed.validRows[1]?.data).toMatchObject({
+      title: "  Conferir caixa  ",
+      areaId: " area exact ",
+      areaNameSnapshot: "  Financeiro antigo  ",
+      stepTitleSnapshot: "  Conferir comprovante  ",
+      reviewComment: "  manter espacos  ",
+      evidence: { comment: "  comentario exato  " }
+    });
+    expect([...new Set(parsed.malformedRecords.map((item) => item.entityId))]).toEqual([
+      "area_blank", "task_blank_ref", "task_blank_comment"
+    ]);
+  });
   it("reports primitive top-level data with workspace, kind, id, and path", () => {
     const result = parseLegacyWorkspace("workspace_a", [row("area", "area_1", "not-an-object")]);
 

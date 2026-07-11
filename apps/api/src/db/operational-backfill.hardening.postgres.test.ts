@@ -609,6 +609,139 @@ describe.skipIf(!testDatabaseUrl)("hardened operational backfill on PostgreSQL 1
       expect(largestTaskInsertBatch).toBeLessThanOrEqual(500);
     });
   });
+
+  it("bounds thousands of malformed and staged conflict diagnostics with exact totals", async () => {
+    await withSchema(async (pool) => {
+      await seedLegacy(pool, "routine", "routine_diagnostics", {
+        title: "Diagnosticos",
+        status: "active",
+        frequency: "on_demand",
+        taskTemplates: [step("diagnostic_step", 1)],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedTaskBatch(pool, [
+        ...Array.from({ length: 1_100 }, (_, index) => ({
+          id: `malformed_${String(index).padStart(4, "0")}`,
+          data: {
+            origin: "manual",
+            title: "   ",
+            status: "pending",
+            dueDate: "2026-07-10",
+            approvalMode: "direct",
+            evidencePolicy: "optional",
+            evidence: null,
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        })),
+        ...Array.from({ length: 1_101 }, (_, index) => ({
+          id: `valid_${String(index).padStart(4, "0")}`,
+          data: {
+            origin: "routine",
+            routineId: "routine_diagnostics",
+            taskTemplateId: "diagnostic_step",
+            audienceKey: "all",
+            title: "diagnostic_step",
+            routineTitleSnapshot: "Diagnosticos",
+            status: "pending",
+            dueDate: "2026-07-10",
+            approvalMode: "direct",
+            evidencePolicy: "optional",
+            evidence: null,
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        }))
+      ]);
+      let largestStageConflictRead = 0;
+      const countedPool = wrappingPool(pool, async (text, run) => {
+        const result = await run();
+        if (/join duplicates[\s\S]*limit \$2/i.test(text)) {
+          largestStageConflictRead = Math.max(largestStageConflictRead, result.rows.length);
+        }
+        return result;
+      });
+
+      const first = await backfillOperationalData(countedPool);
+      const second = await backfillOperationalData(countedPool);
+
+      expect(first.reconciled).toBe(false);
+      expect(first.malformedRecords).toHaveLength(100);
+      expect(first.conflictingRecords).toHaveLength(100);
+      expect(first.diagnostics).toMatchObject({
+        categories: {
+          malformedRecords: { total: 1_100, sampled: 100, truncated: true },
+          conflictingRecords: { total: 1_100, sampled: 100, truncated: true }
+        },
+        global: { total: 2_200, sampled: 200, truncated: true },
+        categorySampleCap: 100,
+        globalSampleCap: 250
+      });
+      expect(first.malformedRecords?.[0]?.entityId).toBe("malformed_0000");
+      expect(first.conflictingRecords?.[0]?.actual).toEqual({ sourceTaskId: "valid_0001" });
+      expect(second.malformedRecords).toEqual(first.malformedRecords);
+      expect(second.conflictingRecords).toEqual(first.conflictingRecords);
+      expect(second.diagnostics).toEqual(first.diagnostics);
+      expect(largestStageConflictRead).toBeLessThanOrEqual(200);
+    });
+  });
+
+  it("preserves spaced PostgreSQL text and exact reference identities byte-for-byte", async () => {
+    await withSchema(async (pool) => {
+      await seedLegacy(pool, "area", " area exact ", {
+        name: "  Financeiro  ",
+        sortOrder: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedLegacy(pool, "team_member", " profile exact ", {
+        name: "  Responsavel  ",
+        role: "employee",
+        status: "active",
+        areaId: " area exact ",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      await seedLegacy(pool, "task_occurrence", "task_spaced", {
+        origin: "manual",
+        title: "  Conferir caixa  ",
+        areaId: " area exact ",
+        assigneeProfileId: " profile exact ",
+        areaNameSnapshot: "  Financeiro antigo  ",
+        stepTitleSnapshot: "  Conferir comprovante  ",
+        status: "pending",
+        dueDate: "2026-07-10",
+        approvalMode: "direct",
+        evidencePolicy: "optional",
+        evidence: { profileId: " profile exact ", comment: "  comentario exato  " },
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+
+      const report = await backfillOperationalData(pool);
+      const task = await pool.query<{
+        title: string; area_id: string; assignee_profile_id: string;
+        area_name_snapshot: string; step_title_snapshot: string;
+      }>("select title, area_id, assignee_profile_id, area_name_snapshot, step_title_snapshot from task_occurrences");
+      const evidence = await pool.query<{ comment: string; profile_id: string }>(
+        "select comment, profile_id from task_evidence"
+      );
+
+      expect(report.reconciled).toBe(true);
+      expect(task.rows[0]).toEqual({
+        title: "  Conferir caixa  ",
+        area_id: " area exact ",
+        assignee_profile_id: " profile exact ",
+        area_name_snapshot: "  Financeiro antigo  ",
+        step_title_snapshot: "  Conferir comprovante  "
+      });
+      expect(evidence.rows[0]).toEqual({
+        comment: "  comentario exato  ",
+        profile_id: " profile exact "
+      });
+    });
+  });
 });
 
 async function withSchema<T>(run: (pool: Pool, schemaName: string) => Promise<T>) {

@@ -6,6 +6,7 @@ import {
   type OperationalMigrationPool
 } from "./migrate-operational";
 import { ensurePostgresSchema } from "./postgres";
+import { attachCleanupError } from "./migration-cleanup-errors";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 let schemaSequence = 0;
@@ -185,6 +186,28 @@ describe("operational migration CLI", () => {
     expect(stdout.read()).toBe("");
     expect(stderr.read()).toContain("primary operation failure");
     expect(stderr.read()).toContain("pool close failure");
+  });
+
+  it("prints the primary stack and every attached rollback and release cleanup failure", async () => {
+    const stdout = captureWriter();
+    const stderr = captureWriter();
+    const primary = new Error("primary migration failure");
+    attachCleanupError(primary, new Error("rollback cleanup failure"));
+    attachCleanupError(primary, new Error("release cleanup failure"));
+
+    const exitCode = await runOperationalMigration({
+      env: { DATABASE_URL: "postgresql://example.invalid/baase" },
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+      poolFactory: () => unusedPool(() => undefined),
+      ensureSchema: async () => { throw primary; }
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout.read()).toBe("");
+    expect(stderr.read()).toContain(primary.stack);
+    expect(stderr.read()).toContain("rollback cleanup failure");
+    expect(stderr.read()).toContain("release cleanup failure");
   });
 });
 
