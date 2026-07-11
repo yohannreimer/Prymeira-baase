@@ -504,7 +504,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     updateRoutine(routine) {
       return store.update<CompanyRoutine>("routine", {
         ...routine,
-        updatedAt: now()
+        updatedAt: nextTimestamp(routine.updatedAt)
       });
     },
 
@@ -538,6 +538,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       const timestamp = now();
       return store.insert<TaskOccurrence>("task_occurrence", {
         ...input,
+        origin: input.origin ?? (input.routineId ? "routine" : "manual"),
         id: await store.nextId("task_occurrence", input.workspaceId, "task"),
         createdAt: timestamp,
         updatedAt: timestamp

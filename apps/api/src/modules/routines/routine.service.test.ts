@@ -3,6 +3,29 @@ import { createInMemoryRoutineRepository } from "./in-memory-routine.repository"
 import { createRoutineService } from "./routine.service";
 
 describe("routine service", () => {
+  it.each([undefined, [], ["mon", "tue"] as const])(
+    "rejects weekly routines unless exactly one weekday is supplied: %j",
+    async (weekdays) => {
+      const service = createRoutineService(createInMemoryRoutineRepository());
+      await expect(service.createRoutine("workspace_a", "profile_owner", {
+        title: "Semanal",
+        frequency: "weekly",
+        weekdays: weekdays ? [...weekdays] : undefined,
+        taskTemplates: [{ title: "Executar" }]
+      })).rejects.toThrow("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+    }
+  );
+
+  it("accepts a weekly routine with exactly one weekday", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    await expect(service.createRoutine("workspace_a", "profile_owner", {
+      title: "Semanal",
+      frequency: "weekly",
+      weekdays: ["mon"],
+      taskTemplates: [{ title: "Executar" }]
+    })).resolves.toMatchObject({ frequency: "weekly", weekdays: ["mon"] });
+  });
+
   it("preserves step identities across id-less removal and reorder updates", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
     const routine = await service.createRoutine("workspace_a", "profile_owner", {

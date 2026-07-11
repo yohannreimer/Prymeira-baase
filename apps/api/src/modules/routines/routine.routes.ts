@@ -69,6 +69,13 @@ const returnTaskSchema = z.object({
 });
 
 function routineMutationError(error: unknown) {
+  if (error instanceof Error && error.message === "ROUTINE_WEEKLY_WEEKDAY_INVALID") {
+    return new ApiError(
+      400,
+      "ROUTINE_WEEKLY_WEEKDAY_INVALID",
+      "Rotinas semanais precisam ter exatamente um dia da semana."
+    );
+  }
   if (error instanceof Error && error.message === "ROUTINE_NOT_FOUND") {
     return new ApiError(404, "ROUTINE_NOT_FOUND", "Rotina não encontrada.");
   }
@@ -109,26 +116,31 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createRoutineSchema.parse(request.body);
-    const routine = await service.createRoutine(context.workspaceId, context.profileId, {
-      title: body.title,
-      areaId: body.area_id,
-      frequency: body.frequency,
-      weekdays: body.weekdays,
-      dueHint: body.due_hint,
-      assigneeProfileIds: body.assignee_profile_ids,
-      executionMode: body.execution_mode,
-      approvalMode: body.approval_mode,
-      evidencePolicy: body.evidence_policy,
-      taskTemplates: body.task_templates.map((template) => ({
-        id: template.id,
-        title: template.title,
-        processId: template.process_id,
-        assigneeProfileId: template.assignee_profile_id,
-        dueHint: template.due_hint,
-        approvalMode: template.approval_mode,
-        evidencePolicy: template.evidence_policy
-      }))
-    });
+    let routine;
+    try {
+      routine = await service.createRoutine(context.workspaceId, context.profileId, {
+        title: body.title,
+        areaId: body.area_id,
+        frequency: body.frequency,
+        weekdays: body.weekdays,
+        dueHint: body.due_hint,
+        assigneeProfileIds: body.assignee_profile_ids,
+        executionMode: body.execution_mode,
+        approvalMode: body.approval_mode,
+        evidencePolicy: body.evidence_policy,
+        taskTemplates: body.task_templates.map((template) => ({
+          id: template.id,
+          title: template.title,
+          processId: template.process_id,
+          assigneeProfileId: template.assignee_profile_id,
+          dueHint: template.due_hint,
+          approvalMode: template.approval_mode,
+          evidencePolicy: template.evidence_policy
+        }))
+      });
+    } catch (error) {
+      throw routineMutationError(error);
+    }
 
     return reply.status(201).send({ routine });
   });
@@ -139,26 +151,31 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createRoutineSchema.parse(request.body);
-    const routine = await service.updateRoutine(context.workspaceId, params.id, {
-      title: body.title,
-      areaId: body.area_id,
-      frequency: body.frequency,
-      weekdays: body.weekdays,
-      dueHint: body.due_hint,
-      assigneeProfileIds: body.assignee_profile_ids,
-      executionMode: body.execution_mode,
-      approvalMode: body.approval_mode,
-      evidencePolicy: body.evidence_policy,
-      taskTemplates: body.task_templates.map((template) => ({
-        id: template.id,
-        title: template.title,
-        processId: template.process_id,
-        assigneeProfileId: template.assignee_profile_id,
-        dueHint: template.due_hint,
-        approvalMode: template.approval_mode,
-        evidencePolicy: template.evidence_policy
-      }))
-    });
+    let routine;
+    try {
+      routine = await service.updateRoutine(context.workspaceId, params.id, {
+        title: body.title,
+        areaId: body.area_id,
+        frequency: body.frequency,
+        weekdays: body.weekdays,
+        dueHint: body.due_hint,
+        assigneeProfileIds: body.assignee_profile_ids,
+        executionMode: body.execution_mode,
+        approvalMode: body.approval_mode,
+        evidencePolicy: body.evidence_policy,
+        taskTemplates: body.task_templates.map((template) => ({
+          id: template.id,
+          title: template.title,
+          processId: template.process_id,
+          assigneeProfileId: template.assignee_profile_id,
+          dueHint: template.due_hint,
+          approvalMode: template.approval_mode,
+          evidencePolicy: template.evidence_policy
+        }))
+      });
+    } catch (error) {
+      throw routineMutationError(error);
+    }
 
     return { routine };
   });

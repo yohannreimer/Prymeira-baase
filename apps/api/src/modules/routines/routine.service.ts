@@ -125,6 +125,10 @@ function normalizedFrequency(input: CreateRoutineInput) {
 }
 
 function normalizedWeekdays(input: CreateRoutineInput) {
+  if (normalizedFrequency(input) === "weekly") {
+    if (input.weekdays?.length !== 1) throw new Error("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+    return [input.weekdays[0]!];
+  }
   if (input.weekdays?.length) return [...new Set(input.weekdays)];
   return normalizedFrequency(input) === "daily" ? [...BUSINESS_WEEKDAYS] : [];
 }

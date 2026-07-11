@@ -4,6 +4,7 @@ import { createCompanyService } from "../modules/company/company.service";
 import { createProcessService } from "../modules/processes/process.service";
 import { createRoutineService } from "../modules/routines/routine.service";
 import type { RoutineRepository } from "../modules/routines/routine.types";
+import { createInMemoryRoutineRepository } from "../modules/routines/in-memory-routine.repository";
 import { ensureOperationalSchema } from "./operational-schema";
 import { createConfiguredPostgresRepositoryBundle, createPostgresRepositoryBundle, createRelationalOperationalRepositoryBundle, ensurePostgresSchema } from "./postgres";
 import type { OperationalClient, OperationalPool } from "./operational-repository-support";
@@ -37,6 +38,39 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
 
       expect(await createConfiguredPostgresRepositoryBundle(pool, "jsonb").companyRepository.listAreas("workspace_a")).toHaveLength(1);
       expect(await createConfiguredPostgresRepositoryBundle(pool, "relational").companyRepository.listAreas("workspace_a")).toEqual([]);
+    });
+  });
+
+  it("infers direct repository task origin consistently across storage modes", async () => {
+    await withPostgresSchema(async (pool) => {
+      const relational = createConfiguredPostgresRepositoryBundle(pool, "relational").routineRepository;
+      const jsonb = createConfiguredPostgresRepositoryBundle(pool, "jsonb").routineRepository;
+      const memory = createInMemoryRoutineRepository();
+      const input = {
+        workspaceId: "workspace_origin",
+        routineId: null,
+        taskTemplateId: null,
+        title: "Origem inferida",
+        areaId: null,
+        processId: null,
+        assigneeProfileId: "account_owner",
+        approvalMode: "direct" as const,
+        evidencePolicy: "optional" as const,
+        status: "pending" as const,
+        dueDate: "2026-07-21",
+        evidence: null,
+        submittedByProfileId: null,
+        submittedAt: null,
+        reviewedByProfileId: null,
+        reviewedAt: null,
+        reviewComment: null
+      };
+      const tasks = await Promise.all([
+        relational.createTaskOccurrence(input),
+        jsonb.createTaskOccurrence(input),
+        memory.createTaskOccurrence(input)
+      ]);
+      expect(tasks.map((task) => task.origin)).toEqual(["manual", "manual", "manual"]);
     });
   });
 
@@ -326,6 +360,18 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
          from task_evidence where workspace_id=$1 and task_occurrence_id=$2`, ["workspace_a", task.id]
       );
       expect(evidence.rows[0]).toEqual({ active: 1, archived: 1 });
+      const audits = await pool.query<{ action: string; actor_profile_id: string | null }>(
+        `select action,actor_profile_id from operational_audit_log
+         where workspace_id=$1 and entity_type='task_occurrence' and entity_id=$2
+         order by created_at,id`, ["workspace_a", task.id]
+      );
+      expect(audits.rows).toEqual([
+        { action: "create", actor_profile_id: null },
+        { action: "submit", actor_profile_id: "account_owner" },
+        { action: "return", actor_profile_id: "account_manager" },
+        { action: "submit", actor_profile_id: "account_owner" },
+        { action: "approve", actor_profile_id: "account_manager" }
+      ]);
     });
   });
 

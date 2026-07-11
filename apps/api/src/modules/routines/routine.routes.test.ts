@@ -15,6 +15,51 @@ const employeeHeaders = {
 };
 
 describe("routine routes", () => {
+  it.each([undefined, [], ["mon", "tue"]])(
+    "returns a deterministic 400 for an invalid weekly weekday selection: %j",
+    async (weekdays) => {
+      const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+      const response = await app.inject({
+        method: "POST",
+        url: "/routines",
+        headers: managerHeaders,
+        payload: {
+          title: "Semanal",
+          frequency: "weekly",
+          ...(weekdays === undefined ? {} : { weekdays }),
+          task_templates: [{ title: "Executar" }]
+        }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+    }
+  );
+
+  it("returns the same weekly validation error on routine update", async () => {
+    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const created = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: managerHeaders,
+      payload: { title: "Diaria", task_templates: [{ title: "Executar" }] }
+    });
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/routines/${created.json().routine.id}`,
+      headers: managerHeaders,
+      payload: {
+        title: "Semanal invalida",
+        frequency: "weekly",
+        task_templates: created.json().routine.taskTemplates.map((step: { id: string; title: string }) => ({
+          id: step.id,
+          title: step.title
+        }))
+      }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+  });
+
   it("runs the manager-to-employee execution flow", async () => {
     const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
 

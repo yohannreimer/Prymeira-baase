@@ -45,7 +45,7 @@ export function createInMemoryRoutineRepository(
       if (index === -1) throw new Error("ROUTINE_NOT_FOUND");
       const updated = {
         ...routine,
-        updatedAt: now()
+        updatedAt: nextTimestamp(now(), routine.updatedAt)
       };
       routines[index] = updated;
       return updated;
@@ -89,6 +89,7 @@ export function createInMemoryRoutineRepository(
       const timestamp = now();
       const task: TaskOccurrence = {
         ...input,
+        origin: input.origin ?? (input.routineId ? "routine" : "manual"),
         id: `task_${tasks.length + 1}`,
         createdAt: timestamp,
         updatedAt: timestamp
@@ -113,4 +114,9 @@ export function createInMemoryRoutineRepository(
       if (index >= 0) tasks.splice(index, 1);
     }
   };
+}
+
+function nextTimestamp(candidate: string, previous: string) {
+  if (new Date(candidate).getTime() > new Date(previous).getTime()) return candidate;
+  return new Date(new Date(previous).getTime() + 1).toISOString();
 }
