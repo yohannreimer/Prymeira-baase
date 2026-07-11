@@ -38,7 +38,7 @@ services:
       DATABASE_URL: postgresql://postgres:${BAASE_POSTGRES_PASSWORD}@postgres:5432/baase
       BAASE_RUNTIME_MODE: production
       BAASE_AUTH_MODE: account
-      BAASE_OPERATIONAL_STORE: relational
+      BAASE_OPERATIONAL_STORE: ${BAASE_OPERATIONAL_STORE:-jsonb}
       BAASE_SEED_DEMO_DATA: "false"
       PRYMEIRA_ACCOUNT_API_URL: https://hub.prymeiradigital.com.br/api
       OPENAI_API_KEY: ${OPENAI_API_KEY}
