@@ -12,7 +12,7 @@ import type { QuizAttempt, Training, TrainingAssignment, TrainingRepository } fr
 import { createPostgresCompanyRepository as createRelationalCompanyRepository } from "../modules/company/postgres-company.repository";
 import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
 import { createPostgresRoutineRepository as createRelationalRoutineRepository } from "../modules/routines/postgres-routine.repository";
-import type { OperationalPool } from "./operational-repository-support";
+import { withOperationalTransaction, type OperationalClient, type OperationalPool } from "./operational-repository-support";
 import type { BaaseOperationalStore } from "../config/runtime";
 
 type Queryable = {
@@ -24,23 +24,15 @@ type RecordRow<T> = {
 };
 
 const tableName = "baase_records";
+const postgresSchemaLock = [1111574864, 1768843636];
+const postgresSchemaMigrations = [{
+  version: 1,
+  name: "global_unguessable_team_invite_codes",
+  run: rotateLegacyAndDuplicateInviteCodes
+}] as const;
 
-export async function ensurePostgresSchema(db: Queryable) {
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS ${tableName} (
-      kind TEXT NOT NULL,
-      workspace_id TEXT NOT NULL,
-      id TEXT NOT NULL,
-      data JSONB NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (kind, workspace_id, id)
-    )
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS baase_records_workspace_kind_idx ON ${tableName} (workspace_id, kind)`);
-  await rotateLegacyAndDuplicateInviteCodes(db);
-  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS baase_records_team_invite_code_uidx
-    ON ${tableName} ((data ->> 'code')) WHERE kind = 'team_invite'`);
+export async function ensurePostgresSchema(db: OperationalPool) {
+  await migratePostgresSchema(db);
 }
 
 export function createPostgresPool(connectionString: string) {
@@ -492,10 +484,51 @@ function generateInviteCode() {
   return `BAASE-${randomUUID().replaceAll("-", "").toUpperCase()}`;
 }
 
-async function rotateLegacyAndDuplicateInviteCodes(db: Queryable) {
+async function migratePostgresSchema(db: OperationalPool) {
+  await withOperationalTransaction(db, async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", postgresSchemaLock);
+    await client.query(`CREATE TABLE IF NOT EXISTS ${tableName} (
+      kind TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (kind, workspace_id, id)
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS baase_records_workspace_kind_idx
+      ON ${tableName} (workspace_id, kind)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS baase_postgres_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+    for (const migration of postgresSchemaMigrations) {
+      const applied = await client.query<{ version: number }>(
+        "SELECT version FROM baase_postgres_schema_migrations WHERE version=$1",
+        [migration.version]
+      );
+      if (applied.rows[0]) continue;
+      await migration.run(client);
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS baase_records_team_invite_code_uidx
+        ON ${tableName} ((data ->> 'code')) WHERE kind = 'team_invite'`);
+      await client.query(
+        "INSERT INTO baase_postgres_schema_migrations (version,name) VALUES ($1,$2)",
+        [migration.version, migration.name]
+      );
+    }
+  });
+}
+
+async function rotateLegacyAndDuplicateInviteCodes(db: OperationalClient) {
+  const hasInvites = await db.query<{ exists: boolean }>(
+    `SELECT EXISTS(SELECT 1 FROM ${tableName} WHERE kind='team_invite') exists`
+  );
+  if (!hasInvites.rows[0]?.exists) return;
+  await db.query(`LOCK TABLE ${tableName} IN SHARE ROW EXCLUSIVE MODE`);
   const records = await db.query<{ workspace_id: string; id: string; data: TeamInvite }>(
     `SELECT workspace_id, id, data FROM ${tableName}
-     WHERE kind = 'team_invite' ORDER BY created_at, workspace_id, id`
+     WHERE kind = 'team_invite' ORDER BY created_at, workspace_id, id FOR UPDATE`
   );
   const usedCodes = new Set<string>();
   for (const record of records.rows) {
@@ -509,14 +542,28 @@ async function rotateLegacyAndDuplicateInviteCodes(db: Queryable) {
     let replacement = generateInviteCode();
     while (usedCodes.has(replacement)) replacement = generateInviteCode();
     const updatedAt = nextTimestamp(record.data.updatedAt);
-    const data = { ...record.data, code: replacement, updatedAt };
     const updated = await db.query<{ id: string }>(
-      `UPDATE ${tableName} SET data = $3::jsonb, updated_at = $4
+      `UPDATE ${tableName}
+       SET data = jsonb_set(
+         jsonb_set(data, '{code}', $3::jsonb, TRUE),
+         '{updatedAt}', $4::jsonb, TRUE
+       ), updated_at = $5
        WHERE kind = 'team_invite' AND workspace_id = $1 AND id = $2
-         AND data ->> 'code' = $5 RETURNING id`,
-      [record.workspace_id, record.id, JSON.stringify(data), updatedAt, record.data.code]
+         AND data ->> 'updatedAt' = $6
+         AND data ->> 'code' IS NOT DISTINCT FROM $7
+       RETURNING id`,
+      [
+        record.workspace_id,
+        record.id,
+        JSON.stringify(replacement),
+        JSON.stringify(updatedAt),
+        updatedAt,
+        record.data.updatedAt,
+        record.data.code
+      ]
     );
-    if (updated.rows[0]) usedCodes.add(replacement);
+    if (!updated.rows[0]) throw new Error("INVITE_CODE_MIGRATION_STALE");
+    usedCodes.add(replacement);
   }
 }
 

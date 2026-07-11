@@ -42,9 +42,31 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
-  it("upgrades duplicate legacy invite codes before enforcing global uniqueness", async () => {
+  it("serializes concurrent generic schema initialization from an empty database", async () => {
+    await withPostgresSchema(async (pool) => {
+      await pool.query("DROP TABLE baase_postgres_schema_migrations");
+      await pool.query("DROP TABLE baase_records");
+      let advisoryLocks = 0;
+      const tracked = trackPostgresSchemaLocks(pool, () => { advisoryLocks += 1; });
+
+      await Promise.all([ensurePostgresSchema(tracked), ensurePostgresSchema(tracked)]);
+
+      expect(advisoryLocks).toBe(2);
+      const state = await pool.query<{ records: string | null; migrations: number }>(
+        `SELECT to_regclass('baase_records')::text records,
+          (SELECT COUNT(*)::int FROM baase_postgres_schema_migrations WHERE version=1) migrations`
+      );
+      expect(state.rows[0]).toEqual({ records: "baase_records", migrations: 1 });
+    });
+  });
+
+  it("serializes and versions concurrent legacy invite-code migration", async () => {
     await withPostgresSchema(async (pool) => {
       await pool.query("DROP INDEX baase_records_team_invite_code_uidx");
+      await pool.query(`CREATE TABLE IF NOT EXISTS baase_postgres_schema_migrations (
+        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await pool.query("DELETE FROM baase_postgres_schema_migrations WHERE version=1");
       const legacyInvite = (workspaceId: string, id: string) => ({
         id,
         workspaceId,
@@ -69,7 +91,15 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
         );
       }
 
-      await ensurePostgresSchema(pool);
+      let advisoryLocks = 0;
+      const tracked = trackPostgresSchemaLocks(pool, () => { advisoryLocks += 1; });
+      await Promise.all([ensurePostgresSchema(tracked), ensurePostgresSchema(tracked)]);
+      expect(advisoryLocks).toBe(2);
+      const versions = await pool.query<{ version: number; count: number }>(
+        `SELECT version,COUNT(*)::int count FROM baase_postgres_schema_migrations
+         GROUP BY version ORDER BY version`
+      );
+      expect(versions.rows).toEqual([{ version: 1, count: 1 }]);
       const upgraded = await pool.query<{ code: string }>(
         "SELECT data ->> 'code' code FROM baase_records WHERE kind='team_invite' ORDER BY workspace_id"
       );
@@ -83,6 +113,64 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
          VALUES ('team_invite','workspace_c','invite_c',$1::jsonb)`,
         [JSON.stringify({ ...legacyInvite("workspace_c", "invite_c"), code: upgraded.rows[0]!.code })]
       )).rejects.toMatchObject({ code: "23505", constraint: "baase_records_team_invite_code_uidx" });
+    });
+  });
+
+  it("locks invite rows during code migration and preserves a racing status mutation", async () => {
+    await withPostgresSchema(async (pool) => {
+      await pool.query("DROP INDEX baase_records_team_invite_code_uidx");
+      await pool.query(`CREATE TABLE IF NOT EXISTS baase_postgres_schema_migrations (
+        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await pool.query("DELETE FROM baase_postgres_schema_migrations WHERE version=1");
+      const invite = {
+        id: "invite_race", workspaceId: "workspace_race", name: "Corrida", email: null,
+        role: "employee", areaId: null, roleTemplateId: null, accessScope: "workspace",
+        code: "BAASE-0001", status: "pending", createdByProfileId: "account_owner",
+        createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z"
+      };
+      await pool.query(
+        `INSERT INTO baase_records (kind,workspace_id,id,data,created_at,updated_at)
+         VALUES ('team_invite',$1,$2,$3::jsonb,$4,$4)`,
+        [invite.workspaceId, invite.id, JSON.stringify(invite), invite.createdAt]
+      );
+
+      let migrationRead!: () => void;
+      let releaseMigration!: () => void;
+      const readObserved = new Promise<void>((resolve) => { migrationRead = resolve; });
+      const migrationGate = new Promise<void>((resolve) => { releaseMigration = resolve; });
+      const migrating = ensurePostgresSchema(barrierPostgresInviteMigration(
+        pool,
+        migrationRead,
+        migrationGate
+      ));
+      await readObserved;
+
+      const acceptedAt = "2030-07-02T00:00:00.000Z";
+      let mutationSettled = false;
+      const mutation = pool.query(
+        `UPDATE baase_records
+         SET data=jsonb_set(jsonb_set(data,'{status}','\"accepted\"'::jsonb),'{updatedAt}',$3::jsonb),
+             updated_at=$4
+         WHERE kind='team_invite' AND workspace_id=$1 AND id=$2`,
+        [invite.workspaceId, invite.id, JSON.stringify(acceptedAt), acceptedAt]
+      ).then(() => { mutationSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const mutationWasBlocked = !mutationSettled;
+      releaseMigration();
+      await Promise.all([migrating, mutation]);
+      expect(mutationWasBlocked).toBe(true);
+
+      const persisted = await pool.query<{ code: string; status: string; updated_at: string }>(
+        `SELECT data->>'code' code,data->>'status' status,data->>'updatedAt' updated_at
+         FROM baase_records WHERE kind='team_invite' AND workspace_id=$1 AND id=$2`,
+        [invite.workspaceId, invite.id]
+      );
+      expect(persisted.rows[0]).toEqual({
+        code: expect.stringMatching(/^BAASE-[A-F0-9]{32}$/),
+        status: "accepted",
+        updated_at: acceptedAt
+      });
     });
   });
 
@@ -480,6 +568,55 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
+  it("rejects an acceptance snapshot made stale by committed area archival and retries without archived refs", async () => {
+    await withPostgresSchema(async (pool) => {
+      const repository = createConfiguredPostgresRepositoryBundle(pool, "relational").companyRepository;
+      const setup = createCompanyService(repository);
+      const area = await setup.createArea("workspace_a", { name: "Area removida" });
+      const role = await setup.createRoleTemplate("workspace_a", { areaId: area.id, name: "Cargo removido" });
+      const invite = await setup.createTeamInvite("workspace_a", {
+        name: "Pessoa", role: "employee", areaId: area.id, roleTemplateId: role.id,
+        accessScope: "assigned_only", createdByProfileId: "account_owner"
+      });
+
+      let acceptanceStarted!: () => void;
+      let releaseAcceptance!: () => void;
+      const acceptanceObserved = new Promise<void>((resolve) => { acceptanceStarted = resolve; });
+      const acceptanceGate = new Promise<void>((resolve) => { releaseAcceptance = resolve; });
+      const delayedRepository = {
+        ...repository,
+        async acceptTeamInviteAtomically(
+          snapshot: Parameters<NonNullable<typeof repository.acceptTeamInviteAtomically>>[0],
+          member: Parameters<NonNullable<typeof repository.acceptTeamInviteAtomically>>[1]
+        ) {
+          acceptanceStarted();
+          await acceptanceGate;
+          return repository.acceptTeamInviteAtomically!(snapshot, member);
+        }
+      };
+      const accepting = createCompanyService(delayedRepository).acceptTeamInvite(invite.code, {
+        acceptedByProfileId: "account_acceptor"
+      });
+      await acceptanceObserved;
+      await setup.deleteArea("workspace_a", area.id);
+      releaseAcceptance();
+      await expect(accepting).rejects.toThrow("INVITE_STALE");
+      expect((await pool.query("SELECT id FROM people WHERE workspace_id=$1", ["workspace_a"])).rows).toEqual([]);
+
+      const retried = await setup.acceptTeamInvite(invite.code, { acceptedByProfileId: "account_acceptor" });
+      expect(retried.person).toMatchObject({ areaId: null, roleTemplateId: null });
+      const archivedReferences = await pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int count FROM people p
+         LEFT JOIN areas a ON a.workspace_id=p.workspace_id AND a.id=p.area_id
+         LEFT JOIN role_templates r ON r.workspace_id=p.workspace_id AND r.id=p.role_template_id
+         WHERE p.workspace_id=$1 AND ((p.area_id IS NOT NULL AND a.archived_at IS NOT NULL)
+           OR (p.role_template_id IS NOT NULL AND r.archived_at IS NOT NULL))`,
+        ["workspace_a"]
+      );
+      expect(archivedReferences.rows[0]?.count).toBe(0);
+    });
+  });
+
   it("creates process history atomically and rolls back the whole create on audit failure", async () => {
     await withPostgresSchema(async (pool) => {
       const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
@@ -805,6 +942,53 @@ function failOnQuery(pool: Pool, needle: string, message: string): OperationalPo
         query(text, params) {
           if (text.includes(needle)) throw new Error(message);
           return client.query(text, params) as never;
+        },
+        release: () => client.release()
+      };
+    }
+  };
+}
+
+function trackPostgresSchemaLocks(pool: Pool, onLock: () => void) {
+  return {
+    query: pool.query.bind(pool),
+    async connect() {
+      const client = await pool.connect();
+      return {
+        query<T = unknown>(query: string, params?: unknown[]) {
+          if (query.includes("pg_advisory_xact_lock")) onLock();
+          return client.query(query, params) as unknown as Promise<{ rows: T[] }>;
+        },
+        release: () => client.release()
+      };
+    }
+  };
+}
+
+function barrierPostgresInviteMigration(
+  pool: Pool,
+  onRead: () => void,
+  gate: Promise<void>
+) {
+  let intercepted = false;
+  const intercept = async <T>(query: string, run: () => Promise<{ rows: T[] }>) => {
+    const result = await run();
+    if (!intercepted && query.includes("SELECT workspace_id, id, data FROM baase_records")) {
+      intercepted = true;
+      onRead();
+      await gate;
+    }
+    return result;
+  };
+  return {
+    query<T = unknown>(query: string, params?: unknown[]) {
+      return intercept(query, () => pool.query(query, params) as unknown as Promise<{ rows: T[] }>);
+    },
+    async connect() {
+      const client = await pool.connect();
+      return {
+        query<T = unknown>(query: string, params?: unknown[]) {
+          return intercept(query, () => client.query(query, params) as unknown as Promise<{ rows: T[] }>);
         },
         release: () => client.release()
       };

@@ -121,12 +121,30 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
           if (!existing.rows[0]) throw new Error("INVITE_ACCEPTANCE_INCOMPLETE");
           return { invite: persisted, person: personFromRow(existing.rows[0]) };
         }
+        if (persisted.updatedAt !== invite.updatedAt) throw new Error("INVITE_STALE");
+
+        if (persisted.areaId) {
+          const area = await client.query<{ id: string }>(
+            "SELECT id FROM areas WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",
+            [persisted.workspaceId, persisted.areaId]
+          );
+          if (!area.rows[0]) throw new Error("INVITE_STALE");
+        }
+        if (persisted.roleTemplateId) {
+          const role = await client.query<{ area_id: string }>(
+            "SELECT area_id FROM role_templates WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",
+            [persisted.workspaceId, persisted.roleTemplateId]
+          );
+          if (!role.rows[0] || (persisted.areaId && role.rows[0].area_id !== persisted.areaId)) {
+            throw new Error("INVITE_STALE");
+          }
+        }
 
         const created = await client.query<PersonRow>(`INSERT INTO people
           (id,workspace_id,name,email,role,area_id,role_template_id,status,created_by_profile_id)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [
-          personId, member.workspaceId, member.name, member.email, member.role,
-          member.areaId, member.roleTemplateId, member.status, member.createdByProfileId
+          personId, persisted.workspaceId, member.name, member.email, persisted.role,
+          persisted.areaId, persisted.roleTemplateId, member.status, member.createdByProfileId
         ]);
         const acceptedAt = nextTimestamp(persisted.updatedAt);
         const acceptedInvite: TeamInvite = { ...persisted, status: "accepted", updatedAt: acceptedAt };
