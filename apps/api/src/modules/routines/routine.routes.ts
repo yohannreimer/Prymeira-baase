@@ -5,12 +5,13 @@ import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import { requireOperationalMembership } from "../../http/auth-context";
 import { canExecuteTask, canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
+import type { OperationalMembership } from "../company/company.types";
 import { createAnnouncementService } from "../announcements/announcement.service";
 import type { AnnouncementRepository } from "../announcements/announcement.types";
 import { createTrainingService } from "../trainings/training.service";
 import type { TrainingRepository } from "../trainings/training.types";
 import { createRoutineService } from "./routine.service";
-import type { RoutineRepository } from "./routine.types";
+import type { RoutineRepository, TaskOccurrence } from "./routine.types";
 
 const taskTemplateSchema = z.object({
   id: z.string().min(1).optional(),
@@ -280,6 +281,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
 
     try {
+      const task = await service.getTask(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), task.areaId ?? null)) throw scopeForbidden();
       await service.deleteTask(context.workspaceId, params.id);
       return { ok: true };
     } catch (error) {
@@ -295,6 +298,10 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const body = createManualTaskSchema.parse(request.body);
 
     try {
+      const membership = requireOperationalMembership(request);
+      const existingTask = await service.getTask(context.workspaceId, params.id);
+      if (!canManageAreaResource(membership, existingTask.areaId ?? null)) throw scopeForbidden();
+      if (!canManageAreaResource(membership, body.area_id ?? null)) throw scopeForbidden();
       const task = await service.updateManualTask(context.workspaceId, params.id, {
         title: body.title,
         areaId: body.area_id,
@@ -319,7 +326,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     try {
       const membership = requireOperationalMembership(request);
       const existingTask = await service.getTask(context.workspaceId, params.id);
-      if (!canExecuteTask(membership, existingTask)) throw scopeForbidden();
+      assertCanExecuteTask(membership, existingTask);
       const task = await service.updateTaskChecklist(context.workspaceId, params.id, context.profileId, {
         checklistItems: body.checklist_items
       }, { allowAssigneeOverride: membership.role === "owner" });
@@ -336,7 +343,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     try {
       const membership = requireOperationalMembership(request);
       const task = await service.getTask(context.workspaceId, params.id);
-      if (!canExecuteTask(membership, task)) throw scopeForbidden();
+      assertCanExecuteTask(membership, task);
       const submittedTask = await service.submitTask(context.workspaceId, params.id, context.profileId, {
         comment: body.comment,
         photoUrl: body.photo_url
@@ -352,8 +359,14 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const task = await service.approveTask(context.workspaceId, params.id, context.profileId);
-    return { task };
+    try {
+      const existingTask = await service.getTask(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), existingTask.areaId ?? null)) throw scopeForbidden();
+      const task = await service.approveTask(context.workspaceId, params.id, context.profileId);
+      return { task };
+    } catch (error) {
+      throw taskMutationError(error);
+    }
   });
 
   app.post("/tasks/:id/return", async (request) => {
@@ -362,13 +375,30 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = returnTaskSchema.parse(request.body);
-    const task = await service.returnTask(context.workspaceId, params.id, context.profileId, {
-      comment: body.comment
-    });
-    return { task };
+    try {
+      const existingTask = await service.getTask(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), existingTask.areaId ?? null)) throw scopeForbidden();
+      const task = await service.returnTask(context.workspaceId, params.id, context.profileId, {
+        comment: body.comment
+      });
+      return { task };
+    } catch (error) {
+      throw taskMutationError(error);
+    }
   });
 }
 
 function scopeForbidden() {
   return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
+}
+
+function assertCanExecuteTask(
+  membership: OperationalMembership,
+  task: TaskOccurrence
+) {
+  if (canExecuteTask(membership, task)) return;
+  if (task.assigneeProfileId && membership.role === "manager" && canManageAreaResource(membership, task.areaId ?? null)) {
+    throw new ApiError(403, "TASK_NOT_ASSIGNED_TO_PROFILE", "Tarefa não atribuída a este perfil.");
+  }
+  throw scopeForbidden();
 }

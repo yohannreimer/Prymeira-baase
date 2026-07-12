@@ -311,7 +311,7 @@ export function createRoutineService(repository: RoutineRepository) {
       await ensureTodayOccurrences(repository, workspaceId, dueDate);
       const tasks = await repository.listTaskOccurrences(workspaceId, { dueDate });
       return legacyDueDate
-        ? tasks.filter((task) => task.assigneeProfileId === dueDateOrProfileId)
+        ? tasks.filter((task) => task.assigneeProfileId === dueDateOrProfileId || task.assigneeProfileId === null)
         : tasks;
     },
 

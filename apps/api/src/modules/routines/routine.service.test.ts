@@ -151,6 +151,23 @@ describe("routine service", () => {
     });
   });
 
+  it("keeps shared tasks visible to legacy profile-filtered today callers", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Conferir equipe",
+      frequency: "daily",
+      executionMode: "shared",
+      taskTemplates: [{ title: "Conferir equipe" }]
+    });
+
+    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const tasks = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-08");
+
+    expect(tasks).toEqual([
+      expect.objectContaining({ assigneeProfileId: null, title: "Conferir equipe" })
+    ]);
+  });
+
   it("keeps routine due hints as task metadata instead of title text", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
     const routine = await service.createRoutine("workspace_a", "profile_owner", {
