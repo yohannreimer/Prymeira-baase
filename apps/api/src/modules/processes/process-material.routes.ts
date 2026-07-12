@@ -4,7 +4,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import type { ObjectStorage } from "../../storage/object-storage";
 import type { ProcessRepository } from "./process.types";
 
@@ -25,7 +26,8 @@ export async function registerProcessMaterialRoutes(
     const context = requireKnowledgeManager(request);
     const params = processParamsSchema.parse(request.params);
     const body = linkMaterialSchema.parse(request.body);
-    await requireProcess(repository, context.workspaceId, params.id);
+    const process = await requireProcess(repository, context.workspaceId, params.id);
+    requireManagedProcess(request, process.areaId);
 
     try {
       const material = await repository.addProcessMaterial({
@@ -47,7 +49,8 @@ export async function registerProcessMaterialRoutes(
   app.post("/processes/:id/materials/files", async (request, reply) => {
     const context = requireKnowledgeManager(request);
     const params = processParamsSchema.parse(request.params);
-    await requireProcess(repository, context.workspaceId, params.id);
+    const process = await requireProcess(repository, context.workspaceId, params.id);
+    requireManagedProcess(request, process.areaId);
     const file = await request.file();
     if (!file) throw new ApiError(400, "PROCESS_MATERIAL_FILE_REQUIRED", "Selecione um arquivo para anexar.");
 
@@ -89,6 +92,8 @@ export async function registerProcessMaterialRoutes(
   app.get("/processes/:id/materials/:materialId/download", async (request) => {
     const context = readRequestContext(request);
     const params = materialParamsSchema.parse(request.params);
+    const process = await requireProcess(repository, context.workspaceId, params.id);
+    if (!canReadAreaResource(requireOperationalMembership(request), process.areaId)) throw scopeForbidden();
     const material = await requireMaterial(repository, context.workspaceId, params.id, params.materialId);
     if (material.kind !== "file" || !material.objectKey) {
       throw new ApiError(400, "PROCESS_MATERIAL_NOT_A_FILE", "Este material não é um arquivo para download.");
@@ -104,6 +109,8 @@ export async function registerProcessMaterialRoutes(
   app.delete("/processes/:id/materials/:materialId", async (request) => {
     const context = requireKnowledgeManager(request);
     const params = materialParamsSchema.parse(request.params);
+    const process = await requireProcess(repository, context.workspaceId, params.id);
+    requireManagedProcess(request, process.areaId);
     const material = await requireMaterial(repository, context.workspaceId, params.id, params.materialId);
 
     try {
@@ -122,6 +129,14 @@ function requireKnowledgeManager(request: Parameters<typeof readRequestContext>[
   const context = readRequestContext(request);
   if (!canManageKnowledge(context.role)) throw forbiddenError();
   return context;
+}
+
+function requireManagedProcess(request: Parameters<typeof readRequestContext>[0], areaId: string | null) {
+  if (!canManageAreaResource(requireOperationalMembership(request), areaId)) throw scopeForbidden();
+}
+
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
 }
 
 async function requireProcess(repository: ProcessRepository, workspaceId: string, processId: string) {

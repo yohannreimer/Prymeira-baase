@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
-import { forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { ApiError, forbiddenError } from "../../http/api-error";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createTrainingService } from "./training.service";
 import type { TrainingRepository } from "./training.types";
 
@@ -69,8 +70,9 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
   app.get("/trainings", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const trainings = await service.listTrainings(context.workspaceId);
-    return { trainings };
+    return { trainings: trainings.filter((training) => canReadAudience(membership, training.audience)) };
   });
 
   app.post("/trainings", async (request, reply) => {
@@ -78,6 +80,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createTrainingSchema.parse(request.body);
+    if (!canManageAudience(requireOperationalMembership(request), body.audience)) throw scopeForbidden();
     const training = await service.createTraining(context.workspaceId, context.profileId, {
       title: body.title,
       description: body.description,
@@ -102,6 +105,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createTrainingSchema.parse(request.body);
+    if (!canManageAudience(requireOperationalMembership(request), body.audience)) throw scopeForbidden();
     const training = await service.updateTraining(context.workspaceId, params.id, {
       title: body.title,
       description: body.description,
@@ -153,6 +157,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = assignmentSchema.parse(request.body);
+    if (!canManageAudience(requireOperationalMembership(request), body)) throw scopeForbidden();
     const assignment = await service.assignTraining(context.workspaceId, context.profileId, params.id, {
       audience: readTrainingAudience(body),
       dueDate: body.due_date
@@ -185,6 +190,18 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
     return reply.status(201).send({ attempt });
   });
+}
+
+function canReadAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { type: string; areaId?: string } | null) {
+  return !audience || audience.type !== "area" || canReadAreaResource(member, audience.areaId ?? null);
+}
+
+function canManageAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { type?: string; area_id?: string | null } | null | undefined) {
+  return !audience || audience.type !== "area" || canManageAreaResource(member, audience.area_id ?? null);
+}
+
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
 }
 
 function readTrainingSource(body: z.infer<typeof trainingSourceSchema> | null | undefined) {

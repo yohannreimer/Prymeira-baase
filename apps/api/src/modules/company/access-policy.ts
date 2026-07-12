@@ -14,6 +14,12 @@ export function canExecuteTask(member: OperationalMembership, assigneeProfileId:
   return member.role === "owner" || assigneeProfileId === member.personId;
 }
 
+export function canReadTask(member: OperationalMembership, input: { assigneeProfileId: string | null; areaId: string | null }) {
+  if (member.role === "owner") return true;
+  if (member.role === "employee") return input.assigneeProfileId === member.personId;
+  return canReadAreaResource(member, input.areaId);
+}
+
 export function canAdministerHubSeats(member: OperationalMembership) {
   return member.role === "owner" && member.accessScope === "workspace";
 }
