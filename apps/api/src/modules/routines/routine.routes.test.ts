@@ -16,6 +16,24 @@ const employeeHeaders = {
   "x-baase-profile-id": "profile_employee"
 };
 
+async function buildLocalRoutineAppWithEmployee(areaId: string) {
+  const companyRepository = createInMemoryCompanyRepository();
+  const employee = await companyRepository.createTeamMember({
+    workspaceId: "workspace_a",
+    name: "Funcionário",
+    email: null,
+    role: "employee",
+    areaId,
+    roleTemplateId: null,
+    createdByProfileId: "profile_manager"
+  });
+  return {
+    app: buildApp({ companyRepository, routineRepository: createInMemoryRoutineRepository() }),
+    employeeId: employee.id,
+    employeeHeaders: { ...employeeHeaders, "x-baase-profile-id": employee.id }
+  };
+}
+
 const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
 
 const operationalRuntimeConfig: BaaseRuntimeConfig = {
@@ -150,6 +168,140 @@ describe("routine routes", () => {
       .toEqual([petersonId, andreId]);
     expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
       .not.toContain(ownerId);
+  });
+
+  it("keeps null-area routines and approvals owner-only and validates manual task assignees", async () => {
+    const { app, headersFor, personIdFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const technicalPersonId = personIdFor("profile_peterson");
+    const financePersonId = personIdFor("profile_financeiro");
+    const nullAreaRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina sem area",
+        approval_mode: "approval_required",
+        task_templates: [{ title: "Aprovar rotina", approval_mode: "approval_required" }]
+      }
+    });
+    const generated = await app.inject({
+      method: "POST",
+      url: `/routines/${nullAreaRoutine.json().routine.id}/occurrences/generate`,
+      headers: ownerHeaders,
+      payload: { due_date: "2026-07-08" }
+    });
+    const nullAreaTaskId = generated.json().tasks[0].id;
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/tasks/${nullAreaTaskId}/submit`,
+      headers: ownerHeaders,
+      payload: {}
+    });
+
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json().task.status).toBe("awaiting_approval");
+
+    const financeRoutines = await app.inject({
+      method: "GET",
+      url: "/routines",
+      headers: headersFor("profile_gestor_financeiro")
+    });
+    const financeApprovals = await app.inject({
+      method: "GET",
+      url: "/approvals",
+      headers: headersFor("profile_gestor_financeiro")
+    });
+    const financeApprove = await app.inject({
+      method: "POST",
+      url: `/tasks/${nullAreaTaskId}/approve`,
+      headers: headersFor("profile_gestor_financeiro")
+    });
+
+    expect(financeRoutines.json().routines).toEqual([]);
+    expect(financeApprovals.json().tasks).toEqual([]);
+    expect(financeApprove.statusCode).toBe(403);
+    expect(financeApprove.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+    expect(financeApprove.json()).not.toHaveProperty("task");
+
+    const financeHeaders = headersFor("profile_gestor_financeiro");
+    const nullAreaTask = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: financeHeaders,
+      payload: {
+        title: "Tarefa nula para tecnico",
+        assignee_profile_id: technicalPersonId,
+        due_date: "2026-07-08"
+      }
+    });
+    const crossAreaTask = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: financeHeaders,
+      payload: {
+        title: "Tarefa financeira para tecnico",
+        area_id: "area_financeiro",
+        assignee_profile_id: technicalPersonId,
+        due_date: "2026-07-08"
+      }
+    });
+    const financeTask = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: financeHeaders,
+      payload: {
+        title: "Tarefa financeira",
+        area_id: "area_financeiro",
+        assignee_profile_id: financePersonId,
+        due_date: "2026-07-08"
+      }
+    });
+
+    expect(nullAreaTask.statusCode).toBe(403);
+    expect(crossAreaTask.statusCode).toBe(403);
+    expect(financeTask.statusCode).toBe(201);
+    expect(financeTask.json().task).toMatchObject({
+      areaId: "area_financeiro",
+      assigneeProfileId: financePersonId
+    });
+
+    const financeTaskId = financeTask.json().task.id;
+    const financeTaskAssigneePatch = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${financeTaskId}`,
+      headers: financeHeaders,
+      payload: {
+        title: "Tarefa financeira alterada",
+        area_id: "area_financeiro",
+        assignee_profile_id: technicalPersonId,
+        due_date: "2026-07-08"
+      }
+    });
+    const financeTaskNullAreaPatch = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${financeTaskId}`,
+      headers: financeHeaders,
+      payload: {
+        title: "Tarefa financeira sem area",
+        assignee_profile_id: financePersonId,
+        due_date: "2026-07-08"
+      }
+    });
+    const ownerNullAreaTask = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: ownerHeaders,
+      payload: {
+        title: "Tarefa manual do owner",
+        due_date: "2026-07-08"
+      }
+    });
+
+    expect(financeTaskAssigneePatch.statusCode).toBe(403);
+    expect(financeTaskNullAreaPatch.statusCode).toBe(403);
+    expect(ownerNullAreaTask.statusCode).toBe(201);
+    expect(ownerNullAreaTask.json().task.areaId).toBeNull();
   });
 
   it("restricts technical routine occurrence generation to the routine area", async () => {
@@ -1211,7 +1363,7 @@ describe("routine routes", () => {
   });
 
   it("creates and deletes one-off tasks for today's execution inbox", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, employeeHeaders: assignedEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_comercial");
 
     const createResponse = await app.inject({
       method: "POST",
@@ -1220,7 +1372,7 @@ describe("routine routes", () => {
       payload: {
         title: "Confirmar agenda do cliente",
         area_id: "area_comercial",
-        assignee_profile_id: "profile_employee",
+        assignee_profile_id: employeeId,
         due_date: "2026-07-07",
         due_hint: "Até 16:00",
         evidence_policy: "comment_required",
@@ -1236,7 +1388,7 @@ describe("routine routes", () => {
       routineId: null,
       taskTemplateId: null,
       areaId: "area_comercial",
-      assigneeProfileId: "profile_employee",
+      assigneeProfileId: employeeId,
       dueDate: "2026-07-07",
       dueHint: "Até 16:00",
       evidencePolicy: "comment_required",
@@ -1251,7 +1403,7 @@ describe("routine routes", () => {
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-07",
-      headers: employeeHeaders
+      headers: assignedEmployeeHeaders
     });
 
     expect(todayResponse.statusCode).toBe(200);
@@ -1274,14 +1426,14 @@ describe("routine routes", () => {
     const afterDeleteResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-07",
-      headers: employeeHeaders
+      headers: assignedEmployeeHeaders
     });
 
     expect(afterDeleteResponse.json().tasks).toEqual([]);
   });
 
   it("updates one-off task details and checklist state", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, employeeHeaders: assignedEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_tecnica");
 
     const createResponse = await app.inject({
       method: "POST",
@@ -1289,7 +1441,8 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Terminar máquina virtual",
-        assignee_profile_id: "profile_employee",
+        area_id: "area_tecnica",
+        assignee_profile_id: employeeId,
         due_date: "2026-07-07",
         due_hint: "Até 17:00",
         checklist_items: ["Instalar dependências", "Validar acesso"]
@@ -1304,7 +1457,7 @@ describe("routine routes", () => {
       payload: {
         title: "Terminar máquina virtual Krah",
         area_id: "area_tecnica",
-        assignee_profile_id: "profile_employee",
+        assignee_profile_id: employeeId,
         due_date: "2026-07-07",
         due_hint: "Até 18:00",
         evidence_policy: "comment_required",
@@ -1329,7 +1482,7 @@ describe("routine routes", () => {
     const checklistResponse = await app.inject({
       method: "PATCH",
       url: `/tasks/${taskId}/checklist`,
-      headers: employeeHeaders,
+      headers: assignedEmployeeHeaders,
       payload: {
         checklist_items: [
           { title: "Instalar dependências", done: true },
