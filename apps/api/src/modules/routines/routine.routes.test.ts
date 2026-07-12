@@ -20,6 +20,7 @@ const employeeHeaders = {
 async function buildLocalRoutineAppWithEmployee(areaId: string) {
   const companyRepository = createInMemoryCompanyRepository();
   const objectStorage = createInMemoryObjectStorage();
+  const routineRepository = createInMemoryRoutineRepository();
   const manager = await companyRepository.createTeamMember({
     workspaceId: "workspace_a",
     name: "Gestor",
@@ -41,8 +42,9 @@ async function buildLocalRoutineAppWithEmployee(areaId: string) {
     createdByProfileId: manager.id
   });
   return {
-    app: buildApp({ companyRepository, routineRepository: createInMemoryRoutineRepository(), objectStorage }),
+    app: buildApp({ companyRepository, routineRepository, objectStorage }),
     objectStorage,
+    routineRepository,
     managerId: manager.id,
     employeeId: employee.id,
     managerHeaders: { ...managerHeaders, "x-baase-profile-id": manager.id },
@@ -61,6 +63,9 @@ function multipartEvidencePayload(filename: string, contentType: string, content
     ])
   };
 }
+
+const pngEvidence = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const pdfEvidence = Buffer.from("%PDF-1.7\n%task-evidence\n");
 
 const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
 
@@ -1551,19 +1556,105 @@ describe("routine routes", () => {
 
     expect((await app.inject({ method: "POST", url: `/tasks/${taskId}/submit`, headers: localEmployeeHeaders, payload: { comment: null } })).statusCode).toBe(400);
 
-    const upload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...multipartEvidencePayload("comprovante.pdf", "application/pdf", "pdf").headers }, payload: multipartEvidencePayload("comprovante.pdf", "application/pdf", "pdf").payload });
+    const pdf = multipartEvidencePayload("comprovante.pdf", "application/pdf", pdfEvidence);
+    const upload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...pdf.headers }, payload: pdf.payload });
     expect(upload.statusCode).toBe(201);
-    expect(upload.json().evidence).toMatchObject({ attachment: { fileName: "comprovante.pdf", contentType: "application/pdf", sizeBytes: 3 } });
+    expect(upload.json().evidence).toMatchObject({ attachment: { fileName: "comprovante.pdf", contentType: "application/pdf", sizeBytes: pdfEvidence.length } });
     expect(objectStorage.keys()[0]).toMatch(new RegExp(`^workspaces/workspace_a/task-evidence/${taskId}/`));
 
-    const image = multipartEvidencePayload("recepcao.png", "image/png", "png");
+    const image = multipartEvidencePayload("recepcao.png", "image/png", pngEvidence);
     const imageUpload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...image.headers }, payload: image.payload });
     expect(imageUpload.statusCode).toBe(201);
     expect(imageUpload.json().evidence.attachment.fileName).toBe("recepcao.png");
+    expect(objectStorage.keys()).toHaveLength(1);
 
     const submit = await app.inject({ method: "POST", url: `/tasks/${taskId}/submit`, headers: localEmployeeHeaders, payload: { comment: null } });
     expect(submit.statusCode).toBe(200);
     expect(submit.json().task.evidence.attachment.fileName).toBe("recepcao.png");
+  });
+
+  it("rejects content that only claims to be an allowed image and never stores it", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Validar evidência", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12"
+    } });
+    const taskId = created.json().task.id;
+
+    for (const [filename, contentType, content] of [
+      ["script.png", "image/png", "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"],
+      ["imagem.svg", "image/svg+xml", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"],
+      ["relatorio.pdf", "application/pdf", "não é um PDF"]
+    ] as const) {
+      const invalid = multipartEvidencePayload(filename, contentType, content);
+      const response = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...invalid.headers }, payload: invalid.payload });
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error.code).toBe("TASK_EVIDENCE_TYPE_INVALID");
+    }
+
+    expect(objectStorage.keys()).toEqual([]);
+  });
+
+  it("does not persist temporary download URLs and creates a current URL for task responses", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, routineRepository } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Comprovante atual", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12", approval_mode: "approval_required"
+    } });
+    const taskId = created.json().task.id;
+    const image = multipartEvidencePayload("recepcao.png", "image/png", pngEvidence);
+    const upload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...image.headers }, payload: image.payload });
+    const attachment = upload.json().evidence.attachment;
+    expect(attachment.url).toContain("memory://");
+    expect(routineRepository.getLifecycleState!().tasks[0]?.evidence?.attachment).toEqual({
+      objectKey: attachment.objectKey,
+      fileName: "recepcao.png",
+      contentType: "image/png",
+      sizeBytes: pngEvidence.length
+    });
+
+    await app.inject({ method: "POST", url: `/tasks/${taskId}/submit`, headers: localEmployeeHeaders, payload: { comment: null } });
+    const approvals = await app.inject({ method: "GET", url: "/approvals", headers: localManagerHeaders });
+    expect(approvals.json().tasks[0].evidence.attachment).toMatchObject({
+      objectKey: attachment.objectKey,
+      fileName: "recepcao.png",
+      url: expect.stringContaining("memory://")
+    });
+  });
+
+  it("removes replaced and deleted task evidence objects after metadata is updated", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Trocar comprovante", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12"
+    } });
+    const taskId = created.json().task.id;
+    const first = multipartEvidencePayload("primeira.png", "image/png", pngEvidence);
+    await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...first.headers }, payload: first.payload });
+    const firstKey = objectStorage.keys()[0];
+    const second = multipartEvidencePayload("segunda.png", "image/png", pngEvidence);
+    const replacement = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...second.headers }, payload: second.payload });
+    expect(replacement.statusCode).toBe(201);
+    expect(objectStorage.keys()).toEqual([replacement.json().evidence.attachment.objectKey]);
+    expect(objectStorage.keys()).not.toContain(firstKey);
+
+    const removal = await app.inject({ method: "DELETE", url: `/tasks/${taskId}`, headers: localManagerHeaders });
+    expect(removal.statusCode).toBe(200);
+    expect(objectStorage.keys()).toEqual([]);
+  });
+
+  it("keeps the replacement metadata when cleanup of an old object fails", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage, routineRepository } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Troca resiliente", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12"
+    } });
+    const taskId = created.json().task.id;
+    const first = multipartEvidencePayload("primeira.png", "image/png", pngEvidence);
+    await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...first.headers }, payload: first.payload });
+    objectStorage.failNextDelete(new Error("storage temporarily unavailable"));
+    const second = multipartEvidencePayload("segunda.png", "image/png", pngEvidence);
+    const replacement = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...second.headers }, payload: second.payload });
+
+    expect(replacement.statusCode).toBe(201);
+    expect(routineRepository.getLifecycleState!().tasks[0]?.evidence?.attachment?.objectKey)
+      .toBe(replacement.json().evidence.attachment.objectKey);
   });
 
   it("rejects unsupported and oversized task evidence uploads", async () => {

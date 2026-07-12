@@ -281,7 +281,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         : Promise.resolve([])
     ]);
     return {
-      tasks: tasks.filter((task) => canReadTask(membership, task)),
+      tasks: await presentTasks(tasks.filter((task) => canReadTask(membership, task)), options.objectStorage),
       training_assignments: trainingAssignments,
       announcements
     };
@@ -293,7 +293,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     const tasks = await service.listApprovalTasks(context.workspaceId);
     const membership = requireOperationalMembership(request);
-    return { tasks: tasks.filter((task) => canManageRoutineOrTaskArea(membership, task.areaId ?? null)) };
+    return { tasks: await presentTasks(tasks.filter((task) => canManageRoutineOrTaskArea(membership, task.areaId ?? null)), options.objectStorage) };
   });
 
   app.post("/tasks", async (request, reply) => {
@@ -328,7 +328,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     try {
       const task = await service.getTask(context.workspaceId, params.id);
       if (!canManageRoutineOrTaskArea(requireOperationalMembership(request), task.areaId ?? null)) throw scopeForbidden();
-      await service.deleteTask(context.workspaceId, params.id);
+      const deletedTask = await service.deleteTask(context.workspaceId, params.id);
+      await deleteEvidenceObject(options.objectStorage, deletedTask.evidence?.attachment?.objectKey);
       return { ok: true };
     } catch (error) {
       throw taskMutationError(error);
@@ -364,7 +365,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         evidencePolicy: body.evidence_policy,
         checklistItems: body.checklist_items
       });
-      return { task };
+      return { task: await presentTask(task, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
     }
@@ -382,7 +383,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       const task = await service.updateTaskChecklist(context.workspaceId, params.id, context.profileId, {
         checklistItems: body.checklist_items
       }, { allowAssigneeOverride: membership.role === "owner" });
-      return { task };
+      return { task: await presentTask(task, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
     }
@@ -400,7 +401,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         comment: body.comment,
         photoUrl: body.photo_url
       }, { allowAssigneeOverride: membership.role === "owner" });
-      return { task: submittedTask };
+      return { task: await presentTask(submittedTask, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
     }
@@ -424,14 +425,14 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       throw new ApiError(413, "PAYLOAD_TOO_LARGE", "O arquivo enviado é grande demais para esta operação.");
     }
 
-    const contentType = file.mimetype.trim().toLowerCase();
-    if (!isAllowedTaskEvidenceType(contentType)) {
-      throw new ApiError(415, "TASK_EVIDENCE_TYPE_INVALID", "Este tipo de arquivo não pode ser usado como evidência.");
-    }
     const buffer = await file.toBuffer();
     if (!buffer.length) throw new ApiError(400, "TASK_EVIDENCE_FILE_EMPTY", "O arquivo não pode estar vazio.");
     if (buffer.length > TASK_EVIDENCE_MAX_BYTES) {
       throw new ApiError(413, "PAYLOAD_TOO_LARGE", "O arquivo enviado é grande demais para esta operação.");
+    }
+    const contentType = file.mimetype.trim().toLowerCase();
+    if (!isValidTaskEvidenceFile(file.filename, contentType, buffer)) {
+      throw new ApiError(415, "TASK_EVIDENCE_TYPE_INVALID", "Este tipo de arquivo não pode ser usado como evidência.");
     }
     if (file.fields.photo_url) {
       throw new ApiError(400, "REQUEST_VALIDATION_ERROR", "A URL de foto não é aceita para anexos de evidência.");
@@ -440,16 +441,19 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const fileName = sanitizeFilename(file.filename);
     const objectKey = `workspaces/${context.workspaceId}/task-evidence/${params.id}/${randomUUID()}-${fileName}`;
     let stored = false;
+    let persisted = false;
     try {
       await options.objectStorage.put({ key: objectKey, body: Readable.from(buffer), contentType, sizeBytes: buffer.length });
       stored = true;
-      const url = await options.objectStorage.createDownloadUrl(objectKey, TASK_EVIDENCE_URL_TTL_SECONDS);
       const evidence = await service.attachTaskEvidence(context.workspaceId, params.id, context.profileId, {
-        attachment: { objectKey, fileName, contentType, sizeBytes: buffer.length, url }
+        attachment: { objectKey, fileName, contentType, sizeBytes: buffer.length }
       }, { allowAssigneeOverride: membership.role === "owner" });
-      return reply.status(201).send({ evidence: evidence.evidence });
+      persisted = true;
+      await deleteEvidenceObject(options.objectStorage, task.evidence?.attachment?.objectKey, objectKey);
+      const presented = await presentTask(evidence, options.objectStorage);
+      return reply.status(201).send({ evidence: presented.evidence });
     } catch (error) {
-      if (stored) {
+      if (stored && !persisted) {
         try { await options.objectStorage.delete(objectKey); } catch { /* preserve the original error */ }
       }
       throw taskEvidenceMutationError(error);
@@ -465,7 +469,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       const existingTask = await service.getTask(context.workspaceId, params.id);
       if (!canManageRoutineOrTaskArea(requireOperationalMembership(request), existingTask.areaId ?? null)) throw scopeForbidden();
       const task = await service.approveTask(context.workspaceId, params.id, context.profileId);
-      return { task };
+      return { task: await presentTask(task, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
     }
@@ -483,7 +487,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       const task = await service.returnTask(context.workspaceId, params.id, context.profileId, {
         comment: body.comment
       });
-      return { task };
+      return { task: await presentTask(task, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
     }
@@ -492,16 +496,58 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
 const TASK_EVIDENCE_MAX_BYTES = 25 * 1024 * 1024;
 const TASK_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
-const taskEvidenceTypes = new Set([
-  "application/pdf",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-]);
+const taskEvidenceFormats = [
+  { contentType: "image/png", extensions: ["png"], matches: (buffer: Buffer) => hasPrefix(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+  { contentType: "image/jpeg", extensions: ["jpg", "jpeg"], matches: (buffer: Buffer) => hasPrefix(buffer, [0xff, 0xd8, 0xff]) },
+  { contentType: "image/gif", extensions: ["gif"], matches: (buffer: Buffer) => buffer.subarray(0, 6).equals(Buffer.from("GIF87a")) || buffer.subarray(0, 6).equals(Buffer.from("GIF89a")) },
+  { contentType: "image/webp", extensions: ["webp"], matches: (buffer: Buffer) => buffer.subarray(0, 4).equals(Buffer.from("RIFF")) && buffer.subarray(8, 12).equals(Buffer.from("WEBP")) },
+  { contentType: "application/pdf", extensions: ["pdf"], matches: (buffer: Buffer) => buffer.subarray(0, 5).equals(Buffer.from("%PDF-")) },
+  { contentType: "application/msword", extensions: ["doc"], matches: isCompoundDocument },
+  { contentType: "application/vnd.ms-excel", extensions: ["xls"], matches: isCompoundDocument },
+  { contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", extensions: ["docx"], matches: (buffer: Buffer) => isOfficeZip(buffer, "word/") },
+  { contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", extensions: ["xlsx"], matches: (buffer: Buffer) => isOfficeZip(buffer, "xl/") }
+] as const;
 
-function isAllowedTaskEvidenceType(contentType: string) {
-  return contentType.startsWith("image/") || taskEvidenceTypes.has(contentType);
+function isValidTaskEvidenceFile(filename: string, contentType: string, buffer: Buffer) {
+  const extension = filename.split(".").at(-1)?.toLowerCase();
+  const format = taskEvidenceFormats.find((candidate) => candidate.contentType === contentType && (candidate.extensions as readonly string[]).includes(extension ?? ""));
+  return Boolean(format?.matches(buffer));
+}
+
+function hasPrefix(buffer: Buffer, signature: number[]) {
+  return buffer.length >= signature.length && signature.every((byte, index) => buffer[index] === byte);
+}
+
+function isCompoundDocument(buffer: Buffer) {
+  return hasPrefix(buffer, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+}
+
+function isOfficeZip(buffer: Buffer, entryPrefix: string) {
+  return hasPrefix(buffer, [0x50, 0x4b, 0x03, 0x04]) && buffer.includes(Buffer.from(entryPrefix));
+}
+
+async function presentTasks(tasks: TaskOccurrence[], objectStorage: ObjectStorage) {
+  return Promise.all(tasks.map((task) => presentTask(task, objectStorage)));
+}
+
+async function presentTask(task: TaskOccurrence, objectStorage: ObjectStorage): Promise<TaskOccurrence> {
+  const attachment = task.evidence?.attachment;
+  if (!attachment) return task;
+  try {
+    const url = await objectStorage.createDownloadUrl(attachment.objectKey, TASK_EVIDENCE_URL_TTL_SECONDS);
+    return { ...task, evidence: { ...task.evidence!, attachment: { ...attachment, url } } };
+  } catch {
+    return { ...task, evidence: { ...task.evidence!, attachment: { ...attachment } } };
+  }
+}
+
+async function deleteEvidenceObject(objectStorage: ObjectStorage, objectKey: string | undefined, exceptObjectKey?: string) {
+  if (!objectKey || objectKey === exceptObjectKey) return;
+  try {
+    await objectStorage.delete(objectKey);
+  } catch {
+    // Metadata mutation already committed; a failed cleanup must not restore stale metadata.
+  }
 }
 
 function sanitizeFilename(filename: string) {

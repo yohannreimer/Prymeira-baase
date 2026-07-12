@@ -16,7 +16,8 @@ export type TaskEvidenceAttachment = {
   fileName: string;
   contentType: string;
   sizeBytes: number;
-  url: string;
+  /** Generated only while presenting an attachment to an authorized caller. */
+  url?: string;
 };
 
 export type RoutineTaskTemplate = {

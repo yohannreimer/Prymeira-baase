@@ -40,7 +40,7 @@ async function hydrateTasks(db: Pick<OperationalPool,"query">|Pick<OperationalCl
     const comment=evidenceRows.find(item=>item.kind==="comment")?.comment??null;
     const attachmentRow=evidenceRows.find(item=>item.kind==="photo"&&item.object_key&&item.file_name&&item.content_type&&item.size_bytes!==null);
     const photoUrl=evidenceRows.find(item=>item.kind==="photo"&&!item.object_key)?.photo_url??null;
-    const attachment=attachmentRow?{objectKey:attachmentRow.object_key!,fileName:attachmentRow.file_name!,contentType:attachmentRow.content_type!,sizeBytes:attachmentRow.size_bytes!,url:attachmentRow.photo_url??""}:null;
+    const attachment=attachmentRow?{objectKey:attachmentRow.object_key!,fileName:attachmentRow.file_name!,contentType:attachmentRow.content_type!,sizeBytes:attachmentRow.size_bytes!}:null;
     const dueDate=dateOnly(row.due_date);
     return { id:row.id,workspaceId:row.workspace_id,origin:row.origin,routineId:row.routine_id,
       taskTemplateId:row.source_template_key??row.routine_step_id,title:row.title,areaId:row.area_id,processId:row.process_id,
@@ -239,6 +239,6 @@ async function replaceEvidence(client:OperationalClient,task:TaskOccurrence){
   await client.query("UPDATE task_evidence SET archived_at=NOW() WHERE workspace_id=$1 AND task_occurrence_id=$2 AND archived_at IS NULL",[task.workspaceId,task.id]);
   if(nextComment)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,comment) VALUES ($1,$2,$3,$4,'comment',$5)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextComment]);
   if(nextPhoto)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,photo_url) VALUES ($1,$2,$3,$4,'photo',$5)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextPhoto]);
-  if(nextAttachment)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,photo_url,object_key,file_name,content_type,size_bytes) VALUES ($1,$2,$3,$4,'photo',$5,$6,$7,$8,$9)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextAttachment.url,nextAttachment.objectKey,nextAttachment.fileName,nextAttachment.contentType,nextAttachment.sizeBytes]);
+  if(nextAttachment)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,photo_url,object_key,file_name,content_type,size_bytes) VALUES ($1,$2,$3,$4,'photo',NULL,$5,$6,$7,$8)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextAttachment.objectKey,nextAttachment.fileName,nextAttachment.contentType,nextAttachment.sizeBytes]);
 }
-function sameAttachment(next:NonNullable<TaskOccurrence["evidence"]>["attachment"],row:EvidenceRow|undefined){return next?.objectKey===row?.object_key&&next?.fileName===row?.file_name&&next?.contentType===row?.content_type&&next?.sizeBytes===row?.size_bytes&&next?.url===(row?.photo_url??undefined);}
+function sameAttachment(next:NonNullable<TaskOccurrence["evidence"]>["attachment"],row:EvidenceRow|undefined){return next?.objectKey===row?.object_key&&next?.fileName===row?.file_name&&next?.contentType===row?.content_type&&next?.sizeBytes===row?.size_bytes;}

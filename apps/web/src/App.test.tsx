@@ -1566,7 +1566,7 @@ describe("Baase React app shell", () => {
         "/api/today?date=2026-07-07": { tasks: [] },
         "/api/approvals": {
           tasks: [
-            { id: "task_review", title: "Revisar relatório", status: "awaiting_approval", evidence: { comment: "Feito.", photoUrl: null } },
+            { id: "task_review", title: "Revisar relatório", status: "awaiting_approval", evidence: { comment: "Feito.", photoUrl: null, attachment: { objectKey: "workspace/task_review/evidencia.png", fileName: "evidencia.png", contentType: "image/png", sizeBytes: 8, url: "https://storage.example/evidencia.png?signature=current" } } },
             { id: "task_return", title: "Enviar print", status: "awaiting_approval", evidence: { comment: "Sem print.", photoUrl: null } }
           ]
         },
@@ -1581,6 +1581,8 @@ describe("Baase React app shell", () => {
     render(<App initialRole="gestor" />);
 
     expect(await screen.findByText("Revisar relatório")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "evidencia.png" })).toHaveAttribute("href", "https://storage.example/evidencia.png?signature=current");
+    expect(screen.getByRole("img", { name: "Prévia de evidencia.png" })).toHaveAttribute("src", "https://storage.example/evidencia.png?signature=current");
     fireEvent.click(screen.getByRole("button", { name: /Aprovar Revisar relatório/ }));
     fireEvent.click(screen.getByRole("button", { name: /Devolver Enviar print/ }));
     fireEvent.change(await screen.findByLabelText("Comentário da devolução"), { target: { value: "Inclua o print." } });

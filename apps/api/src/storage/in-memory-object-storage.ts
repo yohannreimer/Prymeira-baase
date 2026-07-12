@@ -3,12 +3,14 @@ import type { ObjectStorage, PutObjectInput } from "./object-storage";
 
 export type InMemoryObjectStorage = ObjectStorage & {
   failNextPut(error: Error): void;
+  failNextDelete(error: Error): void;
   keys(): string[];
 };
 
 export function createInMemoryObjectStorage(): InMemoryObjectStorage {
   const objects = new Map<string, { body: Buffer; contentType: string }>();
   let nextPutError: Error | null = null;
+  let nextDeleteError: Error | null = null;
 
   return {
     async put(input: PutObjectInput) {
@@ -26,10 +28,18 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       return `memory://${encodeURIComponent(key)}?expires_in=${expiresInSeconds}`;
     },
     async delete(key) {
+      if (nextDeleteError) {
+        const error = nextDeleteError;
+        nextDeleteError = null;
+        throw error;
+      }
       objects.delete(key);
     },
     failNextPut(error) {
       nextPutError = error;
+    },
+    failNextDelete(error) {
+      nextDeleteError = error;
     },
     keys() {
       return [...objects.keys()].sort();

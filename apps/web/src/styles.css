@@ -564,6 +564,9 @@ button { cursor: pointer; }
 .ai-row button, .approval-row button { border: 0; background: var(--accent); color: #fbfbf9; border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 600; }
 .approval-row-actions { align-items: start; }
 .approval-row .ghost-action { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.approval-evidence { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.approval-evidence a, .approval-evidence span { color: var(--accent-ink); font-size: 11.5px; font-weight: 600; overflow-wrap: anywhere; }
+.approval-evidence img { width: 42px; height: 32px; object-fit: cover; border: 1px solid var(--line); border-radius: 5px; background: var(--panel2); }
 .metric-line { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 4px; }
 .metric-line strong { font-size: 30px; line-height: 1; }
 .metric-line span { color: var(--muted); font-size: 12.5px; }

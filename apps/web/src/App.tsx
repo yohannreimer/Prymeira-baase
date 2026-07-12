@@ -450,6 +450,12 @@ function statusLabel(status: string) {
   return labels[status] ?? status;
 }
 
+const safeEvidencePreviewTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function hasSafeEvidencePreview(attachment: NonNullable<NonNullable<ApiTask["evidence"]>["attachment"]>) {
+  return safeEvidencePreviewTypes.has(attachment.contentType) && Boolean(attachment.url);
+}
+
 function processItems(processes: ApiProcess[], areas: ApiArea[] = []): Array<[string, string, string, boolean]> {
   const areaNames = areaNameMap(areas);
   return processes.map((process, index) => [
@@ -3938,10 +3944,18 @@ function ManagerDashboard({
             <PanelHeader title="Aprovações pendentes" aside={String(approvalRows.length)} />
             {approvalRows.length ? approvalRows.map((task) => {
               const isDemo = task.id.startsWith("demo_");
+              const attachment = task.evidence?.attachment;
               return (
                 <div className="approval-row approval-row-actions" key={task.id}>
                   <span className="square square-warn"><Icon name="ph-seal-check" /></span>
-                  <div><strong>{task.title}</strong><small>{task.evidence?.comment ?? "Evidência enviada pelo funcionário"}</small></div>
+                  <div>
+                    <strong>{task.title}</strong>
+                    <small>{task.evidence?.comment ?? "Evidência enviada pelo funcionário"}</small>
+                    {attachment ? <div className="approval-evidence">
+                      {attachment.url ? <a href={attachment.url} target="_blank" rel="noreferrer">{attachment.fileName}</a> : <span>{attachment.fileName}</span>}
+                      {hasSafeEvidencePreview(attachment) ? <img src={attachment.url} alt={`Prévia de ${attachment.fileName}`} referrerPolicy="no-referrer" /> : null}
+                    </div> : null}
+                  </div>
                   <button type="button" disabled={isDemo} onClick={() => approveTask(task)}>Aprovar {pendingApprovals.length ? task.title : ""}</button>
                   {pendingApprovals.length ? <button className="ghost-action" type="button" onClick={() => returnTask(task)}>Devolver {task.title}</button> : null}
                 </div>
