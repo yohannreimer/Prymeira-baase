@@ -56,7 +56,31 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("adds operational identity and multi-area access without changing the person key", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='people' and column_name in ('clerk_user_id','customer_id','access_scope')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual([
+      "access_scope", "clerk_user_id", "customer_id"
+    ]);
+
+    await db.query("insert into areas (id,workspace_id,name) values ('area_finance','workspace_a','Financeiro')");
+    await db.query(
+      `insert into people (id,workspace_id,name,role,status,created_by_profile_id,area_id,clerk_user_id,customer_id,access_scope)
+       values ('person_ana','workspace_a','Ana','manager','active','person_owner','area_finance','user_ana','customer_ana','area')`
+    );
+    await db.query(
+      "insert into person_area_access (workspace_id,person_id,area_id) values ('workspace_a','person_ana','area_finance')"
+    );
+    await expect(db.query(
+      `insert into people (id,workspace_id,name,role,status,created_by_profile_id,clerk_user_id)
+       values ('person_duplicate','workspace_a','Outra','employee','active','person_owner','user_ana')`
+    )).rejects.toThrow();
   });
 
   it("checks out and releases exactly one migration client", async () => {

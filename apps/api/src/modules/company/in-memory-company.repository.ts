@@ -1,4 +1,4 @@
-import type { Area, CompanyRepository, RoleTemplate, TeamInvite, TeamMember } from "./company.types";
+import { normalizeAccessScope, normalizeAreaAccessIds, type Area, type CompanyRepository, type RoleTemplate, type TeamInvite, type TeamMember } from "./company.types";
 
 type InMemoryCompanyRepositoryOptions = {
   now?: () => string;
@@ -88,10 +88,20 @@ export function createInMemoryCompanyRepository(
     },
 
     async createTeamMember(input) {
+      if (input.clerkUserId && teamMembers.some((member) => member.workspaceId === input.workspaceId && member.clerkUserId === input.clerkUserId && member.status !== "archived")) {
+        throw new Error("TEAM_MEMBER_CLERK_ID_CONFLICT");
+      }
+      if (input.customerId && teamMembers.some((member) => member.workspaceId === input.workspaceId && member.customerId === input.customerId && member.status !== "archived")) {
+        throw new Error("TEAM_MEMBER_CUSTOMER_ID_CONFLICT");
+      }
       const timestamp = now();
       const member: TeamMember = {
         ...input,
         id: `person_${teamMembers.length + 1}`,
+        areaAccessIds: normalizeAreaAccessIds(input.areaId, input.areaAccessIds),
+        accessScope: normalizeAccessScope(input.role, input.accessScope),
+        clerkUserId: input.clerkUserId ?? null,
+        customerId: input.customerId ?? null,
         status: input.status ?? "active",
         createdAt: timestamp,
         updatedAt: timestamp
@@ -104,8 +114,16 @@ export function createInMemoryCompanyRepository(
       const index = teamMembers.findIndex((member) => member.workspaceId === person.workspaceId && member.id === person.id);
       if (index === -1) throw new Error("TEAM_MEMBER_NOT_FOUND");
 
-      const updatedMember = {
+      if (person.clerkUserId && teamMembers.some((member) => member.workspaceId === person.workspaceId && member.id !== person.id && member.clerkUserId === person.clerkUserId && member.status !== "archived")) {
+        throw new Error("TEAM_MEMBER_CLERK_ID_CONFLICT");
+      }
+      if (person.customerId && teamMembers.some((member) => member.workspaceId === person.workspaceId && member.id !== person.id && member.customerId === person.customerId && member.status !== "archived")) {
+        throw new Error("TEAM_MEMBER_CUSTOMER_ID_CONFLICT");
+      }
+      const updatedMember: TeamMember = {
         ...person,
+        areaAccessIds: normalizeAreaAccessIds(person.areaId, person.areaAccessIds),
+        accessScope: normalizeAccessScope(person.role, person.accessScope),
         updatedAt: now()
       };
       teamMembers[index] = updatedMember;
@@ -114,7 +132,7 @@ export function createInMemoryCompanyRepository(
 
     async deleteTeamMember(workspaceId, personId) {
       const index = teamMembers.findIndex((member) => member.workspaceId === workspaceId && member.id === personId);
-      if (index >= 0) teamMembers.splice(index, 1);
+      if (index >= 0) teamMembers[index] = { ...teamMembers[index]!, status: "archived", updatedAt: now() };
     },
 
     async listTeamInvites(workspaceId) {

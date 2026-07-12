@@ -463,6 +463,35 @@ const migrations: Migration[] = [{
       ON people (workspace_id, email)
       WHERE archived_at IS NULL AND email IS NOT NULL;
   `
+}, {
+  version: 5,
+  name: "operational_member_identity_and_scope",
+  sql: `
+    ALTER TABLE people ADD COLUMN IF NOT EXISTS clerk_user_id TEXT;
+    ALTER TABLE people ADD COLUMN IF NOT EXISTS customer_id TEXT;
+    ALTER TABLE people ADD COLUMN IF NOT EXISTS access_scope TEXT NOT NULL DEFAULT 'workspace'
+      CHECK (access_scope IN ('workspace','area','assigned_only'));
+    ALTER TABLE people DROP CONSTRAINT IF EXISTS people_status_check;
+    ALTER TABLE people ADD CONSTRAINT people_status_check
+      CHECK (status IN ('pending','active','inactive','placeholder','archived'));
+
+    CREATE TABLE IF NOT EXISTS person_area_access (
+      workspace_id TEXT NOT NULL,
+      person_id TEXT NOT NULL,
+      area_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, person_id, area_id),
+      FOREIGN KEY (workspace_id, person_id) REFERENCES people(workspace_id, id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id, area_id) REFERENCES areas(workspace_id, id) ON DELETE RESTRICT
+    );
+    INSERT INTO person_area_access (workspace_id,person_id,area_id)
+      SELECT workspace_id,id,area_id FROM people WHERE area_id IS NOT NULL
+      ON CONFLICT DO NOTHING;
+    CREATE UNIQUE INDEX IF NOT EXISTS people_active_clerk_identity_uidx
+      ON people (workspace_id, clerk_user_id) WHERE clerk_user_id IS NOT NULL AND archived_at IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS people_active_customer_identity_uidx
+      ON people (workspace_id, customer_id) WHERE customer_id IS NOT NULL AND archived_at IS NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

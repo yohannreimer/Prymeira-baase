@@ -9,6 +9,7 @@ import type {
   UpdateTeamMemberInput,
   TeamMember
 } from "./company.types";
+import { normalizeAccessScope, normalizeAreaAccessIds } from "./company.types";
 
 function normalizeRequiredName(value: string, errorCode: string) {
   const name = value.trim();
@@ -26,6 +27,12 @@ function normalizeOptionalEmail(value: string | null | undefined) {
   if (!email) return null;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("TEAM_MEMBER_EMAIL_INVALID");
   return email;
+}
+
+async function validateAreaAccess(repository: CompanyRepository, workspaceId: string, areaIds: string[]) {
+  for (const areaId of areaIds) {
+    if (!await repository.findAreaById(workspaceId, areaId)) throw new Error("AREA_NOT_FOUND");
+  }
 }
 
 export function createCompanyService(repository: CompanyRepository) {
@@ -145,7 +152,9 @@ export function createCompanyService(repository: CompanyRepository) {
         email: normalizeOptionalEmail(input.email),
         role: input.role,
         areaId: normalizeOptionalText(input.areaId),
+        areaAccessIds: normalizeAreaAccessIds(normalizeOptionalText(input.areaId), input.areaAccessIds ?? current.areaAccessIds),
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
+        accessScope: normalizeAccessScope(input.role, input.accessScope ?? current.accessScope),
         status: input.status ?? current.status
       });
     },
@@ -156,13 +165,23 @@ export function createCompanyService(repository: CompanyRepository) {
         if (!area) throw new Error("AREA_NOT_FOUND");
       }
 
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.createTeamMember({
         workspaceId,
         name: normalizeRequiredName(input.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
+        accessScope,
+        clerkUserId: normalizeOptionalText(input.clerkUserId),
+        customerId: normalizeOptionalText(input.customerId),
         status: input.status ?? "active",
         createdByProfileId: input.createdByProfileId
       });
@@ -217,10 +236,14 @@ export function createCompanyService(repository: CompanyRepository) {
         email: normalizeOptionalEmail(input.email ?? invite.email),
         role: invite.role,
         areaId: invite.areaId,
+        areaAccessIds: normalizeAreaAccessIds(invite.areaId, invite.areaAccessIds),
         roleTemplateId: invite.roleTemplateId,
-        status: "active",
+        accessScope: normalizeAccessScope(invite.role, invite.accessScope),
+        clerkUserId: null,
+        customerId: null,
+        status: "active" as const,
         createdByProfileId: normalizeOptionalText(input.acceptedByProfileId) ?? invite.createdByProfileId
-      } satisfies Omit<TeamMember, "id" | "createdAt" | "updatedAt">;
+      };
 
       if (repository.acceptTeamInviteAtomically) {
         return repository.acceptTeamInviteAtomically(invite, memberInput);

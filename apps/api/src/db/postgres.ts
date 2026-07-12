@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import type { BuildAppOptions } from "../app";
 import type { AiRepository, AiRun } from "../modules/ai/ai.types";
 import type { Announcement, AnnouncementReceipt, AnnouncementRepository } from "../modules/announcements/announcement.types";
-import type { Area, CompanyRepository, RoleTemplate, TeamInvite, TeamMember } from "../modules/company/company.types";
+import { normalizeAccessScope, normalizeAreaAccessIds, type Area, type CompanyRepository, type RoleTemplate, type TeamInvite, type TeamMember } from "../modules/company/company.types";
 import type { OnboardingRepository, OnboardingSession } from "../modules/onboarding/onboarding.types";
 import type { CompanyProcess, ProcessRepository } from "../modules/processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../modules/routines/routine.types";
@@ -458,11 +458,11 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
     },
 
     listTeamMembers(workspaceId) {
-      return store.list<TeamMember>("team_member", workspaceId);
+      return store.list<TeamMember>("team_member", workspaceId).then((people) => people.map(normalizeJsonbTeamMember));
     },
 
     findTeamMember(workspaceId, personId) {
-      return store.find<TeamMember>("team_member", workspaceId, personId);
+      return store.find<TeamMember>("team_member", workspaceId, personId).then((person) => person ? normalizeJsonbTeamMember(person) : null);
     },
 
     async createTeamMember(input) {
@@ -470,9 +470,19 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
         await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
         await assertJsonbActiveRoleTemplate(lockedStore, input.workspaceId, input.areaId, input.roleTemplateId);
         const timestamp = now();
+        if (input.clerkUserId && (await lockedStore.list<TeamMember>("team_member", input.workspaceId)).some((person) => normalizeJsonbTeamMember(person).clerkUserId === input.clerkUserId && person.status !== "archived")) {
+          throw new Error("TEAM_MEMBER_CLERK_ID_CONFLICT");
+        }
+        if (input.customerId && (await lockedStore.list<TeamMember>("team_member", input.workspaceId)).some((person) => normalizeJsonbTeamMember(person).customerId === input.customerId && person.status !== "archived")) {
+          throw new Error("TEAM_MEMBER_CUSTOMER_ID_CONFLICT");
+        }
         return lockedStore.insert<TeamMember>("team_member", {
           ...input,
           id: await lockedStore.nextId("team_member", input.workspaceId, "person"),
+          areaAccessIds: normalizeAreaAccessIds(input.areaId, input.areaAccessIds),
+          accessScope: normalizeAccessScope(input.role, input.accessScope),
+          clerkUserId: input.clerkUserId ?? null,
+          customerId: input.customerId ?? null,
           status: input.status ?? "active",
           createdAt: timestamp,
           updatedAt: timestamp
@@ -480,16 +490,25 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
       });
     },
 
-    deleteTeamMember(workspaceId, personId) {
-      return store.delete("team_member", workspaceId, personId);
+    async deleteTeamMember(workspaceId, personId) {
+      return store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const person = await lockedStore.find<TeamMember>("team_member", workspaceId, personId);
+        if (!person) return;
+        await lockedStore.update<TeamMember>("team_member", { ...normalizeJsonbTeamMember(person), status: "archived", updatedAt: now() });
+      });
     },
 
     updateTeamMember(person) {
       return store.withWorkspaceOperationalMutation(person.workspaceId, async (lockedStore) => {
         await assertJsonbActiveArea(lockedStore, person.workspaceId, person.areaId);
         await assertJsonbActiveRoleTemplate(lockedStore, person.workspaceId, person.areaId, person.roleTemplateId);
+        const others = await lockedStore.list<TeamMember>("team_member", person.workspaceId);
+        if (person.clerkUserId && others.some((item) => item.id !== person.id && normalizeJsonbTeamMember(item).clerkUserId === person.clerkUserId && item.status !== "archived")) throw new Error("TEAM_MEMBER_CLERK_ID_CONFLICT");
+        if (person.customerId && others.some((item) => item.id !== person.id && normalizeJsonbTeamMember(item).customerId === person.customerId && item.status !== "archived")) throw new Error("TEAM_MEMBER_CUSTOMER_ID_CONFLICT");
         return lockedStore.update<TeamMember>("team_member", {
           ...person,
+          areaAccessIds: normalizeAreaAccessIds(person.areaId, person.areaAccessIds),
+          accessScope: normalizeAccessScope(person.role, person.accessScope),
           updatedAt: now()
         });
       });
@@ -572,7 +591,11 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
           workspaceId: persisted.workspaceId,
           role: persisted.role,
           areaId: persisted.areaId,
+          areaAccessIds: normalizeAreaAccessIds(persisted.areaId, persisted.areaAccessIds),
           roleTemplateId: persisted.roleTemplateId,
+          accessScope: normalizeAccessScope(persisted.role, persisted.accessScope),
+          clerkUserId: null,
+          customerId: null,
           createdAt: now(),
           updatedAt: now()
         };
@@ -591,6 +614,16 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
         return { invite: updated, person };
       });
     }
+  };
+}
+
+function normalizeJsonbTeamMember(person: TeamMember): TeamMember {
+  return {
+    ...person,
+    areaAccessIds: normalizeAreaAccessIds(person.areaId, person.areaAccessIds),
+    accessScope: normalizeAccessScope(person.role, person.accessScope),
+    clerkUserId: person.clerkUserId ?? null,
+    customerId: person.customerId ?? null
   };
 }
 

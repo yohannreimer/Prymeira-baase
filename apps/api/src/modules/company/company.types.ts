@@ -72,6 +72,7 @@ export type TeamInvite = {
   email: string | null;
   role: "owner" | "manager" | "employee";
   areaId: string | null;
+  areaAccessIds?: string[];
   roleTemplateId: string | null;
   accessScope: "workspace" | "area" | "assigned_only";
   code: string;
@@ -88,8 +89,12 @@ export type TeamMember = {
   email: string | null;
   role: "owner" | "manager" | "employee";
   areaId: string | null;
+  areaAccessIds: string[];
   roleTemplateId: string | null;
-  status: "active" | "inactive" | "placeholder";
+  accessScope: "workspace" | "area" | "assigned_only";
+  clerkUserId: string | null;
+  customerId: string | null;
+  status: "pending" | "active" | "inactive" | "placeholder" | "archived";
   createdByProfileId: string;
   createdAt: string;
   updatedAt: string;
@@ -123,7 +128,11 @@ export type CreateTeamMemberInput = {
   email?: string | null;
   role: TeamMember["role"];
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
+  accessScope?: TeamMember["accessScope"];
+  clerkUserId?: string | null;
+  customerId?: string | null;
   status?: TeamMember["status"];
   createdByProfileId: string;
 };
@@ -133,7 +142,9 @@ export type UpdateTeamMemberInput = {
   email?: string | null;
   role: TeamMember["role"];
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
+  accessScope?: TeamMember["accessScope"];
   status?: TeamMember["status"];
 };
 
@@ -155,7 +166,9 @@ export type CompanyRepository = {
   listTeamMembers(workspaceId: string): Promise<TeamMember[]>;
   findTeamMember(workspaceId: string, personId: string): Promise<TeamMember | null>;
   createTeamMember(
-    input: Omit<TeamMember, "id" | "status" | "createdAt" | "updatedAt"> & { status?: TeamMember["status"] }
+    input: Omit<TeamMember, "id" | "status" | "createdAt" | "updatedAt" | "areaAccessIds" | "accessScope" | "clerkUserId" | "customerId">
+      & Partial<Pick<TeamMember, "areaAccessIds" | "accessScope" | "clerkUserId" | "customerId">>
+      & { status?: TeamMember["status"] }
   ): Promise<TeamMember>;
   updateTeamMember(person: TeamMember): Promise<TeamMember>;
   deleteTeamMember(workspaceId: string, personId: string): Promise<void>;
@@ -178,3 +191,12 @@ export type CompanyRepository = {
   getLifecycleState?(): InMemoryCompanyLifecycleState;
   commitLifecycleState?(state: InMemoryCompanyLifecycleState): void;
 };
+
+export function normalizeAreaAccessIds(areaId: string | null, areaAccessIds: string[] | null | undefined) {
+  return [...new Set([...(areaAccessIds ?? []), ...(areaId ? [areaId] : [])].filter(Boolean))];
+}
+
+export function normalizeAccessScope(role: TeamMember["role"], scope: TeamMember["accessScope"] | null | undefined) {
+  if (role === "owner") return "workspace" as const;
+  return scope ?? "workspace";
+}
