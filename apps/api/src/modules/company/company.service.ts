@@ -146,15 +146,21 @@ export function createCompanyService(repository: CompanyRepository) {
         if (input.areaId && roleTemplate.areaId !== input.areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
       }
 
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds ?? current.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope ?? current.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.updateTeamMember({
         ...current,
         name: normalizeRequiredName(input.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
-        areaAccessIds: normalizeAreaAccessIds(normalizeOptionalText(input.areaId), input.areaAccessIds ?? current.areaAccessIds),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
-        accessScope: normalizeAccessScope(input.role, input.accessScope ?? current.accessScope),
+        accessScope,
         status: input.status ?? current.status
       });
     },
@@ -215,14 +221,23 @@ export function createCompanyService(repository: CompanyRepository) {
         if (input.areaId && roleTemplate.areaId !== input.areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
       }
 
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.createTeamInvite({
         workspaceId,
         name: normalizeRequiredName(input.name, "INVITE_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
-        accessScope: input.accessScope ?? "workspace",
+        accessScope,
+        hubInvitationId: normalizeOptionalText(input.hubInvitationId),
+        hubStatus: input.hubStatus ?? null,
         createdByProfileId: input.createdByProfileId
       });
     },
@@ -248,8 +263,6 @@ export function createCompanyService(repository: CompanyRepository) {
       if (repository.acceptTeamInviteAtomically) {
         return repository.acceptTeamInviteAtomically(invite, memberInput);
       }
-      if (invite.status !== "pending") throw new Error("INVITE_ALREADY_ACCEPTED");
-
       const member = await repository.createTeamMember(memberInput);
 
       const acceptedInvite = await repository.updateTeamInvite({

@@ -178,6 +178,90 @@ describe("Baase API app", () => {
     });
   });
 
+  it("sends production invitations through the Account Hub before storing operational context", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    await companyRepository.createTeamMember({
+      workspaceId: "hub_workspace",
+      name: "Dona",
+      email: "owner@example.com",
+      role: "owner",
+      areaId: null,
+      areaAccessIds: [],
+      roleTemplateId: null,
+      accessScope: "workspace",
+      clerkUserId: "user_owner",
+      customerId: "customer_owner",
+      createdByProfileId: "user_owner"
+    });
+    const runtimeConfig: BaaseRuntimeConfig = {
+      mode: "production",
+      auth: { mode: "account", accountApiUrl: "https://hub.prymeiradigital.com.br/api" },
+      persistence: "postgres",
+      operationalStore: "jsonb",
+      demoSeedEnabled: false,
+      ai: { structured: "openai", transcription: "deepgram" },
+      objectStorage: inMemoryObjectStorage,
+      ok: true,
+      warnings: []
+    };
+    const accountTeamRequests: Array<{ url: string; body: string | null }> = [];
+    const app = buildApp({
+      runtimeConfig,
+      companyRepository,
+      accountAccessFetch: async () => new Response(JSON.stringify({
+        allowed: true,
+        workspace_id: "hub_workspace",
+        workspace_name: "Empresa Hub",
+        workspace_role: "owner",
+        product_key: "base",
+        product_role: "admin",
+        customer_id: "customer_owner",
+        customer_name: "Dona",
+        status: "active",
+        reason: "active_entitlement"
+      }), { status: 200 }),
+      accountTeamFetch: async (input, init) => {
+        const body = typeof init?.body === "string" ? init.body : null;
+        accountTeamRequests.push({ url: String(input), body });
+        if (body?.includes("falha@example.com")) return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify({ status: "pending", invitation: { id: "hub_invite_1" } }), { status: 200 });
+      }
+    });
+    const headers = { authorization: accountBearer("user_owner") };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers,
+      payload: { name: "Ana", email: "ana@example.com", role: "employee", access_scope: "assigned_only" }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(accountTeamRequests).toEqual([{
+      url: "https://hub.prymeiradigital.com.br/api/team/members/invite",
+      body: JSON.stringify({ email: "ana@example.com", name: "Ana", role: "member", product_key: "base" })
+    }]);
+    expect(response.json().invite).toMatchObject({
+      email: "ana@example.com",
+      hubInvitationId: "hub_invite_1",
+      hubStatus: "pending",
+      status: "pending"
+    });
+
+    const failedInvite = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers,
+      payload: { name: "Falha", email: "falha@example.com", role: "employee" }
+    });
+    expect(failedInvite.statusCode).toBe(502);
+    expect((await companyRepository.listTeamInvites("hub_workspace"))).toHaveLength(1);
+
+    const legacyResponse = await app.inject({ method: "POST", url: "/invites/BAASE-0001/accept" });
+    expect(legacyResponse.statusCode).toBe(410);
+    expect(legacyResponse.json().error.code).toBe("LEGACY_INVITE_FLOW_DISABLED");
+  });
+
   it("keeps health probes anonymous under Account runtime", async () => {
     const runtimeConfig: BaaseRuntimeConfig = {
       mode: "production",

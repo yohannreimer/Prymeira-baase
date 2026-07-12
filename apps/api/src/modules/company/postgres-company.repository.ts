@@ -171,7 +171,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
         if (!persisted) throw new Error("INVITE_NOT_FOUND");
         if (persisted.status === "revoked") throw new Error("INVITE_NOT_FOUND");
 
-        const personId = `person_${persisted.id}`;
+        const personId = persisted.personId ?? `person_${persisted.id}`;
         if (persisted.status === "accepted") {
           const existing = await client.query<PersonRow>(
             "SELECT * FROM people WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",
@@ -200,13 +200,15 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
         }
 
         const created = await client.query<PersonRow>(`INSERT INTO people
-          (id,workspace_id,name,email,role,area_id,role_template_id,status,created_by_profile_id)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [
+          (id,workspace_id,name,email,role,area_id,role_template_id,access_scope,clerk_user_id,customer_id,status,created_by_profile_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [
           personId, persisted.workspaceId, member.name, member.email, persisted.role,
-          persisted.areaId, persisted.roleTemplateId, member.status, member.createdByProfileId
+          persisted.areaId, persisted.roleTemplateId, normalizeAccessScope(persisted.role, persisted.accessScope),
+          member.clerkUserId, member.customerId, member.status, member.createdByProfileId
         ]);
+        await replaceAreaAccess(client, persisted.workspaceId, personId, normalizeAreaAccessIds(persisted.areaId, persisted.areaAccessIds));
         const acceptedAt = nextTimestamp(persisted.updatedAt);
-        const acceptedInvite: TeamInvite = { ...persisted, status: "accepted", updatedAt: acceptedAt };
+        const acceptedInvite: TeamInvite = { ...persisted, status: "accepted", personId, acceptedAt, updatedAt: acceptedAt };
         const updated = await client.query<{ id: string }>(
           `UPDATE baase_records SET data=$3::jsonb,updated_at=$4
            WHERE kind='team_invite' AND workspace_id=$1 AND id=$2
@@ -217,7 +219,7 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
         if (!updated.rows[0]) throw new Error("INVITE_STALE");
         await audit(client, member.workspaceId, "person", personId, "create", member.createdByProfileId);
         await audit(client, persisted.workspaceId, "team_invite", persisted.id, "accept", member.createdByProfileId);
-        return { invite: acceptedInvite, person: personFromRow(created.rows[0]!) };
+        return { invite: acceptedInvite, person: await readPerson(client, persisted.workspaceId, personId, created.rows[0]!) };
       });
     }
   };

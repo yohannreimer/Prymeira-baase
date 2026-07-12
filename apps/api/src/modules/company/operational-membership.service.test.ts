@@ -63,4 +63,39 @@ describe("operational membership resolver", () => {
 
     await expect(resolver.resolve(identity)).rejects.toThrow("BAASE_MEMBERSHIP_REQUIRED");
   });
+
+  it("activates the operational invitation when the Hub user enters with the invited email", async () => {
+    const repository = createInMemoryCompanyRepository();
+    const invite = await repository.createTeamInvite({
+      workspaceId: "workspace_a",
+      name: "Ana",
+      email: "ana@example.com",
+      role: "manager",
+      areaId: null,
+      areaAccessIds: [],
+      roleTemplateId: null,
+      accessScope: "workspace",
+      hubInvitationId: "hub_invite_1",
+      hubStatus: "pending",
+      createdByProfileId: "person_owner"
+    });
+    const resolver = createOperationalMembershipResolver({
+      repository,
+      loadHubProfile: async () => ({ email: "ana@example.com", name: "Ana Souza" })
+    });
+
+    const membership = await resolver.resolve(identity);
+
+    expect(membership.person).toMatchObject({
+      id: `person_${invite.id}`,
+      name: "Ana Souza",
+      role: "manager",
+      clerkUserId: "user_ana",
+      customerId: "customer_ana"
+    });
+    expect(await repository.findTeamInviteByCode(invite.code)).toMatchObject({
+      status: "accepted",
+      personId: membership.personId
+    });
+  });
 });

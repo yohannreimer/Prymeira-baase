@@ -195,6 +195,46 @@ export function createInMemoryCompanyRepository(
       if (index >= 0) invites.splice(index, 1);
     },
 
+    async acceptTeamInviteAtomically(invite, member) {
+      const inviteIndex = invites.findIndex((current) => current.workspaceId === invite.workspaceId && current.id === invite.id);
+      const persisted = invites[inviteIndex];
+      if (!persisted || persisted.status === "revoked") throw new Error("INVITE_NOT_FOUND");
+      const personId = persisted.personId ?? `person_${persisted.id}`;
+      if (persisted.status === "accepted") {
+        const existing = teamMembers.find((person) => person.workspaceId === persisted.workspaceId && person.id === personId);
+        if (!existing) throw new Error("INVITE_ACCEPTANCE_INCOMPLETE");
+        return { invite: persisted, person: existing };
+      }
+      if (persisted.updatedAt !== invite.updatedAt) throw new Error("INVITE_STALE");
+      if (teamMembers.some((person) => person.workspaceId === persisted.workspaceId && person.id === personId)) {
+        throw new Error("INVITE_ACCEPTANCE_INCOMPLETE");
+      }
+
+      const timestamp = now();
+      const person: TeamMember = {
+        ...member,
+        id: personId,
+        workspaceId: persisted.workspaceId,
+        role: persisted.role,
+        areaId: persisted.areaId,
+        areaAccessIds: normalizeAreaAccessIds(persisted.areaId, persisted.areaAccessIds),
+        roleTemplateId: persisted.roleTemplateId,
+        accessScope: normalizeAccessScope(persisted.role, persisted.accessScope),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      teamMembers.push(person);
+      const acceptedInvite: TeamInvite = {
+        ...persisted,
+        status: "accepted",
+        personId,
+        acceptedAt: timestamp,
+        updatedAt: now()
+      };
+      invites[inviteIndex] = acceptedInvite;
+      return { invite: acceptedInvite, person };
+    },
+
     getLifecycleState() {
       return structuredClone({ areas, roleTemplates, teamMembers, invites });
     },

@@ -56,6 +56,7 @@ export type BuildAppOptions = {
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   accountAccessFetch?: typeof fetch;
+  accountTeamFetch?: typeof fetch;
 };
 
 const API_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
@@ -205,7 +206,11 @@ export function buildApp(options: BuildAppOptions = {}) {
   }));
 
   app.register((routes) => registerSessionRoutes(routes, onboardingRepository, companyRepository));
-  app.register((routes) => registerCompanyRoutes(routes, companyRepository, areaLifecycleRepository));
+  app.register((routes) => registerCompanyRoutes(routes, companyRepository, areaLifecycleRepository, {
+    authMode: runtimeConfig.auth.mode,
+    accountApiUrl: runtimeConfig.auth.accountApiUrl,
+    accountTeamFetch: options.accountTeamFetch
+  }));
   app.register((routes) => registerDashboardRoutes(routes, {
     companyRepository,
     processRepository,

@@ -26,6 +26,15 @@ export function createOperationalMembershipResolver(options: OperationalMembersh
         return membershipFromPerson(person);
       }
 
+      const pendingInvites = (await options.repository.listTeamInvites(identity.workspaceId)).filter((invite) => {
+        return invite.status === "pending" && invite.email?.trim().toLowerCase() === profile.email;
+      });
+      if (pendingInvites.length > 1) throw new Error("BAASE_MEMBERSHIP_CONFLICT");
+      if (pendingInvites.length === 1) {
+        const person = await acceptOperationalInvite(options.repository, pendingInvites[0]!, profile, identity);
+        return membershipFromPerson(person);
+      }
+
       if ((identity.productRole === "admin" || identity.productRole === "owner")
         && !await options.repository.hasLinkedOwner(identity.workspaceId)) {
         const person = await options.repository.createTeamMember({
@@ -57,6 +66,40 @@ async function activatePerson(repository: CompanyRepository, person: TeamMember,
     customerId: identity.customerId,
     status: "active"
   });
+}
+
+async function acceptOperationalInvite(
+  repository: CompanyRepository,
+  invite: Awaited<ReturnType<CompanyRepository["listTeamInvites"]>>[number],
+  profile: HubAccountProfile,
+  identity: ExternalAccountIdentity
+) {
+  const member = {
+    workspaceId: invite.workspaceId,
+    name: profile.name?.trim() || invite.name,
+    email: profile.email,
+    role: invite.role,
+    areaId: invite.areaId,
+    areaAccessIds: invite.areaAccessIds ?? [],
+    roleTemplateId: invite.roleTemplateId,
+    accessScope: invite.accessScope,
+    clerkUserId: identity.clerkUserId,
+    customerId: identity.customerId,
+    status: "active" as const,
+    createdByProfileId: identity.clerkUserId
+  };
+  if (repository.acceptTeamInviteAtomically) {
+    return (await repository.acceptTeamInviteAtomically(invite, member)).person;
+  }
+
+  const person = await repository.createTeamMember(member);
+  await repository.updateTeamInvite({
+    ...invite,
+    status: "accepted",
+    personId: person.id,
+    acceptedAt: person.createdAt
+  }, { updatedAt: invite.updatedAt, status: "pending" });
+  return person;
 }
 
 function membershipFromPerson(person: TeamMember): OperationalMembership {

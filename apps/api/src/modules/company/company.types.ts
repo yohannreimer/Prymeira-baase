@@ -75,6 +75,10 @@ export type TeamInvite = {
   areaAccessIds?: string[];
   roleTemplateId: string | null;
   accessScope: "workspace" | "area" | "assigned_only";
+  hubInvitationId?: string | null;
+  hubStatus?: "active" | "pending" | null;
+  acceptedAt?: string | null;
+  personId?: string | null;
   code: string;
   status: "pending" | "accepted" | "revoked";
   createdByProfileId: string;
@@ -136,8 +140,11 @@ export type CreateTeamInviteInput = {
   email?: string | null;
   role: TeamInvite["role"];
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
   accessScope?: TeamInvite["accessScope"];
+  hubInvitationId?: string | null;
+  hubStatus?: TeamInvite["hubStatus"];
   createdByProfileId: string;
 };
 

@@ -597,7 +597,7 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
       return store.withWorkspaceOperationalMutation(invite.workspaceId, async (lockedStore) => {
         const persisted = await lockedStore.find<TeamInvite>("team_invite", invite.workspaceId, invite.id);
         if (!persisted || persisted.status === "revoked") throw new Error("INVITE_NOT_FOUND");
-        const personId = `person_${persisted.id}`;
+        const personId = persisted.personId ?? `person_${persisted.id}`;
 
         if (persisted.status === "accepted") {
           const person = await lockedStore.find<TeamMember>("team_member", persisted.workspaceId, personId);
@@ -620,8 +620,8 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
           areaAccessIds: normalizeAreaAccessIds(persisted.areaId, persisted.areaAccessIds),
           roleTemplateId: persisted.roleTemplateId,
           accessScope: normalizeAccessScope(persisted.role, persisted.accessScope),
-          clerkUserId: null,
-          customerId: null,
+          clerkUserId: member.clerkUserId,
+          customerId: member.customerId,
           createdAt: now(),
           updatedAt: now()
         };
@@ -629,6 +629,8 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
         const acceptedInvite: TeamInvite = {
           ...persisted,
           status: "accepted",
+          personId,
+          acceptedAt: person.createdAt,
           updatedAt: nextTimestamp(persisted.updatedAt)
         };
         const updated = await lockedStore.updateTeamInviteIfCurrent(
