@@ -59,7 +59,7 @@ function BaaseAccessGate({ children, config }: { children: ReactNode; config: Ba
         if (cancelled) return;
         setDecision(access);
         if (access.allowed) {
-          configureBaaseApiAuth({ getToken });
+          configureBaaseApiAuth({ getToken, accountMode: true });
           setState("allowed");
         } else {
           configureBaaseApiAuth(null);

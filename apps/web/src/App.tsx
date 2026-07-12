@@ -95,6 +95,7 @@ import {
   type OnboardingSetupResult
 } from "./api";
 import { OnboardingShell, createEmptyOnboardingDraft, onboardingConversationQuestions, type OnboardingDraftState } from "./onboarding";
+import { readBaaseAuthConfig } from "./auth-config";
 import "./styles.css";
 
 type Role = "dono" | "gestor" | "func";
@@ -1552,6 +1553,7 @@ function ActivationPlanPanel({
 }
 
 export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
+  const accountMode = readBaaseAuthConfig(import.meta.env).mode === "account";
   const [role, setRoleState] = useState<Role>(initialRole);
   const [screen, setScreen] = useState<Screen>(homeFor(initialRole));
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1646,6 +1648,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       cancelled = true;
     };
   }, [apiEnabled, bootstrapAttempt, role]);
+
+  useEffect(() => {
+    if (!accountMode || !apiBundle?.session) return;
+    const authenticatedRole = apiBundle.session.profile.role === "owner"
+      ? "dono" : apiBundle.session.profile.role === "manager" ? "gestor" : "func";
+    setRoleState(authenticatedRole);
+    setScreen(homeFor(authenticatedRole));
+  }, [accountMode, apiBundle?.session]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1795,6 +1805,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     && (onboardingSession?.status === "completed" || workspaceIsEmpty);
 
   function setRole(nextRole: Role) {
+    if (accountMode) return;
     setRoleState(nextRole);
     setScreen(homeFor(nextRole));
     setMenuOpen(false);
@@ -3220,7 +3231,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             <div className="mono kicker">{workspaceName}</div>
             <div className="header-heading">{headerTitle}</div>
           </div>
-          <div className="role-switch" aria-label="Visualização">
+          {!accountMode ? <div className="role-switch" aria-label="Visualização">
             {[
               ["dono", "Dono"],
               ["gestor", "Gestor"],
@@ -3230,7 +3241,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 {label}
               </button>
             ))}
-          </div>
+          </div> : null}
           <div className="top-actions">
             <button className="icon-btn" type="button" aria-label="Buscar" onClick={() => setTopPanel((panel) => panel === "search" ? null : "search")}><Icon name="ph-magnifying-glass" /></button>
             <button className={`icon-btn ${notificationItems.length ? "has-dot" : ""}`} type="button" aria-label="Notificações" onClick={() => setTopPanel((panel) => panel === "notifications" ? null : "notifications")}><Icon name="ph-bell" /></button>

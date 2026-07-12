@@ -215,6 +215,7 @@ export type ApiInvite = {
   email?: string | null;
   role: BaaseApiRole;
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
   accessScope?: "workspace" | "area" | "assigned_only";
   code: string;
@@ -249,7 +250,9 @@ export type ApiPerson = {
   email?: string | null;
   role: BaaseApiRole;
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
+  accessScope?: "workspace" | "area" | "assigned_only";
   status?: string;
 };
 
@@ -519,7 +522,9 @@ export type ApiProactiveSuggestion = {
   };
   target: {
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
     processId?: string | null;
     taskIds?: string[];
   };
@@ -642,9 +647,11 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 type TokenProvider = () => Promise<string | null> | string | null;
 
 let baaseTokenProvider: TokenProvider | null = null;
+let baaseAccountMode = false;
 
-export function configureBaaseApiAuth(options: { getToken: TokenProvider } | null) {
+export function configureBaaseApiAuth(options: { getToken: TokenProvider; accountMode?: boolean } | null) {
   baaseTokenProvider = options?.getToken ?? null;
+  baaseAccountMode = options?.accountMode ?? false;
 }
 
 const roleByUiRole: Record<UiRole, BaaseApiRole> = {
@@ -660,6 +667,7 @@ const profileIdByUiRole: Record<UiRole, string> = {
 };
 
 export function createBaaseHeaders(role: UiRole): HeadersInit {
+  if (baaseAccountMode) return { "content-type": "application/json" };
   return {
     "content-type": "application/json",
     "x-baase-workspace-id": "workspace_a",
@@ -669,6 +677,7 @@ export function createBaaseHeaders(role: UiRole): HeadersInit {
 }
 
 function createBaaseAuthHeaders(role: UiRole): HeadersInit {
+  if (baaseAccountMode) return {};
   return {
     "x-baase-workspace-id": "workspace_a",
     "x-baase-role": roleByUiRole[role],
@@ -1092,7 +1101,9 @@ export async function createPerson(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
   },
   fetcher: Fetcher = fetch
 ) {
@@ -1104,7 +1115,9 @@ export async function createPerson(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
-      role_template_id: input.roleTemplateId ?? null
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
+      role_template_id: input.roleTemplateId ?? null,
+      ...(input.accessScope ? { access_scope: input.accessScope } : {})
     })
   });
 
@@ -1119,7 +1132,9 @@ export async function updatePerson(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
     status?: string;
   },
   fetcher: Fetcher = fetch
@@ -1132,7 +1147,9 @@ export async function updatePerson(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
       role_template_id: input.roleTemplateId ?? null,
+      ...(input.accessScope ? { access_scope: input.accessScope } : {}),
       status: input.status
     })
   });
@@ -1595,6 +1612,7 @@ export async function createInvite(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
     accessScope?: "workspace" | "area" | "assigned_only";
   },
@@ -1608,8 +1626,9 @@ export async function createInvite(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
       role_template_id: input.roleTemplateId ?? null,
-      access_scope: input.accessScope ?? "workspace"
+      ...(input.accessScope ? { access_scope: input.accessScope } : {})
     })
   });
 
