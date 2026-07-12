@@ -99,6 +99,7 @@ export function buildApp(options: BuildAppOptions = {}) {
 
   registerAccountAuthHook(app, {
     runtimeConfig,
+    companyRepository,
     fetcher: options.accountAccessFetch
   });
 

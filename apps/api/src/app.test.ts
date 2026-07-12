@@ -4,6 +4,7 @@ import type { BaaseRuntimeConfig } from "./config/runtime";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
 
 const inMemoryObjectStorage = { provider: "memory" as const, s3: null };
+const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
 
 describe("Baase API app", () => {
   it("responds to health checks", async () => {
@@ -83,7 +84,9 @@ describe("Baase API app", () => {
         role: "manager",
         display_name: "Rafael Nunes",
         initials: "RN",
-        area_name: "Criação"
+        area_name: "Criação",
+        area_names: [],
+        access_scope: "workspace"
       },
       home_route: "/gestor"
     });
@@ -115,6 +118,11 @@ describe("Baase API app", () => {
           url: String(input),
           authorization: new Headers(init?.headers).get("authorization")
         });
+        if (String(input).endsWith("/me/products")) {
+          return new Response(JSON.stringify({
+            customer: { email: "yohann@example.com", name: "Yohann Reimer" }
+          }), { status: 200 });
+        }
         return new Response(JSON.stringify({
           allowed: true,
           workspace_id: "hub_workspace",
@@ -134,7 +142,7 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token",
+        authorization: accountBearer("user_yohann"),
         "x-baase-workspace-id": "spoofed_workspace",
         "x-baase-profile-id": "spoofed_profile",
         "x-baase-role": "employee"
@@ -142,21 +150,29 @@ describe("Baase API app", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(accountRequests).toEqual([{
-      url: "https://hub.prymeiradigital.com.br/api/access-check?product_key=base",
-      authorization: "Bearer clerk-token"
-    }]);
+    expect(accountRequests).toEqual([
+      {
+        url: "https://hub.prymeiradigital.com.br/api/access-check?product_key=base",
+        authorization: accountBearer("user_yohann")
+      },
+      {
+        url: "https://hub.prymeiradigital.com.br/api/me/products",
+        authorization: accountBearer("user_yohann")
+      }
+    ]);
     expect(response.json()).toEqual({
       workspace: {
         id: "hub_workspace",
         name: "Estúdio Aurora"
       },
       profile: {
-        id: "account_customer_123",
+        id: "person_1",
         role: "owner",
         display_name: "Yohann Reimer",
         initials: "YR",
-        area_name: null
+        area_name: null,
+        area_names: [],
+        access_scope: "workspace"
       },
       home_route: "/painel"
     });
@@ -196,7 +212,7 @@ describe("Baase API app", () => {
     expect(readinessResponse.statusCode).toBe(200);
   });
 
-  it("uses neutral labels when Account Hub has no workspace or customer identity", async () => {
+  it("rejects an incomplete Account Hub authorization response", async () => {
     const runtimeConfig: BaaseRuntimeConfig = {
       mode: "production",
       auth: {
@@ -231,17 +247,16 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token"
+        authorization: accountBearer("user_missing_customer")
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      workspace: {
-        name: "Empresa em configuração"
-      },
-      profile: {
-        display_name: "Usuário"
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: {
+        code: "ACCOUNT_AUTH_INVALID_RESPONSE",
+        message: "Account Hub autorizou acesso sem workspace.",
+        details: {}
       }
     });
   });
@@ -279,7 +294,7 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token"
+        authorization: accountBearer("user_denied")
       }
     });
 
@@ -355,7 +370,7 @@ describe("Baase API app", () => {
         name: "Responsável Financeiro e Administrativo"
       }
     });
-    await app.inject({
+    const personResponse = await app.inject({
       method: "POST",
       url: "/people",
       headers,
@@ -368,11 +383,15 @@ describe("Baase API app", () => {
       }
     });
 
-    const response = await app.inject({ method: "GET", url: "/me", headers });
+    const response = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { ...headers, "x-baase-profile-id": personResponse.json().person.id }
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().profile).toMatchObject({
-      id: "profile_owner",
+      id: personResponse.json().person.id,
       role: "owner",
       display_name: "Yohann Reimer",
       initials: "YR",

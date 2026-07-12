@@ -80,6 +80,22 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
       const result = await db.query<PersonRow>(`${personSelect} WHERE p.workspace_id = $1 AND p.id = $2 AND p.archived_at IS NULL`, [workspaceId, personId]);
       return result.rows[0] ? personFromRow(result.rows[0]) : null;
     },
+    async findTeamMemberByClerkUserId(workspaceId, clerkUserId) {
+      const result = await db.query<PersonRow>(`${personSelect} WHERE p.workspace_id=$1 AND p.clerk_user_id=$2 AND p.archived_at IS NULL`, [workspaceId, clerkUserId]);
+      return result.rows[0] ? personFromRow(result.rows[0]) : null;
+    },
+    async findTeamMemberByCustomerId(workspaceId, customerId) {
+      const result = await db.query<PersonRow>(`${personSelect} WHERE p.workspace_id=$1 AND p.customer_id=$2 AND p.archived_at IS NULL`, [workspaceId, customerId]);
+      return result.rows[0] ? personFromRow(result.rows[0]) : null;
+    },
+    async findUnlinkedTeamMembersByEmail(workspaceId, email) {
+      const result = await db.query<PersonRow>(`${personSelect} WHERE p.workspace_id=$1 AND lower(p.email)=lower($2) AND p.clerk_user_id IS NULL AND p.customer_id IS NULL AND p.archived_at IS NULL`, [workspaceId, email]);
+      return result.rows.map(personFromRow);
+    },
+    async hasLinkedOwner(workspaceId) {
+      const result = await db.query<{ id: string }>("SELECT id FROM people WHERE workspace_id=$1 AND role='owner' AND status='active' AND clerk_user_id IS NOT NULL AND archived_at IS NULL LIMIT 1", [workspaceId]);
+      return Boolean(result.rows[0]);
+    },
     async createTeamMember(input) {
       return withOperationalTransaction(db, async (client) => {
         await lockWorkspaceOperationalMutation(client, input.workspaceId);

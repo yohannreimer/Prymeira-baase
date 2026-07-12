@@ -80,11 +80,32 @@ export function createInMemoryCompanyRepository(
     },
 
     async listTeamMembers(workspaceId) {
-      return teamMembers.filter((member) => member.workspaceId === workspaceId);
+      return teamMembers.filter((member) => member.workspaceId === workspaceId && member.status !== "archived");
     },
 
     async findTeamMember(workspaceId, personId) {
-      return teamMembers.find((member) => member.workspaceId === workspaceId && member.id === personId) ?? null;
+      return teamMembers.find((member) => member.workspaceId === workspaceId && member.id === personId && member.status !== "archived") ?? null;
+    },
+
+    async findTeamMemberByClerkUserId(workspaceId, clerkUserId) {
+      return teamMembers.find((member) => member.workspaceId === workspaceId && member.clerkUserId === clerkUserId && member.status !== "archived") ?? null;
+    },
+
+    async findTeamMemberByCustomerId(workspaceId, customerId) {
+      return teamMembers.find((member) => member.workspaceId === workspaceId && member.customerId === customerId && member.status !== "archived") ?? null;
+    },
+
+    async findUnlinkedTeamMembersByEmail(workspaceId, email) {
+      const normalized = email.trim().toLowerCase();
+      return teamMembers.filter((member) => member.workspaceId === workspaceId
+        && member.status !== "archived"
+        && !member.clerkUserId
+        && !member.customerId
+        && member.email?.trim().toLowerCase() === normalized);
+    },
+
+    async hasLinkedOwner(workspaceId) {
+      return teamMembers.some((member) => member.workspaceId === workspaceId && member.role === "owner" && member.status === "active" && Boolean(member.clerkUserId));
     },
 
     async createTeamMember(input) {

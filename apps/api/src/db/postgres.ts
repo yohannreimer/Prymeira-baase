@@ -458,11 +458,37 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
     },
 
     listTeamMembers(workspaceId) {
-      return store.list<TeamMember>("team_member", workspaceId).then((people) => people.map(normalizeJsonbTeamMember));
+      return store.list<TeamMember>("team_member", workspaceId).then((people) => people
+        .map(normalizeJsonbTeamMember)
+        .filter((person) => person.status !== "archived"));
     },
 
     findTeamMember(workspaceId, personId) {
-      return store.find<TeamMember>("team_member", workspaceId, personId).then((person) => person ? normalizeJsonbTeamMember(person) : null);
+      return store.find<TeamMember>("team_member", workspaceId, personId).then((person) => {
+        const normalized = person ? normalizeJsonbTeamMember(person) : null;
+        return normalized?.status === "archived" ? null : normalized;
+      });
+    },
+
+    async findTeamMemberByClerkUserId(workspaceId, clerkUserId) {
+      return (await store.list<TeamMember>("team_member", workspaceId)).map(normalizeJsonbTeamMember)
+        .find((person) => person.clerkUserId === clerkUserId && person.status !== "archived") ?? null;
+    },
+
+    async findTeamMemberByCustomerId(workspaceId, customerId) {
+      return (await store.list<TeamMember>("team_member", workspaceId)).map(normalizeJsonbTeamMember)
+        .find((person) => person.customerId === customerId && person.status !== "archived") ?? null;
+    },
+
+    async findUnlinkedTeamMembersByEmail(workspaceId, email) {
+      const normalized = email.trim().toLowerCase();
+      return (await store.list<TeamMember>("team_member", workspaceId)).map(normalizeJsonbTeamMember)
+        .filter((person) => person.status !== "archived" && !person.clerkUserId && !person.customerId && person.email?.trim().toLowerCase() === normalized);
+    },
+
+    async hasLinkedOwner(workspaceId) {
+      return (await store.list<TeamMember>("team_member", workspaceId)).map(normalizeJsonbTeamMember)
+        .some((person) => person.role === "owner" && person.status === "active" && Boolean(person.clerkUserId));
     },
 
     async createTeamMember(input) {

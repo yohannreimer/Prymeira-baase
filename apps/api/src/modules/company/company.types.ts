@@ -100,6 +100,24 @@ export type TeamMember = {
   updatedAt: string;
 };
 
+export type ExternalAccountIdentity = {
+  workspaceId: string;
+  workspaceName?: string;
+  clerkUserId: string;
+  customerId: string;
+  productRole: string | null;
+  profileName?: string;
+  bearerToken: string;
+};
+
+export type OperationalMembership = {
+  person: TeamMember;
+  personId: string;
+  role: TeamMember["role"];
+  accessScope: TeamMember["accessScope"];
+  areaAccessIds: string[];
+};
+
 export type CreateAreaInput = {
   name: string;
   description?: string | null;
@@ -165,6 +183,10 @@ export type CompanyRepository = {
   deleteRoleTemplate(workspaceId: string, roleTemplateId: string): Promise<void>;
   listTeamMembers(workspaceId: string): Promise<TeamMember[]>;
   findTeamMember(workspaceId: string, personId: string): Promise<TeamMember | null>;
+  findTeamMemberByClerkUserId(workspaceId: string, clerkUserId: string): Promise<TeamMember | null>;
+  findTeamMemberByCustomerId(workspaceId: string, customerId: string): Promise<TeamMember | null>;
+  findUnlinkedTeamMembersByEmail(workspaceId: string, email: string): Promise<TeamMember[]>;
+  hasLinkedOwner(workspaceId: string): Promise<boolean>;
   createTeamMember(
     input: Omit<TeamMember, "id" | "status" | "createdAt" | "updatedAt" | "areaAccessIds" | "accessScope" | "clerkUserId" | "customerId">
       & Partial<Pick<TeamMember, "areaAccessIds" | "accessScope" | "clerkUserId" | "customerId">>
