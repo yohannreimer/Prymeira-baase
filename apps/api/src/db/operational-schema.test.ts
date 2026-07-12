@@ -83,6 +83,64 @@ describe("operational schema", () => {
     )).rejects.toThrow();
   });
 
+  it("backfills the parent revision only for unsubmitted pending routine tasks", async () => {
+    await ensureOperationalSchema(db);
+    await db.query("delete from baase_schema_migrations where version = 6");
+    await db.query(
+      `insert into routines
+        (id, workspace_id, title, status, frequency, created_by_profile_id)
+       values ('routine_legacy', 'workspace_a', 'Rotina', 'active', 'on_demand', 'profile_owner')`
+    );
+    await db.query(
+      `insert into routine_steps (id, workspace_id, routine_id, title, sort_order)
+       values ('step_legacy', 'workspace_a', 'routine_legacy', 'Etapa', 1)`
+    );
+    await db.query(
+      `insert into routine_occurrences
+        (id, workspace_id, routine_id, due_date, audience_key, routine_title_snapshot,
+         routine_updated_at_snapshot)
+       values ('occurrence_legacy', 'workspace_a', 'routine_legacy', '2026-07-10',
+         'shared', 'Rotina', '2026-07-11T09:00:00.000Z')`
+    );
+    await db.query(
+      `insert into task_occurrences
+        (id, workspace_id, origin, routine_id, routine_step_id, audience_key, title,
+         routine_title_snapshot, step_title_snapshot, approval_mode, evidence_policy,
+         status, due_date, submitted_at)
+       values
+        ('task_pending', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+         'Pendente', 'Rotina', 'Etapa', 'direct', 'optional', 'pending', '2026-07-10', null),
+        ('task_submitted', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+         'Enviada', 'Rotina', 'Etapa', 'direct', 'optional', 'pending', '2026-07-10',
+         '2026-07-10T09:00:00.000Z'),
+        ('task_awaiting', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+         'Aguardando', 'Rotina', 'Etapa', 'direct', 'optional', 'awaiting_approval', '2026-07-10',
+         '2026-07-10T09:00:00.000Z'),
+        ('task_adjustment', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+         'Ajuste', 'Rotina', 'Etapa', 'direct', 'optional', 'needs_adjustment', '2026-07-10',
+         '2026-07-10T09:00:00.000Z'),
+        ('task_completed', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+         'Concluída', 'Rotina', 'Etapa', 'direct', 'optional', 'completed', '2026-07-10',
+         '2026-07-10T09:00:00.000Z')`
+    );
+
+    await ensureOperationalSchema(db);
+
+    const snapshots = await db.query<{ id: string; routine_revision_snapshot: Date | null }>(
+      "select id, routine_revision_snapshot from task_occurrences where workspace_id='workspace_a' order by id"
+    );
+    expect(snapshots.rows.map((task) => ({
+      id: task.id,
+      hasSnapshot: task.routine_revision_snapshot !== null
+    }))).toEqual([
+      { id: "task_adjustment", hasSnapshot: false },
+      { id: "task_awaiting", hasSnapshot: false },
+      { id: "task_completed", hasSnapshot: false },
+      { id: "task_pending", hasSnapshot: true },
+      { id: "task_submitted", hasSnapshot: false }
+    ]);
+  });
+
   it("checks out and releases exactly one migration client", async () => {
     let checkouts = 0;
     let releases = 0;

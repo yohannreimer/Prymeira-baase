@@ -505,6 +505,8 @@ const migrations: Migration[] = [{
       FROM routine_occurrences AS routine_occurrences_parent
       WHERE task_occurrences.routine_revision_snapshot IS NULL
         AND task_occurrences.origin = 'routine'
+        AND task_occurrences.status = 'pending'
+        AND task_occurrences.submitted_at IS NULL
         AND task_occurrences.workspace_id = routine_occurrences_parent.workspace_id
         AND task_occurrences.routine_id = routine_occurrences_parent.routine_id
         AND task_occurrences.due_date = routine_occurrences_parent.due_date

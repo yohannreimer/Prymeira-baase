@@ -66,7 +66,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
     });
   });
 
@@ -186,7 +186,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const before = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(before.rows.map((row) => row.version)).toEqual([1, 3, 4]);
+      expect(before.rows.map((row) => row.version)).toEqual([1, 3, 4, 5, 6]);
       const oldConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -200,7 +200,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
       const upgradedConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -245,7 +245,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
       const v3Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; source_key: boolean; revision_snapshot: boolean; people_fks: number; active_order_index: boolean }>(
         `select
           exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
@@ -281,7 +281,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
       const catalog = await pool.query<{ full_constraints: number; partial_indexes: number }>(
         `select
           (select count(*)::int from pg_constraint c join pg_namespace n on n.oid=c.connamespace
@@ -298,6 +298,63 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
             )) partial_indexes`
       );
       expect(catalog.rows[0]).toEqual({ full_constraints: 0, partial_indexes: 3 });
+    });
+  });
+
+  it("backfills the parent revision only for unsubmitted pending routine tasks", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 5);
+      await pool.query(
+        `insert into routines
+          (id, workspace_id, title, status, frequency, created_by_profile_id)
+         values ('routine_legacy', 'workspace_a', 'Rotina', 'active', 'on_demand', 'profile_owner')`
+      );
+      await pool.query(
+        `insert into routine_steps (id, workspace_id, routine_id, title, sort_order)
+         values ('step_legacy', 'workspace_a', 'routine_legacy', 'Etapa', 1)`
+      );
+      await pool.query(
+        `insert into routine_occurrences
+          (id, workspace_id, routine_id, due_date, audience_key, routine_title_snapshot,
+           routine_updated_at_snapshot)
+         values ('occurrence_legacy', 'workspace_a', 'routine_legacy', '2026-07-10',
+           'shared', 'Rotina', '2026-07-11T09:00:00.000Z')`
+      );
+      await pool.query(
+        `insert into task_occurrences
+          (id, workspace_id, origin, routine_id, routine_step_id, audience_key, title,
+           routine_title_snapshot, step_title_snapshot, approval_mode, evidence_policy,
+           status, due_date, submitted_at)
+         values
+          ('task_pending', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+           'Pendente', 'Rotina', 'Etapa', 'direct', 'optional', 'pending', '2026-07-10', null),
+          ('task_submitted', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+           'Enviada', 'Rotina', 'Etapa', 'direct', 'optional', 'pending', '2026-07-10',
+           '2026-07-10T09:00:00.000Z'),
+          ('task_awaiting', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+           'Aguardando', 'Rotina', 'Etapa', 'direct', 'optional', 'awaiting_approval', '2026-07-10',
+           '2026-07-10T09:00:00.000Z'),
+          ('task_adjustment', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+           'Ajuste', 'Rotina', 'Etapa', 'direct', 'optional', 'needs_adjustment', '2026-07-10',
+           '2026-07-10T09:00:00.000Z'),
+          ('task_completed', 'workspace_a', 'routine', 'routine_legacy', 'step_legacy', 'shared',
+           'Concluída', 'Rotina', 'Etapa', 'direct', 'optional', 'completed', '2026-07-10',
+           '2026-07-10T09:00:00.000Z')`
+      );
+
+      await ensureOperationalSchema(pool);
+
+      const snapshots = await pool.query<{ id: string; has_snapshot: boolean }>(
+        `select id, routine_revision_snapshot is not null as has_snapshot
+         from task_occurrences where workspace_id='workspace_a' order by id`
+      );
+      expect(snapshots.rows).toEqual([
+        { id: "task_adjustment", has_snapshot: false },
+        { id: "task_awaiting", has_snapshot: false },
+        { id: "task_completed", has_snapshot: false },
+        { id: "task_pending", has_snapshot: true },
+        { id: "task_submitted", has_snapshot: false }
+      ]);
     });
   });
 
@@ -330,7 +387,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const migrations = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(migrations.rows.map((row) => row.version)).toEqual([1, 3, 4]);
+      expect(migrations.rows.map((row) => row.version)).toEqual([1, 3, 4, 5, 6]);
       const stableConstraint = await pool.query<{ count: number }>(
         `select count(*)::int as count
          from pg_constraint

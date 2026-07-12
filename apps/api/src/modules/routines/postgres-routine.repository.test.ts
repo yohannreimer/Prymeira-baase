@@ -183,6 +183,28 @@ describe("Postgres routine repository", () => {
       .toBe(parentBefore.rows[0]?.routine_updated_at_snapshot.toISOString());
   });
 
+  it("keeps an unknown legacy task revision null instead of falling back to its parent", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const repository = createPostgresRoutineRepository(pool);
+    const service = createRoutineService(repository);
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Portas" }]
+    });
+    const [created] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    if (!created) throw new Error("Expected generated task");
+    await pool.query(
+      "UPDATE task_occurrences SET routine_revision_snapshot=NULL WHERE workspace_id=$1 AND id=$2",
+      ["workspace_a", created.id]
+    );
+    await pool.query(
+      "UPDATE routine_occurrences SET routine_updated_at_snapshot='2026-07-12T09:00:00.000Z' WHERE workspace_id=$1 AND routine_id=$2",
+      ["workspace_a", routine.id]
+    );
+
+    expect((await repository.findTaskOccurrence("workspace_a", created.id))?.routineRevisionSnapshot).toBeNull();
+  });
+
   it("keeps a submitted shared task on its original revision while refreshing its pending sibling", async () => {
     const pool = createMemoryPool();
     await createRoutineTables(pool);
