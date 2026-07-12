@@ -921,11 +921,13 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
     },
 
     async deleteRoutine(workspaceId, routineId) {
-      const tasks = await store.list<TaskOccurrence>("task_occurrence", workspaceId);
-      await Promise.all(tasks
-        .filter((task) => task.routineId === routineId)
-        .map((task) => store.delete("task_occurrence", workspaceId, task.id)));
-      await store.delete("routine", workspaceId, routineId);
+      await store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const tasks = await lockedStore.list<TaskOccurrence>("task_occurrence", workspaceId);
+        await Promise.all(tasks
+          .filter((task) => task.routineId === routineId)
+          .map((task) => lockedStore.delete("task_occurrence", workspaceId, task.id)));
+        await lockedStore.delete("routine", workspaceId, routineId);
+      });
     },
 
     async listTaskOccurrences(workspaceId, filters = {}) {

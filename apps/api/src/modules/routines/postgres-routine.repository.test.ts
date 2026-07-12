@@ -1,5 +1,6 @@
 import { DataType, newDb } from "pg-mem";
 import { describe, expect, it } from "vitest";
+import type { OperationalPool } from "../../db/operational-repository-support";
 import { createRoutineService } from "./routine.service";
 import { createPostgresRoutineRepository } from "./postgres-routine.repository";
 
@@ -79,6 +80,38 @@ async function createRoutineTables(pool: ReturnType<typeof createMemoryPool>) {
 }
 
 describe("Postgres routine repository", () => {
+  it("acquires the workspace lock before archiving a routine", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const statements: string[] = [];
+    const connect = pool.connect.bind(pool);
+    const observedPool = {
+      query: pool.query.bind(pool),
+      async connect() {
+        const client = await connect();
+        return {
+          async query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as Promise<{ rows: T[]; rowCount?: number | null }>;
+          },
+          release: () => client.release()
+        };
+      }
+    } as unknown as OperationalPool;
+    const service = createRoutineService(createPostgresRoutineRepository(observedPool));
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Conferir caixa" }]
+    });
+    statements.length = 0;
+
+    await service.deleteRoutine("workspace_a", routine.id);
+
+    const lock = statements.findIndex((statement) => statement.includes("pg_advisory_xact_lock"));
+    const archive = statements.findIndex((statement) => statement.startsWith("UPDATE routines SET status='archived'"));
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(archive).toBeGreaterThan(lock);
+  });
+
   it("resets every pending checklist when sibling occurrences share an audience", async () => {
     const pool = createMemoryPool();
     await createRoutineTables(pool);
