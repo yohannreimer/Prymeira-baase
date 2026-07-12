@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import type { BaaseRuntimeConfig } from "../../config/runtime";
+import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryRoutineRepository } from "./in-memory-routine.repository";
 
 const managerHeaders = {
@@ -14,7 +16,287 @@ const employeeHeaders = {
   "x-baase-profile-id": "profile_employee"
 };
 
+const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
+
+const operationalRuntimeConfig: BaaseRuntimeConfig = {
+  mode: "production",
+  auth: { mode: "account", accountApiUrl: "https://hub.prymeiradigital.com.br/api" },
+  persistence: "postgres",
+  operationalStore: "jsonb",
+  demoSeedEnabled: false,
+  ai: { structured: "openai", transcription: "deepgram" },
+  objectStorage: { provider: "memory", s3: null },
+  ok: true,
+  warnings: []
+};
+
+async function buildOperationalAccessApp() {
+  const companyRepository = createInMemoryCompanyRepository();
+  const members = [
+    { id: "profile_owner", name: "Owner", email: "owner@example.com", role: "owner" as const, areaId: null, areaAccessIds: [], accessScope: "workspace" as const },
+    { id: "profile_peterson", name: "Peterson", email: "peterson@example.com", role: "employee" as const, areaId: "area_tecnica", areaAccessIds: [], accessScope: "assigned_only" as const },
+    { id: "profile_andre", name: "Andre", email: "andre@example.com", role: "employee" as const, areaId: "area_tecnica", areaAccessIds: [], accessScope: "assigned_only" as const },
+    { id: "profile_financeiro", name: "Financeiro", email: "financeiro@example.com", role: "employee" as const, areaId: "area_financeiro", areaAccessIds: [], accessScope: "assigned_only" as const },
+    { id: "profile_gestor_tecnico", name: "Gestor Tecnico", email: "gestor.tecnico@example.com", role: "manager" as const, areaId: "area_tecnica", areaAccessIds: ["area_tecnica"], accessScope: "area" as const },
+    { id: "profile_gestor_financeiro", name: "Gestor Financeiro", email: "gestor.financeiro@example.com", role: "manager" as const, areaId: "area_financeiro", areaAccessIds: ["area_financeiro"], accessScope: "area" as const }
+  ];
+
+  for (const member of members) {
+    await companyRepository.createTeamMember({
+      workspaceId: "workspace_a",
+      name: member.name,
+      email: member.email,
+      role: member.role,
+      areaId: member.areaId,
+      areaAccessIds: member.areaAccessIds,
+      accessScope: member.accessScope,
+      roleTemplateId: null,
+      clerkUserId: member.id,
+      customerId: `customer_${member.id}`,
+      createdByProfileId: "profile_owner"
+    });
+  }
+
+  const app = buildApp({
+    companyRepository,
+    routineRepository: createInMemoryRoutineRepository(),
+    runtimeConfig: operationalRuntimeConfig,
+    accountAccessFetch: async (input, init) => {
+      const authorization = new Headers(init?.headers).get("authorization")!;
+      const token = authorization.slice("Bearer ".length);
+      const [, payload] = token.split(".");
+      const subject = JSON.parse(Buffer.from(payload!, "base64url").toString("utf8")).sub as string;
+      const member = members.find((candidate) => candidate.id === subject)!;
+
+      if (String(input).endsWith("/me/products")) {
+        return new Response(JSON.stringify({ customer: { email: member.email, name: member.name } }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({
+        allowed: true,
+        workspace_id: "workspace_a",
+        workspace_name: "Workspace A",
+        workspace_role: member.role,
+        product_key: "base",
+        product_role: member.role,
+        customer_id: `customer_${member.id}`,
+        customer_name: member.name,
+        status: "active",
+        reason: "active_entitlement"
+      }), { status: 200 });
+    }
+  });
+
+  return {
+    app,
+    headersFor: (profileId: string) => ({ authorization: accountBearer(profileId) })
+  };
+}
+
 describe("routine routes", () => {
+  it("isolates individual technical routine tasks by assignee and operational area", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const routineResponse = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Inspecao tecnica",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        assignee_profile_ids: ["person_2", "person_3"],
+        execution_mode: "individual",
+        task_templates: [{ title: "Executar inspecao" }]
+      }
+    });
+
+    expect(routineResponse.statusCode).toBe(201);
+
+    const financeToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_financeiro")
+    });
+    const petersonToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_peterson")
+    });
+    const andreToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_andre")
+    });
+    const ownerToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: ownerHeaders
+    });
+
+    expect(financeToday.json().tasks).toEqual([]);
+    expect(petersonToday.json().tasks).toEqual([
+      expect.objectContaining({ assigneeProfileId: "person_2" })
+    ]);
+    expect(andreToday.json().tasks).toEqual([
+      expect.objectContaining({ assigneeProfileId: "person_3" })
+    ]);
+    expect(ownerToday.json().tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assigneeProfileId: "person_2" }),
+      expect.objectContaining({ assigneeProfileId: "person_3" })
+    ]));
+  });
+
+  it("forbids a Financeiro employee from changing or submitting a technical task by ID", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const routineResponse = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: headersFor("profile_owner"),
+      payload: {
+        title: "Inspecao tecnica",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        assignee_profile_ids: ["person_2"],
+        execution_mode: "individual",
+        task_templates: [{ title: "Executar inspecao" }]
+      }
+    });
+    const generated = await app.inject({
+      method: "POST",
+      url: `/routines/${routineResponse.json().routine.id}/occurrences/generate`,
+      headers: headersFor("profile_owner"),
+      payload: { due_date: "2026-07-08" }
+    });
+    const taskId = generated.json().tasks[0].id;
+
+    const checklistResponse = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${taskId}/checklist`,
+      headers: headersFor("profile_financeiro"),
+      payload: { checklist_items: [{ title: "Executar inspecao", done: true }] }
+    });
+    const submitResponse = await app.inject({
+      method: "POST",
+      url: `/tasks/${taskId}/submit`,
+      headers: headersFor("profile_financeiro"),
+      payload: {}
+    });
+
+    expect(checklistResponse.statusCode).toBe(403);
+    expect(submitResponse.statusCode).toBe(403);
+  });
+
+  it("keeps manager, shared, and manual task access inside the task area policy", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const individualRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina individual tecnica",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        assignee_profile_ids: ["person_2"],
+        execution_mode: "individual",
+        task_templates: [{ title: "Executar rotina individual" }]
+      }
+    });
+    const individualTasks = await app.inject({
+      method: "POST",
+      url: `/routines/${individualRoutine.json().routine.id}/occurrences/generate`,
+      headers: ownerHeaders,
+      payload: { due_date: "2026-07-08" }
+    });
+    const individualTaskId = individualTasks.json().tasks[0].id;
+
+    const technicalManagerToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_gestor_tecnico")
+    });
+    const financeManagerToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_gestor_financeiro")
+    });
+    const individualManagerChecklist = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${individualTaskId}/checklist`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: { checklist_items: [{ title: "Executar rotina individual", done: true }] }
+    });
+
+    expect(technicalManagerToday.json().tasks).toEqual([
+      expect.objectContaining({ id: individualTaskId })
+    ]);
+    expect(financeManagerToday.json().tasks).toEqual([]);
+    expect(individualManagerChecklist.statusCode).toBe(403);
+
+    const sharedRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina compartilhada tecnica",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        execution_mode: "shared",
+        task_templates: [{ title: "Executar rotina compartilhada" }]
+      }
+    });
+    const sharedTasks = await app.inject({
+      method: "POST",
+      url: `/routines/${sharedRoutine.json().routine.id}/occurrences/generate`,
+      headers: ownerHeaders,
+      payload: { due_date: "2026-07-08" }
+    });
+    const sharedTaskId = sharedTasks.json().tasks[0].id;
+    const sharedTechnicalManagerChecklist = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${sharedTaskId}/checklist`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: { checklist_items: [{ title: "Executar rotina compartilhada", done: true }] }
+    });
+    const sharedFinanceManagerChecklist = await app.inject({
+      method: "PATCH",
+      url: `/tasks/${sharedTaskId}/checklist`,
+      headers: headersFor("profile_gestor_financeiro"),
+      payload: { checklist_items: [{ title: "Executar rotina compartilhada", done: true }] }
+    });
+
+    expect(sharedTechnicalManagerChecklist.statusCode).toBe(200);
+    expect(sharedFinanceManagerChecklist.statusCode).toBe(403);
+
+    const manualTask = await app.inject({
+      method: "POST",
+      url: "/tasks",
+      headers: ownerHeaders,
+      payload: {
+        title: "Tarefa pontual tecnica",
+        area_id: "area_tecnica",
+        assignee_profile_id: "person_2",
+        due_date: "2026-07-09"
+      }
+    });
+    const petersonManualToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-09",
+      headers: headersFor("profile_peterson")
+    });
+    const andreManualToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-09",
+      headers: headersFor("profile_andre")
+    });
+
+    expect(petersonManualToday.json().tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: manualTask.json().task.id })
+    ]));
+    expect(andreManualToday.json().tasks).toEqual([]);
+  });
+
   it("returns 409 when a routine aggregate changes during update", async () => {
     const base = createInMemoryRoutineRepository();
     const app = buildApp({

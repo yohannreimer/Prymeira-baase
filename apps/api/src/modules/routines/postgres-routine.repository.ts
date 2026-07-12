@@ -98,7 +98,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateRoutines(client,result.rows))[0]!;
     });},
     async deleteRoutine(workspaceId,routineId){await withOperationalTransaction(db,async client=>{await client.query("UPDATE routines SET status='archived',archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,routineId]);await audit(client,workspaceId,"routine",routineId,"archive");});},
-    async listTaskOccurrences(workspaceId,filters={}){const params:unknown[]=[workspaceId];let sql="SELECT * FROM task_occurrences WHERE workspace_id=$1 AND archived_at IS NULL";if(filters.dueDate){params.push(filters.dueDate);sql+=` AND due_date=$${params.length}`;}if(filters.profileId){params.push(filters.profileId);sql+=` AND (assignee_profile_id IS NULL OR assignee_profile_id=$${params.length})`;}sql+=" ORDER BY created_at,id";const r=await db.query<TaskRow>(sql,params);return hydrateTasks(db,r.rows);},
+    async listTaskOccurrences(workspaceId,filters={}){const params:unknown[]=[workspaceId];let sql="SELECT * FROM task_occurrences WHERE workspace_id=$1 AND archived_at IS NULL";if(filters.dueDate){params.push(filters.dueDate);sql+=` AND due_date=$${params.length}`;}sql+=" ORDER BY created_at,id";const r=await db.query<TaskRow>(sql,params);return hydrateTasks(db,r.rows);},
     async findTaskOccurrence(workspaceId,taskId){const r=await db.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,taskId]);return (await hydrateTasks(db,r.rows))[0]??null;},
     async findTaskOccurrenceForTemplate(workspaceId,routineId,taskTemplateId,dueDate){
       const individualPrefix=`${routineId}__execution__`;

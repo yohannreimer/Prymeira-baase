@@ -306,9 +306,17 @@ export function createRoutineService(repository: RoutineRepository) {
       return createOrReuseRoutineOccurrences(repository, routine, dueDate);
     },
 
-    async listTodayTasks(workspaceId: string, profileId: string, dueDate: string) {
+    async listTodayTasks(workspaceId: string, dueDateOrProfileId: string, legacyDueDate?: string) {
+      const dueDate = legacyDueDate ?? dueDateOrProfileId;
       await ensureTodayOccurrences(repository, workspaceId, dueDate);
-      return repository.listTaskOccurrences(workspaceId, { dueDate, profileId });
+      const tasks = await repository.listTaskOccurrences(workspaceId, { dueDate });
+      return legacyDueDate
+        ? tasks.filter((task) => task.assigneeProfileId === dueDateOrProfileId)
+        : tasks;
+    },
+
+    async getTask(workspaceId: string, taskId: string): Promise<TaskOccurrence> {
+      return readTaskOrThrow(repository, workspaceId, taskId);
     },
 
     async createManualTask(
@@ -369,10 +377,13 @@ export function createRoutineService(repository: RoutineRepository) {
       workspaceId: string,
       taskId: string,
       actorProfileId: string,
-      input: { checklistItems: TaskChecklistItem[] }
+      input: { checklistItems: TaskChecklistItem[] },
+      options: { allowAssigneeOverride?: boolean } = {}
     ): Promise<TaskOccurrence> {
       const task = await readTaskOrThrow(repository, workspaceId, taskId);
-      if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId) throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
+      if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId && !options.allowAssigneeOverride) {
+        throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
+      }
 
       return repository.updateTaskOccurrence({
         ...task,
@@ -390,11 +401,14 @@ export function createRoutineService(repository: RoutineRepository) {
       workspaceId: string,
       taskId: string,
       actorProfileId: string,
-      input: SubmitTaskInput
+      input: SubmitTaskInput,
+      options: { allowAssigneeOverride?: boolean } = {}
     ): Promise<TaskOccurrence> {
       const task = await readTaskOrThrow(repository, workspaceId, taskId);
       if (!canSubmitTask(task.status)) throw new Error("TASK_CANNOT_BE_SUBMITTED");
-      if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId) throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
+      if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId && !options.allowAssigneeOverride) {
+        throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
+      }
 
       const evidence = normalizeEvidence(input);
       if (!hasRequiredEvidence(task.evidencePolicy, evidence)) throw new Error("TASK_EVIDENCE_REQUIRED");

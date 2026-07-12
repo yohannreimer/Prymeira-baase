@@ -69,7 +69,6 @@ export function createInMemoryRoutineRepository(
       return tasks.filter((task) => {
         if (task.workspaceId !== workspaceId) return false;
         if (filters.dueDate && task.dueDate !== filters.dueDate) return false;
-        if (filters.profileId && task.assigneeProfileId && task.assigneeProfileId !== filters.profileId) return false;
         return true;
       });
     },

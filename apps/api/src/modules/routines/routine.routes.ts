@@ -4,7 +4,7 @@ import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import { requireOperationalMembership } from "../../http/auth-context";
-import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
+import { canExecuteTask, canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
 import { createAnnouncementService } from "../announcements/announcement.service";
 import type { AnnouncementRepository } from "../announcements/announcement.types";
 import { createTrainingService } from "../trainings/training.service";
@@ -221,8 +221,9 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const context = readRequestContext(request);
     const query = todayQuerySchema.parse(request.query);
     const date = query.date ?? new Date().toISOString().slice(0, 10);
+    const membership = requireOperationalMembership(request);
     const [tasks, trainingAssignments, announcements] = await Promise.all([
-      service.listTodayTasks(context.workspaceId, context.profileId, date),
+      service.listTodayTasks(context.workspaceId, date),
       trainingService
         ? trainingService.listTrainingProgress(context.workspaceId, {
           profileId: context.profileId,
@@ -237,7 +238,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         : Promise.resolve([])
     ]);
     return {
-      tasks,
+      tasks: tasks.filter((task) => canReadTask(membership, task)),
       training_assignments: trainingAssignments,
       announcements
     };
@@ -316,9 +317,12 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const body = updateTaskChecklistSchema.parse(request.body);
 
     try {
+      const membership = requireOperationalMembership(request);
+      const existingTask = await service.getTask(context.workspaceId, params.id);
+      if (!canExecuteTask(membership, existingTask)) throw scopeForbidden();
       const task = await service.updateTaskChecklist(context.workspaceId, params.id, context.profileId, {
         checklistItems: body.checklist_items
-      });
+      }, { allowAssigneeOverride: membership.role === "owner" });
       return { task };
     } catch (error) {
       throw taskMutationError(error);
@@ -329,11 +333,18 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const context = readRequestContext(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = submitTaskSchema.parse(request.body);
-    const task = await service.submitTask(context.workspaceId, params.id, context.profileId, {
-      comment: body.comment,
-      photoUrl: body.photo_url
-    });
-    return { task };
+    try {
+      const membership = requireOperationalMembership(request);
+      const task = await service.getTask(context.workspaceId, params.id);
+      if (!canExecuteTask(membership, task)) throw scopeForbidden();
+      const submittedTask = await service.submitTask(context.workspaceId, params.id, context.profileId, {
+        comment: body.comment,
+        photoUrl: body.photo_url
+      }, { allowAssigneeOverride: membership.role === "owner" });
+      return { task: submittedTask };
+    } catch (error) {
+      throw taskMutationError(error);
+    }
   });
 
   app.post("/tasks/:id/approve", async (request) => {
