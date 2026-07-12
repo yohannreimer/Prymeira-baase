@@ -1470,8 +1470,18 @@ describe("Baase React app shell", () => {
   });
 
   it("lets the employee attach evidence and send a task for approval", async () => {
+    let uploadAttempts = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
+      if (url === "/api/tasks/task_approval/evidence" && init?.method === "POST") {
+        uploadAttempts += 1;
+        if (uploadAttempts === 1) return new Response(JSON.stringify({ error: { code: "OBJECT_STORAGE_UNAVAILABLE", message: "indisponível" } }), { status: 503 });
+        return new Response(JSON.stringify({ evidence: {
+          comment: null,
+          photoUrl: null,
+          attachment: { objectKey: "evidence-key", fileName: "recepcao.jpg", contentType: "image/jpeg", sizeBytes: 3, url: "memory://evidence-key" }
+        } }), { status: 201 });
+      }
       if (url === "/api/tasks/task_approval/submit" && init?.method === "POST") {
         return new Response(JSON.stringify({
           task: {
@@ -1481,7 +1491,7 @@ describe("Baase React app shell", () => {
             dueDate: "2026-07-07",
             evidencePolicy: "photo_or_comment_required",
             approvalMode: "approval_required",
-            evidence: { comment: "Recepção pronta.", photoUrl: "https://example.com/foto.jpg" }
+            evidence: { comment: "Recepção pronta.", photoUrl: null, attachment: { objectKey: "evidence-key", fileName: "recepcao.jpg", contentType: "image/jpeg", sizeBytes: 3, url: "memory://evidence-key" } }
           }
         }), { status: 200 });
       }
@@ -1516,13 +1526,22 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /Fotografar recepção pronta/ }));
 
     fireEvent.change(await screen.findByLabelText("Comentário"), { target: { value: "Recepção pronta." } });
-    fireEvent.change(screen.getByLabelText("Foto"), { target: { value: "https://example.com/foto.jpg" } });
+    const file = new File(["jpg"], "recepcao.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByLabelText("Anexar evidência"), { target: { files: [file] } });
+    expect(screen.getByText("Arquivo selecionado: recepcao.jpg")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enviar para aprovação" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByText("Arquivo selecionado: recepcao.jpg")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/tasks/task_approval/submit", expect.anything());
+
     fireEvent.click(screen.getByRole("button", { name: "Enviar para aprovação" }));
 
     await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_approval/evidence", expect.objectContaining({ method: "POST", body: expect.any(FormData) }));
       expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_approval/submit", expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ comment: "Recepção pronta.", photo_url: "https://example.com/foto.jpg" })
+        body: JSON.stringify({ comment: "Recepção pronta." })
       }));
       expect(screen.getByText("Enviado para aprovação")).toBeInTheDocument();
     });

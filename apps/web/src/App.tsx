@@ -49,6 +49,7 @@ import {
   saveReviewWorkspace,
   skipOnboardingSession,
   submitTaskExecution,
+  uploadTaskEvidence,
   submitTrainingQuizAttempt,
   transcribeAudioBlob,
   unpublishProcess,
@@ -1893,27 +1894,27 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setExecutionTask(task);
   }
 
-  function handleSubmitExecution(task: TodayTaskRow, evidence: { comment?: string | null; photoUrl?: string | null }) {
+  async function handleSubmitExecution(task: TodayTaskRow, evidence: { comment?: string | null; file?: File | null }) {
     const apiId = task.apiId;
     if (!apiId || submittingTasks[apiId]) return;
 
-    void runAction(async () => {
-      setSubmittingTasks((current) => ({ ...current, [apiId]: true }));
-      try {
-        const updatedTask = await submitTaskExecution(role, apiId, evidence);
-        setSubmittedApiTasks((current) => ({ ...current, [apiId]: isTaskDone(updatedTask) }));
-        setApiBundle((current) => {
-          if (!current) return current;
-          return {
-            ...current,
-            tasks: current.tasks.map((currentTask) => currentTask.id === updatedTask.id ? updatedTask : currentTask)
-          };
-        });
-        setExecutionTask(null);
-      } finally {
-        setSubmittingTasks((current) => ({ ...current, [apiId]: false }));
-      }
-    });
+    setSubmittingTasks((current) => ({ ...current, [apiId]: true }));
+    try {
+      if (evidence.file) await uploadTaskEvidence(role, apiId, evidence.file);
+      const updatedTask = await submitTaskExecution(role, apiId, { comment: evidence.comment });
+      setSubmittedApiTasks((current) => ({ ...current, [apiId]: isTaskDone(updatedTask) }));
+      setApiBundle((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          tasks: current.tasks.map((currentTask) => currentTask.id === updatedTask.id ? updatedTask : currentTask)
+        };
+      });
+      setApiStatus("ready");
+      setExecutionTask(null);
+    } finally {
+      setSubmittingTasks((current) => ({ ...current, [apiId]: false }));
+    }
   }
 
   function handleSaveTask(input: TaskFormInput) {
@@ -3503,7 +3504,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         {executionTask ? (
           <ExecutionModal
             task={executionTask}
-            actionBusy={actionBusy}
+            actionBusy={actionBusy || Boolean(executionTask.apiId && submittingTasks[executionTask.apiId])}
             onClose={() => setExecutionTask(null)}
             onSubmit={handleSubmitExecution}
             canDelete={canManageOperationalTasks && executionTask.origin === "manual"}
@@ -5426,7 +5427,7 @@ function ExecutionModal({
   task: TodayTaskRow;
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (task: TodayTaskRow, evidence: { comment?: string | null; photoUrl?: string | null }) => void;
+  onSubmit: (task: TodayTaskRow, evidence: { comment?: string | null; file?: File | null }) => Promise<void>;
   canEdit?: boolean;
   onEdit?: (task: TodayTaskRow) => void;
   canDelete?: boolean;
@@ -5434,11 +5435,11 @@ function ExecutionModal({
   onChecklistChange?: (task: TodayTaskRow, checklistItems: NonNullable<ApiTask["checklistItems"]>) => void;
 }) {
   const [comment, setComment] = useState(task.reviewComment ? `Ajuste solicitado: ${task.reviewComment}\n` : "");
-  const [photoUrl, setPhotoUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [checklistExpanded, setChecklistExpanded] = useState(true);
   const [checklistItems, setChecklistItems] = useState(task.checklistItems ?? []);
   const requiresApproval = task.approvalMode === "approval_required";
-  const needsPhoto = task.evidencePolicy === "photo_required" || task.evidencePolicy === "photo_or_comment_required";
   const needsComment = task.evidencePolicy === "comment_required" || task.evidencePolicy === "photo_or_comment_required";
   const checklistDone = checklistItems.filter((item) => item.done).length;
   const checklistTotal = checklistItems.length;
@@ -5451,6 +5452,15 @@ function ExecutionModal({
     const nextItems = checklistItems.map((item, itemIndex) => itemIndex === index ? { ...item, done: !item.done } : item);
     setChecklistItems(nextItems);
     onChecklistChange?.(task, nextItems);
+  }
+
+  async function submit() {
+    setSubmissionError(null);
+    try {
+      await onSubmit(task, { comment, file });
+    } catch {
+      setSubmissionError("Não foi possível enviar a evidência. Confira o arquivo e tente novamente.");
+    }
   }
 
   return (
@@ -5483,13 +5493,16 @@ function ExecutionModal({
             </section>
           ) : null}
           <label>Comentário<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={needsComment ? "Descreva o que foi feito..." : "Opcional"} /></label>
-          <label>Foto<input value={photoUrl} onChange={(event) => setPhotoUrl(event.target.value)} placeholder={needsPhoto ? "Cole a URL da foto/evidência" : "Opcional"} /></label>
+          <label>Anexo<input aria-label="Anexar evidência" type="file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
+          <label>Usar câmera<input aria-label="Usar câmera" type="file" accept="image/*" capture="environment" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
+          {file ? <small className="attachment-name">Arquivo selecionado: {file.name}</small> : null}
+          {submissionError ? <p role="alert" className="form-error">{submissionError}</p> : null}
           <footer>
             {canEdit ? <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => onEdit?.(task)}><Icon name="ph-pencil-simple" />Editar tarefa</button> : null}
             {canDelete ? <button className="secondary-btn danger-btn" type="button" disabled={actionBusy} onClick={() => onDelete?.(task)}><Icon name="ph-trash" />Excluir tarefa</button> : null}
             <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
-            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit(task, { comment, photoUrl })}>
-              {requiresApproval ? "Enviar para aprovação" : "Concluir tarefa"}
+            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => void submit()}>
+              {actionBusy ? "Enviando..." : requiresApproval ? "Enviar para aprovação" : "Concluir tarefa"}
             </button>
           </footer>
         </form>

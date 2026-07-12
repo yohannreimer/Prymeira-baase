@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeRoutineRecurrence } from "./routine-recurrence";
 import type {
   CompanyRoutine,
+  AttachTaskEvidenceInput,
   CreateManualTaskInput,
   CreateRoutineInput,
   CreateRoutineTaskTemplateInput,
@@ -60,15 +61,16 @@ function normalizedChecklistState(items: TaskChecklistItem[] | null | undefined)
 function normalizeEvidence(input: SubmitTaskInput): TaskEvidence {
   return {
     comment: optionalText(input.comment),
-    photoUrl: optionalText(input.photoUrl)
+    photoUrl: optionalText(input.photoUrl),
+    attachment: null
   };
 }
 
 function hasRequiredEvidence(policy: EvidencePolicy, evidence: TaskEvidence) {
   if (policy === "optional") return true;
-  if (policy === "photo_required") return Boolean(evidence.photoUrl);
+  if (policy === "photo_required") return Boolean(evidence.attachment || evidence.photoUrl);
   if (policy === "comment_required") return Boolean(evidence.comment);
-  return Boolean(evidence.comment || evidence.photoUrl);
+  return Boolean(evidence.comment || evidence.attachment || evidence.photoUrl);
 }
 
 function buildTemplate(
@@ -408,7 +410,7 @@ export function createRoutineService(repository: RoutineRepository) {
         throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
       }
 
-      const evidence = normalizeEvidence(input);
+      const evidence = { ...normalizeEvidence(input), attachment: task.evidence?.attachment ?? null };
       if (!hasRequiredEvidence(task.evidencePolicy, evidence)) throw new Error("TASK_EVIDENCE_REQUIRED");
 
       return repository.updateTaskOccurrence({
@@ -423,6 +425,29 @@ export function createRoutineService(repository: RoutineRepository) {
           approvalMode: task.approvalMode,
           hasRequiredEvidence: true
         })
+      });
+    },
+
+    async attachTaskEvidence(
+      workspaceId: string,
+      taskId: string,
+      actorProfileId: string,
+      input: AttachTaskEvidenceInput,
+      options: { allowAssigneeOverride?: boolean } = {}
+    ): Promise<TaskOccurrence> {
+      const task = await readTaskOrThrow(repository, workspaceId, taskId);
+      if (!canSubmitTask(task.status)) throw new Error("TASK_CANNOT_BE_SUBMITTED");
+      if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId && !options.allowAssigneeOverride) {
+        throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
+      }
+
+      return repository.updateTaskOccurrence({
+        ...task,
+        evidence: {
+          comment: task.evidence?.comment ?? null,
+          photoUrl: task.evidence?.photoUrl ?? null,
+          attachment: input.attachment
+        }
       });
     },
 

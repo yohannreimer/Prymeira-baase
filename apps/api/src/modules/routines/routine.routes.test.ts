@@ -3,6 +3,7 @@ import { buildApp } from "../../app";
 import type { BaaseRuntimeConfig } from "../../config/runtime";
 import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryRoutineRepository } from "./in-memory-routine.repository";
+import { createInMemoryObjectStorage } from "../../storage/in-memory-object-storage";
 
 const managerHeaders = {
   "x-baase-workspace-id": "workspace_a",
@@ -18,6 +19,7 @@ const employeeHeaders = {
 
 async function buildLocalRoutineAppWithEmployee(areaId: string) {
   const companyRepository = createInMemoryCompanyRepository();
+  const objectStorage = createInMemoryObjectStorage();
   const manager = await companyRepository.createTeamMember({
     workspaceId: "workspace_a",
     name: "Gestor",
@@ -39,11 +41,24 @@ async function buildLocalRoutineAppWithEmployee(areaId: string) {
     createdByProfileId: manager.id
   });
   return {
-    app: buildApp({ companyRepository, routineRepository: createInMemoryRoutineRepository() }),
+    app: buildApp({ companyRepository, routineRepository: createInMemoryRoutineRepository(), objectStorage }),
+    objectStorage,
     managerId: manager.id,
     employeeId: employee.id,
     managerHeaders: { ...managerHeaders, "x-baase-profile-id": manager.id },
     employeeHeaders: { ...employeeHeaders, "x-baase-profile-id": employee.id }
+  };
+}
+
+function multipartEvidencePayload(filename: string, contentType: string, content: Buffer | string) {
+  const boundary = "----baase-task-evidence-boundary";
+  return {
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      Buffer.isBuffer(content) ? content : Buffer.from(content),
+      Buffer.from(`\r\n--${boundary}--\r\n`)
+    ])
   };
 }
 
@@ -1525,6 +1540,46 @@ describe("routine routes", () => {
       status: "completed",
       reviewedByProfileId: managerId
     });
+  });
+
+  it("uploads an allowed task evidence file before submitting it", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Anexar comprovante", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12", evidence_policy: "photo_required"
+    } });
+    const taskId = created.json().task.id;
+
+    expect((await app.inject({ method: "POST", url: `/tasks/${taskId}/submit`, headers: localEmployeeHeaders, payload: { comment: null } })).statusCode).toBe(400);
+
+    const upload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...multipartEvidencePayload("comprovante.pdf", "application/pdf", "pdf").headers }, payload: multipartEvidencePayload("comprovante.pdf", "application/pdf", "pdf").payload });
+    expect(upload.statusCode).toBe(201);
+    expect(upload.json().evidence).toMatchObject({ attachment: { fileName: "comprovante.pdf", contentType: "application/pdf", sizeBytes: 3 } });
+    expect(objectStorage.keys()[0]).toMatch(new RegExp(`^workspaces/workspace_a/task-evidence/${taskId}/`));
+
+    const image = multipartEvidencePayload("recepcao.png", "image/png", "png");
+    const imageUpload = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...image.headers }, payload: image.payload });
+    expect(imageUpload.statusCode).toBe(201);
+    expect(imageUpload.json().evidence.attachment.fileName).toBe("recepcao.png");
+
+    const submit = await app.inject({ method: "POST", url: `/tasks/${taskId}/submit`, headers: localEmployeeHeaders, payload: { comment: null } });
+    expect(submit.statusCode).toBe(200);
+    expect(submit.json().task.evidence.attachment.fileName).toBe("recepcao.png");
+  });
+
+  it("rejects unsupported and oversized task evidence uploads", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Registrar arquivo", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12", evidence_policy: "optional"
+    } });
+    const taskId = created.json().task.id;
+    const invalid = multipartEvidencePayload("script.txt", "text/plain", "nope");
+    const invalidResponse = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...invalid.headers }, payload: invalid.payload });
+    expect(invalidResponse.statusCode).toBe(415);
+    expect(invalidResponse.json().error.code).toBe("TASK_EVIDENCE_TYPE_INVALID");
+
+    const large = multipartEvidencePayload("foto.jpg", "image/jpeg", Buffer.alloc(25 * 1024 * 1024 + 1));
+    const largeResponse = await app.inject({ method: "POST", url: `/tasks/${taskId}/evidence`, headers: { ...localEmployeeHeaders, ...large.headers }, payload: large.payload });
+    expect(largeResponse.statusCode).toBe(413);
   });
 
   it("deletes routines and their generated task occurrences", async () => {

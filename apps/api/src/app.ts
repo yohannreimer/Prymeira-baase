@@ -231,6 +231,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register((routes) => registerProcessMaterialRoutes(routes, processRepository, objectStorage));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     companyRepository,
+    objectStorage,
     trainingRepository,
     announcementRepository
   }));

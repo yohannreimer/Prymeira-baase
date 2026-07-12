@@ -49,6 +49,7 @@ import {
   saveReviewWorkspace,
   skipOnboardingSession,
   submitTaskExecution,
+  uploadTaskEvidence,
   submitTrainingQuizAttempt,
   transcribeAudioBlob,
   returnTask,
@@ -540,9 +541,17 @@ describe("Baase web API client", () => {
 
     expect(fetcher).toHaveBeenCalledWith("/api/tasks/task_1/submit", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ comment: "Feito.", photo_url: null })
+      body: JSON.stringify({ comment: "Feito." })
     }));
     expect(task.status).toBe("completed");
+  });
+
+  it("uploads a task evidence file with the existing authentication headers", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ evidence: { comment: null, photoUrl: null, attachment: { objectKey: "key", fileName: "foto.png", contentType: "image/png", sizeBytes: 1, url: "memory://key" } } }), { status: 201 }));
+    const evidence = await uploadTaskEvidence("func", "task_1", new File(["x"], "foto.png", { type: "image/png" }), fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith("/api/tasks/task_1/evidence", expect.objectContaining({ method: "POST", body: expect.any(FormData) }));
+    expect(evidence.attachment?.fileName).toBe("foto.png");
   });
 
   it("updates one-off tasks and checklist progress", async () => {

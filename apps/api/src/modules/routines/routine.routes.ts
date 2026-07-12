@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
@@ -12,6 +14,7 @@ import { createTrainingService } from "../trainings/training.service";
 import type { TrainingRepository } from "../trainings/training.types";
 import { createRoutineService } from "./routine.service";
 import type { RoutineRepository, TaskOccurrence } from "./routine.types";
+import type { ObjectStorage } from "../../storage/object-storage";
 
 const taskTemplateSchema = z.object({
   id: z.string().min(1).optional(),
@@ -98,11 +101,15 @@ function taskMutationError(error: unknown) {
   if (error instanceof Error && error.message === "TASK_NOT_ASSIGNED_TO_PROFILE") {
     return new ApiError(403, "TASK_NOT_ASSIGNED_TO_PROFILE", "Tarefa não atribuída a este perfil.");
   }
+  if (error instanceof Error && error.message === "TASK_EVIDENCE_REQUIRED") {
+    return new ApiError(400, "TASK_EVIDENCE_REQUIRED", "Envie a evidência exigida para concluir a tarefa.");
+  }
   return error;
 }
 
 type RoutineRouteOptions = {
   companyRepository: CompanyRepository;
+  objectStorage: ObjectStorage;
   trainingRepository?: TrainingRepository;
   announcementRepository?: AnnouncementRepository;
 };
@@ -399,6 +406,56 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     }
   });
 
+  app.post("/tasks/:id/evidence", async (request, reply) => {
+    const context = readRequestContext(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const membership = requireOperationalMembership(request);
+    let task: TaskOccurrence;
+    try {
+      task = await service.getTask(context.workspaceId, params.id);
+    } catch (error) {
+      throw taskEvidenceMutationError(error);
+    }
+    assertCanExecuteTask(membership, task);
+
+    const file = await request.file();
+    if (!file) throw new ApiError(400, "TASK_EVIDENCE_FILE_REQUIRED", "Selecione um arquivo para anexar.");
+    if (file.file.truncated) {
+      throw new ApiError(413, "PAYLOAD_TOO_LARGE", "O arquivo enviado é grande demais para esta operação.");
+    }
+
+    const contentType = file.mimetype.trim().toLowerCase();
+    if (!isAllowedTaskEvidenceType(contentType)) {
+      throw new ApiError(415, "TASK_EVIDENCE_TYPE_INVALID", "Este tipo de arquivo não pode ser usado como evidência.");
+    }
+    const buffer = await file.toBuffer();
+    if (!buffer.length) throw new ApiError(400, "TASK_EVIDENCE_FILE_EMPTY", "O arquivo não pode estar vazio.");
+    if (buffer.length > TASK_EVIDENCE_MAX_BYTES) {
+      throw new ApiError(413, "PAYLOAD_TOO_LARGE", "O arquivo enviado é grande demais para esta operação.");
+    }
+    if (file.fields.photo_url) {
+      throw new ApiError(400, "REQUEST_VALIDATION_ERROR", "A URL de foto não é aceita para anexos de evidência.");
+    }
+
+    const fileName = sanitizeFilename(file.filename);
+    const objectKey = `workspaces/${context.workspaceId}/task-evidence/${params.id}/${randomUUID()}-${fileName}`;
+    let stored = false;
+    try {
+      await options.objectStorage.put({ key: objectKey, body: Readable.from(buffer), contentType, sizeBytes: buffer.length });
+      stored = true;
+      const url = await options.objectStorage.createDownloadUrl(objectKey, TASK_EVIDENCE_URL_TTL_SECONDS);
+      const evidence = await service.attachTaskEvidence(context.workspaceId, params.id, context.profileId, {
+        attachment: { objectKey, fileName, contentType, sizeBytes: buffer.length, url }
+      }, { allowAssigneeOverride: membership.role === "owner" });
+      return reply.status(201).send({ evidence: evidence.evidence });
+    } catch (error) {
+      if (stored) {
+        try { await options.objectStorage.delete(objectKey); } catch { /* preserve the original error */ }
+      }
+      throw taskEvidenceMutationError(error);
+    }
+  });
+
   app.post("/tasks/:id/approve", async (request) => {
     const context = readRequestContext(request);
     if (!canManageKnowledge(context.role)) throw forbiddenError();
@@ -431,6 +488,34 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       throw taskMutationError(error);
     }
   });
+}
+
+const TASK_EVIDENCE_MAX_BYTES = 25 * 1024 * 1024;
+const TASK_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
+const taskEvidenceTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+]);
+
+function isAllowedTaskEvidenceType(contentType: string) {
+  return contentType.startsWith("image/") || taskEvidenceTypes.has(contentType);
+}
+
+function sanitizeFilename(filename: string) {
+  const normalized = filename.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const safe = normalized.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
+  return safe || "arquivo";
+}
+
+function taskEvidenceMutationError(error: unknown) {
+  if (error instanceof ApiError) return error;
+  if (error instanceof Error && error.message === "TASK_NOT_FOUND") return new ApiError(404, "TASK_NOT_FOUND", "Tarefa não encontrada.");
+  if (error instanceof Error && error.message === "TASK_NOT_ASSIGNED_TO_PROFILE") return new ApiError(403, "TASK_NOT_ASSIGNED_TO_PROFILE", "Tarefa não atribuída a este perfil.");
+  if (error instanceof Error && error.message === "TASK_CANNOT_BE_SUBMITTED") return new ApiError(409, "TASK_CANNOT_BE_SUBMITTED", "A tarefa não pode receber evidências neste estado.");
+  return new ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "Não foi possível salvar a evidência. Tente novamente.");
 }
 
 function scopeForbidden() {

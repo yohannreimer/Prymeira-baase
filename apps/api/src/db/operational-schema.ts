@@ -334,6 +334,9 @@ const migrations: Migration[] = [{
       comment TEXT,
       photo_url TEXT,
       object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      size_bytes BIGINT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id),
       CHECK (
@@ -511,6 +514,14 @@ const migrations: Migration[] = [{
         AND task_occurrences.routine_id = routine_occurrences_parent.routine_id
         AND task_occurrences.due_date = routine_occurrences_parent.due_date
         AND task_occurrences.audience_key = routine_occurrences_parent.audience_key;
+  `
+}, {
+  version: 7,
+  name: "task_evidence_attachment_metadata",
+  sql: `
+    ALTER TABLE task_evidence ADD COLUMN IF NOT EXISTS file_name TEXT;
+    ALTER TABLE task_evidence ADD COLUMN IF NOT EXISTS content_type TEXT;
+    ALTER TABLE task_evidence ADD COLUMN IF NOT EXISTS size_bytes BIGINT;
   `
 }];
 

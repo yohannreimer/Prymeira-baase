@@ -7,7 +7,7 @@ type StepRow = { id:string;workspace_id:string;routine_id:string;title:string;pr
 type AssignmentRow = { routine_id:string;routine_step_id:string|null;profile_id:string|null };
 type TaskRow = { id:string;workspace_id:string;origin:TaskOccurrence["origin"];routine_id:string|null;routine_step_id:string|null;source_template_key:string|null;area_id:string|null;process_id:string|null;assignee_profile_id:string|null;audience_key:string|null;title:string;area_name_snapshot:string|null;routine_title_snapshot:string|null;step_title_snapshot:string;routine_revision_snapshot:string|Date|null;due_hint:string|null;approval_mode:TaskOccurrence["approvalMode"];evidence_policy:TaskOccurrence["evidencePolicy"];status:TaskOccurrence["status"];due_date:string|Date;submitted_by_profile_id:string|null;submitted_at:string|Date|null;reviewed_by_profile_id:string|null;reviewed_at:string|Date|null;review_comment:string|null;created_at:string|Date;updated_at:string|Date };
 type ChecklistRow = { task_occurrence_id:string;title:string;is_completed:boolean;sort_order:number };
-type EvidenceRow = { task_occurrence_id:string;kind:"comment"|"photo";comment:string|null;photo_url:string|null;created_at:string|Date };
+type EvidenceRow = { task_occurrence_id:string;kind:"comment"|"photo";comment:string|null;photo_url:string|null;object_key:string|null;file_name:string|null;content_type:string|null;size_bytes:number|null;created_at:string|Date };
 type ParentRow = { routine_id:string;due_date:string|Date;audience_key:string;area_name_snapshot:string|null;routine_title_snapshot:string;routine_updated_at_snapshot:string|Date|null };
 
 async function hydrateRoutines(db: Pick<OperationalPool,"query">|Pick<OperationalClient,"query">, rows: RoutineRow[]) {
@@ -34,16 +34,18 @@ async function hydrateTasks(db: Pick<OperationalPool,"query">|Pick<OperationalCl
   if (!rows.length) return [];
   const workspaceId=rows[0]!.workspace_id,ids=rows.map(row=>row.id);
   const checkResult=await db.query<ChecklistRow>("SELECT task_occurrence_id,title,is_completed,sort_order FROM task_checklist_items WHERE workspace_id=$1 AND task_occurrence_id=ANY($2::text[]) ORDER BY sort_order",[workspaceId,ids]);
-  const evidenceResult=await db.query<EvidenceRow>("SELECT task_occurrence_id,kind,comment,photo_url,created_at FROM task_evidence WHERE workspace_id=$1 AND task_occurrence_id=ANY($2::text[]) AND archived_at IS NULL ORDER BY created_at DESC,id DESC",[workspaceId,ids]);
+  const evidenceResult=await db.query<EvidenceRow>("SELECT task_occurrence_id,kind,comment,photo_url,object_key,file_name,content_type,size_bytes,created_at FROM task_evidence WHERE workspace_id=$1 AND task_occurrence_id=ANY($2::text[]) AND archived_at IS NULL ORDER BY created_at DESC,id DESC",[workspaceId,ids]);
   return rows.map((row):TaskOccurrence=>{
     const evidenceRows=evidenceResult.rows.filter(item=>item.task_occurrence_id===row.id);
     const comment=evidenceRows.find(item=>item.kind==="comment")?.comment??null;
-    const photoUrl=evidenceRows.find(item=>item.kind==="photo")?.photo_url??null;
+    const attachmentRow=evidenceRows.find(item=>item.kind==="photo"&&item.object_key&&item.file_name&&item.content_type&&item.size_bytes!==null);
+    const photoUrl=evidenceRows.find(item=>item.kind==="photo"&&!item.object_key)?.photo_url??null;
+    const attachment=attachmentRow?{objectKey:attachmentRow.object_key!,fileName:attachmentRow.file_name!,contentType:attachmentRow.content_type!,sizeBytes:attachmentRow.size_bytes!,url:attachmentRow.photo_url??""}:null;
     const dueDate=dateOnly(row.due_date);
     return { id:row.id,workspaceId:row.workspace_id,origin:row.origin,routineId:row.routine_id,
       taskTemplateId:row.source_template_key??row.routine_step_id,title:row.title,areaId:row.area_id,processId:row.process_id,
       assigneeProfileId:row.assignee_profile_id,dueHint:row.due_hint,approvalMode:row.approval_mode,
-      evidencePolicy:row.evidence_policy,status:row.status,dueDate,evidence:comment||photoUrl?{comment,photoUrl}:null,
+      evidencePolicy:row.evidence_policy,status:row.status,dueDate,evidence:comment||photoUrl||attachment?{comment,photoUrl,attachment}:null,
       checklistItems:checkResult.rows.filter(item=>item.task_occurrence_id===row.id).map(item=>({title:item.title,done:item.is_completed})),
       areaNameSnapshot:row.area_name_snapshot,routineTitleSnapshot:row.routine_title_snapshot,stepTitleSnapshot:row.step_title_snapshot,
       routineRevisionSnapshot:row.routine_revision_snapshot?iso(row.routine_revision_snapshot):null,
@@ -228,12 +230,15 @@ function taskAuditAttribution(previous:TaskRow,next:TaskOccurrence){
 function timestamp(value:string|Date|null){return value?iso(value):null;}
 async function replaceChecklist(client:OperationalClient,workspaceId:string,taskId:string,items:TaskChecklistItem[]){for(const [index,item] of items.entries())await client.query(`INSERT INTO task_checklist_items (id,workspace_id,task_occurrence_id,title,sort_order,is_completed) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (workspace_id,task_occurrence_id,sort_order) DO UPDATE SET title=EXCLUDED.title,is_completed=EXCLUDED.is_completed,updated_at=NOW()`,[generatedId("checklist"),workspaceId,taskId,item.title,index+1,item.done]);await client.query("DELETE FROM task_checklist_items WHERE workspace_id=$1 AND task_occurrence_id=$2 AND sort_order>$3",[workspaceId,taskId,items.length]);}
 async function replaceEvidence(client:OperationalClient,task:TaskOccurrence){
-  const latest=await client.query<EvidenceRow>("SELECT task_occurrence_id,kind,comment,photo_url,created_at FROM task_evidence WHERE workspace_id=$1 AND task_occurrence_id=$2 AND archived_at IS NULL ORDER BY created_at DESC,id DESC",[task.workspaceId,task.id]);
+  const latest=await client.query<EvidenceRow>("SELECT task_occurrence_id,kind,comment,photo_url,object_key,file_name,content_type,size_bytes,created_at FROM task_evidence WHERE workspace_id=$1 AND task_occurrence_id=$2 AND archived_at IS NULL ORDER BY created_at DESC,id DESC",[task.workspaceId,task.id]);
   const latestComment=latest.rows.find(item=>item.kind==="comment")?.comment??null;
-  const latestPhoto=latest.rows.find(item=>item.kind==="photo")?.photo_url??null;
-  const nextComment=task.evidence?.comment??null,nextPhoto=task.evidence?.photoUrl??null;
-  if(nextComment===latestComment&&nextPhoto===latestPhoto)return;
+  const latestPhoto=latest.rows.find(item=>item.kind==="photo"&&!item.object_key)?.photo_url??null;
+  const latestAttachment=latest.rows.find(item=>item.kind==="photo"&&item.object_key&&item.file_name&&item.content_type&&item.size_bytes!==null);
+  const nextComment=task.evidence?.comment??null,nextPhoto=task.evidence?.photoUrl??null,nextAttachment=task.evidence?.attachment??null;
+  if(nextComment===latestComment&&nextPhoto===latestPhoto&&sameAttachment(nextAttachment,latestAttachment))return;
   await client.query("UPDATE task_evidence SET archived_at=NOW() WHERE workspace_id=$1 AND task_occurrence_id=$2 AND archived_at IS NULL",[task.workspaceId,task.id]);
   if(nextComment)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,comment) VALUES ($1,$2,$3,$4,'comment',$5)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextComment]);
   if(nextPhoto)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,photo_url) VALUES ($1,$2,$3,$4,'photo',$5)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextPhoto]);
+  if(nextAttachment)await client.query(`INSERT INTO task_evidence (id,workspace_id,task_occurrence_id,profile_id,kind,photo_url,object_key,file_name,content_type,size_bytes) VALUES ($1,$2,$3,$4,'photo',$5,$6,$7,$8,$9)`,[generatedId("evidence"),task.workspaceId,task.id,task.submittedByProfileId??task.reviewedByProfileId??"system",nextAttachment.url,nextAttachment.objectKey,nextAttachment.fileName,nextAttachment.contentType,nextAttachment.sizeBytes]);
 }
+function sameAttachment(next:NonNullable<TaskOccurrence["evidence"]>["attachment"],row:EvidenceRow|undefined){return next?.objectKey===row?.object_key&&next?.fileName===row?.file_name&&next?.contentType===row?.content_type&&next?.sizeBytes===row?.size_bytes&&next?.url===(row?.photo_url??undefined);}

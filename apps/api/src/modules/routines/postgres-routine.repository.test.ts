@@ -68,7 +68,8 @@ async function createRoutineTables(pool: ReturnType<typeof createMemoryPool>) {
     );
     CREATE TABLE task_evidence (
       id TEXT NOT NULL, workspace_id TEXT NOT NULL, task_occurrence_id TEXT NOT NULL, profile_id TEXT,
-      kind TEXT NOT NULL, comment TEXT, photo_url TEXT, archived_at TIMESTAMPTZ,
+      kind TEXT NOT NULL, comment TEXT, photo_url TEXT, object_key TEXT, file_name TEXT,
+      content_type TEXT, size_bytes BIGINT, archived_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (workspace_id, id)
     );
     CREATE TABLE operational_audit_log (

@@ -56,7 +56,16 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("adds metadata columns for uploaded task evidence", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='task_evidence' and column_name in ('file_name','content_type','size_bytes')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual(["content_type", "file_name", "size_bytes"]);
   });
 
   it("adds operational identity and multi-area access without changing the person key", async () => {

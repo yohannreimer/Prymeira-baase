@@ -8,6 +8,15 @@ export type RoutineExecutionMode = "shared" | "individual";
 export type TaskEvidence = {
   comment: string | null;
   photoUrl: string | null;
+  attachment?: TaskEvidenceAttachment | null;
+};
+
+export type TaskEvidenceAttachment = {
+  objectKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
 };
 
 export type RoutineTaskTemplate = {
@@ -125,6 +134,10 @@ export type UpdateTaskChecklistInput = {
 export type SubmitTaskInput = {
   comment?: string | null;
   photoUrl?: string | null;
+};
+
+export type AttachTaskEvidenceInput = {
+  attachment: TaskEvidenceAttachment;
 };
 
 export type RoutineRepository = {

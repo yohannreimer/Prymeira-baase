@@ -38,6 +38,13 @@ export type ApiTask = {
   evidence?: {
     comment: string | null;
     photoUrl: string | null;
+    attachment?: {
+      objectKey: string;
+      fileName: string;
+      contentType: string;
+      sizeBytes: number;
+      url: string;
+    } | null;
   } | null;
   reviewComment?: string | null;
   submittedByProfileId?: string | null;
@@ -910,19 +917,34 @@ export async function useTemplate(role: UiRole, templateId: string, fetcher: Fet
 export async function submitTaskExecution(
   role: UiRole,
   taskId: string,
-  evidence: { comment?: string | null; photoUrl?: string | null },
+  evidence: { comment?: string | null },
   fetcher: Fetcher = fetch
 ) {
   const result = await readJson<{ task: ApiTask }>(fetcher, `/api/tasks/${taskId}/submit`, {
     method: "POST",
     headers: createBaaseHeaders(role),
     body: JSON.stringify({
-      comment: evidence.comment ?? null,
-      photo_url: evidence.photoUrl ?? null
+      comment: evidence.comment ?? null
     })
   });
 
   return result.task;
+}
+
+export async function uploadTaskEvidence(
+  role: UiRole,
+  taskId: string,
+  file: File,
+  fetcher: Fetcher = fetch
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const result = await readJson<{ evidence: NonNullable<ApiTask["evidence"]> }>(
+    fetcher,
+    `/api/tasks/${encodeURIComponent(taskId)}/evidence`,
+    { method: "POST", headers: createBaaseAuthHeaders(role), body: formData }
+  );
+  return result.evidence;
 }
 
 export async function createTask(role: UiRole, input: ApiTaskInput, fetcher: Fetcher = fetch) {
