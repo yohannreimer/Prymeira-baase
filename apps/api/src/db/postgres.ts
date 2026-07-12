@@ -959,6 +959,24 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       });
     },
 
+    async reconcileRoutineOccurrence(task, routineRevisionSnapshot) {
+      return store.withWorkspaceOperationalMutation(task.workspaceId, async (lockedStore) => {
+        const persisted = await lockedStore.find<TaskOccurrence>("task_occurrence", task.workspaceId, task.id);
+        if (!persisted) throw new Error("TASK_NOT_FOUND");
+        if (persisted.status !== "pending" || persisted.submittedAt !== null) return persisted;
+        return lockedStore.update<TaskOccurrence>("task_occurrence", {
+          ...persisted,
+          ...task,
+          checklistItems: persisted.routineRevisionSnapshot !== routineRevisionSnapshot
+            ? task.checklistItems
+            : persisted.checklistItems,
+          routineRevisionSnapshot,
+          createdAt: persisted.createdAt,
+          updatedAt: now()
+        });
+      });
+    },
+
     updateTaskOccurrence(task) {
       return store.withWorkspaceOperationalMutation(task.workspaceId, async (lockedStore) => {
         const persisted = await lockedStore.find<TaskOccurrence>("task_occurrence", task.workspaceId, task.id);

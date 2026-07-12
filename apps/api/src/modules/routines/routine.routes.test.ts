@@ -1153,7 +1153,7 @@ describe("routine routes", () => {
     });
   });
 
-  it("keeps existing occurrences immutable when responsible people are edited", async () => {
+  it("reconciles pending occurrences when responsible people are edited", async () => {
     const {
       app,
       employeeId,
@@ -1217,21 +1217,25 @@ describe("routine routes", () => {
       headers: localEmployeeHeaders
     });
 
-    expect(oldResponsibleToday.json().tasks).toHaveLength(1);
-    expect(oldResponsibleToday.json().tasks[0]).toMatchObject({
-      title: "Atualizar orquestrador",
-      assigneeProfileId: managerId,
-      dueHint: "Até 09:00",
-      checklistItems: [{ title: "Conferir dia anterior", done: false }]
-    });
-    expect(newResponsibleToday.json().tasks).toEqual([
+    expect(oldResponsibleToday.json().tasks.filter((task: { assigneeProfileId: string }) => task.assigneeProfileId === managerId)).toEqual([]);
+    expect(newResponsibleToday.json().tasks.filter((task: { assigneeProfileId: string }) => task.assigneeProfileId === employeeId)).toEqual([
       expect.objectContaining({
-        title: "Atualizar orquestrador",
-        assigneeProfileId: managerId,
-        dueHint: "Até 09:00",
-        checklistItems: [{ title: "Conferir dia anterior", done: false }]
+        title: "Atualizar orquestrador revisado",
+        assigneeProfileId: employeeId,
+        dueHint: "Até 10:00",
+        checklistItems: [
+          { title: "Conferir dia anterior", done: false },
+          { title: "Registrar mudanças", done: false }
+        ]
       })
     ]);
+
+    const repeatedNewResponsibleToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: localEmployeeHeaders
+    });
+    expect(repeatedNewResponsibleToday.json().tasks.filter((task: { assigneeProfileId: string }) => task.assigneeProfileId === employeeId)).toHaveLength(1);
 
     const newResponsibleFuture = await app.inject({
       method: "GET",
@@ -1247,6 +1251,102 @@ describe("routine routes", () => {
         { title: "Registrar mudanças", done: false }
       ]
     });
+  });
+
+  it("preserves completed routine occurrences while reconciling pending assignees", async () => {
+    const {
+      app,
+      employeeId,
+      managerId,
+      managerHeaders: localManagerHeaders,
+      employeeHeaders: localEmployeeHeaders
+    } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const routineResponse = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: localManagerHeaders,
+      payload: {
+        title: "Atualizar orquestrador",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        weekdays: ["mon", "tue", "wed", "thu", "fri"],
+        due_hint: "Até 09:00",
+        assignee_profile_ids: [managerId, employeeId],
+        execution_mode: "individual",
+        task_templates: [{ title: "Conferir dia anterior" }]
+      }
+    });
+    const routineId = routineResponse.json().routine.id;
+
+    const generatedToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: localManagerHeaders
+    });
+    const managerTask = generatedToday.json().tasks.find((task: { assigneeProfileId: string }) => task.assigneeProfileId === managerId);
+    expect(managerTask).toBeDefined();
+
+    const completed = await app.inject({
+      method: "POST",
+      url: `/tasks/${managerTask.id}/submit`,
+      headers: localManagerHeaders,
+      payload: {}
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().task.status).toBe("completed");
+
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: `/routines/${routineId}`,
+      headers: localManagerHeaders,
+      payload: {
+        title: "Atualizar orquestrador revisado",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        weekdays: ["mon", "tue", "wed", "thu", "fri"],
+        due_hint: "Até 10:00",
+        assignee_profile_ids: [managerId, employeeId],
+        execution_mode: "individual",
+        task_templates: [
+          { title: "Conferir dia anterior" },
+          { title: "Registrar mudanças" }
+        ]
+      }
+    });
+    expect(updateResponse.statusCode).toBe(200);
+
+    const managerToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: localManagerHeaders
+    });
+    const employeeToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: localEmployeeHeaders
+    });
+
+    expect(managerToday.json().tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: managerTask.id,
+        title: "Atualizar orquestrador",
+        dueHint: "Até 09:00",
+        status: "completed",
+        checklistItems: [{ title: "Conferir dia anterior", done: false }]
+      })
+    ]));
+    expect(employeeToday.json().tasks.filter((task: { assigneeProfileId: string }) => task.assigneeProfileId === employeeId)).toEqual([
+      expect.objectContaining({
+        title: "Atualizar orquestrador revisado",
+        assigneeProfileId: employeeId,
+        dueHint: "Até 10:00",
+        status: "pending",
+        checklistItems: [
+          { title: "Conferir dia anterior", done: false },
+          { title: "Registrar mudanças", done: false }
+        ]
+      })
+    ]);
   });
 
   it("updates routine checklist fields and archives routines", async () => {

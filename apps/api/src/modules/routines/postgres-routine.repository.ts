@@ -108,6 +108,30 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateTasks(db,r.rows))[0]??null;
     },
     async createTaskOccurrence(input){return withOperationalTransaction(db,async client=>{await lockWorkspaceOperationalMutation(client,input.workspaceId);return createOrReuseTask(client,input);});},
+    async reconcileRoutineOccurrence(task,routineRevisionSnapshot){return withOperationalTransaction(db,async client=>{
+      await lockWorkspaceOperationalMutation(client,task.workspaceId);
+      const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[task.workspaceId,task.id]);
+      if(!persisted.rows[0])throw new Error("TASK_NOT_FOUND");
+      if(persisted.rows[0].status!=="pending"||persisted.rows[0].submitted_at!==null)return (await hydrateTasks(client,persisted.rows))[0]!;
+      const persistedTask=(await hydrateTasks(client,persisted.rows))[0]!;
+      await lockActiveAreaReference(client,task.workspaceId,task.areaId??null);
+      const routine=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[task.workspaceId,task.routineId]);
+      if(!routine.rows[0])throw new Error("ROUTINE_NOT_FOUND");
+      const area=task.areaId?await client.query<{name:string}>("SELECT name FROM areas WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[task.workspaceId,task.areaId]):{rows:[]};
+      const sourceTemplateKey=task.taskTemplateId;
+      let stepId=sourceTemplateKey;
+      if(sourceTemplateKey?.startsWith(`${task.routineId}__execution__`)){
+        const first=await client.query<StepRow>("SELECT * FROM routine_steps WHERE workspace_id=$1 AND routine_id=$2 AND archived_at IS NULL ORDER BY sort_order LIMIT 1",[task.workspaceId,task.routineId]);
+        stepId=first.rows[0]?.id??null;
+      }
+      const revisionChanged=persistedTask.routineRevisionSnapshot!==routineRevisionSnapshot;
+      const result=await client.query<TaskRow>(`UPDATE task_occurrences SET routine_step_id=$3,source_template_key=$4,area_id=$5,process_id=$6,assignee_profile_id=$7,audience_key=$8,title=$9,area_name_snapshot=$10,routine_title_snapshot=$11,step_title_snapshot=$12,due_hint=$13,approval_mode=$14,evidence_policy=$15,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
+        WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[task.workspaceId,task.id,stepId,sourceTemplateKey,task.areaId??null,task.processId,task.assigneeProfileId,task.assigneeProfileId??"shared",task.title,area.rows[0]?.name??null,routine.rows[0].title,task.title,task.dueHint??null,task.approvalMode,task.evidencePolicy]);
+      if(revisionChanged)await replaceChecklist(client,task.workspaceId,task.id,task.checklistItems??[]);
+      await client.query(`INSERT INTO routine_occurrences (id,workspace_id,routine_id,due_date,audience_key,area_name_snapshot,routine_title_snapshot,routine_updated_at_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (workspace_id,routine_id,due_date,audience_key) DO UPDATE SET area_name_snapshot=EXCLUDED.area_name_snapshot,routine_title_snapshot=EXCLUDED.routine_title_snapshot,routine_updated_at_snapshot=EXCLUDED.routine_updated_at_snapshot`,[generatedId("routine_occurrence"),task.workspaceId,task.routineId,task.dueDate,task.assigneeProfileId??"shared",area.rows[0]?.name??null,routine.rows[0].title,routineRevisionSnapshot]);
+      return (await hydrateTasks(client,result.rows))[0]!;
+    });},
     async updateTaskOccurrence(task){return withOperationalTransaction(db,async client=>{
       await lockWorkspaceOperationalMutation(client,task.workspaceId);
       const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[task.workspaceId,task.id]);

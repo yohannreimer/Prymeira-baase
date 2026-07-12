@@ -102,6 +102,24 @@ export function createInMemoryRoutineRepository(
       return task;
     },
 
+    async reconcileRoutineOccurrence(task, routineRevisionSnapshot) {
+      const index = tasks.findIndex((item) => item.workspaceId === task.workspaceId && item.id === task.id);
+      if (index === -1) throw new Error("TASK_NOT_FOUND");
+      const persisted = tasks[index]!;
+      if (persisted.status !== "pending" || persisted.submittedAt !== null) return persisted;
+      const revisionChanged = persisted.routineRevisionSnapshot !== routineRevisionSnapshot;
+      const updated = {
+        ...persisted,
+        ...task,
+        checklistItems: revisionChanged ? task.checklistItems : persisted.checklistItems,
+        routineRevisionSnapshot,
+        createdAt: persisted.createdAt,
+        updatedAt: now()
+      };
+      tasks[index] = updated;
+      return updated;
+    },
+
     async updateTaskOccurrence(task) {
       const index = tasks.findIndex((item) => item.workspaceId === task.workspaceId && item.id === task.id);
       if (index === -1) throw new Error("TASK_NOT_FOUND");

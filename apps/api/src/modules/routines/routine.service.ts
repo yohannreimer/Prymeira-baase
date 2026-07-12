@@ -216,6 +216,15 @@ function buildRoutineOccurrenceInputs(
   }));
 }
 
+function occurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemplateId" | "assigneeProfileId">) {
+  const templateKey = task.taskTemplateId ?? `${task.routineId ?? "manual"}__shared`;
+  return `${templateKey}__${task.assigneeProfileId ?? "shared"}`;
+}
+
+function isMutableRoutineOccurrence(task: TaskOccurrence) {
+  return task.status === "pending" && task.submittedAt === null;
+}
+
 async function createOrReuseRoutineOccurrences(
   repository: RoutineRepository,
   routine: CompanyRoutine,
@@ -223,23 +232,38 @@ async function createOrReuseRoutineOccurrences(
 ) {
   const existingForDate = (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
     .filter((task) => task.routineId === routine.id);
-  if (existingForDate.some((task) => task.routineRevisionSnapshot !== routine.updatedAt)) {
-    return existingForDate;
-  }
+  const desiredByKey = new Map(
+    buildRoutineOccurrenceInputs(routine, dueDate)
+      .filter((input) => input.taskTemplateId)
+      .map((input) => [occurrenceKey(input), input])
+  );
+  const existingByKey = new Map(existingForDate.map((task) => [occurrenceKey(task), task]));
 
-  const generated: TaskOccurrence[] = [];
-  for (const input of buildRoutineOccurrenceInputs(routine, dueDate)) {
-    if (!input.taskTemplateId) continue;
-    const existing = await repository.findTaskOccurrenceForTemplate(routine.workspaceId, routine.id, input.taskTemplateId, dueDate);
-    if (existing) {
-      generated.push(existing);
+  for (const [key, input] of desiredByKey) {
+    const existing = existingByKey.get(key);
+    if (!existing) {
+      await repository.createTaskOccurrence(input);
       continue;
     }
+    if (!isMutableRoutineOccurrence(existing) || existing.routineRevisionSnapshot === routine.updatedAt) continue;
 
-    generated.push(await repository.createTaskOccurrence(input));
+    await repository.reconcileRoutineOccurrence({
+      ...existing,
+      ...input,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: existing.updatedAt
+    }, routine.updatedAt);
   }
 
-  return generated;
+  for (const [key, task] of existingByKey) {
+    if (!desiredByKey.has(key) && isMutableRoutineOccurrence(task)) {
+      await repository.deleteTaskOccurrence(routine.workspaceId, task.id);
+    }
+  }
+
+  return (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
+    .filter((task) => task.routineId === routine.id);
 }
 
 async function ensureTodayOccurrences(repository: RoutineRepository, workspaceId: string, dueDate: string) {

@@ -124,8 +124,9 @@ describe("routine service", () => {
       ]
     } as any);
 
-    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
-    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const [reconciled] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const [repeated] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    expect(repeated?.updatedAt).toBe(reconciled?.updatedAt);
     const saturdayTasks = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-11");
 
     const tasks = await service.listTodayTasks("workspace_a", "2026-07-08");
@@ -151,6 +152,50 @@ describe("routine service", () => {
       title: "Organizar orquestrador",
       assigneeProfileId: "person_andre"
     });
+  });
+
+  it("refreshes a pending occurrence once after a routine revision", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Organizar abertura",
+      frequency: "daily",
+      assigneeProfileIds: ["profile_employee"],
+      executionMode: "individual",
+      dueHint: "Até 09:00",
+      taskTemplates: [{ title: "Conferir caixa" }]
+    });
+    const [original] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    if (!original) throw new Error("Expected generated task");
+    await service.updateTaskChecklist("workspace_a", original.id, "profile_employee", {
+      checklistItems: [{ title: "Conferir caixa", done: true }]
+    });
+
+    await service.updateRoutine("workspace_a", routine.id, {
+      title: "Organizar abertura revisada",
+      frequency: "daily",
+      assigneeProfileIds: ["profile_employee"],
+      executionMode: "individual",
+      dueHint: "Até 10:00",
+      taskTemplates: [
+        { id: routine.taskTemplates[0]!.id, title: "Conferir caixa" },
+        { title: "Registrar ajustes" }
+      ]
+    });
+    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+
+    const tasks = await service.listTodayTasks("workspace_a", "2026-07-08");
+    expect(tasks).toEqual([
+      expect.objectContaining({
+        id: original.id,
+        title: "Organizar abertura revisada",
+        dueHint: "Até 10:00",
+        checklistItems: [
+          { title: "Conferir caixa", done: false },
+          { title: "Registrar ajustes", done: false }
+        ]
+      })
+    ]);
   });
 
   it("returns shared tasks without profile filtering", async () => {
