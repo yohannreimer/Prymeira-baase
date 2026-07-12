@@ -214,8 +214,14 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = generateOccurrencesSchema.parse(request.body);
-    const tasks = await service.generateRoutineOccurrences(context.workspaceId, params.id, body.due_date);
-    return reply.status(201).send({ tasks });
+    try {
+      const routine = await service.getRoutine(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
+      const tasks = await service.generateRoutineOccurrences(context.workspaceId, params.id, body.due_date);
+      return reply.status(201).send({ tasks });
+    } catch (error) {
+      throw routineMutationError(error);
+    }
   });
 
   app.get("/today", async (request) => {

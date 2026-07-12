@@ -152,6 +152,52 @@ describe("routine routes", () => {
       .not.toContain(ownerId);
   });
 
+  it("restricts technical routine occurrence generation to the routine area", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const routineResponse = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Gerar rotina tecnica",
+        area_id: "area_tecnica",
+        frequency: "daily",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const routineId = routineResponse.json().routine.id;
+
+    const financeGeneration = await app.inject({
+      method: "POST",
+      url: `/routines/${routineId}/occurrences/generate`,
+      headers: headersFor("profile_gestor_financeiro"),
+      payload: { due_date: "2026-07-06" }
+    });
+    const ownerGeneration = await app.inject({
+      method: "POST",
+      url: `/routines/${routineId}/occurrences/generate`,
+      headers: ownerHeaders,
+      payload: { due_date: "2026-07-07" }
+    });
+    const technicalManagerGeneration = await app.inject({
+      method: "POST",
+      url: `/routines/${routineId}/occurrences/generate`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: { due_date: "2026-07-08" }
+    });
+
+    expect(financeGeneration.statusCode).toBe(403);
+    expect(financeGeneration.json()).toEqual({
+      error: expect.objectContaining({ code: "BAASE_SCOPE_FORBIDDEN" })
+    });
+    expect(financeGeneration.json()).not.toHaveProperty("tasks");
+    expect(ownerGeneration.statusCode).toBe(201);
+    expect(ownerGeneration.json().tasks).toHaveLength(1);
+    expect(technicalManagerGeneration.statusCode).toBe(201);
+    expect(technicalManagerGeneration.json().tasks).toHaveLength(1);
+  });
+
   it("forbids a Financeiro employee from changing or submitting a technical task by ID", async () => {
     const { app, headersFor, personIdFor } = await buildOperationalAccessApp();
     const routineResponse = await app.inject({

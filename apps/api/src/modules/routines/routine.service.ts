@@ -255,6 +255,10 @@ export function createRoutineService(repository: RoutineRepository) {
       return repository.listRoutines(workspaceId);
     },
 
+    async getRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine> {
+      return readRoutineOrThrow(repository, workspaceId, routineId);
+    },
+
     async createRoutine(workspaceId: string, actorProfileId: string, input: CreateRoutineInput): Promise<CompanyRoutine> {
       const title = requiredText(input.title, "ROUTINE_TITLE_REQUIRED");
       if (input.taskTemplates.length === 0) throw new Error("ROUTINE_TASKS_REQUIRED");
