@@ -214,7 +214,6 @@ describe("Postgres repositories", () => {
         task_templates: [
           {
             title: "Conferir prioridades",
-            assignee_profile_id: "profile_employee",
             approval_mode: "direct",
             evidence_policy: "optional"
           }

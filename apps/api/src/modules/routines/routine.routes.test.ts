@@ -18,6 +18,17 @@ const employeeHeaders = {
 
 async function buildLocalRoutineAppWithEmployee(areaId: string) {
   const companyRepository = createInMemoryCompanyRepository();
+  const manager = await companyRepository.createTeamMember({
+    workspaceId: "workspace_a",
+    name: "Gestor",
+    email: null,
+    role: "manager",
+    areaId,
+    areaAccessIds: [areaId],
+    accessScope: "area",
+    roleTemplateId: null,
+    createdByProfileId: "profile_manager"
+  });
   const employee = await companyRepository.createTeamMember({
     workspaceId: "workspace_a",
     name: "Funcionário",
@@ -25,11 +36,13 @@ async function buildLocalRoutineAppWithEmployee(areaId: string) {
     role: "employee",
     areaId,
     roleTemplateId: null,
-    createdByProfileId: "profile_manager"
+    createdByProfileId: manager.id
   });
   return {
     app: buildApp({ companyRepository, routineRepository: createInMemoryRoutineRepository() }),
+    managerId: manager.id,
     employeeId: employee.id,
+    managerHeaders: { ...managerHeaders, "x-baase-profile-id": manager.id },
     employeeHeaders: { ...employeeHeaders, "x-baase-profile-id": employee.id }
   };
 }
@@ -302,6 +315,73 @@ describe("routine routes", () => {
     expect(financeTaskNullAreaPatch.statusCode).toBe(403);
     expect(ownerNullAreaTask.statusCode).toBe(201);
     expect(ownerNullAreaTask.json().task.areaId).toBeNull();
+  });
+
+  it("validates routine assignees against the requested area", async () => {
+    const { app, headersFor, personIdFor } = await buildOperationalAccessApp();
+    const financeHeaders = headersFor("profile_gestor_financeiro");
+    const technicalPersonId = personIdFor("profile_peterson");
+    const financePersonId = personIdFor("profile_financeiro");
+    const globalCrossAreaCreate = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: financeHeaders,
+      payload: {
+        title: "Rotina financeira para tecnico",
+        area_id: "area_financeiro",
+        assignee_profile_ids: [technicalPersonId],
+        execution_mode: "individual",
+        task_templates: [{ title: "Conferir saldo" }]
+      }
+    });
+    const templateCrossAreaCreate = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: financeHeaders,
+      payload: {
+        title: "Rotina financeira com etapa tecnica",
+        area_id: "area_financeiro",
+        task_templates: [{ title: "Conferir saldo", assignee_profile_id: technicalPersonId }]
+      }
+    });
+    const financeRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: financeHeaders,
+      payload: {
+        title: "Rotina financeira",
+        area_id: "area_financeiro",
+        assignee_profile_ids: [financePersonId],
+        execution_mode: "individual",
+        task_templates: [{ title: "Conferir saldo" }]
+      }
+    });
+
+    expect(globalCrossAreaCreate.statusCode).toBe(403);
+    expect(templateCrossAreaCreate.statusCode).toBe(403);
+    for (const response of [globalCrossAreaCreate, templateCrossAreaCreate]) {
+      expect(response.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+      expect(response.json()).not.toHaveProperty("routine");
+    }
+    expect(financeRoutine.statusCode).toBe(201);
+    expect(financeRoutine.json().routine.assigneeProfileIds).toEqual([financePersonId]);
+
+    const financeUpdate = await app.inject({
+      method: "PATCH",
+      url: `/routines/${financeRoutine.json().routine.id}`,
+      headers: financeHeaders,
+      payload: {
+        title: "Rotina financeira alterada",
+        area_id: "area_financeiro",
+        assignee_profile_ids: [technicalPersonId],
+        execution_mode: "individual",
+        task_templates: [{ title: "Conferir saldo" }]
+      }
+    });
+
+    expect(financeUpdate.statusCode).toBe(403);
+    expect(financeUpdate.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+    expect(financeUpdate.json()).not.toHaveProperty("routine");
   });
 
   it("restricts technical routine occurrence generation to the routine area", async () => {
@@ -870,19 +950,19 @@ describe("routine routes", () => {
   });
 
   it("runs the manager-to-employee execution flow", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_operacao");
 
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Abertura da loja",
         area_id: "area_operacao",
         task_templates: [
           {
             title: "Fotografar recepção pronta",
-            assignee_profile_id: "profile_employee",
+            assignee_profile_id: employeeId,
             evidence_policy: "photo_or_comment_required",
             approval_mode: "direct"
           }
@@ -896,7 +976,7 @@ describe("routine routes", () => {
     const generationResponse = await app.inject({
       method: "POST",
       url: `/routines/${routineId}/occurrences/generate`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         due_date: "2026-07-07"
       }
@@ -908,7 +988,7 @@ describe("routine routes", () => {
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-07",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
 
     expect(todayResponse.statusCode).toBe(200);
@@ -921,7 +1001,7 @@ describe("routine routes", () => {
     const submitResponse = await app.inject({
       method: "POST",
       url: `/tasks/${taskId}/submit`,
-      headers: employeeHeaders,
+      headers: localEmployeeHeaders,
       payload: {
         comment: "Recepção pronta para abertura."
       }
@@ -952,19 +1032,25 @@ describe("routine routes", () => {
   });
 
   it("creates individual recurring routine executions for each responsible person", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const {
+      app,
+      employeeId,
+      managerId,
+      managerHeaders: localManagerHeaders,
+      employeeHeaders: localEmployeeHeaders
+    } = await buildLocalRoutineAppWithEmployee("area_tecnica");
 
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Organizar orquestrador",
         area_id: "area_tecnica",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 09:00",
-        assignee_profile_ids: ["profile_employee", "profile_manager"],
+        assignee_profile_ids: [employeeId, managerId],
         execution_mode: "individual",
         evidence_policy: "optional",
         approval_mode: "direct",
@@ -982,7 +1068,7 @@ describe("routine routes", () => {
       frequency: "daily",
       weekdays: ["mon", "tue", "wed", "thu", "fri"],
       dueHint: "Até 09:00",
-      assigneeProfileIds: ["profile_employee", "profile_manager"],
+      assigneeProfileIds: [employeeId, managerId],
       executionMode: "individual"
     });
 
@@ -990,7 +1076,7 @@ describe("routine routes", () => {
     const generationResponse = await app.inject({
       method: "POST",
       url: `/routines/${routineId}/occurrences/generate`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: { due_date: "2026-07-08" }
     });
 
@@ -1000,7 +1086,7 @@ describe("routine routes", () => {
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
 
     expect(todayResponse.statusCode).toBe(200);
@@ -1008,7 +1094,7 @@ describe("routine routes", () => {
     expect(todayResponse.json().tasks[0]).toMatchObject({
       title: "Organizar orquestrador",
       dueHint: "Até 09:00",
-      assigneeProfileId: "profile_employee",
+      assigneeProfileId: employeeId,
       checklistItems: [
         { title: "Atualizar demandas de ontem", done: false },
         { title: "Planejar demandas de hoje", done: false }
@@ -1017,19 +1103,19 @@ describe("routine routes", () => {
   });
 
   it("generates active routine occurrences when the employee opens today", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_financeiro");
 
     await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Atualizar orquestrador",
         area_id: "area_financeiro",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 09:00",
-        assignee_profile_ids: ["profile_employee"],
+        assignee_profile_ids: [employeeId],
         execution_mode: "individual",
         task_templates: [
           { title: "Conferir dia anterior" },
@@ -1041,14 +1127,14 @@ describe("routine routes", () => {
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
 
     expect(todayResponse.statusCode).toBe(200);
     expect(todayResponse.json().tasks).toHaveLength(1);
     expect(todayResponse.json().tasks[0]).toMatchObject({
       title: "Atualizar orquestrador",
-      assigneeProfileId: "profile_employee",
+      assigneeProfileId: employeeId,
       checklistItems: [
         { title: "Conferir dia anterior", done: false },
         { title: "Planejar compromissos do dia", done: false }
@@ -1057,19 +1143,25 @@ describe("routine routes", () => {
   });
 
   it("keeps existing occurrences immutable when responsible people are edited", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const {
+      app,
+      employeeId,
+      managerId,
+      managerHeaders: localManagerHeaders,
+      employeeHeaders: localEmployeeHeaders
+    } = await buildLocalRoutineAppWithEmployee("area_tecnica");
 
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Atualizar orquestrador",
         area_id: "area_tecnica",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 09:00",
-        assignee_profile_ids: ["profile_manager"],
+        assignee_profile_ids: [managerId],
         execution_mode: "individual",
         task_templates: [{ title: "Conferir dia anterior" }]
       }
@@ -1079,20 +1171,20 @@ describe("routine routes", () => {
     await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
 
     const updateResponse = await app.inject({
       method: "PATCH",
       url: `/routines/${routineId}`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Atualizar orquestrador revisado",
         area_id: "area_tecnica",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 10:00",
-        assignee_profile_ids: ["profile_employee"],
+        assignee_profile_ids: [employeeId],
         execution_mode: "individual",
         task_templates: [
           { title: "Conferir dia anterior" },
@@ -1106,18 +1198,18 @@ describe("routine routes", () => {
     const oldResponsibleToday = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
     const newResponsibleToday = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
 
     expect(oldResponsibleToday.json().tasks).toHaveLength(1);
     expect(oldResponsibleToday.json().tasks[0]).toMatchObject({
       title: "Atualizar orquestrador",
-      assigneeProfileId: "profile_manager",
+      assigneeProfileId: managerId,
       dueHint: "Até 09:00",
       checklistItems: [{ title: "Conferir dia anterior", done: false }]
     });
@@ -1126,11 +1218,11 @@ describe("routine routes", () => {
     const newResponsibleFuture = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-09",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
     expect(newResponsibleFuture.json().tasks[0]).toMatchObject({
       title: "Atualizar orquestrador revisado",
-      assigneeProfileId: "profile_employee",
+      assigneeProfileId: employeeId,
       dueHint: "Até 10:00",
       checklistItems: [
         { title: "Conferir dia anterior", done: false },
@@ -1140,11 +1232,11 @@ describe("routine routes", () => {
   });
 
   it("updates routine checklist fields and archives routines", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, managerHeaders: localManagerHeaders } = await buildLocalRoutineAppWithEmployee("area_atendimento");
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Abertura da loja",
         area_id: "area_operacao",
@@ -1156,14 +1248,14 @@ describe("routine routes", () => {
     const updateResponse = await app.inject({
       method: "PATCH",
       url: `/routines/${routineId}`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Abertura completa da loja",
         area_id: "area_atendimento",
         task_templates: [
           {
             title: "Fotografar recepção pronta",
-            assignee_profile_id: "profile_employee",
+            assignee_profile_id: employeeId,
             due_hint: "Hoje 17:00",
             evidence_policy: "photo_or_comment_required",
             approval_mode: "approval_required"
@@ -1184,7 +1276,7 @@ describe("routine routes", () => {
     expect(updateResponse.json().routine.taskTemplates).toHaveLength(2);
     expect(updateResponse.json().routine.taskTemplates[0]).toMatchObject({
       routineId,
-      assigneeProfileId: "profile_employee",
+      assigneeProfileId: employeeId,
       dueHint: "Hoje 17:00",
       evidencePolicy: "photo_or_comment_required",
       approvalMode: "approval_required"
@@ -1193,7 +1285,7 @@ describe("routine routes", () => {
     const archiveResponse = await app.inject({
       method: "POST",
       url: `/routines/${routineId}/archive`,
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
 
     expect(archiveResponse.statusCode).toBe(200);
@@ -1201,19 +1293,25 @@ describe("routine routes", () => {
   });
 
   it("runs the employee evidence flow with manager approval and return", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const {
+      app,
+      employeeId,
+      managerId,
+      managerHeaders: localManagerHeaders,
+      employeeHeaders: localEmployeeHeaders
+    } = await buildLocalRoutineAppWithEmployee("area_tecnica");
 
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Fechamento do dia",
         area_id: "area_tecnica",
         task_templates: [
           {
             title: "Enviar relatório com evidência",
-            assignee_profile_id: "profile_employee",
+            assignee_profile_id: employeeId,
             evidence_policy: "photo_or_comment_required",
             approval_mode: "approval_required"
           }
@@ -1225,21 +1323,21 @@ describe("routine routes", () => {
     await app.inject({
       method: "POST",
       url: `/routines/${routineId}/occurrences/generate`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: { due_date: "2026-07-07" }
     });
 
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-07",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
     const taskId = todayResponse.json().tasks[0].id;
 
     const submitResponse = await app.inject({
       method: "POST",
       url: `/tasks/${taskId}/submit`,
-      headers: employeeHeaders,
+      headers: localEmployeeHeaders,
       payload: {
         comment: "Relatório revisado.",
         photo_url: "https://example.com/evidencia.jpg"
@@ -1253,13 +1351,13 @@ describe("routine routes", () => {
         comment: "Relatório revisado.",
         photoUrl: "https://example.com/evidencia.jpg"
       },
-      submittedByProfileId: "profile_employee"
+      submittedByProfileId: employeeId
     });
 
     const approvalsResponse = await app.inject({
       method: "GET",
       url: "/approvals",
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
 
     expect(approvalsResponse.statusCode).toBe(200);
@@ -1272,7 +1370,7 @@ describe("routine routes", () => {
     const returnResponse = await app.inject({
       method: "POST",
       url: `/tasks/${taskId}/return`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         comment: "Inclua o print do dashboard."
       }
@@ -1282,13 +1380,13 @@ describe("routine routes", () => {
     expect(returnResponse.json().task).toMatchObject({
       status: "needs_adjustment",
       reviewComment: "Inclua o print do dashboard.",
-      reviewedByProfileId: "profile_manager"
+      reviewedByProfileId: managerId
     });
 
     const resubmitResponse = await app.inject({
       method: "POST",
       url: `/tasks/${taskId}/submit`,
-      headers: employeeHeaders,
+      headers: localEmployeeHeaders,
       payload: {
         comment: "Print incluído.",
         photo_url: "https://example.com/dashboard.jpg"
@@ -1301,30 +1399,30 @@ describe("routine routes", () => {
     const approveResponse = await app.inject({
       method: "POST",
       url: `/tasks/${taskId}/approve`,
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
 
     expect(approveResponse.statusCode).toBe(200);
     expect(approveResponse.json().task).toMatchObject({
       status: "completed",
-      reviewedByProfileId: "profile_manager"
+      reviewedByProfileId: managerId
     });
   });
 
   it("deletes routines and their generated task occurrences", async () => {
-    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_tecnica");
 
     const routineResponse = await app.inject({
       method: "POST",
       url: "/routines",
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: {
         title: "Organizar orquestrador",
         area_id: "area_tecnica",
         task_templates: [
           {
             title: "Atualizar demandas do dia",
-            assignee_profile_id: "profile_employee"
+            assignee_profile_id: employeeId
           }
         ]
       }
@@ -1334,14 +1432,14 @@ describe("routine routes", () => {
     await app.inject({
       method: "POST",
       url: `/routines/${routineId}/occurrences/generate`,
-      headers: managerHeaders,
+      headers: localManagerHeaders,
       payload: { due_date: "2026-07-08" }
     });
 
     const deleteResponse = await app.inject({
       method: "DELETE",
       url: `/routines/${routineId}`,
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
 
     expect(deleteResponse.statusCode).toBe(200);
@@ -1350,12 +1448,12 @@ describe("routine routes", () => {
     const routinesResponse = await app.inject({
       method: "GET",
       url: "/routines",
-      headers: managerHeaders
+      headers: localManagerHeaders
     });
     const todayResponse = await app.inject({
       method: "GET",
       url: "/today?date=2026-07-08",
-      headers: employeeHeaders
+      headers: localEmployeeHeaders
     });
 
     expect(routinesResponse.json().routines).toEqual([]);

@@ -122,6 +122,13 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     const body = createRoutineSchema.parse(request.body);
     if (!canManageRoutineOrTaskArea(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
+    await assertRoutineAssigneesEligible(
+      options.companyRepository,
+      context.workspaceId,
+      body.assignee_profile_ids,
+      body.task_templates.map((template) => template.assignee_profile_id),
+      body.area_id ?? null
+    );
     let routine;
     try {
       routine = await service.createRoutine(context.workspaceId, context.profileId, {
@@ -163,6 +170,13 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       const existingRoutine = await service.getRoutine(context.workspaceId, params.id);
       if (!canManageRoutineOrTaskArea(membership, existingRoutine.areaId)) throw scopeForbidden();
       if (!canManageRoutineOrTaskArea(membership, body.area_id ?? null)) throw scopeForbidden();
+      await assertRoutineAssigneesEligible(
+        options.companyRepository,
+        context.workspaceId,
+        body.assignee_profile_ids,
+        body.task_templates.map((template) => template.assignee_profile_id),
+        body.area_id ?? null
+      );
       routine = await service.updateRoutine(context.workspaceId, params.id, {
         title: body.title,
         areaId: body.area_id,
@@ -441,6 +455,23 @@ async function assertTaskAssigneeEligible(
   }
   if (person.areaId === areaId || (areaId !== null && person.areaAccessIds.includes(areaId))) return;
   throw scopeForbidden();
+}
+
+async function assertRoutineAssigneesEligible(
+  companyRepository: CompanyRepository,
+  workspaceId: string,
+  assigneeProfileIds: string[] | undefined,
+  taskTemplateAssigneeProfileIds: Array<string | null | undefined>,
+  areaId: string | null
+) {
+  const assignees = new Set([
+    ...(assigneeProfileIds ?? []),
+    ...taskTemplateAssigneeProfileIds.filter((profileId): profileId is string => Boolean(profileId))
+  ]);
+
+  for (const assigneeProfileId of assignees) {
+    await assertTaskAssigneeEligible(companyRepository, workspaceId, assigneeProfileId, areaId);
+  }
 }
 
 function assertCanExecuteTask(
