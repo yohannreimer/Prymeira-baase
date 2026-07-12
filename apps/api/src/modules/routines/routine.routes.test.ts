@@ -67,6 +67,7 @@ async function buildOperationalAccessApp() {
     { id: "profile_owner", name: "Owner", email: "owner@example.com", role: "owner" as const, areaId: null, areaAccessIds: [], accessScope: "workspace" as const },
     { id: "profile_peterson", name: "Peterson", email: "peterson@example.com", role: "employee" as const, areaId: "area_tecnica", areaAccessIds: [], accessScope: "assigned_only" as const },
     { id: "profile_andre", name: "Andre", email: "andre@example.com", role: "employee" as const, areaId: "area_tecnica", areaAccessIds: [], accessScope: "assigned_only" as const },
+    { id: "profile_apoio_tecnico", name: "Apoio Tecnico", email: "apoio.tecnico@example.com", role: "employee" as const, areaId: "area_tecnica", areaAccessIds: ["area_tecnica"], accessScope: "area" as const },
     { id: "profile_financeiro", name: "Financeiro", email: "financeiro@example.com", role: "employee" as const, areaId: "area_financeiro", areaAccessIds: [], accessScope: "assigned_only" as const },
     { id: "profile_gestor_tecnico", name: "Gestor Tecnico", email: "gestor.tecnico@example.com", role: "manager" as const, areaId: "area_tecnica", areaAccessIds: ["area_tecnica"], accessScope: "area" as const },
     { id: "profile_gestor_financeiro", name: "Gestor Financeiro", email: "gestor.financeiro@example.com", role: "manager" as const, areaId: "area_financeiro", areaAccessIds: ["area_financeiro"], accessScope: "area" as const }
@@ -170,12 +171,18 @@ describe("routine routes", () => {
       url: "/today?date=2026-07-08",
       headers: ownerHeaders
     });
+    const technicalSupportToday = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: headersFor("profile_apoio_tecnico")
+    });
 
     expect(financeToday.json().tasks).toEqual([]);
     expect(petersonToday.json().tasks).toHaveLength(1);
     expect(petersonToday.json().tasks[0]).toMatchObject({ assigneeProfileId: petersonId });
     expect(andreToday.json().tasks).toHaveLength(1);
     expect(andreToday.json().tasks[0]).toMatchObject({ assigneeProfileId: andreId });
+    expect(technicalSupportToday.json().tasks).toHaveLength(2);
     expect(ownerToday.json().tasks).toHaveLength(2);
     expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
       .toEqual([petersonId, andreId]);
@@ -666,7 +673,9 @@ describe("routine routes", () => {
     });
 
     expect(checklistResponse.statusCode).toBe(403);
+    expect(checklistResponse.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
     expect(submitResponse.statusCode).toBe(403);
+    expect(submitResponse.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
   });
 
   it("keeps manager, shared, and manual task access inside the task area policy", async () => {
@@ -716,7 +725,7 @@ describe("routine routes", () => {
     ]);
     expect(financeManagerToday.json().tasks).toEqual([]);
     expect(individualManagerChecklist.statusCode).toBe(403);
-    expect(individualManagerChecklist.json().error.code).toBe("TASK_NOT_ASSIGNED_TO_PROFILE");
+    expect(individualManagerChecklist.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
 
     const sharedRoutine = await app.inject({
       method: "POST",
@@ -1090,16 +1099,18 @@ describe("routine routes", () => {
     });
 
     expect(todayResponse.statusCode).toBe(200);
-    expect(todayResponse.json().tasks).toHaveLength(1);
-    expect(todayResponse.json().tasks[0]).toMatchObject({
-      title: "Organizar orquestrador",
-      dueHint: "Até 09:00",
-      assigneeProfileId: employeeId,
-      checklistItems: [
-        { title: "Atualizar demandas de ontem", done: false },
-        { title: "Planejar demandas de hoje", done: false }
-      ]
-    });
+    expect(todayResponse.json().tasks).toHaveLength(2);
+    expect(todayResponse.json().tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "Organizar orquestrador",
+        dueHint: "Até 09:00",
+        assigneeProfileId: employeeId,
+        checklistItems: [
+          { title: "Atualizar demandas de ontem", done: false },
+          { title: "Planejar demandas de hoje", done: false }
+        ]
+      })
+    ]));
   });
 
   it("generates active routine occurrences when the employee opens today", async () => {
@@ -1213,7 +1224,14 @@ describe("routine routes", () => {
       dueHint: "Até 09:00",
       checklistItems: [{ title: "Conferir dia anterior", done: false }]
     });
-    expect(newResponsibleToday.json().tasks).toEqual([]);
+    expect(newResponsibleToday.json().tasks).toEqual([
+      expect.objectContaining({
+        title: "Atualizar orquestrador",
+        assigneeProfileId: managerId,
+        dueHint: "Até 09:00",
+        checklistItems: [{ title: "Conferir dia anterior", done: false }]
+      })
+    ]);
 
     const newResponsibleFuture = await app.inject({
       method: "GET",

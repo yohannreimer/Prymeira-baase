@@ -310,13 +310,9 @@ export function createRoutineService(repository: RoutineRepository) {
       return createOrReuseRoutineOccurrences(repository, routine, dueDate);
     },
 
-    async listTodayTasks(workspaceId: string, dueDateOrProfileId: string, legacyDueDate?: string) {
-      const dueDate = legacyDueDate ?? dueDateOrProfileId;
+    async listTodayTasks(workspaceId: string, dueDate: string) {
       await ensureTodayOccurrences(repository, workspaceId, dueDate);
-      const tasks = await repository.listTaskOccurrences(workspaceId, { dueDate });
-      return legacyDueDate
-        ? tasks.filter((task) => task.assigneeProfileId === dueDateOrProfileId || task.assigneeProfileId === null)
-        : tasks;
+      return repository.listTaskOccurrences(workspaceId, { dueDate });
     },
 
     async getTask(workspaceId: string, taskId: string): Promise<TaskOccurrence> {

@@ -479,8 +479,5 @@ function assertCanExecuteTask(
   task: TaskOccurrence
 ) {
   if (canExecuteTask(membership, task)) return;
-  if (task.assigneeProfileId && membership.role === "manager" && canManageRoutineOrTaskArea(membership, task.areaId ?? null)) {
-    throw new ApiError(403, "TASK_NOT_ASSIGNED_TO_PROFILE", "Tarefa não atribuída a este perfil.");
-  }
   throw scopeForbidden();
 }

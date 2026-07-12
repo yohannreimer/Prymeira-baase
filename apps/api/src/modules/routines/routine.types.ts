@@ -132,7 +132,7 @@ export type RoutineRepository = {
   createRoutine(input: Omit<CompanyRoutine, "id" | "createdAt" | "updatedAt">): Promise<CompanyRoutine>;
   updateRoutine(routine: CompanyRoutine): Promise<CompanyRoutine>;
   deleteRoutine(workspaceId: string, routineId: string): Promise<void>;
-  listTaskOccurrences(workspaceId: string, filters?: { dueDate?: string; profileId?: string }): Promise<TaskOccurrence[]>;
+  listTaskOccurrences(workspaceId: string, filters?: { dueDate?: string }): Promise<TaskOccurrence[]>;
   findTaskOccurrence(workspaceId: string, taskId: string): Promise<TaskOccurrence | null>;
   findTaskOccurrenceForTemplate(
     workspaceId: string,

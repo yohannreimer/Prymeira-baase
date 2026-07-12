@@ -101,7 +101,7 @@ describe("routine service", () => {
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-07");
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-07");
 
-    const tasks = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-07");
+    const tasks = await service.listTodayTasks("workspace_a", "2026-07-07");
     expect(tasks).toHaveLength(2);
     expect(tasks.map((task) => task.status)).toEqual(["pending", "pending"]);
   });
@@ -128,10 +128,12 @@ describe("routine service", () => {
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
     const saturdayTasks = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-11");
 
-    const petersonTasks = await service.listTodayTasks("workspace_a", "person_peterson", "2026-07-08");
-    const andreTasks = await service.listTodayTasks("workspace_a", "person_andre", "2026-07-08");
+    const tasks = await service.listTodayTasks("workspace_a", "2026-07-08");
+    const petersonTasks = tasks.filter((task) => task.assigneeProfileId === "person_peterson");
+    const andreTasks = tasks.filter((task) => task.assigneeProfileId === "person_andre");
 
     expect(saturdayTasks).toHaveLength(0);
+    expect(tasks).toHaveLength(2);
     expect(petersonTasks).toHaveLength(1);
     expect(andreTasks).toHaveLength(1);
     expect(petersonTasks[0]).toMatchObject({
@@ -151,7 +153,7 @@ describe("routine service", () => {
     });
   });
 
-  it("keeps shared tasks visible to legacy profile-filtered today callers", async () => {
+  it("returns shared tasks without profile filtering", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
     const routine = await service.createRoutine("workspace_a", "profile_owner", {
       title: "Conferir equipe",
@@ -161,7 +163,7 @@ describe("routine service", () => {
     });
 
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
-    const tasks = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-08");
+    const tasks = await service.listTodayTasks("workspace_a", "2026-07-08");
 
     expect(tasks).toEqual([
       expect.objectContaining({ assigneeProfileId: null, title: "Conferir equipe" })
@@ -183,7 +185,7 @@ describe("routine service", () => {
 
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-07");
 
-    const [task] = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-07");
+    const [task] = await service.listTodayTasks("workspace_a", "2026-07-07");
     expect(task).toMatchObject({
       title: "Conferir agenda",
       dueHint: "Hoje 17:00",
@@ -205,7 +207,7 @@ describe("routine service", () => {
       ]
     });
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-07");
-    const [task] = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-07");
+    const [task] = await service.listTodayTasks("workspace_a", "2026-07-07");
     if (!task) throw new Error("Expected generated task");
 
     const submitted = await service.submitTask("workspace_a", task.id, "profile_employee", {
@@ -236,7 +238,7 @@ describe("routine service", () => {
       ]
     });
     await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-07");
-    const [task] = await service.listTodayTasks("workspace_a", "profile_employee", "2026-07-07");
+    const [task] = await service.listTodayTasks("workspace_a", "2026-07-07");
     if (!task) throw new Error("Expected generated task");
 
     const submitted = await service.submitTask("workspace_a", task.id, "profile_employee", {

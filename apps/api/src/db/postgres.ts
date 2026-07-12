@@ -932,7 +932,6 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       const tasks = await store.list<TaskOccurrence>("task_occurrence", workspaceId);
       return tasks.filter((task) => {
         if (filters.dueDate && task.dueDate !== filters.dueDate) return false;
-        if (filters.profileId && task.assigneeProfileId && task.assigneeProfileId !== filters.profileId) return false;
         return true;
       });
     },
