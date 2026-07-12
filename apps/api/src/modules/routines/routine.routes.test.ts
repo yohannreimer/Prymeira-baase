@@ -198,6 +198,103 @@ describe("routine routes", () => {
     expect(technicalManagerGeneration.json().tasks).toHaveLength(1);
   });
 
+  it("scopes routine lifecycle mutations to the existing and requested areas", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const technicalRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina tecnica protegida",
+        area_id: "area_tecnica",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const technicalRoutineId = technicalRoutine.json().routine.id;
+    const financeHeaders = headersFor("profile_gestor_financeiro");
+
+    const financePatch = await app.inject({
+      method: "PATCH",
+      url: `/routines/${technicalRoutineId}`,
+      headers: financeHeaders,
+      payload: {
+        title: "Rotina tecnica alterada",
+        area_id: "area_tecnica",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const financeArchive = await app.inject({
+      method: "POST",
+      url: `/routines/${technicalRoutineId}/archive`,
+      headers: financeHeaders
+    });
+    const financeDelete = await app.inject({
+      method: "DELETE",
+      url: `/routines/${technicalRoutineId}`,
+      headers: financeHeaders
+    });
+
+    for (const response of [financePatch, financeArchive, financeDelete]) {
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+      expect(response.json()).not.toHaveProperty("routine");
+      expect(response.json()).not.toHaveProperty("tasks");
+    }
+
+    const technicalManagerMove = await app.inject({
+      method: "PATCH",
+      url: `/routines/${technicalRoutineId}`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: {
+        title: "Mover rotina tecnica",
+        area_id: "area_financeiro",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const technicalManagerPatch = await app.inject({
+      method: "PATCH",
+      url: `/routines/${technicalRoutineId}`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: {
+        title: "Atualizar rotina tecnica",
+        area_id: "area_tecnica",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const technicalManagerArchive = await app.inject({
+      method: "POST",
+      url: `/routines/${technicalRoutineId}/archive`,
+      headers: headersFor("profile_gestor_tecnico")
+    });
+
+    expect(technicalManagerMove.statusCode).toBe(403);
+    expect(technicalManagerMove.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+    expect(technicalManagerPatch.statusCode).toBe(200);
+    expect(technicalManagerPatch.json().routine.areaId).toBe("area_tecnica");
+    expect(technicalManagerArchive.statusCode).toBe(200);
+    expect(technicalManagerArchive.json().routine.status).toBe("archived");
+
+    const ownerRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina do owner",
+        area_id: "area_tecnica",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const ownerDelete = await app.inject({
+      method: "DELETE",
+      url: `/routines/${ownerRoutine.json().routine.id}`,
+      headers: ownerHeaders
+    });
+
+    expect(ownerDelete.statusCode).toBe(200);
+    expect(ownerDelete.json()).toEqual({ ok: true });
+  });
+
   it("forbids a Financeiro employee from changing or submitting a technical task by ID", async () => {
     const { app, headersFor, personIdFor } = await buildOperationalAccessApp();
     const routineResponse = await app.inject({

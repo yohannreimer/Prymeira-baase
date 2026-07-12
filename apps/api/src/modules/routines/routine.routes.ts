@@ -158,6 +158,10 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const body = createRoutineSchema.parse(request.body);
     let routine;
     try {
+      const membership = requireOperationalMembership(request);
+      const existingRoutine = await service.getRoutine(context.workspaceId, params.id);
+      if (!canManageAreaResource(membership, existingRoutine.areaId)) throw scopeForbidden();
+      if (!canManageAreaResource(membership, body.area_id ?? null)) throw scopeForbidden();
       routine = await service.updateRoutine(context.workspaceId, params.id, {
         title: body.title,
         areaId: body.area_id,
@@ -190,8 +194,13 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const routine = await service.archiveRoutine(context.workspaceId, params.id);
-    return { routine };
+    try {
+      const routine = await service.getRoutine(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
+      return { routine: await service.archiveRoutine(context.workspaceId, params.id) };
+    } catch (error) {
+      throw routineMutationError(error);
+    }
   });
 
   app.delete("/routines/:id", async (request) => {
@@ -201,6 +210,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
 
     try {
+      const routine = await service.getRoutine(context.workspaceId, params.id);
+      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
       await service.deleteRoutine(context.workspaceId, params.id);
       return { ok: true };
     } catch (error) {
