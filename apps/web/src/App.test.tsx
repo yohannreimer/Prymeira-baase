@@ -196,6 +196,47 @@ describe("Baase React app shell", () => {
     expect(screen.getByLabelText("Financeiro")).toBeInTheDocument();
   });
 
+  it("targets an announcement to the selected area and shows its real author and destination", async () => {
+    const fetchMock = mockLoadedWorkspace({
+      "/api/today?date=2026-07-07": {
+        tasks: [],
+        announcements: [{
+          id: "announcement_technical",
+          title: "Atualização técnica",
+          body: "Novo procedimento para a equipe técnica.",
+          type: "simple",
+          status: "published",
+          requirement: "read_confirmation",
+          createdByProfileId: "profile_yohann",
+          audience: { type: "area", areaId: "area_technical" },
+          receipt: { status: "pending" }
+        }]
+      },
+      "/api/areas": { areas: [{ id: "area_technical", name: "Técnica" }] },
+      "/api/roles": { role_templates: [{ id: "role_technical", areaId: "area_technical", name: "Especialista técnico" }] },
+      "/api/people": { people: [{ id: "profile_yohann", name: "Yohann Reimer", role: "owner", areaId: "area_technical", roleTemplateId: "role_technical" }] }
+    });
+
+    render(<App />);
+
+    await screen.findByText("Yohann Reimer");
+    fireEvent.click(screen.getByRole("link", { name: /Comunicados/ }));
+    expect(await screen.findByText("Área: Técnica")).toBeInTheDocument();
+    expect(screen.getByText("Yohann Reimer · para", { exact: false })).toBeInTheDocument();
+    expect(screen.getAllByText("YR").length).toBeGreaterThan(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Criar comunicados" }));
+    fireEvent.change(screen.getByLabelText("Público"), { target: { value: "area" } });
+    fireEvent.change(screen.getByLabelText("Área"), { target: { value: "area_technical" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar rascunho" }));
+
+    await waitFor(() => {
+      const request = fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/announcements" && init?.method === "POST");
+      expect(request).toBeDefined();
+      expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ audience_type: "area", area_id: "area_technical" });
+    });
+  });
+
   it("groups routine occurrences in Hoje and replaces orphaned area ids with a clear label", async () => {
     mockLoadedWorkspace({
       "/api/today?date=2026-07-07": {

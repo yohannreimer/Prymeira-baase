@@ -278,7 +278,9 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       announcementService
         ? announcementService.listAnnouncementsForProfile(context.workspaceId, {
           profileId: context.profileId,
-          role: context.role
+          role: context.role,
+          areaId: membership.person.areaId,
+          roleTemplateId: membership.person.roleTemplateId
         })
         : Promise.resolve([])
     ]);

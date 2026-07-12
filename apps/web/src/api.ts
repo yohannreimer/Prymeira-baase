@@ -198,6 +198,7 @@ export type ApiTrainingAssignment = {
 
 export type ApiAnnouncement = {
   id: string;
+  createdByProfileId?: string;
   title: string;
   body?: string;
   type: "simple" | "process_change" | "mandatory_training";

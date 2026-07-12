@@ -53,14 +53,11 @@ export async function registerAnnouncementRoutes(app: FastifyInstance, repositor
   app.get("/announcements", async (request) => {
     const context = readRequestContext(request);
     const membership = requireOperationalMembership(request);
-    if (canManageKnowledge(context.role)) {
-      const announcements = await service.listAnnouncements(context.workspaceId);
-      return { announcements: announcements.filter((announcement) => canReadAudience(membership, announcement.audience)) };
-    }
-
     const announcements = await service.listAnnouncementsForProfile(context.workspaceId, {
       profileId: context.profileId,
-      role: context.role
+      role: context.role,
+      areaId: membership.person.areaId,
+      roleTemplateId: membership.person.roleTemplateId
     });
     return { announcements: announcements.filter((announcement) => canReadAudience(membership, announcement.audience)) };
   });

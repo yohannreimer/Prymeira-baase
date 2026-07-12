@@ -2841,6 +2841,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     body: string;
     type: ApiAnnouncement["type"];
     requirement: ApiAnnouncement["requirement"];
+    audience: NonNullable<ApiAnnouncement["audience"]>;
     publish: boolean;
   }) {
     void runAction(async () => {
@@ -2849,7 +2850,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         body: input.body,
         type: input.type,
         requirement: input.requirement,
-        audienceType: "all",
+        audienceType: input.audience.type,
+        areaId: input.audience.type === "area" ? input.audience.areaId : null,
+        roleTemplateId: input.audience.type === "role" ? input.audience.roleTemplateId : null,
+        profileId: input.audience.type === "person" ? input.audience.profileId : null,
         quizQuestions: input.requirement === "quiz_confirmation"
           ? [{
             prompt: "Qual é o comportamento esperado?",
@@ -3406,6 +3410,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             <AnnouncementsPage
               announcements={visibleAnnouncements}
               isLiveWorkspace={liveWorkspaceMode}
+              areas={companyAreas}
+              roleTemplates={companyRoleTemplates}
+              people={companyPeople}
+              currentProfile={{ id: apiBundle?.session.profile.id ?? null, name: identity.name }}
               createAnnouncement={() => setCrudModal({ kind: "announcement", mode: "create" })}
               confirmAnnouncement={handleConfirmAnnouncement}
               deleteAnnouncement={handleDeleteAnnouncement}
@@ -4904,6 +4912,10 @@ function TrainingPage({
 function AnnouncementsPage({
   announcements,
   isLiveWorkspace,
+  areas,
+  roleTemplates,
+  people,
+  currentProfile,
   createAnnouncement,
   confirmAnnouncement,
   deleteAnnouncement,
@@ -4913,6 +4925,10 @@ function AnnouncementsPage({
 }: {
   announcements: ApiAnnouncement[];
   isLiveWorkspace: boolean;
+  areas: ApiArea[];
+  roleTemplates: ApiRoleTemplate[];
+  people: ApiPerson[];
+  currentProfile: { id: string | null; name: string };
   createAnnouncement: () => void;
   confirmAnnouncement: (announcement: ApiAnnouncement) => void;
   deleteAnnouncement: (announcement: ApiAnnouncement) => void;
@@ -4939,6 +4955,7 @@ function AnnouncementsPage({
   const selectedAnnouncement = rows[safeIndex] ?? null;
   const selectedApiAnnouncement = selectedAnnouncement && announcements.some((announcement) => announcement.id === selectedAnnouncement.id) ? selectedAnnouncement : null;
   const isConfirmed = selectedAnnouncement?.receipt?.status === "confirmed" || selectedAnnouncement?.receipt?.status === "quiz_completed";
+  const selectedAuthor = selectedAnnouncement ? announcementAuthor(selectedAnnouncement, people, currentProfile) : null;
 
   return (
     <div className="screen split-page">
@@ -4955,7 +4972,7 @@ function AnnouncementsPage({
               <div>
                 <div className="meta-line"><Pill tone="info">{announcementTypeLabel(selectedAnnouncement.type)}</Pill><Pill tone="warn">{announcementRequirementLabel(selectedAnnouncement.requirement)}</Pill></div>
                 <h1 className="serif">{selectedAnnouncement.title}</h1>
-                <div className="author-line"><span className="avatar">MA</span><span>Baase · para <b>{audienceLabel(selectedAnnouncement)}</b></span></div>
+                <div className="author-line"><span className="avatar">{selectedAuthor?.initials}</span><span>{selectedAuthor?.name} · para <b>{audienceLabel(selectedAnnouncement, areas, roleTemplates, people)}</b></span></div>
               </div>
               {selectedApiAnnouncement ? (
                 <div className="button-row">
@@ -4984,11 +5001,17 @@ function AnnouncementsPage({
   );
 }
 
-function audienceLabel(announcement: ApiAnnouncement) {
-  if (!announcement.audience || announcement.audience.type === "all") return "toda a empresa";
-  if (announcement.audience.type === "area") return "uma área";
-  if (announcement.audience.type === "role") return "um cargo";
-  return "uma pessoa";
+function announcementAuthor(announcement: ApiAnnouncement, people: ApiPerson[], currentProfile: { id: string | null; name: string }) {
+  const person = people.find((candidate) => candidate.id === announcement.createdByProfileId);
+  const name = person?.name ?? (announcement.createdByProfileId && announcement.createdByProfileId === currentProfile.id ? currentProfile.name : "Autor removido");
+  return { name, initials: initialsFromName(name) };
+}
+
+function audienceLabel(announcement: ApiAnnouncement, areas: ApiArea[], roleTemplates: ApiRoleTemplate[], people: ApiPerson[]) {
+  if (!announcement.audience || announcement.audience.type === "all") return "Empresa inteira";
+  if (announcement.audience.type === "area") return `Área: ${areaLabel(announcement.audience.areaId, areaNameMap(areas))}`;
+  if (announcement.audience.type === "role") return `Cargo: ${roleLabel(announcement.audience.roleTemplateId, roleTemplates)}`;
+  return `Pessoa: ${personLabel(announcement.audience.profileId, people)}`;
 }
 
 function announcementTypeLabel(type: ApiAnnouncement["type"]) {
@@ -5591,7 +5614,7 @@ function CrudModalView({
   }) => void;
   onSaveRoutine: (input: RoutineFormInput) => void;
   onSaveTraining: (input: TrainingFormInput) => void;
-  onSaveAnnouncement: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; publish: boolean }) => void;
+  onSaveAnnouncement: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; audience: NonNullable<ApiAnnouncement["audience"]>; publish: boolean }) => void;
   onCreateInvite: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; areaAccessIds: string[]; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
@@ -5625,7 +5648,7 @@ function CrudModalView({
           <TrainingForm modal={modal} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveTraining} areas={areas} roleTemplates={roleTemplates} people={people} processes={processes} />
         ) : null}
         {modal.kind === "announcement" ? (
-          <AnnouncementForm actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveAnnouncement} />
+          <AnnouncementForm actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveAnnouncement} areas={areas} roleTemplates={roleTemplates} people={people} />
         ) : null}
         {modal.kind === "invite" ? (
           <InviteForm areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onCreateInvite} />
@@ -5931,16 +5954,33 @@ function PersonForm({
 function AnnouncementForm({
   actionBusy,
   onClose,
-  onSubmit
+  onSubmit,
+  areas,
+  roleTemplates,
+  people
 }: {
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; publish: boolean }) => void;
+  onSubmit: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; audience: NonNullable<ApiAnnouncement["audience"]>; publish: boolean }) => void;
+  areas: ApiArea[];
+  roleTemplates: ApiRoleTemplate[];
+  people: ApiPerson[];
 }) {
   const [title, setTitle] = useState("Novo comunicado");
   const [body, setBody] = useState("Descreva a mudança operacional para a equipe.");
   const [type, setType] = useState<ApiAnnouncement["type"]>("simple");
   const [requirement, setRequirement] = useState<ApiAnnouncement["requirement"]>("read_confirmation");
+  const [audienceType, setAudienceType] = useState<NonNullable<ApiAnnouncement["audience"]>["type"]>("all");
+  const [areaId, setAreaId] = useState(areas[0]?.id ?? "");
+  const [roleTemplateId, setRoleTemplateId] = useState(roleTemplates[0]?.id ?? "");
+  const [profileId, setProfileId] = useState(people[0]?.id ?? "");
+  const audience = audienceType === "area" && areaId
+    ? { type: "area" as const, areaId }
+    : audienceType === "role" && roleTemplateId
+      ? { type: "role" as const, roleTemplateId }
+      : audienceType === "person" && profileId
+        ? { type: "person" as const, profileId }
+        : audienceType === "all" ? { type: "all" as const } : null;
 
   return (
     <form className="modal-form" onSubmit={(event) => event.preventDefault()}>
@@ -5951,10 +5991,19 @@ function AnnouncementForm({
         <label>Tipo<select value={type} onChange={(event) => setType(event.target.value as ApiAnnouncement["type"])}><option value="simple">Aviso</option><option value="process_change">Mudança de processo</option><option value="mandatory_training">Treinamento obrigatório</option></select></label>
         <label>Confirmação<select value={requirement} onChange={(event) => setRequirement(event.target.value as ApiAnnouncement["requirement"])}><option value="none">Informativo</option><option value="read_confirmation">Confirmar leitura</option><option value="quiz_confirmation">Confirmação + quiz</option></select></label>
       </div>
+      <section className="responsible-picker training-audience-picker" aria-label="Público do comunicado">
+        <div className="field-row"><strong>Público</strong><span className="muted-inline">Escolha quem deve receber este comunicado</span></div>
+        <div className="training-audience-grid">
+          <label>Público<select value={audienceType} onChange={(event) => setAudienceType(event.target.value as NonNullable<ApiAnnouncement["audience"]>["type"])}><option value="all">Empresa inteira</option><option value="area">Área</option><option value="role">Cargo</option><option value="person">Pessoa</option></select></label>
+          {audienceType === "area" ? <label>Área<select value={areaId} onChange={(event) => setAreaId(event.target.value)}><option value="">Selecionar área</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label> : null}
+          {audienceType === "role" ? <label>Cargo<select value={roleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Selecionar cargo</option>{roleTemplates.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label> : null}
+          {audienceType === "person" ? <label>Pessoa<select value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Selecionar pessoa</option>{people.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label> : null}
+        </div>
+      </section>
       <footer>
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
-        <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, body, type, requirement, publish: false })}>Salvar rascunho</button>
-        <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, body, type, requirement, publish: true })}>Salvar e publicar</button>
+        <button className="secondary-btn" type="button" disabled={actionBusy || !audience} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, publish: false })}>Salvar rascunho</button>
+        <button className="accent-solid" type="button" disabled={actionBusy || !audience} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, publish: true })}>Salvar e publicar</button>
       </footer>
     </form>
   );
