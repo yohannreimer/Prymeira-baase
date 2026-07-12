@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource } from "../company/access-policy";
+import type { OperationalMembership } from "../company/company.types";
 import { createProcessService } from "../processes/process.service";
 import type { ProcessRepository } from "../processes/process.types";
 import { createRoutineService } from "../routines/routine.service";
@@ -58,6 +60,9 @@ export async function registerTemplateRoutes(app: FastifyInstance, repositories:
     }
 
     if (template.kind === "routine") {
+      if (!canUseRoutineTemplate(requireOperationalMembership(request), template.content.areaId ?? null)) {
+        throw new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
+      }
       const routine = await routineService.createRoutine(context.workspaceId, context.profileId, template.content);
       return reply.status(201).send({
         kind: template.kind,
@@ -75,3 +80,6 @@ export async function registerTemplateRoutes(app: FastifyInstance, repositories:
   });
 }
 
+function canUseRoutineTemplate(membership: OperationalMembership, areaId: string | null) {
+  return membership.role === "owner" || (areaId !== null && canManageAreaResource(membership, areaId));
+}
