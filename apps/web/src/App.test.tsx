@@ -142,6 +142,7 @@ describe("Baase React app shell", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("renders the owner internal dashboard by default", () => {
@@ -150,6 +151,49 @@ describe("Baase React app shell", () => {
     expect(screen.getByText("Prymeira Baase")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Bom dia, Marina." })).toBeInTheDocument();
     expect(screen.getByText("Precisa de você agora")).toBeInTheDocument();
+  });
+
+  it("uses email-only invitations and a conditional area picker in account mode", async () => {
+    vi.stubEnv("VITE_BAASE_AUTH_MODE", "account");
+    mockLoadedWorkspace({
+      "/api/areas": {
+        areas: [
+          { id: "area_commercial", name: "Comercial", description: "Vendas." },
+          { id: "area_finance", name: "Financeiro", description: "Controle." }
+        ]
+      },
+      "/api/roles": { role_templates: [{ id: "role_sales", areaId: "area_commercial", name: "Executivo comercial" }] },
+      "/api/invites": {
+        invites: [{
+          id: "invite_email_1",
+          name: "Ana Lima",
+          email: "ana@empresa.com",
+          role: "employee",
+          areaId: "area_commercial",
+          areaAccessIds: ["area_commercial"],
+          accessScope: "area",
+          code: "BAASE-0001",
+          status: "pending"
+        }]
+      }
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: /Equipe/ }));
+    expect(await screen.findByText(/convide por e-mail/)).toBeInTheDocument();
+    expect(screen.queryByText("Link de convite do workspace")).not.toBeInTheDocument();
+    expect(screen.queryByText("Aceitar convite por código")).not.toBeInTheDocument();
+    expect(await screen.findByText("Convites pendentes")).toBeInTheDocument();
+    expect(screen.getByText(/ana@empresa\.com/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Convidar/ }));
+    expect(await screen.findByLabelText("Alcance de acesso")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Áreas específicas" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Alcance de acesso"), { target: { value: "specific_areas" } });
+    expect(screen.getByRole("group", { name: "Áreas específicas" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Financeiro")).toBeInTheDocument();
   });
 
   it("groups routine occurrences in Hoje and replaces orphaned area ids with a clear label", async () => {
@@ -1573,7 +1617,9 @@ describe("Baase React app shell", () => {
         "/api/today?date=2026-07-07": { tasks: [] },
         "/api/processes": { processes: [] },
         "/api/routines": { routines: [] },
-        "/api/trainings": { trainings: [] }
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [{ id: "area_ops", name: "Operações" }] },
+        "/api/roles": { role_templates: [{ id: "role_ops", areaId: "area_ops", name: "Analista operacional" }] }
       };
 
       return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
@@ -2056,7 +2102,9 @@ describe("Baase React app shell", () => {
         "/api/today?date=2026-07-07": { tasks: [] },
         "/api/processes": { processes: [] },
         "/api/routines": { routines: [] },
-        "/api/trainings": { trainings: [] }
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [{ id: "area_ops", name: "Operações" }] },
+        "/api/roles": { role_templates: [{ id: "role_ops", areaId: "area_ops", name: "Analista operacional" }] }
       };
 
       return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
@@ -2067,11 +2115,11 @@ describe("Baase React app shell", () => {
     await screen.findByText("Marina Alves");
     fireEvent.click(screen.getByRole("link", { name: /Equipe/ }));
     fireEvent.click(screen.getByRole("button", { name: /Convidar/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Gerar convite" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Enviar convite" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/invites", expect.objectContaining({ method: "POST" }));
-      expect(screen.getAllByText(/BAASE-0009/).length).toBeGreaterThan(0);
+      expect(screen.getByText("Convites pendentes")).toBeInTheDocument();
     });
   });
 
@@ -2181,12 +2229,12 @@ describe("Baase React app shell", () => {
     fireEvent.change(await screen.findByLabelText("Nome"), { target: { value: "Bruno Costa" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "bruno@estudionorte.com" } });
     fireEvent.change(screen.getByLabelText("Cargo"), { target: { value: "Designer" } });
-    fireEvent.change(screen.getByLabelText("Permissão"), { target: { value: "assigned_only" } });
-    fireEvent.click(screen.getByRole("button", { name: "Gerar convite" }));
+    fireEvent.change(screen.getByLabelText("Alcance de acesso"), { target: { value: "assigned_only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar convite" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/invites", expect.objectContaining({ method: "POST" }));
-      expect(screen.getAllByText(/BAASE-0009/).length).toBeGreaterThan(0);
+      expect(screen.getByText("Convites pendentes")).toBeInTheDocument();
     });
   });
 
@@ -2433,11 +2481,11 @@ describe("Baase React app shell", () => {
 
     const inviteSection = screen.getByText("Convites pendentes").closest("section");
     expect(inviteSection).not.toBeNull();
-    fireEvent.click(within(inviteSection as HTMLElement).getByRole("button", { name: /Excluir/ }));
+    fireEvent.click(within(inviteSection as HTMLElement).getByRole("button", { name: /Cancelar convite de André/ }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/invites/invite_tecnico", expect.objectContaining({ method: "DELETE" }));
-      expect(screen.queryByText("BAASE-0007")).not.toBeInTheDocument();
+      expect(screen.queryByText("André")).not.toBeInTheDocument();
     });
   });
 
@@ -2507,22 +2555,6 @@ describe("Baase React app shell", () => {
       expect(fetchMock).toHaveBeenCalledWith("/api/announcements/announcement_mudanca", expect.objectContaining({ method: "DELETE" }));
       expect(screen.queryByRole("heading", { name: "Mudança no processo comercial" })).not.toBeInTheDocument();
     });
-  });
-
-  it("copies the workspace invite link", () => {
-    const writeText = vi.fn(async () => undefined);
-    vi.stubGlobal("navigator", {
-      ...globalThis.navigator,
-      clipboard: { writeText }
-    });
-
-    render(<App apiEnabled={false} />);
-
-    fireEvent.click(screen.getByRole("link", { name: /Equipe/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Copiar link" }));
-
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("ENORTE-4192"));
-    expect(screen.getByText("Link de convite copiado.")).toBeInTheDocument();
   });
 
   it("selects cards in the side list instead of always showing the first process", () => {
@@ -2809,7 +2841,7 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(screen.getByRole("link", { name: /Equipe/ }));
     expect(screen.getByText("Luiza Melo")).toBeInTheDocument();
-    expect(screen.getByText(/BAASE-0001/)).toBeInTheDocument();
+    expect(screen.getByText("Aguardando entrada")).toBeInTheDocument();
   });
 
   it("renders onboarding-created company hierarchy and process area labels as user-facing names", async () => {
@@ -3015,7 +3047,7 @@ describe("Baase React app shell", () => {
     expect(screen.getByRole("heading", { name: "Editar pessoa" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Nome"), { target: { value: "Peterson" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "peterson@empresa.com" } });
-    fireEvent.change(screen.getByLabelText("Área"), { target: { value: "area_criacao" } });
+    fireEvent.change(screen.getByLabelText("Área principal"), { target: { value: "area_criacao" } });
     fireEvent.change(screen.getByLabelText("Cargo"), { target: { value: "role_designer" } });
     fireEvent.click(screen.getByRole("button", { name: "Salvar pessoa" }));
 
@@ -3097,51 +3129,6 @@ describe("Baase React app shell", () => {
       expect(screen.getAllByText("Bia Ramos").length).toBeGreaterThan(0);
       expect(screen.getByText("Sem cargo definido")).toBeInTheDocument();
       expect(screen.getByText("Nenhum cargo criado")).toBeInTheDocument();
-    });
-  });
-
-  it("previews and accepts an invite code from the team page", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url === "/api/invites/BAASE-0022" && init?.method === "GET") {
-        return new Response(JSON.stringify({ invite: { id: "invite_22", code: "BAASE-0022", name: "Caio Lima", email: "caio@empresa.com", role: "employee", status: "pending" } }), { status: 200 });
-      }
-      if (url === "/api/invites/BAASE-0022/accept" && init?.method === "POST") {
-        return new Response(JSON.stringify({
-          invite: { id: "invite_22", code: "BAASE-0022", name: "Caio Lima", role: "employee", status: "accepted" },
-          person: { id: "person_caio", name: "Caio Lima", email: "caio@empresa.com", role: "employee", status: "active" }
-        }), { status: 200 });
-      }
-
-      const dataByUrl: Record<string, unknown> = {
-        "/api/me": { workspace: { id: "workspace_a", name: "Norte Ops" }, profile: { id: "profile_owner", role: "owner", display_name: "Marina Alves", initials: "MA" }, home_route: "/painel" },
-        "/api/today?date=2026-07-07": { tasks: [] },
-        "/api/approvals": { tasks: [] },
-        "/api/processes": { processes: [] },
-        "/api/routines": { routines: [] },
-        "/api/trainings": { trainings: [] },
-        "/api/areas": { areas: [] },
-        "/api/roles": { role_templates: [] },
-        "/api/people": { people: [] },
-        "/api/invites": { invites: [] }
-      };
-
-      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
-    });
-
-    render(<App />);
-
-    await screen.findByText("Marina Alves");
-    fireEvent.click(screen.getByRole("link", { name: /Equipe/ }));
-    fireEvent.change(screen.getByLabelText("Código ou link de convite"), { target: { value: "BAASE-0022" } });
-    fireEvent.click(screen.getByRole("button", { name: "Pré-visualizar convite" }));
-
-    expect(await screen.findByText("Convite para Caio Lima")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Aceitar convite" }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/invites/BAASE-0022/accept", expect.objectContaining({ method: "POST" }));
-      expect(screen.getByText("Caio Lima")).toBeInTheDocument();
     });
   });
 

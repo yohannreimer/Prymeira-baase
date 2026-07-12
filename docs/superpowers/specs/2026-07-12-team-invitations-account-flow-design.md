@@ -6,8 +6,8 @@ Make Team use the production invitation flow: an owner invites a person by email
 
 ## Product decisions
 
-- Email invitation is the only invitation entry point in account mode.
-- Workspace links, invite codes, preview, and local acceptance are legacy demo flows and are not displayed in account mode.
+- Email invitation is the only invitation entry point in the Team interface.
+- Workspace links, invite codes, preview, and local acceptance are legacy demo flows and are not displayed.
 - The team screen lists pending email invitations with their status and a revoke action.
 - Primary area is the organizational home of the person and determines which role templates can be selected.
 - Access reach is the content boundary, not a second independent permission system:

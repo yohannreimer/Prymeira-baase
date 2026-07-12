@@ -5,7 +5,6 @@ import {
   archiveRoutine,
   approveTask,
   assignTraining,
-  acceptInvite,
   completeOnboardingSession,
   createOnboardingSession,
   confirmAnnouncement,
@@ -37,7 +36,6 @@ import {
   generateOnboardingDiagnosis,
   generateOnboardingSetup,
   generateOnboardingSuggestion,
-  getInviteByCode,
   loadBaaseWorkspace,
   loadFirstRunState,
   patchOnboardingSession,
@@ -1485,12 +1483,6 @@ function announcementInputFromAiDraft(draft: AiGeneratedDraft, prompt: string) {
   };
 }
 
-function extractInviteCode(codeOrLink: string) {
-  const value = codeOrLink.trim();
-  const match = value.match(/([A-Z]+-\d{4,})/i);
-  return (match?.[1] ?? value).toUpperCase();
-}
-
 function homeFor(role: Role): Screen {
   if (role === "dono") return "painel-dono";
   if (role === "gestor") return "painel-gestor";
@@ -1580,7 +1572,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [returningTask, setReturningTask] = useState<ApiTask | null>(null);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [inviteCode, setInviteCode] = useState("ENORTE-4192");
   const [customAreas, setCustomAreas] = useState<ApiArea[]>([]);
   const [createdRoleTemplates, setCreatedRoleTemplates] = useState<ApiRoleTemplate[]>([]);
   const [createdPeople, setCreatedPeople] = useState<ApiPerson[]>([]);
@@ -2330,15 +2321,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleCopyInviteLink() {
-    const inviteLink = `https://app.baase.com/join/${inviteCode}`;
-    const clipboard = navigator.clipboard;
-    if (clipboard?.writeText) {
-      void clipboard.writeText(inviteLink).catch(() => undefined);
-    }
-    showNotice("Link de convite copiado.");
-  }
-
   function handleRunProactiveSuggestion(suggestion: ApiProactiveSuggestion) {
     const nextMode = modeFromSuggestion(suggestion);
     if (!nextMode) {
@@ -2915,25 +2897,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         roleTemplateId: input.roleTemplateId,
         accessScope: input.accessScope
       });
-      setInviteCode(invite.code);
       setCreatedInvites((current) => [invite, ...current.filter((item) => item.id !== invite.id)]);
       setCrudModal(null);
-    });
-  }
-
-  async function handlePreviewInvite(codeOrLink: string) {
-    return getInviteByCode(extractInviteCode(codeOrLink));
-  }
-
-  function handleAcceptInvite(invite: ApiInvite, input: { name: string; email: string }) {
-    void runAction(async () => {
-      const accepted = await acceptInvite(invite.code, {
-        name: input.name,
-        email: input.email
-      });
-      setCreatedPeople((current) => [accepted.person, ...current.filter((item) => item.id !== accepted.person.id)]);
-      setCreatedInvites((current) => [accepted.invite, ...current.filter((item) => item.id !== accepted.invite.id)]);
-      showNotice(`Convite aceito para ${accepted.person.name}.`);
+      showNotice(`Convite enviado para ${input.email}.`);
     });
   }
 
@@ -3368,17 +3334,13 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "equipe" && (
             <TeamPage
-              inviteCode={inviteCode}
-              workspaceName={workspaceName}
-              copyInviteLink={handleCopyInviteLink}
               openInvite={() => setCrudModal({ kind: "invite" })}
               actionBusy={actionBusy}
               peopleRows={visiblePeople}
               invites={companyInvites}
-              previewInvite={handlePreviewInvite}
-              acceptInvite={handleAcceptInvite}
               deleteInvite={handleDeleteInvite}
               people={companyPeople}
+              areas={companyAreas}
               editPerson={(person) => setCrudModal({ kind: "person", mode: "edit", person })}
             />
           )}
@@ -4300,93 +4262,78 @@ function CompanyMap({
   );
 }
 
+type AccessReach = "assigned_only" | "primary_area" | "specific_areas" | "workspace";
+
+function accessReachFromStored(accessScope: "workspace" | "area" | "assigned_only" | undefined, areaId: string | null | undefined, areaAccessIds: string[] | undefined): AccessReach {
+  if (!accessScope) return "workspace";
+  if (accessScope === "workspace") return "workspace";
+  if (accessScope === "assigned_only") return "assigned_only";
+  const uniqueAreas = [...new Set(areaAccessIds ?? [])];
+  return uniqueAreas.some((id) => id !== areaId) ? "specific_areas" : "primary_area";
+}
+
+function accessPayloadForReach(reach: AccessReach, areaId: string, areaAccessIds: string[]) {
+  const selectedAreas = [...new Set([areaId, ...areaAccessIds].filter(Boolean))];
+  if (reach === "workspace") return { accessScope: "workspace" as const, areaAccessIds: [] };
+  if (reach === "assigned_only") return { accessScope: "assigned_only" as const, areaAccessIds: [] };
+  if (reach === "primary_area") return { accessScope: "area" as const, areaAccessIds: areaId ? [areaId] : [] };
+  return { accessScope: "area" as const, areaAccessIds: selectedAreas };
+}
+
+function accessReachSummary(reach: AccessReach, areaId: string, areas: ApiArea[]) {
+  if (reach === "workspace") return "Pode consultar toda a empresa.";
+  if (reach === "assigned_only") return "Vê apenas tarefas e conteúdos atribuídos diretamente.";
+  const areaName = areas.find((area) => area.id === areaId)?.name ?? "a área principal";
+  if (reach === "primary_area") return `Vê processos, rotinas e treinamentos de ${areaName}.`;
+  return "Vê as áreas selecionadas abaixo, incluindo a área principal.";
+}
+
+function inviteAccessLabel(invite: ApiInvite, areas: ApiArea[]) {
+  const areaNames = areaNameMap(areas);
+  if (invite.accessScope === "workspace") return "Empresa inteira";
+  if (invite.accessScope === "assigned_only") return "Somente atribuídos";
+  const selectedAreas = [...new Set(invite.areaAccessIds?.length ? invite.areaAccessIds : invite.areaId ? [invite.areaId] : [])];
+  if (!selectedAreas.length) return "Sem área definida";
+  const labels = selectedAreas.map((id) => areaLabel(id, areaNames));
+  return labels.length === 1 ? labels[0]! : `${labels[0]} + ${labels.length - 1} área${labels.length > 2 ? "s" : ""}`;
+}
+
 function TeamPage({
-  inviteCode,
-  workspaceName,
   openInvite,
-  copyInviteLink,
   actionBusy,
   peopleRows,
   invites,
-  previewInvite,
-  acceptInvite,
   deleteInvite,
   people,
+  areas,
   editPerson
 }: {
-  inviteCode: string;
-  workspaceName: string;
   openInvite: () => void;
-  copyInviteLink: () => void;
   actionBusy: boolean;
   peopleRows: TeamDisplayRow[];
   invites: ApiInvite[];
-  previewInvite: (codeOrLink: string) => Promise<ApiInvite>;
-  acceptInvite: (invite: ApiInvite, input: { name: string; email: string }) => void;
   deleteInvite: (invite: ApiInvite) => void;
   people: ApiPerson[];
+  areas: ApiArea[];
   editPerson: (person: ApiPerson) => void;
 }) {
-  const [inviteLookup, setInviteLookup] = useState("");
-  const [previewedInvite, setPreviewedInvite] = useState<ApiInvite | null>(null);
-  const [inviteLookupStatus, setInviteLookupStatus] = useState<"idle" | "loading" | "error">("idle");
   const pendingInvites = invites.filter((invite) => invite.status === "pending");
-  const inviteLink = `app.baase.com/join/${inviteCode.toLowerCase()}`;
-
-  function previewCode() {
-    const code = inviteLookup.trim();
-    if (!code) return;
-
-    setInviteLookupStatus("loading");
-    previewInvite(code)
-      .then((invite) => {
-        setPreviewedInvite(invite);
-        setInviteLookupStatus("idle");
-      })
-      .catch(() => {
-        setPreviewedInvite(null);
-        setInviteLookupStatus("error");
-      });
-  }
 
   return (
     <div className="screen">
       <div className="page-head">
-        <div><h1 className="serif">Equipe</h1><p>{peopleRows.length} pessoas · convide por link ou código e defina o acesso.</p></div>
+        <div><h1 className="serif">Equipe</h1><p>{peopleRows.length} pessoas · convide por e-mail e defina o acesso antes da primeira entrada.</p></div>
         <button className="accent-btn" type="button" onClick={openInvite} disabled={actionBusy}><Icon name="ph-user-plus" />Convidar</button>
       </div>
-      <div className="invite-banner">
-        <Icon name="ph-link-simple" />
-        <div><strong>Link de convite do workspace</strong><span className="mono">{inviteLink} · código {inviteCode} · {workspaceName}</span></div>
-        <button type="button" onClick={copyInviteLink}>Copiar link</button>
-      </div>
-      <section className="panel padded invite-accept-panel">
-        <div>
-          <h2>Aceitar convite por código</h2>
-          <p>Simula o fluxo futuro com Clerk: a pessoa cola o código, confere o acesso e cria o perfil operacional.</p>
-        </div>
-        <label>Código ou link de convite<input value={inviteLookup} onChange={(event) => setInviteLookup(event.target.value)} placeholder="BAASE-0001 ou link completo" /></label>
-        <button className="secondary-btn" type="button" disabled={actionBusy || inviteLookupStatus === "loading"} onClick={previewCode}>Pré-visualizar convite</button>
-        {inviteLookupStatus === "error" ? <small className="danger-text">Não encontramos esse convite.</small> : null}
-        {previewedInvite ? (
-          <div className="invite-preview">
-            <div>
-              <strong>Convite para {previewedInvite.name}</strong>
-              <span>{apiRoleLabel(previewedInvite.role)} · código {previewedInvite.code}</span>
-            </div>
-            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => acceptInvite(previewedInvite, { name: previewedInvite.name ?? "Novo funcionário", email: previewedInvite.email ?? "" })}>Aceitar convite</button>
-          </div>
-        ) : null}
-      </section>
       {pendingInvites.length ? (
         <section className="panel flush invite-list">
           <PanelHeader title="Convites pendentes" aside={String(pendingInvites.length)} />
           {pendingInvites.map((invite) => (
             <div className="invite-row" key={invite.id}>
               <div><strong>{invite.name}</strong><small>{invite.email ?? "Sem email"} · {apiRoleLabel(invite.role)}</small></div>
-              <span className="mono">{invite.code}</span>
-              <Pill tone="warn">Pendente</Pill>
-              <button className="secondary-btn danger-btn compact-btn" type="button" disabled={actionBusy} onClick={() => deleteInvite(invite)}><Icon name="ph-trash" />Excluir</button>
+              <span className="invite-access">{inviteAccessLabel(invite, areas)}</span>
+              <Pill tone="warn">Aguardando entrada</Pill>
+              <button className="tiny-icon danger-icon" type="button" aria-label={`Cancelar convite de ${invite.name ?? invite.email ?? "pessoa"}`} disabled={actionBusy} onClick={() => deleteInvite(invite)}><Icon name="ph-trash" /></button>
             </div>
           ))}
         </section>
@@ -5828,6 +5775,59 @@ function RoleTemplateForm({
   );
 }
 
+function AccessReachFields({
+  reach,
+  onReachChange,
+  primaryAreaId,
+  areas,
+  areaAccessIds,
+  onToggleArea,
+  owner
+}: {
+  reach: AccessReach;
+  onReachChange: (reach: AccessReach) => void;
+  primaryAreaId: string;
+  areas: ApiArea[];
+  areaAccessIds: string[];
+  onToggleArea: (areaId: string) => void;
+  owner?: boolean;
+}) {
+  const selectedAreaIds = [...new Set([primaryAreaId, ...areaAccessIds].filter(Boolean))];
+  const effectiveReach = owner ? "workspace" : reach;
+
+  return (
+    <section className="access-reach-section" aria-label="Configuração de acesso">
+      <label>Alcance de acesso
+        <select aria-label="Alcance de acesso" value={effectiveReach} disabled={owner} onChange={(event) => onReachChange(event.target.value as AccessReach)}>
+          <option value="assigned_only">Somente tarefas atribuídas</option>
+          <option value="primary_area">Área principal</option>
+          <option value="specific_areas">Áreas específicas</option>
+          <option value="workspace">Empresa inteira</option>
+        </select>
+      </label>
+      <p className="form-summary">{owner ? "Donos têm acesso à empresa inteira." : accessReachSummary(effectiveReach, primaryAreaId, areas)}</p>
+      {effectiveReach === "specific_areas" ? (
+        <fieldset className="access-area-fieldset">
+          <legend>Áreas específicas</legend>
+          <p>A área principal permanece incluída e não pode ser removida.</p>
+          <div className="access-area-list">
+            {areas.map((area) => {
+              const isPrimary = area.id === primaryAreaId;
+              return (
+                <label className={`access-area-option${selectedAreaIds.includes(area.id) ? " selected" : ""}`} key={area.id}>
+                  <input aria-label={area.name} type="checkbox" checked={selectedAreaIds.includes(area.id)} disabled={isPrimary} onChange={() => onToggleArea(area.id)} />
+                  <span>{area.name}</span>
+                  {isPrimary ? <small>Principal</small> : null}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
+      ) : null}
+    </section>
+  );
+}
+
 function PersonForm({
   modal,
   areas,
@@ -5851,7 +5851,7 @@ function PersonForm({
   const [role, setRole] = useState<ApiPerson["role"]>(person?.role ?? "employee");
   const [areaId, setAreaId] = useState(person?.areaId ?? areas[0]?.id ?? "");
   const [areaAccessIds, setAreaAccessIds] = useState<string[]>(person?.areaAccessIds ?? (areaId ? [areaId] : []));
-  const [accessScope, setAccessScope] = useState<"workspace" | "area" | "assigned_only">(person?.accessScope ?? "workspace");
+  const [accessReach, setAccessReach] = useState<AccessReach>(() => accessReachFromStored(person?.accessScope, person?.areaId, person?.areaAccessIds));
   const [roleTemplateId, setRoleTemplateId] = useState(person?.roleTemplateId ?? roleTemplates[0]?.id ?? "");
   const availableRoles = roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId);
   const selectedRoleTemplateId = availableRoles.some((roleTemplate) => roleTemplate.id === roleTemplateId)
@@ -5859,15 +5859,16 @@ function PersonForm({
     : availableRoles[0]?.id ?? "";
 
   function save() {
+    const access = accessPayloadForReach(role === "owner" ? "workspace" : accessReach, areaId, areaAccessIds);
     onSubmit({
       id: person?.id,
       name,
       email,
       role,
       areaId: areaId || null,
-      areaAccessIds: areaAccessIds.includes(areaId) || !areaId ? areaAccessIds : [...areaAccessIds, areaId],
+      areaAccessIds: access.areaAccessIds,
       roleTemplateId: selectedRoleTemplateId || null,
-      accessScope,
+      accessScope: access.accessScope,
       status: person?.status === "inactive" ? "inactive" : "active"
     });
   }
@@ -5878,12 +5879,19 @@ function PersonForm({
       <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <div className="form-grid">
-        <label>Papel<select value={role} onChange={(event) => setRole(event.target.value as ApiPerson["role"])}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
-        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setRoleTemplateId(""); }}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
+        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as ApiPerson["role"]; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
+        <label>Área principal<select value={areaId} onChange={(event) => { const nextAreaId = event.target.value; setAreaId(nextAreaId); setAreaAccessIds((current) => nextAreaId && !current.includes(nextAreaId) ? [...current, nextAreaId] : current); setRoleTemplateId(""); }}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
       </div>
       <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Sem cargo definido</option>{availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label>
-      <label>Áreas acessíveis<div className="access-area-list">{areas.map((area) => <label key={area.id} className="check-row"><input type="checkbox" checked={areaAccessIds.includes(area.id)} onChange={() => setAreaAccessIds((current) => current.includes(area.id) ? current.filter((id) => id !== area.id) : [...current, area.id])} />{area.name}</label>)}</div></label>
-      <label>Escopo<select value={accessScope} onChange={(event) => setAccessScope(event.target.value as "workspace" | "area" | "assigned_only")}><option value="workspace">Empresa inteira</option><option value="area">Áreas selecionadas</option><option value="assigned_only">Somente tarefas atribuídas</option></select></label>
+      <AccessReachFields
+        reach={accessReach}
+        onReachChange={setAccessReach}
+        primaryAreaId={areaId}
+        areas={areas}
+        areaAccessIds={areaAccessIds}
+        onToggleArea={(selectedAreaId) => setAreaAccessIds((current) => current.includes(selectedAreaId) ? current.filter((id) => id !== selectedAreaId) : [...current, selectedAreaId])}
+        owner={role === "owner"}
+      />
       <footer>
         {person ? <button className="secondary-btn danger-btn" type="button" disabled={actionBusy} onClick={() => onDelete(person)}><Icon name="ph-trash" />Excluir pessoa</button> : null}
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
@@ -6417,14 +6425,15 @@ function InviteForm({
   const [name, setName] = useState("Novo funcionário");
   const [email, setEmail] = useState("novo@estudionorte.com");
   const [role, setRole] = useState<"owner" | "manager" | "employee">("employee");
-  const [areaId, setAreaId] = useState(areas[0]?.id ?? "area_criacao");
+  const [areaId, setAreaId] = useState(areas[0]?.id ?? "");
   const [areaAccessIds, setAreaAccessIds] = useState<string[]>(areaId ? [areaId] : []);
-  const [roleTemplateId, setRoleTemplateId] = useState(roleTemplates[0]?.id ?? "Designer");
-  const [accessScope, setAccessScope] = useState<"workspace" | "area" | "assigned_only">("area");
+  const [roleTemplateId, setRoleTemplateId] = useState(roleTemplates[0]?.id ?? "");
+  const [accessReach, setAccessReach] = useState<AccessReach>("primary_area");
   const availableRoles = roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId);
   const selectedRoleTemplateId = availableRoles.length
     ? availableRoles.some((roleTemplate) => roleTemplate.id === roleTemplateId) ? roleTemplateId : availableRoles[0]!.id
-    : roleTemplateId;
+    : "";
+  const access = accessPayloadForReach(role === "owner" ? "workspace" : accessReach, areaId, areaAccessIds);
 
   return (
     <form className="modal-form" onSubmit={(event) => event.preventDefault()}>
@@ -6432,16 +6441,20 @@ function InviteForm({
       <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <div className="form-grid">
-        <label>Papel<select value={role} onChange={(event) => setRole(event.target.value as "owner" | "manager" | "employee")}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
-        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setRoleTemplateId(""); }}>{areas.length ? areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>) : <option value="area_criacao">Criação</option>}</select></label>
+        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as "owner" | "manager" | "employee"; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
+        <label>Área principal<select value={areaId} onChange={(event) => { const nextAreaId = event.target.value; setAreaId(nextAreaId); setAreaAccessIds((current) => nextAreaId && !current.includes(nextAreaId) ? [...current, nextAreaId] : current); setRoleTemplateId(""); }}>{areas.length ? areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>) : <option value="">Crie uma área primeiro</option>}</select></label>
       </div>
-      <label>Áreas acessíveis<div className="access-area-list">{areas.map((area) => <label key={area.id} className="check-row"><input type="checkbox" checked={areaAccessIds.includes(area.id)} onChange={() => setAreaAccessIds((current) => current.includes(area.id) ? current.filter((id) => id !== area.id) : [...current, area.id])} />{area.name}</label>)}</div></label>
-      <p className="form-summary">{role === "owner" ? "Dono com acesso à empresa inteira." : accessScope === "area" ? `${role === "manager" ? "Gestor" : "Funcionário"} com acesso a ${areaAccessIds.length || 0} área(s).` : accessScope === "assigned_only" ? "Funcionário com acesso apenas ao trabalho atribuído." : "Acesso à empresa inteira."}</p>
-      <div className="form-grid">
-        <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}>{availableRoles.length ? availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>) : <option value="Designer">Designer</option>}</select></label>
-        <label>Permissão<select value={accessScope} onChange={(event) => setAccessScope(event.target.value as "workspace" | "area" | "assigned_only")}><option value="workspace">Workspace inteiro</option><option value="area">Área</option><option value="assigned_only">Somente atribuídos</option></select></label>
-      </div>
-      <footer><button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button><button className="accent-solid" type="button" disabled={actionBusy || (accessScope === "area" && areaAccessIds.length === 0)} onClick={() => onSubmit({ name, email, role, areaId, areaAccessIds: areaAccessIds.includes(areaId) ? areaAccessIds : [...areaAccessIds, areaId], roleTemplateId: selectedRoleTemplateId, accessScope })}>Gerar convite</button></footer>
+      <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Sem cargo definido</option>{availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label>
+      <AccessReachFields
+        reach={accessReach}
+        onReachChange={setAccessReach}
+        primaryAreaId={areaId}
+        areas={areas}
+        areaAccessIds={areaAccessIds}
+        onToggleArea={(selectedAreaId) => setAreaAccessIds((current) => current.includes(selectedAreaId) ? current.filter((id) => id !== selectedAreaId) : [...current, selectedAreaId])}
+        owner={role === "owner"}
+      />
+      <footer><button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button><button className="accent-solid" type="button" disabled={actionBusy || !name.trim() || !email.trim() || (!areaId && accessReach !== "workspace" && accessReach !== "assigned_only") || (accessReach === "specific_areas" && !access.areaAccessIds.length)} onClick={() => onSubmit({ name, email, role, areaId, areaAccessIds: access.areaAccessIds, roleTemplateId: selectedRoleTemplateId, accessScope: access.accessScope })}>Enviar convite</button></footer>
     </form>
   );
 }
