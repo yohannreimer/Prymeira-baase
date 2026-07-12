@@ -198,6 +198,21 @@ describe("routine service", () => {
     ]);
   });
 
+  it("preserves submitted task history from later edits and deletion", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    const task = await service.createManualTask("workspace_a", "profile_owner", {
+      title: "Conferir caixa",
+      dueDate: "2026-07-08"
+    });
+    await service.submitTask("workspace_a", task.id, "profile_owner", {});
+
+    await expect(service.updateTaskChecklist("workspace_a", task.id, "profile_owner", {
+      checklistItems: [{ title: "Conferir caixa", done: true }]
+    })).rejects.toThrow("TASK_NOT_PENDING");
+    await expect(service.deleteTask("workspace_a", task.id)).rejects.toThrow("TASK_NOT_PENDING");
+    await expect(service.getTask("workspace_a", task.id)).resolves.toMatchObject({ status: "completed" });
+  });
+
   it("returns shared tasks without profile filtering", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
     const routine = await service.createRoutine("workspace_a", "profile_owner", {

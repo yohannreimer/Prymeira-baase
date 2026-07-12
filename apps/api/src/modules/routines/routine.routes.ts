@@ -92,6 +92,9 @@ function taskMutationError(error: unknown) {
   if (error instanceof Error && error.message === "TASK_NOT_MANUAL") {
     return new ApiError(400, "TASK_NOT_MANUAL", "Somente tarefas pontuais podem ser editadas por aqui.");
   }
+  if (error instanceof Error && error.message === "TASK_NOT_PENDING") {
+    return new ApiError(409, "TASK_NOT_PENDING", "Somente tarefas pendentes podem ser alteradas ou removidas.");
+  }
   if (error instanceof Error && error.message === "TASK_NOT_ASSIGNED_TO_PROFILE") {
     return new ApiError(403, "TASK_NOT_ASSIGNED_TO_PROFILE", "Tarefa não atribuída a este perfil.");
   }

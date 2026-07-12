@@ -216,13 +216,12 @@ function buildRoutineOccurrenceInputs(
   }));
 }
 
-function occurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemplateId" | "assigneeProfileId">) {
-  const templateKey = task.taskTemplateId ?? `${task.routineId ?? "manual"}__shared`;
-  return `${templateKey}__${task.assigneeProfileId ?? "shared"}`;
-}
-
 function isMutableRoutineOccurrence(task: TaskOccurrence) {
   return task.status === "pending" && task.submittedAt === null;
+}
+
+function requirePendingTask(task: TaskOccurrence) {
+  if (!isMutableRoutineOccurrence(task)) throw new Error("TASK_NOT_PENDING");
 }
 
 async function createOrReuseRoutineOccurrences(
@@ -230,41 +229,7 @@ async function createOrReuseRoutineOccurrences(
   routine: CompanyRoutine,
   dueDate: string
 ) {
-  const existingForDate = (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
-    .filter((task) => task.routineId === routine.id);
-  const desiredByKey = new Map(
-    buildRoutineOccurrenceInputs(routine, dueDate)
-      .filter((input) => input.taskTemplateId)
-      .map((input) => [occurrenceKey(input), input])
-  );
-  const existingByKey = new Map(existingForDate.map((task) => [occurrenceKey(task), task]));
-
-  for (const [key, input] of desiredByKey) {
-    const existing = existingByKey.get(key);
-    if (!existing) {
-      await repository.createTaskOccurrence(input);
-      continue;
-    }
-    if (!isMutableRoutineOccurrence(existing) || existing.routineRevisionSnapshot === routine.updatedAt) continue;
-
-    await repository.reconcileRoutineOccurrence({
-      ...existing,
-      ...input,
-      routineRevisionSnapshot: existing.routineRevisionSnapshot,
-      id: existing.id,
-      createdAt: existing.createdAt,
-      updatedAt: existing.updatedAt
-    }, routine.updatedAt);
-  }
-
-  for (const [key, task] of existingByKey) {
-    if (!desiredByKey.has(key) && isMutableRoutineOccurrence(task)) {
-      await repository.deleteTaskOccurrence(routine.workspaceId, task.id);
-    }
-  }
-
-  return (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
-    .filter((task) => task.routineId === routine.id);
+  return repository.reconcileRoutineOccurrences(routine, dueDate, buildRoutineOccurrenceInputs(routine, dueDate));
 }
 
 async function ensureTodayOccurrences(repository: RoutineRepository, workspaceId: string, dueDate: string) {
@@ -381,6 +346,7 @@ export function createRoutineService(repository: RoutineRepository) {
     async updateManualTask(workspaceId: string, taskId: string, input: UpdateManualTaskInput): Promise<TaskOccurrence> {
       const task = await readTaskOrThrow(repository, workspaceId, taskId);
       if (task.origin !== "manual" && task.routineId) throw new Error("TASK_NOT_MANUAL");
+      requirePendingTask(task);
 
       return repository.updateTaskOccurrence({
         ...task,
@@ -406,6 +372,7 @@ export function createRoutineService(repository: RoutineRepository) {
       options: { allowAssigneeOverride?: boolean } = {}
     ): Promise<TaskOccurrence> {
       const task = await readTaskOrThrow(repository, workspaceId, taskId);
+      requirePendingTask(task);
       if (task.assigneeProfileId && task.assigneeProfileId !== actorProfileId && !options.allowAssigneeOverride) {
         throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
       }
@@ -418,7 +385,9 @@ export function createRoutineService(repository: RoutineRepository) {
 
     async deleteTask(workspaceId: string, taskId: string): Promise<TaskOccurrence> {
       const task = await readTaskOrThrow(repository, workspaceId, taskId);
-      await repository.deleteTaskOccurrence(workspaceId, taskId);
+      if (!isMutableRoutineOccurrence(task) || !(await repository.deleteTaskOccurrence(workspaceId, taskId))) {
+        throw new Error("TASK_NOT_PENDING");
+      }
       return task;
     },
 

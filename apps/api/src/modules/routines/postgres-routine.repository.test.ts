@@ -111,17 +111,61 @@ describe("Postgres routine repository", () => {
       ["workspace_a"]
     ) as { rows: Array<{ routine_updated_at_snapshot: Date }> };
     expect(storedSnapshot.rows[0]!.routine_updated_at_snapshot.toISOString()).toBe(originals[0]!.routineRevisionSnapshot);
-    const pending = await repository.listTaskOccurrences("workspace_a", { dueDate: "2026-07-08" });
-    for (const task of pending) {
-      await repository.reconcileRoutineOccurrence({
-        ...task,
-        title: "Abertura revisada",
-        checklistItems: [{ title: "Confirmação", done: false }]
-      }, revised.updatedAt);
-    }
+    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
 
     const reconciled = await repository.listTaskOccurrences("workspace_a", { dueDate: "2026-07-08" });
     expect(reconciled).toHaveLength(2);
-    expect(reconciled.map((task) => task.checklistItems?.map((item) => item.done))).toEqual([[false], [false]]);
+    expect(reconciled.map((task) => task.checklistItems)).toEqual([[], []]);
+    const snapshots = await pool.query(
+      "SELECT routine_updated_at_snapshot FROM routine_occurrences WHERE workspace_id=$1",
+      ["workspace_a"]
+    ) as { rows: Array<{ routine_updated_at_snapshot: Date }> };
+    expect(snapshots.rows.map((row) => row.routine_updated_at_snapshot.toISOString())).toEqual([revised.updatedAt]);
+  });
+
+  it("does not archive an occurrence that is no longer pending", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const repository = createPostgresRoutineRepository(pool);
+    const service = createRoutineService(repository);
+    const task = await service.createManualTask("workspace_a", "profile_owner", {
+      title: "Conferir caixa",
+      dueDate: "2026-07-08"
+    });
+
+    await pool.query(
+      "UPDATE task_occurrences SET status='completed',submitted_at=NOW() WHERE workspace_id=$1 AND id=$2",
+      ["workspace_a", task.id]
+    );
+
+    await expect(repository.deleteTaskOccurrence("workspace_a", task.id)).resolves.toBe(false);
+    const stored = await pool.query(
+      "SELECT archived_at FROM task_occurrences WHERE workspace_id=$1 AND id=$2",
+      ["workspace_a", task.id]
+    ) as { rows: Array<{ archived_at: Date | null }> };
+    expect(stored.rows[0]?.archived_at).toBeNull();
+  });
+
+  it("rejects a stale routine snapshot without rewriting occurrences", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const repository = createPostgresRoutineRepository(pool);
+    const service = createRoutineService(repository);
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura",
+      frequency: "daily",
+      taskTemplates: [{ title: "Conferir caixa" }]
+    });
+    await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    await service.updateRoutine("workspace_a", routine.id, {
+      title: "Abertura revisada",
+      frequency: "daily",
+      taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Conferir caixa" }]
+    });
+
+    await expect(repository.reconcileRoutineOccurrences(routine, "2026-07-08", [])).rejects.toThrow("ROUTINE_STALE");
+    await expect(repository.listTaskOccurrences("workspace_a", { dueDate: "2026-07-08" })).resolves.toEqual([
+      expect.objectContaining({ title: "Conferir caixa" })
+    ]);
   });
 });

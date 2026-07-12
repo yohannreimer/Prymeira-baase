@@ -108,28 +108,41 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       return (await hydrateTasks(db,r.rows))[0]??null;
     },
     async createTaskOccurrence(input){return withOperationalTransaction(db,async client=>{await lockWorkspaceOperationalMutation(client,input.workspaceId);return createOrReuseTask(client,input);});},
-    async reconcileRoutineOccurrence(task,routineRevisionSnapshot){return withOperationalTransaction(db,async client=>{
-      await lockWorkspaceOperationalMutation(client,task.workspaceId);
-      const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[task.workspaceId,task.id]);
-      if(!persisted.rows[0])throw new Error("TASK_NOT_FOUND");
-      if(persisted.rows[0].status!=="pending"||persisted.rows[0].submitted_at!==null)return (await hydrateTasks(client,persisted.rows))[0]!;
-      await lockActiveAreaReference(client,task.workspaceId,task.areaId??null);
-      const routine=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[task.workspaceId,task.routineId]);
-      if(!routine.rows[0])throw new Error("ROUTINE_NOT_FOUND");
-      const area=task.areaId?await client.query<{name:string}>("SELECT name FROM areas WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[task.workspaceId,task.areaId]):{rows:[]};
-      const sourceTemplateKey=task.taskTemplateId;
-      let stepId=sourceTemplateKey;
-      if(sourceTemplateKey?.startsWith(`${task.routineId}__execution__`)){
-        const first=await client.query<StepRow>("SELECT * FROM routine_steps WHERE workspace_id=$1 AND routine_id=$2 AND archived_at IS NULL ORDER BY sort_order LIMIT 1",[task.workspaceId,task.routineId]);
-        stepId=first.rows[0]?.id??null;
+    async reconcileRoutineOccurrences(routine,dueDate,desired){return withOperationalTransaction(db,async client=>{
+      await lockWorkspaceOperationalMutation(client,routine.workspaceId);
+      const persistedRoutine=await client.query<RoutineRow>("SELECT * FROM routines WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL FOR UPDATE",[routine.workspaceId,routine.id]);
+      if(!persistedRoutine.rows[0])throw new Error("ROUTINE_NOT_FOUND");
+      if(iso(persistedRoutine.rows[0].updated_at)!==routine.updatedAt)throw new Error("ROUTINE_STALE");
+
+      const persisted=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND due_date=$3 AND archived_at IS NULL FOR UPDATE",[routine.workspaceId,routine.id,dueDate]);
+      const parents=await client.query<ParentRow>("SELECT routine_id,due_date,audience_key,routine_updated_at_snapshot FROM routine_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND due_date=$3 FOR UPDATE",[routine.workspaceId,routine.id,dueDate]);
+      const snapshotByAudience=new Map(parents.rows.map(parent=>[parent.audience_key,parent.routine_updated_at_snapshot?iso(parent.routine_updated_at_snapshot):null]));
+      const existingByKey=new Map(persisted.rows.map(task=>[routineOccurrenceKey(task.source_template_key??task.routine_step_id,task.assignee_profile_id),task]));
+      const desiredByKey=new Map(desired.map(task=>[routineOccurrenceKey(task.taskTemplateId,task.assigneeProfileId),task]));
+      const touchedAudiences=new Set<string>();
+
+      for(const [key,input] of desiredByKey){
+        const existing=existingByKey.get(key);
+        touchedAudiences.add(input.assigneeProfileId??"shared");
+        if(!existing){await createOrReuseTask(client,input);continue;}
+        if(existing.status!=="pending"||existing.submitted_at!==null)continue;
+        await reconcilePendingRoutineTask(client,existing,input,persistedRoutine.rows[0],snapshotByAudience.get(existing.audience_key??"shared")??null);
       }
-      const revisionChanged=task.routineRevisionSnapshot!==routineRevisionSnapshot;
-      const result=await client.query<TaskRow>(`UPDATE task_occurrences SET routine_step_id=$3,source_template_key=$4,area_id=$5,process_id=$6,assignee_profile_id=$7,audience_key=$8,title=$9,area_name_snapshot=$10,routine_title_snapshot=$11,step_title_snapshot=$12,due_hint=$13,approval_mode=$14,evidence_policy=$15,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
-        WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL RETURNING *`,[task.workspaceId,task.id,stepId,sourceTemplateKey,task.areaId??null,task.processId,task.assigneeProfileId,task.assigneeProfileId??"shared",task.title,area.rows[0]?.name??null,routine.rows[0].title,task.title,task.dueHint??null,task.approvalMode,task.evidencePolicy]);
-      if(revisionChanged)await replaceChecklist(client,task.workspaceId,task.id,task.checklistItems??[]);
-      await client.query(`INSERT INTO routine_occurrences (id,workspace_id,routine_id,due_date,audience_key,area_name_snapshot,routine_title_snapshot,routine_updated_at_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        ON CONFLICT (workspace_id,routine_id,due_date,audience_key) DO UPDATE SET area_name_snapshot=EXCLUDED.area_name_snapshot,routine_title_snapshot=EXCLUDED.routine_title_snapshot,routine_updated_at_snapshot=EXCLUDED.routine_updated_at_snapshot`,[generatedId("routine_occurrence"),task.workspaceId,task.routineId,task.dueDate,task.assigneeProfileId??"shared",area.rows[0]?.name??null,routine.rows[0].title,routineRevisionSnapshot]);
-      return (await hydrateTasks(client,result.rows))[0]!;
+      for(const [key,task] of existingByKey){
+        if(desiredByKey.has(key)||task.status!=="pending"||task.submitted_at!==null)continue;
+        touchedAudiences.add(task.audience_key??"shared");
+        const archived=await client.query<{id:string}>("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL AND status='pending' AND submitted_at IS NULL RETURNING id",[routine.workspaceId,task.id]);
+        if(archived.rows[0])await audit(client,routine.workspaceId,"task_occurrence",task.id,"archive");
+      }
+      for(const audienceKey of touchedAudiences){
+        const sample=desired.find(task=>(task.assigneeProfileId??"shared")===audienceKey);
+        const areaId=sample?.areaId??routine.areaId;
+        const area=areaId?await client.query<{name:string}>("SELECT name FROM areas WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[routine.workspaceId,areaId]):{rows:[]};
+        await client.query(`INSERT INTO routine_occurrences (id,workspace_id,routine_id,due_date,audience_key,area_name_snapshot,routine_title_snapshot,routine_updated_at_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+          ON CONFLICT (workspace_id,routine_id,due_date,audience_key) DO UPDATE SET area_name_snapshot=EXCLUDED.area_name_snapshot,routine_title_snapshot=EXCLUDED.routine_title_snapshot,routine_updated_at_snapshot=EXCLUDED.routine_updated_at_snapshot`,[generatedId("routine_occurrence"),routine.workspaceId,routine.id,dueDate,audienceKey,area.rows[0]?.name??null,persistedRoutine.rows[0].title,routine.updatedAt]);
+      }
+      const result=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND due_date=$3 AND archived_at IS NULL ORDER BY created_at,id",[routine.workspaceId,routine.id,dueDate]);
+      return hydrateTasks(client,result.rows);
     });},
     async updateTaskOccurrence(task){return withOperationalTransaction(db,async client=>{
       await lockWorkspaceOperationalMutation(client,task.workspaceId);
@@ -145,7 +158,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       await audit(client,task.workspaceId,"task_occurrence",task.id,attribution.action,attribution.actorProfileId);
       return (await hydrateTasks(client,result.rows))[0]!;
     });},
-    async deleteTaskOccurrence(workspaceId,taskId){await withOperationalTransaction(db,async client=>{await client.query("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[workspaceId,taskId]);await audit(client,workspaceId,"task_occurrence",taskId,"archive");});}
+    async deleteTaskOccurrence(workspaceId,taskId){return withOperationalTransaction(db,async client=>{await lockWorkspaceOperationalMutation(client,workspaceId);const result=await client.query<{id:string}>("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL AND status='pending' AND submitted_at IS NULL RETURNING id",[workspaceId,taskId]);if(!result.rows[0])return false;await audit(client,workspaceId,"task_occurrence",taskId,"archive");return true;});}
   };
 }
 
@@ -165,6 +178,22 @@ async function createOrReuseTask(client:OperationalClient,input:Omit<TaskOccurre
   if(origin==="routine"&&input.routineId){const existing=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND (source_template_key=$3 OR (source_template_key IS NULL AND routine_step_id=$4)) AND due_date=$5 AND audience_key=$6 AND archived_at IS NULL",[input.workspaceId,input.routineId,sourceTemplateKey,stepId,input.dueDate,audienceKey]);if(existing.rows[0])return (await hydrateTasks(client,existing.rows))[0]!;}
   const id=generatedId("task");const inserted=await client.query<TaskRow>(`INSERT INTO task_occurrences (id,workspace_id,origin,routine_id,routine_step_id,source_template_key,area_id,process_id,assignee_profile_id,audience_key,title,area_name_snapshot,routine_title_snapshot,step_title_snapshot,due_hint,approval_mode,evidence_policy,status,due_date,submitted_by_profile_id,submitted_at,reviewed_by_profile_id,reviewed_at,review_comment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,[id,input.workspaceId,origin,input.routineId,stepId,sourceTemplateKey,input.areaId??null,input.processId,input.assigneeProfileId,audienceKey,input.title,areaName,routineTitle,stepTitle,input.dueHint??null,input.approvalMode,input.evidencePolicy,input.status,input.dueDate,input.submittedByProfileId,input.submittedAt,input.reviewedByProfileId,input.reviewedAt,input.reviewComment]);
   const taskId=inserted.rows[0]!.id;await replaceChecklist(client,input.workspaceId,taskId,input.checklistItems??[]);await replaceEvidence(client,{...input,id:taskId,createdAt:"",updatedAt:""});await audit(client,input.workspaceId,"task_occurrence",taskId,"create",input.submittedByProfileId??input.reviewedByProfileId,{routineOccurrenceId:parentId});return (await hydrateTasks(client,inserted.rows))[0]!;
+}
+
+function routineOccurrenceKey(sourceTemplateKey:string|null,assigneeProfileId:string|null){return `${sourceTemplateKey??"__shared"}__${assigneeProfileId??"shared"}`;}
+
+async function reconcilePendingRoutineTask(client:OperationalClient,persisted:TaskRow,input:Omit<TaskOccurrence,"id"|"createdAt"|"updatedAt">,routine:RoutineRow,previousRevision:string|null){
+  await lockActiveAreaReference(client,input.workspaceId,input.areaId??null);
+  const area=input.areaId?await client.query<{name:string}>("SELECT name FROM areas WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",[input.workspaceId,input.areaId]):{rows:[]};
+  const sourceTemplateKey=input.taskTemplateId;
+  let stepId=sourceTemplateKey;
+  if(sourceTemplateKey?.startsWith(`${input.routineId}__execution__`)){
+    const first=await client.query<StepRow>("SELECT * FROM routine_steps WHERE workspace_id=$1 AND routine_id=$2 AND archived_at IS NULL ORDER BY sort_order LIMIT 1",[input.workspaceId,input.routineId]);
+    stepId=first.rows[0]?.id??null;
+  }
+  await client.query(`UPDATE task_occurrences SET routine_step_id=$3,source_template_key=$4,area_id=$5,process_id=$6,assignee_profile_id=$7,audience_key=$8,title=$9,area_name_snapshot=$10,routine_title_snapshot=$11,step_title_snapshot=$12,due_hint=$13,approval_mode=$14,evidence_policy=$15,updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 millisecond')
+    WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL AND status='pending' AND submitted_at IS NULL`,[input.workspaceId,persisted.id,stepId,sourceTemplateKey,input.areaId??null,input.processId,input.assigneeProfileId,input.assigneeProfileId??"shared",input.title,area.rows[0]?.name??null,routine.title,input.title,input.dueHint??null,input.approvalMode,input.evidencePolicy]);
+  if(previousRevision!==iso(routine.updated_at))await replaceChecklist(client,input.workspaceId,persisted.id,input.checklistItems??[]);
 }
 
 function taskAuditAttribution(previous:TaskRow,next:TaskOccurrence){

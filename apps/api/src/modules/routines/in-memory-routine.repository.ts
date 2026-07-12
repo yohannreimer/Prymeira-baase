@@ -102,22 +102,41 @@ export function createInMemoryRoutineRepository(
       return task;
     },
 
-    async reconcileRoutineOccurrence(task, routineRevisionSnapshot) {
-      const index = tasks.findIndex((item) => item.workspaceId === task.workspaceId && item.id === task.id);
-      if (index === -1) throw new Error("TASK_NOT_FOUND");
-      const persisted = tasks[index]!;
-      if (persisted.status !== "pending" || persisted.submittedAt !== null) return persisted;
-      const revisionChanged = persisted.routineRevisionSnapshot !== routineRevisionSnapshot;
-      const updated = {
-        ...persisted,
-        ...task,
-        checklistItems: revisionChanged ? task.checklistItems : persisted.checklistItems,
-        routineRevisionSnapshot,
-        createdAt: persisted.createdAt,
-        updatedAt: now()
-      };
-      tasks[index] = updated;
-      return updated;
+    async reconcileRoutineOccurrences(routine, dueDate, desired) {
+      const persistedRoutine = routines.find((item) => item.workspaceId === routine.workspaceId && item.id === routine.id);
+      if (!persistedRoutine) throw new Error("ROUTINE_NOT_FOUND");
+      if (persistedRoutine.updatedAt !== routine.updatedAt) throw new Error("ROUTINE_STALE");
+
+      const existing = tasks.filter((task) => task.workspaceId === routine.workspaceId && task.routineId === routine.id && task.dueDate === dueDate);
+      const existingByKey = new Map(existing.map((task) => [routineOccurrenceKey(task), task]));
+      const desiredByKey = new Map(desired.map((task) => [routineOccurrenceKey(task), task]));
+
+      for (const [key, input] of desiredByKey) {
+        const task = existingByKey.get(key);
+        if (!task) {
+          const timestamp = now();
+          tasks.push({ ...input, id: `task_${tasks.length + 1}`, createdAt: timestamp, updatedAt: timestamp });
+          continue;
+        }
+        if (!isPending(task)) continue;
+        const revisionChanged = task.routineRevisionSnapshot !== routine.updatedAt;
+        const index = tasks.indexOf(task);
+        tasks[index] = {
+          ...task,
+          ...input,
+          checklistItems: revisionChanged ? input.checklistItems : task.checklistItems,
+          routineRevisionSnapshot: routine.updatedAt,
+          id: task.id,
+          createdAt: task.createdAt,
+          updatedAt: now()
+        };
+      }
+
+      for (const task of existing) {
+        if (!desiredByKey.has(routineOccurrenceKey(task)) && isPending(task)) tasks.splice(tasks.indexOf(task), 1);
+      }
+
+      return tasks.filter((task) => task.workspaceId === routine.workspaceId && task.routineId === routine.id && task.dueDate === dueDate);
     },
 
     async updateTaskOccurrence(task) {
@@ -133,7 +152,9 @@ export function createInMemoryRoutineRepository(
 
     async deleteTaskOccurrence(workspaceId, taskId) {
       const index = tasks.findIndex((item) => item.workspaceId === workspaceId && item.id === taskId);
-      if (index >= 0) tasks.splice(index, 1);
+      if (index < 0 || !isPending(tasks[index]!)) return false;
+      tasks.splice(index, 1);
+      return true;
     },
 
     getLifecycleState() {
@@ -145,6 +166,14 @@ export function createInMemoryRoutineRepository(
       tasks.splice(0, tasks.length, ...state.tasks);
     }
   };
+}
+
+function routineOccurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemplateId" | "assigneeProfileId">) {
+  return `${task.taskTemplateId ?? `${task.routineId ?? "manual"}__shared`}__${task.assigneeProfileId ?? "shared"}`;
+}
+
+function isPending(task: TaskOccurrence) {
+  return task.status === "pending" && task.submittedAt === null;
 }
 
 function nextTimestamp(candidate: string, previous: string) {

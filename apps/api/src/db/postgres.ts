@@ -959,21 +959,50 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       });
     },
 
-    async reconcileRoutineOccurrence(task, routineRevisionSnapshot) {
-      return store.withWorkspaceOperationalMutation(task.workspaceId, async (lockedStore) => {
-        const persisted = await lockedStore.find<TaskOccurrence>("task_occurrence", task.workspaceId, task.id);
-        if (!persisted) throw new Error("TASK_NOT_FOUND");
-        if (persisted.status !== "pending" || persisted.submittedAt !== null) return persisted;
-        return lockedStore.update<TaskOccurrence>("task_occurrence", {
-          ...persisted,
-          ...task,
-          checklistItems: persisted.routineRevisionSnapshot !== routineRevisionSnapshot
-            ? task.checklistItems
-            : persisted.checklistItems,
-          routineRevisionSnapshot,
-          createdAt: persisted.createdAt,
-          updatedAt: now()
-        });
+    async reconcileRoutineOccurrences(routine, dueDate, desired) {
+      return store.withWorkspaceOperationalMutation(routine.workspaceId, async (lockedStore) => {
+        const persistedRoutine = await lockedStore.find<CompanyRoutine>("routine", routine.workspaceId, routine.id);
+        if (!persistedRoutine) throw new Error("ROUTINE_NOT_FOUND");
+        if (persistedRoutine.updatedAt !== routine.updatedAt) throw new Error("ROUTINE_STALE");
+
+        const existing = (await lockedStore.list<TaskOccurrence>("task_occurrence", routine.workspaceId))
+          .filter((task) => task.routineId === routine.id && task.dueDate === dueDate);
+        const existingByKey = new Map(existing.map((task) => [routineOccurrenceKey(task), task]));
+        const desiredByKey = new Map(desired.map((task) => [routineOccurrenceKey(task), task]));
+
+        for (const [key, input] of desiredByKey) {
+          const task = existingByKey.get(key);
+          if (!task) {
+            const timestamp = now();
+            await lockedStore.insert<TaskOccurrence>("task_occurrence", {
+              ...input,
+              origin: input.origin ?? "routine",
+              id: await lockedStore.nextId("task_occurrence", routine.workspaceId, "task"),
+              createdAt: timestamp,
+              updatedAt: timestamp
+            });
+            continue;
+          }
+          if (!isPendingTask(task)) continue;
+          await lockedStore.update<TaskOccurrence>("task_occurrence", {
+            ...task,
+            ...input,
+            checklistItems: task.routineRevisionSnapshot !== routine.updatedAt ? input.checklistItems : task.checklistItems,
+            routineRevisionSnapshot: routine.updatedAt,
+            id: task.id,
+            createdAt: task.createdAt,
+            updatedAt: now()
+          });
+        }
+
+        for (const task of existing) {
+          if (!desiredByKey.has(routineOccurrenceKey(task)) && isPendingTask(task)) {
+            await lockedStore.delete("task_occurrence", routine.workspaceId, task.id);
+          }
+        }
+
+        return (await lockedStore.list<TaskOccurrence>("task_occurrence", routine.workspaceId))
+          .filter((task) => task.routineId === routine.id && task.dueDate === dueDate);
       });
     },
 
@@ -991,10 +1020,23 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       });
     },
 
-    deleteTaskOccurrence(workspaceId, taskId) {
-      return store.delete("task_occurrence", workspaceId, taskId);
+    async deleteTaskOccurrence(workspaceId, taskId) {
+      return store.withWorkspaceOperationalMutation(workspaceId, async (lockedStore) => {
+        const task = await lockedStore.find<TaskOccurrence>("task_occurrence", workspaceId, taskId);
+        if (!task || !isPendingTask(task)) return false;
+        await lockedStore.delete("task_occurrence", workspaceId, taskId);
+        return true;
+      });
     }
   };
+}
+
+function routineOccurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemplateId" | "assigneeProfileId">) {
+  return `${task.taskTemplateId ?? `${task.routineId ?? "manual"}__shared`}__${task.assigneeProfileId ?? "shared"}`;
+}
+
+function isPendingTask(task: TaskOccurrence) {
+  return task.status === "pending" && task.submittedAt === null;
 }
 
 function createPostgresTrainingRepository(store: JsonbRecordStore): TrainingRepository {

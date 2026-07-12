@@ -141,9 +141,13 @@ export type RoutineRepository = {
     dueDate: string
   ): Promise<TaskOccurrence | null>;
   createTaskOccurrence(input: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">): Promise<TaskOccurrence>;
-  reconcileRoutineOccurrence(task: TaskOccurrence, routineRevisionSnapshot: string): Promise<TaskOccurrence>;
+  reconcileRoutineOccurrences(
+    routine: CompanyRoutine,
+    dueDate: string,
+    desired: Array<Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">>
+  ): Promise<TaskOccurrence[]>;
   updateTaskOccurrence(task: TaskOccurrence): Promise<TaskOccurrence>;
-  deleteTaskOccurrence(workspaceId: string, taskId: string): Promise<void>;
+  deleteTaskOccurrence(workspaceId: string, taskId: string): Promise<boolean>;
   getLifecycleState?(): { routines: CompanyRoutine[]; tasks: TaskOccurrence[] };
   commitLifecycleState?(state: { routines: CompanyRoutine[]; tasks: TaskOccurrence[] }): void;
 };
