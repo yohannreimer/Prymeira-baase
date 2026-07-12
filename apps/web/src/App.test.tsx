@@ -152,6 +152,66 @@ describe("Baase React app shell", () => {
     expect(screen.getByText("Precisa de você agora")).toBeInTheDocument();
   });
 
+  it("groups routine occurrences in Hoje and replaces orphaned area ids with a clear label", async () => {
+    mockLoadedWorkspace({
+      "/api/today?date=2026-07-07": {
+        tasks: [
+          {
+            id: "task_open_1",
+            title: "Conferir agenda",
+            status: "pending",
+            origin: "routine",
+            routineId: "routine_opening",
+            routineTitleSnapshot: "Abertura operacional",
+            areaId: "area_ops",
+            dueDate: "2026-07-07"
+          },
+          {
+            id: "task_open_2",
+            title: "Registrar prioridades",
+            status: "pending",
+            origin: "routine",
+            routineId: "routine_opening",
+            routineTitleSnapshot: "Abertura operacional",
+            areaId: "area_ops",
+            dueDate: "2026-07-07"
+          },
+          {
+            id: "task_manual",
+            title: "Retornar cliente",
+            status: "pending",
+            origin: "manual",
+            areaId: "area_ops",
+            dueDate: "2026-07-07"
+          }
+        ]
+      },
+      "/api/areas": { areas: [{ id: "area_ops", name: "Operações", description: "Execução diária." }] },
+      "/api/processes": { processes: [{ id: "process_orphan", title: "Processo histórico", status: "draft", areaId: "area_legacy" }] },
+      "/api/routines": { routines: [{ id: "routine_opening", title: "Abertura operacional", status: "active", areaId: "area_legacy" }] }
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: /Hoje/ }));
+    expect(await screen.findByText("Abertura operacional")).toBeInTheDocument();
+    expect(screen.getByText("0/2 concluídas")).toBeInTheDocument();
+    expect(screen.queryByText("Conferir agenda")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Abertura operacional/ }));
+    expect(await screen.findByText("Conferir agenda")).toBeInTheDocument();
+    expect(screen.getByText("Registrar prioridades")).toBeInTheDocument();
+    expect(screen.getByText("Retornar cliente")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: /Processos/ }));
+    expect((await screen.findAllByText("Área removida")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("area_legacy")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: /Rotinas/ }));
+    expect(await screen.findByText("Área: Área removida")).toBeInTheDocument();
+    expect(screen.queryByText("area_legacy")).not.toBeInTheDocument();
+  });
+
   it("keeps setup-only onboarding review links out of the owner sidebar", () => {
     render(<App apiEnabled={false} />);
 

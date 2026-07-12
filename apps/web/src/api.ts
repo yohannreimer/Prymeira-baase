@@ -24,8 +24,10 @@ export type ApiTask = {
   status: string;
   origin?: "routine" | "manual";
   routineId?: string | null;
+  routineTitleSnapshot?: string | null;
   taskTemplateId?: string | null;
   areaId?: string | null;
+  areaNameSnapshot?: string | null;
   dueDate?: string;
   dueHint?: string | null;
   checklistItems?: Array<{ title: string; done: boolean }>;

@@ -141,6 +141,8 @@ type TodayTaskRow = {
   id: string;
   apiId?: string;
   origin?: ApiTask["origin"];
+  routineId?: string | null;
+  routineTitle?: string | null;
   label: string;
   meta: string;
   prio: string;
@@ -449,19 +451,21 @@ function statusLabel(status: string) {
   return labels[status] ?? status;
 }
 
-function processItems(processes: ApiProcess[]): Array<[string, string, string, boolean]> {
+function processItems(processes: ApiProcess[], areas: ApiArea[] = []): Array<[string, string, string, boolean]> {
+  const areaNames = areaNameMap(areas);
   return processes.map((process, index) => [
     process.title,
-    process.areaId ?? "Sem área definida",
+    areaLabel(process.areaId, areaNames),
     statusLabel(process.status),
     index === 0
   ]);
 }
 
-function routineItems(routines: ApiRoutine[]): Array<[string, string, string, boolean]> {
+function routineItems(routines: ApiRoutine[], areas: ApiArea[] = []): Array<[string, string, string, boolean]> {
+  const areaNames = areaNameMap(areas);
   return routines.map((routine, index) => [
     routine.title,
-    routine.areaId ? `Área: ${routine.areaId}` : "Empresa inteira",
+    routine.areaId ? `Área: ${areaLabel(routine.areaId, areaNames)}` : "Empresa inteira",
     statusLabel(routine.status),
     index === 0
   ]);
@@ -914,9 +918,12 @@ function areaNameMap(areas: ApiArea[]) {
   return new Map(areas.map((area) => [area.id, area.name]));
 }
 
-function areaLabel(areaId: string | null | undefined, areaNames: Map<string, string>) {
+function areaLabel(areaId: string | null | undefined, areaNames: Map<string, string>, areaNameSnapshot?: string | null) {
   if (!areaId) return "Sem área definida";
-  return areaNames.get(areaId) ?? areaId;
+  const savedName = areaNames.get(areaId) ?? areaNameSnapshot?.trim();
+  if (savedName) return savedName;
+  if (/^area[_-]/i.test(areaId) || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(areaId)) return "Área removida";
+  return areaId;
 }
 
 function roleLabel(roleTemplateId: string | null | undefined, roleTemplates: ApiRoleTemplate[]) {
@@ -1827,8 +1834,11 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const taskRows = useMemo(() => {
     const loadedTasks = apiBundle?.tasks;
     if (loadedTasks?.length) {
+      const taskAreaNames = areaNameMap(companyAreas);
       return loadedTasks.map((task, index): TodayTaskRow => {
-        const areaName = task.areaId ? companyAreas.find((area) => area.id === task.areaId)?.name : null;
+        const areaName = task.areaId
+          ? areaLabel(task.areaId, taskAreaNames, task.areaNameSnapshot)
+          : null;
         const assigneeName = task.assigneeProfileId ? companyPeople.find((person) => person.id === task.assigneeProfileId)?.name : null;
         const originLabel = task.origin === "manual" || !task.routineId ? "Tarefa pontual" : task.processId ? "Processo vinculado" : "Rotina";
         const meta = [originLabel, areaName, assigneeName, task.dueHint ?? task.dueDate ?? operationalDate].filter(Boolean).join(" · ");
@@ -1837,6 +1847,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           id: `api-${task.id}`,
           apiId: task.id,
           origin: task.origin,
+          routineId: task.routineId,
+          routineTitle: task.routineTitleSnapshot ?? apiBundle?.routines.find((routine) => routine.id === task.routineId)?.title ?? null,
           label: task.title,
           meta,
           prio: index === 0 ? "Alta" : "Média",
@@ -3991,6 +4003,23 @@ function ManagerDashboard({
   );
 }
 
+function TodayTaskButton({ task, toggleTask, nested = false }: { task: TodayTaskRow; toggleTask: (task: TodayTaskRow) => void; nested?: boolean }) {
+  return (
+    <button
+      className={`task-row rowh${nested ? " routine-task-row" : ""}`}
+      type="button"
+      onClick={() => toggleTask(task)}
+    >
+      <span className={`check ${task.done ? "done" : ""}`}>{task.submitting ? <Icon name="ph-clock" /> : task.done ? <Icon name="ph-check" bold /> : null}</span>
+      <span><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
+      {task.evid ? <Pill><Icon name="ph-camera" /> evidência</Pill> : null}
+      {task.status === "awaiting_approval" ? <Pill tone="warn">Enviado para aprovação</Pill> : null}
+      {task.status === "needs_adjustment" ? <Pill tone="danger">Devolvido</Pill> : null}
+      <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill>
+    </button>
+  );
+}
+
 function TodayPage({
   identity,
   dashboard,
@@ -4018,12 +4047,43 @@ function TodayPage({
   toggleTask: (task: TodayTaskRow) => void;
   go: (screen: Screen) => void;
 }) {
+  const [expandedRoutineIds, setExpandedRoutineIds] = useState<Set<string>>(() => new Set());
   const announcementRows = announcements.length ? announcements : [];
   const trainingRows = trainingAssignments.length ? trainingAssignments : [];
   const summary = dashboard?.employeeToday;
   const effectiveTasksDone = summary?.completed ?? tasksDone;
   const effectiveTaskTotal = summary?.total ?? taskRows.length;
   const effectiveTasksPct = summary && summary.total > 0 ? `${Math.round((summary.completed / summary.total) * 100)}%` : tasksPct;
+  const { manualTasks, routineGroups } = useMemo(() => {
+    const manualTasks: TodayTaskRow[] = [];
+    const routines = new Map<string, { id: string; title: string; tasks: TodayTaskRow[] }>();
+
+    for (const task of taskRows) {
+      if (!task.routineId) {
+        manualTasks.push(task);
+        continue;
+      }
+
+      const group = routines.get(task.routineId) ?? {
+        id: task.routineId,
+        title: task.routineTitle ?? "Rotina sem título",
+        tasks: []
+      };
+      group.tasks.push(task);
+      routines.set(task.routineId, group);
+    }
+
+    return { manualTasks, routineGroups: [...routines.values()] };
+  }, [taskRows]);
+
+  function toggleRoutineExpansion(routineId: string) {
+    setExpandedRoutineIds((current) => {
+      const next = new Set(current);
+      if (next.has(routineId)) next.delete(routineId);
+      else next.add(routineId);
+      return next;
+    });
+  }
 
   return (
     <div className="screen today-grid">
@@ -4040,21 +4100,38 @@ function TodayPage({
         </section>
         <section className="panel flush">
           <PanelHeader title="Tarefas de hoje" link={canCreateTask ? "Nova tarefa" : undefined} onLinkClick={createTask} />
-          {taskRows.length ? taskRows.map((task) => (
-            <button
-              className="task-row rowh"
-              key={task.id}
-              type="button"
-              onClick={() => toggleTask(task)}
-            >
-              <span className={`check ${task.done ? "done" : ""}`}>{task.submitting ? <Icon name="ph-clock" /> : task.done ? <Icon name="ph-check" bold /> : null}</span>
-              <span><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
-              {task.evid ? <Pill><Icon name="ph-camera" /> evidência</Pill> : null}
-              {task.status === "awaiting_approval" ? <Pill tone="warn">Enviado para aprovação</Pill> : null}
-              {task.status === "needs_adjustment" ? <Pill tone="danger">Devolvido</Pill> : null}
-              <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill>
-            </button>
-          )) : <EmptyState icon="ph-sun" title="Nenhuma tarefa para hoje" text="Quando uma rotina ou tarefa pontual gerar execução, ela aparece aqui para a equipe concluir." />}
+          {taskRows.length ? (
+            <div className="today-task-groups">
+              {manualTasks.length ? (
+                <div className="today-task-section">
+                  {routineGroups.length ? <p className="today-task-section-label">Tarefas pontuais</p> : null}
+                  {manualTasks.map((task) => <TodayTaskButton key={task.id} task={task} toggleTask={toggleTask} />)}
+                </div>
+              ) : null}
+              {routineGroups.map((routine) => {
+                const completed = routine.tasks.filter((task) => task.done).length;
+                const expanded = expandedRoutineIds.has(routine.id);
+                const needsEvidence = routine.tasks.some((task) => task.evid);
+
+                return (
+                  <div className="today-routine-group" key={routine.id}>
+                    <button
+                      aria-expanded={expanded}
+                      className="today-routine-head"
+                      type="button"
+                      onClick={() => toggleRoutineExpansion(routine.id)}
+                    >
+                      <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
+                      <span className="today-routine-copy"><strong>{routine.title}</strong><small>Rotina de hoje</small></span>
+                      {needsEvidence ? <Pill><Icon name="ph-camera" /> evidência em etapas</Pill> : null}
+                      <span className="today-routine-progress">{completed}/{routine.tasks.length} concluídas</span>
+                    </button>
+                    {expanded ? <div className="today-routine-tasks">{routine.tasks.map((task) => <TodayTaskButton key={task.id} task={task} toggleTask={toggleTask} nested />)}</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : <EmptyState icon="ph-sun" title="Nenhuma tarefa para hoje" text="Quando uma rotina ou tarefa pontual gerar execução, ela aparece aqui para a equipe concluir." />}
         </section>
         <section className="panel flush">
           <PanelHeader title="Pendências" />
@@ -4607,7 +4684,8 @@ function RoutinesPage({
     : isLiveWorkspace ? [] : checkRows;
   const routineDone = selectedTaskTemplates.length || isLiveWorkspace ? routineCheckRows.filter((check) => check.done).length : checkDone;
   const routinePct = routineCheckRows.length ? `${Math.round((routineDone / routineCheckRows.length) * 100)}%` : isLiveWorkspace ? "0%" : checkPct;
-  const selectedAreaName = selectedRoutine?.areaId ? areas.find((area) => area.id === selectedRoutine.areaId)?.name ?? selectedRoutine.areaId : "Empresa inteira";
+  const routineAreaNames = areaNameMap(areas);
+  const selectedAreaName = selectedRoutine?.areaId ? areaLabel(selectedRoutine.areaId, routineAreaNames) : "Empresa inteira";
   const routineAssigneeIds = selectedRoutine?.assigneeProfileIds?.length
     ? selectedRoutine.assigneeProfileIds
     : [...new Set(selectedTaskTemplates.map((task) => task.assigneeProfileId).filter((id): id is string => Boolean(id)))];
@@ -4619,7 +4697,7 @@ function RoutinesPage({
   const scheduleText = selectedRoutine ? routineScheduleLabel(selectedRoutine) : "Diária";
   const items = records.map((routine, index) => [
     routine.title,
-    routine.areaId ? `Área: ${areas.find((area) => area.id === routine.areaId)?.name ?? routine.areaId}` : "Empresa inteira",
+    routine.areaId ? `Área: ${areaLabel(routine.areaId, routineAreaNames)}` : "Empresa inteira",
     statusLabel(routine.status),
     index === safeIndex
   ] satisfies [string, string, string, boolean]);
