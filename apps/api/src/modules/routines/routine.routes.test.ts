@@ -198,6 +198,108 @@ describe("routine routes", () => {
     expect(technicalManagerGeneration.json().tasks).toHaveLength(1);
   });
 
+  it("reserves no-area routine lifecycle actions for owners", async () => {
+    const { app, headersFor } = await buildOperationalAccessApp();
+    const ownerHeaders = headersFor("profile_owner");
+    const noAreaRoutinePayload = {
+      title: "Rotina compartilhada do owner",
+      execution_mode: "shared",
+      task_templates: [{ title: "Executar rotina" }]
+    };
+
+    const technicalManagerCreate = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: noAreaRoutinePayload
+    });
+    const financeManagerCreate = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: headersFor("profile_gestor_financeiro"),
+      payload: noAreaRoutinePayload
+    });
+
+    for (const response of [technicalManagerCreate, financeManagerCreate]) {
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+      expect(response.json()).not.toHaveProperty("routine");
+    }
+
+    const ownerNoAreaRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: noAreaRoutinePayload
+    });
+    const noAreaRoutineId = ownerNoAreaRoutine.json().routine.id;
+    const technicalManagerGenerate = await app.inject({
+      method: "POST",
+      url: `/routines/${noAreaRoutineId}/occurrences/generate`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: { due_date: "2026-07-08" }
+    });
+    const financeManagerArchive = await app.inject({
+      method: "POST",
+      url: `/routines/${noAreaRoutineId}/archive`,
+      headers: headersFor("profile_gestor_financeiro")
+    });
+    const technicalManagerDelete = await app.inject({
+      method: "DELETE",
+      url: `/routines/${noAreaRoutineId}`,
+      headers: headersFor("profile_gestor_tecnico")
+    });
+    const ownerGenerate = await app.inject({
+      method: "POST",
+      url: `/routines/${noAreaRoutineId}/occurrences/generate`,
+      headers: ownerHeaders,
+      payload: { due_date: "2026-07-08" }
+    });
+
+    expect(ownerNoAreaRoutine.statusCode).toBe(201);
+    expect(technicalManagerGenerate.statusCode).toBe(403);
+    expect(technicalManagerGenerate.json()).not.toHaveProperty("tasks");
+    expect(financeManagerArchive.statusCode).toBe(403);
+    expect(financeManagerArchive.json()).not.toHaveProperty("routine");
+    expect(technicalManagerDelete.statusCode).toBe(403);
+    expect(ownerGenerate.statusCode).toBe(201);
+    expect(ownerGenerate.json().tasks).toHaveLength(1);
+
+    const technicalRoutine = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: ownerHeaders,
+      payload: {
+        title: "Rotina tecnica",
+        area_id: "area_tecnica",
+        task_templates: [{ title: "Executar rotina" }]
+      }
+    });
+    const technicalRoutineId = technicalRoutine.json().routine.id;
+    const moveToNoAreaPayload = {
+      title: "Mover rotina tecnica",
+      task_templates: [{ title: "Executar rotina" }]
+    };
+    const technicalManagerMove = await app.inject({
+      method: "PATCH",
+      url: `/routines/${technicalRoutineId}`,
+      headers: headersFor("profile_gestor_tecnico"),
+      payload: moveToNoAreaPayload
+    });
+    const financeManagerMove = await app.inject({
+      method: "PATCH",
+      url: `/routines/${technicalRoutineId}`,
+      headers: headersFor("profile_gestor_financeiro"),
+      payload: moveToNoAreaPayload
+    });
+
+    for (const response of [technicalManagerMove, financeManagerMove]) {
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
+      expect(response.json()).not.toHaveProperty("routine");
+    }
+  });
+
   it("scopes routine lifecycle mutations to the existing and requested areas", async () => {
     const { app, headersFor } = await buildOperationalAccessApp();
     const ownerHeaders = headersFor("profile_owner");
@@ -547,7 +649,7 @@ describe("routine routes", () => {
       method: "POST",
       url: "/routines",
       headers: managerHeaders,
-      payload: { title: "Original", task_templates: [{ title: "Executar" }] }
+      payload: { title: "Original", area_id: "area_tecnica", task_templates: [{ title: "Executar" }] }
     });
     const routine = created.json().routine;
     const response = await app.inject({
@@ -556,6 +658,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Atualizada",
+        area_id: "area_tecnica",
         task_templates: routine.taskTemplates.map((step: { id: string; title: string }) => ({
           id: step.id,
           title: step.title
@@ -577,6 +680,7 @@ describe("routine routes", () => {
         headers: managerHeaders,
         payload: {
           title: "Semanal",
+          area_id: "area_tecnica",
           frequency: "weekly",
           ...(weekdays === undefined ? {} : { weekdays }),
           task_templates: [{ title: "Executar" }]
@@ -593,7 +697,7 @@ describe("routine routes", () => {
       method: "POST",
       url: "/routines",
       headers: managerHeaders,
-      payload: { title: "Diaria", task_templates: [{ title: "Executar" }] }
+      payload: { title: "Diaria", area_id: "area_tecnica", task_templates: [{ title: "Executar" }] }
     });
     const response = await app.inject({
       method: "PATCH",
@@ -601,6 +705,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Semanal invalida",
+        area_id: "area_tecnica",
         frequency: "weekly",
         task_templates: created.json().routine.taskTemplates.map((step: { id: string; title: string }) => ({
           id: step.id,
@@ -808,6 +913,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Atualizar orquestrador",
+        area_id: "area_tecnica",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 09:00",
@@ -830,6 +936,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Atualizar orquestrador revisado",
+        area_id: "area_tecnica",
         frequency: "daily",
         weekdays: ["mon", "tue", "wed", "thu", "fri"],
         due_hint: "Até 10:00",
@@ -950,6 +1057,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Fechamento do dia",
+        area_id: "area_tecnica",
         task_templates: [
           {
             title: "Enviar relatório com evidência",
@@ -1060,6 +1168,7 @@ describe("routine routes", () => {
       headers: managerHeaders,
       payload: {
         title: "Organizar orquestrador",
+        area_id: "area_tecnica",
         task_templates: [
           {
             title: "Atualizar demandas do dia",

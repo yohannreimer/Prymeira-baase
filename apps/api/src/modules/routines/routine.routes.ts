@@ -120,7 +120,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createRoutineSchema.parse(request.body);
-    if (!canManageAreaResource(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
+    if (!canManageRoutineArea(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
     let routine;
     try {
       routine = await service.createRoutine(context.workspaceId, context.profileId, {
@@ -160,8 +160,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     try {
       const membership = requireOperationalMembership(request);
       const existingRoutine = await service.getRoutine(context.workspaceId, params.id);
-      if (!canManageAreaResource(membership, existingRoutine.areaId)) throw scopeForbidden();
-      if (!canManageAreaResource(membership, body.area_id ?? null)) throw scopeForbidden();
+      if (!canManageRoutineArea(membership, existingRoutine.areaId)) throw scopeForbidden();
+      if (!canManageRoutineArea(membership, body.area_id ?? null)) throw scopeForbidden();
       routine = await service.updateRoutine(context.workspaceId, params.id, {
         title: body.title,
         areaId: body.area_id,
@@ -196,7 +196,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     try {
       const routine = await service.getRoutine(context.workspaceId, params.id);
-      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
+      if (!canManageRoutineArea(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
       return { routine: await service.archiveRoutine(context.workspaceId, params.id) };
     } catch (error) {
       throw routineMutationError(error);
@@ -211,7 +211,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
     try {
       const routine = await service.getRoutine(context.workspaceId, params.id);
-      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
+      if (!canManageRoutineArea(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
       await service.deleteRoutine(context.workspaceId, params.id);
       return { ok: true };
     } catch (error) {
@@ -227,7 +227,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const body = generateOccurrencesSchema.parse(request.body);
     try {
       const routine = await service.getRoutine(context.workspaceId, params.id);
-      if (!canManageAreaResource(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
+      if (!canManageRoutineArea(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
       const tasks = await service.generateRoutineOccurrences(context.workspaceId, params.id, body.due_date);
       return reply.status(201).send({ tasks });
     } catch (error) {
@@ -407,6 +407,10 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
 function scopeForbidden() {
   return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
+}
+
+function canManageRoutineArea(membership: OperationalMembership, areaId: string | null) {
+  return membership.role === "owner" || (areaId !== null && canManageAreaResource(membership, areaId));
 }
 
 function assertCanExecuteTask(
