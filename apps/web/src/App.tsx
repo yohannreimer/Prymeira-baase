@@ -1555,6 +1555,7 @@ function ActivationPlanPanel({
 export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const accountMode = readBaaseAuthConfig(import.meta.env).mode === "account";
   const [role, setRoleState] = useState<Role>(initialRole);
+  const [previewRole, setPreviewRole] = useState<Role | null>(null);
   const [screen, setScreen] = useState<Screen>(homeFor(initialRole));
   const [menuOpen, setMenuOpen] = useState(false);
   const [tasks, setTasks] = useState<Record<string, boolean>>({ t1: false, t2: true, t3: false, t4: false });
@@ -1665,14 +1666,15 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }, [notice]);
 
   const liveWorkspaceMode = apiEnabled;
-  const identity = identityFromSession(role, apiBundle?.session ?? null, liveWorkspaceMode);
+  const presentationRole = accountMode && role === "dono" && previewRole ? previewRole : role;
+  const identity = identityFromSession(presentationRole, apiBundle?.session ?? null, liveWorkspaceMode);
   const workspaceName = apiBundle?.session.workspace.name?.trim()
     || onboardingSession?.companyName?.trim()
     || (liveWorkspaceMode ? "Sua empresa" : "Estúdio Norte");
   const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
-  const baseNav = navByRole[role];
+  const baseNav = navByRole[presentationRole];
   const visibleProcesses = useMemo(() => {
     const loaded = apiBundle?.processes ?? [];
     return [...createdProcesses, ...loaded.filter((process) => !createdProcesses.some((created) => created.id === process.id))];
@@ -1807,6 +1809,12 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   function setRole(nextRole: Role) {
     if (accountMode) return;
     setRoleState(nextRole);
+    setScreen(homeFor(nextRole));
+    setMenuOpen(false);
+  }
+
+  function setPreview(nextRole: Role) {
+    setPreviewRole(nextRole === role ? null : nextRole);
     setScreen(homeFor(nextRole));
     setMenuOpen(false);
   }
@@ -3243,6 +3251,16 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               ["func", "Funcionário"]
             ].map(([key, label]) => (
               <button key={key} className={role === key ? "active" : ""} type="button" onClick={() => setRole(key as Role)}>
+                {label}
+              </button>
+            ))}
+          </div> : role === "dono" ? <div className="role-switch" aria-label="Prévia de visualização">
+            {[
+              ["dono", "Dono"],
+              ["gestor", "Gestor"],
+              ["func", "Funcionário"]
+            ].map(([key, label]) => (
+              <button key={key} className={presentationRole === key ? "active" : ""} type="button" onClick={() => setPreview(key as Role)}>
                 {label}
               </button>
             ))}
