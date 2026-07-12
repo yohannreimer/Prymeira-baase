@@ -3,6 +3,9 @@ import { buildApp } from "./app";
 import type { BaaseRuntimeConfig } from "./config/runtime";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
 
+const inMemoryObjectStorage = { provider: "memory" as const, s3: null };
+const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
+
 describe("Baase API app", () => {
   it("responds to health checks", async () => {
     const app = buildApp();
@@ -24,11 +27,13 @@ describe("Baase API app", () => {
         accountApiUrl: null
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -45,6 +50,8 @@ describe("Baase API app", () => {
         account_api_configured: false
       },
       persistence: "postgres",
+      operational_store: "jsonb",
+      object_storage: "memory",
       demo_seed_enabled: false,
       ai: {
         structured: "openai",
@@ -77,7 +84,9 @@ describe("Baase API app", () => {
         role: "manager",
         display_name: "Rafael Nunes",
         initials: "RN",
-        area_name: "Criação"
+        area_name: "Criação",
+        area_names: [],
+        access_scope: "workspace"
       },
       home_route: "/gestor"
     });
@@ -92,11 +101,13 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -107,6 +118,11 @@ describe("Baase API app", () => {
           url: String(input),
           authorization: new Headers(init?.headers).get("authorization")
         });
+        if (String(input).endsWith("/me/products")) {
+          return new Response(JSON.stringify({
+            customer: { email: "yohann@example.com", name: "Yohann Reimer" }
+          }), { status: 200 });
+        }
         return new Response(JSON.stringify({
           allowed: true,
           workspace_id: "hub_workspace",
@@ -126,7 +142,7 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token",
+        authorization: accountBearer("user_yohann"),
         "x-baase-workspace-id": "spoofed_workspace",
         "x-baase-profile-id": "spoofed_profile",
         "x-baase-role": "employee"
@@ -134,24 +150,116 @@ describe("Baase API app", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(accountRequests).toEqual([{
-      url: "https://hub.prymeiradigital.com.br/api/access-check?product_key=base",
-      authorization: "Bearer clerk-token"
-    }]);
+    expect(accountRequests).toEqual([
+      {
+        url: "https://hub.prymeiradigital.com.br/api/access-check?product_key=base",
+        authorization: accountBearer("user_yohann")
+      },
+      {
+        url: "https://hub.prymeiradigital.com.br/api/me/products",
+        authorization: accountBearer("user_yohann")
+      }
+    ]);
     expect(response.json()).toEqual({
       workspace: {
         id: "hub_workspace",
         name: "Estúdio Aurora"
       },
       profile: {
-        id: "account_customer_123",
+        id: "person_1",
         role: "owner",
         display_name: "Yohann Reimer",
         initials: "YR",
-        area_name: null
+        area_name: null,
+        area_names: [],
+        access_scope: "workspace"
       },
       home_route: "/painel"
     });
+  });
+
+  it("sends production invitations through the Account Hub before storing operational context", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    await companyRepository.createTeamMember({
+      workspaceId: "hub_workspace",
+      name: "Dona",
+      email: "owner@example.com",
+      role: "owner",
+      areaId: null,
+      areaAccessIds: [],
+      roleTemplateId: null,
+      accessScope: "workspace",
+      clerkUserId: "user_owner",
+      customerId: "customer_owner",
+      createdByProfileId: "user_owner"
+    });
+    const runtimeConfig: BaaseRuntimeConfig = {
+      mode: "production",
+      auth: { mode: "account", accountApiUrl: "https://hub.prymeiradigital.com.br/api" },
+      persistence: "postgres",
+      operationalStore: "jsonb",
+      demoSeedEnabled: false,
+      ai: { structured: "openai", transcription: "deepgram" },
+      objectStorage: inMemoryObjectStorage,
+      ok: true,
+      warnings: []
+    };
+    const accountTeamRequests: Array<{ url: string; body: string | null }> = [];
+    const app = buildApp({
+      runtimeConfig,
+      companyRepository,
+      accountAccessFetch: async () => new Response(JSON.stringify({
+        allowed: true,
+        workspace_id: "hub_workspace",
+        workspace_name: "Empresa Hub",
+        workspace_role: "owner",
+        product_key: "base",
+        product_role: "admin",
+        customer_id: "customer_owner",
+        customer_name: "Dona",
+        status: "active",
+        reason: "active_entitlement"
+      }), { status: 200 }),
+      accountTeamFetch: async (input, init) => {
+        const body = typeof init?.body === "string" ? init.body : null;
+        accountTeamRequests.push({ url: String(input), body });
+        if (body?.includes("falha@example.com")) return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify({ status: "pending", invitation: { id: "hub_invite_1" } }), { status: 200 });
+      }
+    });
+    const headers = { authorization: accountBearer("user_owner") };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers,
+      payload: { name: "Ana", email: "ana@example.com", role: "employee", access_scope: "assigned_only" }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(accountTeamRequests).toEqual([{
+      url: "https://hub.prymeiradigital.com.br/api/team/members/invite",
+      body: JSON.stringify({ email: "ana@example.com", name: "Ana", role: "member", product_key: "base" })
+    }]);
+    expect(response.json().invite).toMatchObject({
+      email: "ana@example.com",
+      hubInvitationId: "hub_invite_1",
+      hubStatus: "pending",
+      status: "pending"
+    });
+
+    const failedInvite = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers,
+      payload: { name: "Falha", email: "falha@example.com", role: "employee" }
+    });
+    expect(failedInvite.statusCode).toBe(502);
+    expect((await companyRepository.listTeamInvites("hub_workspace"))).toHaveLength(1);
+
+    const legacyResponse = await app.inject({ method: "POST", url: "/invites/BAASE-0001/accept" });
+    expect(legacyResponse.statusCode).toBe(410);
+    expect(legacyResponse.json().error.code).toBe("LEGACY_INVITE_FLOW_DISABLED");
   });
 
   it("keeps health probes anonymous under Account runtime", async () => {
@@ -162,11 +270,13 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -186,7 +296,7 @@ describe("Baase API app", () => {
     expect(readinessResponse.statusCode).toBe(200);
   });
 
-  it("uses neutral labels when Account Hub has no workspace or customer identity", async () => {
+  it("rejects an incomplete Account Hub authorization response", async () => {
     const runtimeConfig: BaaseRuntimeConfig = {
       mode: "production",
       auth: {
@@ -194,11 +304,13 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -219,17 +331,16 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token"
+        authorization: accountBearer("user_missing_customer")
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      workspace: {
-        name: "Empresa em configuração"
-      },
-      profile: {
-        display_name: "Usuário"
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: {
+        code: "ACCOUNT_AUTH_INVALID_RESPONSE",
+        message: "Account Hub autorizou acesso sem workspace.",
+        details: {}
       }
     });
   });
@@ -242,11 +353,13 @@ describe("Baase API app", () => {
         accountApiUrl: "https://hub.prymeiradigital.com.br/api"
       },
       persistence: "postgres",
+      operationalStore: "jsonb",
       demoSeedEnabled: false,
       ai: {
         structured: "openai",
         transcription: "deepgram"
       },
+      objectStorage: inMemoryObjectStorage,
       ok: true,
       warnings: []
     };
@@ -265,7 +378,7 @@ describe("Baase API app", () => {
       method: "GET",
       url: "/me",
       headers: {
-        authorization: "Bearer clerk-token"
+        authorization: accountBearer("user_denied")
       }
     });
 
@@ -341,7 +454,7 @@ describe("Baase API app", () => {
         name: "Responsável Financeiro e Administrativo"
       }
     });
-    await app.inject({
+    const personResponse = await app.inject({
       method: "POST",
       url: "/people",
       headers,
@@ -354,11 +467,15 @@ describe("Baase API app", () => {
       }
     });
 
-    const response = await app.inject({ method: "GET", url: "/me", headers });
+    const response = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { ...headers, "x-baase-profile-id": personResponse.json().person.id }
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.json().profile).toMatchObject({
-      id: "profile_owner",
+      id: personResponse.json().person.id,
       role: "owner",
       display_name: "Yohann Reimer",
       initials: "YR",
@@ -393,6 +510,13 @@ describe("Baase API app", () => {
       "x-baase-profile-id": "profile_owner",
       "x-baase-role": "owner"
     };
+    const areaResponse = await app.inject({
+      method: "POST",
+      url: "/areas",
+      headers,
+      payload: { name: "Criação" }
+    });
+    expect(areaResponse.statusCode).toBe(201);
 
     const createResponse = await app.inject({
       method: "POST",
@@ -402,7 +526,7 @@ describe("Baase API app", () => {
         name: "Bianca Ramos",
         email: "bianca@estudionorte.com",
         role: "employee",
-        area_id: "area_criacao"
+        area_id: areaResponse.json().area.id
       }
     });
     const listResponse = await app.inject({ method: "GET", url: "/invites", headers });

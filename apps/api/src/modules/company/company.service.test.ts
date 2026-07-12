@@ -64,4 +64,44 @@ describe("company service", () => {
       })
     ).rejects.toThrow("AREA_NOT_FOUND");
   });
+
+  it("rejects invites with a missing area or a role from another area", async () => {
+    const service = createCompanyService(createInMemoryCompanyRepository());
+    const operations = await service.createArea("workspace_a", { name: "Operações" });
+    const finance = await service.createArea("workspace_a", { name: "Financeiro" });
+    const role = await service.createRoleTemplate("workspace_a", { areaId: operations.id, name: "Analista" });
+
+    await expect(service.createTeamInvite("workspace_a", {
+      name: "Ana", role: "employee", areaId: "area_missing", createdByProfileId: "owner_1"
+    })).rejects.toThrow("AREA_NOT_FOUND");
+
+    await expect(service.createTeamInvite("workspace_a", {
+      name: "Ana", role: "employee", areaId: finance.id, roleTemplateId: role.id, createdByProfileId: "owner_1"
+    })).rejects.toThrow("ROLE_TEMPLATE_AREA_MISMATCH");
+  });
+
+  it("keeps a Clerk identity unique and preserves multiple accessible areas", async () => {
+    const repository = createInMemoryCompanyRepository();
+    const service = createCompanyService(repository);
+    const finance = await service.createArea("workspace_a", { name: "Financeiro" });
+    const operations = await service.createArea("workspace_a", { name: "Operações" });
+
+    const person = await service.createTeamMember("workspace_a", {
+      name: "Ana", email: "ana@example.com", role: "manager", areaId: finance.id,
+      areaAccessIds: [finance.id, operations.id], accessScope: "area",
+      clerkUserId: "user_ana", customerId: "customer_ana", createdByProfileId: "person_owner"
+    });
+
+    expect(person).toMatchObject({
+      clerkUserId: "user_ana",
+      customerId: "customer_ana",
+      accessScope: "area",
+      areaAccessIds: [finance.id, operations.id]
+    });
+
+    await expect(service.createTeamMember("workspace_a", {
+      name: "Ana duplicada", email: "another@example.com", role: "employee",
+      clerkUserId: "user_ana", createdByProfileId: "person_owner"
+    })).rejects.toThrow("TEAM_MEMBER_CLERK_ID_CONFLICT");
+  });
 });

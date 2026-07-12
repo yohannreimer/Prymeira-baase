@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import { ZodError } from "zod";
 import { BAASE_PRODUCT_KEY } from "@prymeira/baase-shared";
 import { readRuntimeConfig, type BaaseRuntimeConfig } from "./config/runtime";
@@ -13,8 +14,9 @@ import { registerAnnouncementRoutes } from "./modules/announcements/announcement
 import { createInMemoryAnnouncementRepository } from "./modules/announcements/in-memory-announcement.repository";
 import type { AnnouncementRepository } from "./modules/announcements/announcement.types";
 import { registerCompanyRoutes } from "./modules/company/company.routes";
+import { createInMemoryAreaLifecycleRepository } from "./modules/company/area-lifecycle.service";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
-import type { CompanyRepository } from "./modules/company/company.types";
+import type { AreaLifecycleRepository, CompanyRepository } from "./modules/company/company.types";
 import { registerDashboardRoutes } from "./modules/dashboard/dashboard.routes";
 import { registerOnboardingRoutes } from "./modules/onboarding/onboarding.routes";
 import { createInMemoryOnboardingRepository } from "./modules/onboarding/in-memory-onboarding.repository";
@@ -22,6 +24,9 @@ import type { OnboardingRepository } from "./modules/onboarding/onboarding.types
 import { registerProcessRoutes } from "./modules/processes/process.routes";
 import { createInMemoryProcessRepository } from "./modules/processes/in-memory-process.repository";
 import type { ProcessRepository } from "./modules/processes/process.types";
+import { registerProcessMaterialRoutes } from "./modules/processes/process-material.routes";
+import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
+import type { ObjectStorage } from "./storage/object-storage";
 import { registerRoutineRoutes } from "./modules/routines/routine.routes";
 import { createInMemoryRoutineRepository } from "./modules/routines/in-memory-routine.repository";
 import type { RoutineRepository } from "./modules/routines/routine.types";
@@ -39,7 +44,9 @@ import {
 
 export type BuildAppOptions = {
   companyRepository?: CompanyRepository;
+  areaLifecycleRepository?: AreaLifecycleRepository;
   processRepository?: ProcessRepository;
+  objectStorage?: ObjectStorage;
   routineRepository?: RoutineRepository;
   trainingRepository?: TrainingRepository;
   announcementRepository?: AnnouncementRepository;
@@ -49,6 +56,7 @@ export type BuildAppOptions = {
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   accountAccessFetch?: typeof fetch;
+  accountTeamFetch?: typeof fetch;
 };
 
 const API_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
@@ -62,9 +70,15 @@ export function buildApp(options: BuildAppOptions = {}) {
   const processRepository = options.processRepository ?? createInMemoryProcessRepository({
     initialProcesses: options.seedDemoData ? createLocalDemoProcesses() : undefined
   });
+  const objectStorage = options.objectStorage ?? createInMemoryObjectStorage();
   const routineRepository = options.routineRepository ?? createInMemoryRoutineRepository({
     initialRoutines: options.seedDemoData ? createLocalDemoRoutines() : undefined,
     initialTasks: options.seedDemoData ? createLocalDemoTasks() : undefined
+  });
+  const areaLifecycleRepository = options.areaLifecycleRepository ?? createInMemoryAreaLifecycleRepository({
+    companyRepository,
+    processRepository,
+    routineRepository
   });
   const trainingRepository = options.trainingRepository ?? createInMemoryTrainingRepository({
     initialTrainings: options.seedDemoData ? createLocalDemoTrainings() : undefined
@@ -80,9 +94,13 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(cors, {
     origin: true
   });
+  app.register(multipart, {
+    limits: { fileSize: 25 * 1024 * 1024, files: 1 }
+  });
 
   registerAccountAuthHook(app, {
     runtimeConfig,
+    companyRepository,
     fetcher: options.accountAccessFetch
   });
 
@@ -107,6 +125,16 @@ export function buildApp(options: BuildAppOptions = {}) {
       });
     }
 
+    if (error instanceof Error && ["INVITE_CODE_CONFLICT", "INVITE_STALE", "PROCESS_STALE", "ROUTINE_STALE", "TASK_OCCURRENCE_STALE"].includes(error.message)) {
+      return reply.status(409).send({
+        error: {
+          code: error.message,
+          message: "O registro mudou durante a operação. Atualize e tente novamente.",
+          details: {}
+        }
+      });
+    }
+
     if (error instanceof ZodError) {
       return reply.status(400).send({
         error: {
@@ -124,7 +152,7 @@ export function buildApp(options: BuildAppOptions = {}) {
 
     const fastifyError = error as { statusCode?: unknown; code?: unknown };
     const statusCode = typeof fastifyError.statusCode === "number" ? fastifyError.statusCode : null;
-    if (statusCode === 413 || fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+    if (statusCode === 413 || fastifyError.code === "FST_ERR_CTP_BODY_TOO_LARGE" || fastifyError.code === "FST_REQ_FILE_TOO_LARGE") {
       return reply.status(413).send({
         error: {
           code: "PAYLOAD_TOO_LARGE",
@@ -170,13 +198,19 @@ export function buildApp(options: BuildAppOptions = {}) {
       account_api_configured: Boolean(runtimeConfig.auth.accountApiUrl)
     },
     persistence: runtimeConfig.persistence,
+    operational_store: runtimeConfig.operationalStore,
+    object_storage: runtimeConfig.objectStorage.provider,
     demo_seed_enabled: runtimeConfig.demoSeedEnabled,
     ai: runtimeConfig.ai,
     warnings: runtimeConfig.warnings
   }));
 
   app.register((routes) => registerSessionRoutes(routes, onboardingRepository, companyRepository));
-  app.register((routes) => registerCompanyRoutes(routes, companyRepository));
+  app.register((routes) => registerCompanyRoutes(routes, companyRepository, areaLifecycleRepository, {
+    authMode: runtimeConfig.auth.mode,
+    accountApiUrl: runtimeConfig.auth.accountApiUrl,
+    accountTeamFetch: options.accountTeamFetch
+  }));
   app.register((routes) => registerDashboardRoutes(routes, {
     companyRepository,
     processRepository,
@@ -193,7 +227,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     aiRepository,
     aiProvider
   }));
-  app.register((routes) => registerProcessRoutes(routes, processRepository));
+  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository));
+  app.register((routes) => registerProcessMaterialRoutes(routes, processRepository, objectStorage));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     trainingRepository,
     announcementRepository

@@ -6,8 +6,10 @@ import type {
   CreateTeamInviteInput,
   CreateTeamMemberInput,
   UpdateAreaInput,
-  UpdateTeamMemberInput
+  UpdateTeamMemberInput,
+  TeamMember
 } from "./company.types";
+import { normalizeAccessScope, normalizeAreaAccessIds } from "./company.types";
 
 function normalizeRequiredName(value: string, errorCode: string) {
   const name = value.trim();
@@ -25,6 +27,12 @@ function normalizeOptionalEmail(value: string | null | undefined) {
   if (!email) return null;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("TEAM_MEMBER_EMAIL_INVALID");
   return email;
+}
+
+async function validateAreaAccess(repository: CompanyRepository, workspaceId: string, areaIds: string[]) {
+  for (const areaId of areaIds) {
+    if (!await repository.findAreaById(workspaceId, areaId)) throw new Error("AREA_NOT_FOUND");
+  }
 }
 
 export function createCompanyService(repository: CompanyRepository) {
@@ -57,40 +65,17 @@ export function createCompanyService(repository: CompanyRepository) {
       if (!area) throw new Error("AREA_NOT_FOUND");
 
       const roleTemplates = await repository.listRoleTemplates(workspaceId);
-      const roleTemplateIds = new Set(
-        roleTemplates.filter((roleTemplate) => roleTemplate.areaId === areaId).map((roleTemplate) => roleTemplate.id)
-      );
+      const roleTemplateIds = new Set(roleTemplates
+        .filter((roleTemplate) => roleTemplate.areaId === areaId)
+        .map((roleTemplate) => roleTemplate.id));
       const teamMembers = await repository.listTeamMembers(workspaceId);
       const teamInvites = await repository.listTeamInvites(workspaceId);
-
-      await Promise.all(teamMembers.map((member) => {
-        const hasDeletedArea = member.areaId === areaId;
-        const hasDeletedRole = member.roleTemplateId ? roleTemplateIds.has(member.roleTemplateId) : false;
-        if (!hasDeletedArea && !hasDeletedRole) return Promise.resolve(member);
-
-        return repository.updateTeamMember({
-          ...member,
-          areaId: hasDeletedArea ? null : member.areaId,
-          roleTemplateId: hasDeletedRole ? null : member.roleTemplateId
-        });
-      }));
-
-      await Promise.all(teamInvites.map((invite) => {
-        const hasDeletedArea = invite.areaId === areaId;
-        const hasDeletedRole = invite.roleTemplateId ? roleTemplateIds.has(invite.roleTemplateId) : false;
-        if (!hasDeletedArea && !hasDeletedRole) return Promise.resolve(invite);
-
-        return repository.updateTeamInvite({
-          ...invite,
-          areaId: hasDeletedArea ? null : invite.areaId,
-          roleTemplateId: hasDeletedRole ? null : invite.roleTemplateId,
-          accessScope: (hasDeletedArea && invite.accessScope === "area") || (hasDeletedRole && invite.accessScope === "assigned_only")
-            ? "workspace"
-            : invite.accessScope
-        });
-      }));
-
-      await Promise.all([...roleTemplateIds].map((roleTemplateId) => repository.deleteRoleTemplate(workspaceId, roleTemplateId)));
+      const hasCompanyLinks = roleTemplateIds.size > 0
+        || teamMembers.some((member) => member.areaId === areaId
+          || Boolean(member.roleTemplateId && roleTemplateIds.has(member.roleTemplateId)))
+        || teamInvites.some((invite) => invite.status === "pending" && (invite.areaId === areaId
+          || Boolean(invite.roleTemplateId && roleTemplateIds.has(invite.roleTemplateId))));
+      if (hasCompanyLinks) throw new Error("AREA_ARCHIVE_RESOLUTION_REQUIRED");
       await repository.deleteArea(workspaceId, areaId);
 
       return area;
@@ -161,13 +146,21 @@ export function createCompanyService(repository: CompanyRepository) {
         if (input.areaId && roleTemplate.areaId !== input.areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
       }
 
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds ?? current.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope ?? current.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.updateTeamMember({
         ...current,
         name: normalizeRequiredName(input.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
+        accessScope,
         status: input.status ?? current.status
       });
     },
@@ -178,13 +171,23 @@ export function createCompanyService(repository: CompanyRepository) {
         if (!area) throw new Error("AREA_NOT_FOUND");
       }
 
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.createTeamMember({
         workspaceId,
         name: normalizeRequiredName(input.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
+        accessScope,
+        clerkUserId: normalizeOptionalText(input.clerkUserId),
+        customerId: normalizeOptionalText(input.customerId),
         status: input.status ?? "active",
         createdByProfileId: input.createdByProfileId
       });
@@ -207,14 +210,34 @@ export function createCompanyService(repository: CompanyRepository) {
     },
 
     async createTeamInvite(workspaceId: string, input: CreateTeamInviteInput) {
+      if (input.areaId) {
+        const area = await repository.findAreaById(workspaceId, input.areaId);
+        if (!area) throw new Error("AREA_NOT_FOUND");
+      }
+
+      if (input.roleTemplateId) {
+        const roleTemplate = (await repository.listRoleTemplates(workspaceId)).find((item) => item.id === input.roleTemplateId);
+        if (!roleTemplate) throw new Error("ROLE_TEMPLATE_NOT_FOUND");
+        if (input.areaId && roleTemplate.areaId !== input.areaId) throw new Error("ROLE_TEMPLATE_AREA_MISMATCH");
+      }
+
+      const areaId = normalizeOptionalText(input.areaId);
+      const areaAccessIds = normalizeAreaAccessIds(areaId, input.areaAccessIds);
+      await validateAreaAccess(repository, workspaceId, areaAccessIds);
+      const accessScope = normalizeAccessScope(input.role, input.accessScope);
+      if (accessScope === "area" && areaAccessIds.length === 0) throw new Error("TEAM_MEMBER_AREA_ACCESS_REQUIRED");
+
       return repository.createTeamInvite({
         workspaceId,
         name: normalizeRequiredName(input.name, "INVITE_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email),
         role: input.role,
-        areaId: normalizeOptionalText(input.areaId),
+        areaId,
+        areaAccessIds,
         roleTemplateId: normalizeOptionalText(input.roleTemplateId),
-        accessScope: input.accessScope ?? "workspace",
+        accessScope,
+        hubInvitationId: normalizeOptionalText(input.hubInvitationId),
+        hubStatus: input.hubStatus ?? null,
         createdByProfileId: input.createdByProfileId
       });
     },
@@ -222,22 +245,32 @@ export function createCompanyService(repository: CompanyRepository) {
     async acceptTeamInvite(code: string, input: AcceptTeamInviteInput = {}) {
       const invite = await repository.findTeamInviteByCode(code.trim().toUpperCase());
       if (!invite) throw new Error("INVITE_NOT_FOUND");
-      if (invite.status !== "pending") throw new Error("INVITE_ALREADY_ACCEPTED");
-
-      const member = await repository.createTeamMember({
+      const memberInput = {
         workspaceId: invite.workspaceId,
         name: normalizeRequiredName(input.name ?? invite.name, "TEAM_MEMBER_NAME_REQUIRED"),
         email: normalizeOptionalEmail(input.email ?? invite.email),
         role: invite.role,
         areaId: invite.areaId,
+        areaAccessIds: normalizeAreaAccessIds(invite.areaId, invite.areaAccessIds),
         roleTemplateId: invite.roleTemplateId,
-        status: "active",
+        accessScope: normalizeAccessScope(invite.role, invite.accessScope),
+        clerkUserId: null,
+        customerId: null,
+        status: "active" as const,
         createdByProfileId: normalizeOptionalText(input.acceptedByProfileId) ?? invite.createdByProfileId
-      });
+      };
+
+      if (repository.acceptTeamInviteAtomically) {
+        return repository.acceptTeamInviteAtomically(invite, memberInput);
+      }
+      const member = await repository.createTeamMember(memberInput);
 
       const acceptedInvite = await repository.updateTeamInvite({
         ...invite,
         status: "accepted"
+      }, {
+        updatedAt: invite.updatedAt,
+        status: invite.status
       });
 
       return {
@@ -250,7 +283,10 @@ export function createCompanyService(repository: CompanyRepository) {
       const invite = (await repository.listTeamInvites(workspaceId)).find((item) => item.id === inviteId);
       if (!invite) throw new Error("INVITE_NOT_FOUND");
 
-      await repository.deleteTeamInvite(workspaceId, inviteId);
+      await repository.deleteTeamInvite(workspaceId, inviteId, {
+        updatedAt: invite.updatedAt,
+        status: invite.status
+      });
       return invite;
     }
   };

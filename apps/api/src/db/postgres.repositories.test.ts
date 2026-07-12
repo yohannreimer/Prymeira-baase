@@ -1,4 +1,4 @@
-import { newDb } from "pg-mem";
+import { DataType, newDb } from "pg-mem";
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../app";
 import type { CreateOnboardingSessionInput, OnboardingSetupSuggestion } from "../modules/onboarding/onboarding.types";
@@ -16,6 +16,18 @@ const employeeHeaders = {
   "x-baase-profile-id": "profile_employee",
   "x-baase-role": "employee"
 };
+
+function createMemoryPool() {
+  const db = newDb();
+  db.public.registerFunction({
+    name: "pg_advisory_xact_lock",
+    args: [DataType.integer, DataType.integer],
+    returns: DataType.integer,
+    implementation: () => 1
+  });
+  const { Pool } = db.adapters.createPg();
+  return new Pool();
+}
 
 function createOnboardingSessionInput(
   overrides: Partial<CreateOnboardingSessionInput> = {}
@@ -79,9 +91,7 @@ function createOnboardingSetupSuggestion(): OnboardingSetupSuggestion {
 
 describe("Postgres repositories", () => {
   it("creates new records after deletions without reusing sparse ids", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
     const app = buildApp(createPostgresRepositoryBundle(pool));
 
@@ -119,9 +129,7 @@ describe("Postgres repositories", () => {
   });
 
   it("persists operational data across app instances", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const firstApp = buildApp({
@@ -269,9 +277,7 @@ describe("Postgres repositories", () => {
   });
 
   it("resets only the selected workspace records", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const app = buildApp(createPostgresRepositoryBundle(pool));
@@ -335,9 +341,7 @@ describe("Postgres repositories", () => {
   });
 
   it("persists training assignments and announcements across app instances", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const firstApp = buildApp(createPostgresRepositoryBundle(pool));
@@ -411,9 +415,7 @@ describe("Postgres repositories", () => {
   });
 
   it("persists onboarding sessions across repository instances", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const firstBundle = createPostgresRepositoryBundle(pool);
@@ -452,9 +454,7 @@ describe("Postgres repositories", () => {
   });
 
   it("advances onboarding session updatedAt when the system clock is tied or regresses", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const bundle = createPostgresRepositoryBundle(pool);
@@ -492,9 +492,7 @@ describe("Postgres repositories", () => {
   });
 
   it("atomically claims onboarding completion across repository instances", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const firstBundle = createPostgresRepositoryBundle(pool);
@@ -521,9 +519,7 @@ describe("Postgres repositories", () => {
   });
 
   it("rejects stale onboarding session updates after a completion claim", async () => {
-    const db = newDb();
-    const { Pool } = db.adapters.createPg();
-    const pool = new Pool();
+    const pool = createMemoryPool();
     await ensurePostgresSchema(pool);
 
     const firstBundle = createPostgresRepositoryBundle(pool);

@@ -29,6 +29,27 @@ describe("process service", () => {
     });
   });
 
+  it("creates a process with one repository mutation and real initial version identity", async () => {
+    const base = createInMemoryProcessRepository();
+    let updates = 0;
+    const service = createProcessService({
+      ...base,
+      async updateProcess(process) {
+        updates += 1;
+        return base.updateProcess(process);
+      }
+    });
+
+    const process = await service.createProcess("workspace_a", "profile_owner", {
+      title: "Processo atomico",
+      body: "Uma unica gravacao."
+    });
+
+    expect(updates).toBe(0);
+    expect(process.currentVersion.processId).toBe(process.id);
+    expect(process.currentVersion.id).toBe(`version_${process.id}_1`);
+  });
+
   it("creates a new version when process content changes", async () => {
     const service = createProcessService(createInMemoryProcessRepository());
     const process = await service.createProcess("workspace_a", "profile_owner", {

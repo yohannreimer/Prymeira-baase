@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createAnnouncementService } from "./announcement.service";
 import type { AnnouncementRepository } from "./announcement.types";
 
@@ -51,15 +52,17 @@ export async function registerAnnouncementRoutes(app: FastifyInstance, repositor
 
   app.get("/announcements", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     if (canManageKnowledge(context.role)) {
-      return { announcements: await service.listAnnouncements(context.workspaceId) };
+      const announcements = await service.listAnnouncements(context.workspaceId);
+      return { announcements: announcements.filter((announcement) => canReadAudience(membership, announcement.audience)) };
     }
 
     const announcements = await service.listAnnouncementsForProfile(context.workspaceId, {
       profileId: context.profileId,
       role: context.role
     });
-    return { announcements };
+    return { announcements: announcements.filter((announcement) => canReadAudience(membership, announcement.audience)) };
   });
 
   app.post("/announcements", async (request, reply) => {
@@ -67,6 +70,7 @@ export async function registerAnnouncementRoutes(app: FastifyInstance, repositor
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = announcementSchema.parse(request.body);
+    if (!canManageAudience(requireOperationalMembership(request), body)) throw scopeForbidden();
     const announcement = await service.createAnnouncement(context.workspaceId, context.profileId, {
       title: body.title,
       body: body.body,
@@ -142,6 +146,18 @@ export async function registerAnnouncementRoutes(app: FastifyInstance, repositor
     });
     return { receipts };
   });
+}
+
+function canReadAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { type: string; areaId?: string }) {
+  return audience.type !== "area" || canReadAreaResource(member, audience.areaId ?? null);
+}
+
+function canManageAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { audience_type: string; area_id?: string | null }) {
+  return audience.audience_type !== "area" || canManageAreaResource(member, audience.area_id ?? null);
+}
+
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
 }
 
 function readAnnouncementAudience(body: z.infer<typeof announcementSchema>) {

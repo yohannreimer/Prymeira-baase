@@ -2024,8 +2024,8 @@ describe("Baase React app shell", () => {
       if (url === "/api/processes/process_9/publish") {
         return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas", status: "published", summary: "Fluxo de revisão" } }), { status: 200 });
       }
-      if (url === "/api/processes/process_9/versions") {
-        return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas v2", status: "published", summary: "Fluxo revisado" } }), { status: 201 });
+      if (url === "/api/processes/process_9" && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ process: { id: "process_9", title: "Aprovação de campanhas v2", status: "published", summary: "Fluxo revisado" } }), { status: 200 });
       }
 
       const dataByUrl: Record<string, unknown> = {
@@ -2059,10 +2059,11 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /Editar/ }));
     fireEvent.change(screen.getByLabelText("Nome do processo"), { target: { value: "Aprovação de campanhas v2" } });
     fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "Fluxo revisado" } });
+    fireEvent.change(screen.getByLabelText("O que mudou?"), { target: { value: "Atualiza o fluxo de revisão." } });
     fireEvent.click(screen.getByRole("button", { name: "Salvar alterações" }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/processes/process_9/versions", expect.objectContaining({ method: "POST" }));
+      expect(fetchMock).toHaveBeenCalledWith("/api/processes/process_9", expect.objectContaining({ method: "PATCH" }));
       expect(screen.getAllByText("Aprovação de campanhas v2").length).toBeGreaterThan(0);
     });
   });
@@ -2268,6 +2269,7 @@ describe("Baase React app shell", () => {
     let people: Array<{ id: string; name: string; role: string; areaId: string | null; roleTemplateId: string | null }> = [
       { id: "person_tecnico", name: "Técnico 2", role: "employee", areaId: "area_training", roleTemplateId: "role_trainer" }
     ];
+    let archived = false;
 
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -2276,10 +2278,14 @@ describe("Baase React app shell", () => {
         area = { ...area, name: payload.name, description: payload.description };
         return new Response(JSON.stringify({ area }), { status: 200 });
       }
-      if (url === "/api/areas/area_training" && init?.method === "DELETE") {
+      if (url === "/api/areas/area_training/impact") {
+        return new Response(JSON.stringify({ impact: { area, processes: [], routines: [], roleTemplates: roles, people, pendingInvites: [] } }), { status: 200 });
+      }
+      if (url === "/api/areas/area_training/archive" && init?.method === "POST") {
+        archived = true;
         roles = [];
         people = people.map((person) => ({ ...person, areaId: null, roleTemplateId: null }));
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        return new Response(JSON.stringify({ result: {} }), { status: 200 });
       }
 
       const dataByUrl: Record<string, unknown> = {
@@ -2290,7 +2296,7 @@ describe("Baase React app shell", () => {
         "/api/processes": { processes: [] },
         "/api/routines": { routines: [] },
         "/api/trainings": { trainings: [] },
-        "/api/areas": { areas: roles.length ? [area] : [] },
+        "/api/areas": { areas: archived ? [] : [area] },
         "/api/roles": { role_templates: roles },
         "/api/people": { people },
         "/api/invites": { invites: [] },
@@ -2301,7 +2307,6 @@ describe("Baase React app shell", () => {
 
       return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     render(<App />);
 
@@ -2320,9 +2325,11 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Abrir área Treinamentos Técnicos/ }));
     fireEvent.click(screen.getByRole("button", { name: /Excluir área/ }));
+    fireEvent.click(await screen.findByLabelText("Deixar sem área"));
+    fireEvent.click(screen.getByRole("button", { name: "Arquivar área" }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/areas/area_training", expect.objectContaining({ method: "DELETE" }));
+      expect(fetchMock).toHaveBeenCalledWith("/api/areas/area_training/archive", expect.objectContaining({ method: "POST" }));
       expect(screen.queryByRole("button", { name: /Abrir área Treinamentos Técnicos/ })).not.toBeInTheDocument();
     });
   });

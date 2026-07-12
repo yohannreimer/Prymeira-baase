@@ -56,6 +56,10 @@ export type TaskOccurrence = {
   routineId: string | null;
   taskTemplateId: string | null;
   title: string;
+  areaNameSnapshot?: string | null;
+  routineTitleSnapshot?: string | null;
+  stepTitleSnapshot?: string | null;
+  routineRevisionSnapshot?: string | null;
   areaId?: string | null;
   processId: string | null;
   assigneeProfileId: string | null;
@@ -76,6 +80,7 @@ export type TaskOccurrence = {
 };
 
 export type CreateRoutineTaskTemplateInput = {
+  id?: string;
   title: string;
   processId?: string | null;
   assigneeProfileId?: string | null;
@@ -138,4 +143,6 @@ export type RoutineRepository = {
   createTaskOccurrence(input: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">): Promise<TaskOccurrence>;
   updateTaskOccurrence(task: TaskOccurrence): Promise<TaskOccurrence>;
   deleteTaskOccurrence(workspaceId: string, taskId: string): Promise<void>;
+  getLifecycleState?(): { routines: CompanyRoutine[]; tasks: TaskOccurrence[] };
+  commitLifecycleState?(state: { routines: CompanyRoutine[]; tasks: TaskOccurrence[] }): void;
 };

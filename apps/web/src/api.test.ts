@@ -21,6 +21,10 @@ import {
   createPerson,
   createProcessDraft,
   createProcessVersion,
+  updateProcess,
+  uploadProcessMaterial,
+  deleteProcessMaterial,
+  getProcessMaterialDownloadUrl,
   createRoutine,
   createRoleTemplate,
   createTrainingDraft,
@@ -198,7 +202,7 @@ describe("Baase web API client", () => {
   });
 
   it("keeps the workspace bundle when proactive suggestions are unavailable", async () => {
-    const fetcher = vi.fn(async (url: string) => {
+    const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url === "/api/ai/proactive-suggestions") {
         return new Response("Internal Server Error", { status: 500 });
       }
@@ -686,6 +690,37 @@ describe("Baase web API client", () => {
     expect(fetcher).toHaveBeenCalledWith("/api/routines/routine_7/archive", expect.objectContaining({ method: "POST" }));
     expect(fetcher).toHaveBeenCalledWith("/api/trainings/training_7", expect.objectContaining({ method: "PATCH" }));
     expect(fetcher).toHaveBeenCalledWith("/api/trainings/training_7/unpublish", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("sends versioned process metadata and file material requests", async () => {
+    const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url === "/api/processes/process_7") return new Response(JSON.stringify({ process: { id: "process_7", title: "Processo" } }), { status: 200 });
+      if (url.endsWith("/download")) return new Response(JSON.stringify({ url: "https://files.example.com/signed" }), { status: 200 });
+      if (url.endsWith("/materials/files")) return new Response(JSON.stringify({ material: { id: "material_1", kind: "file", title: "checklist.pdf" } }), { status: 201 });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    await updateProcess("dono", "process_7", {
+      title: "Processo",
+      body: "Corpo atualizado.",
+      changeNote: "Define responsabilidade.",
+      areaId: "area_financeiro",
+      owner: { type: "role", roleTemplateId: "role_controller" },
+      links: [{ title: "Planilha", url: "https://example.com/planilha" }]
+    }, fetcher);
+    await uploadProcessMaterial("dono", "process_7", new File(["arquivo"], "checklist.pdf", { type: "application/pdf" }), fetcher);
+    await deleteProcessMaterial("dono", "process_7", "material_1", fetcher);
+    await expect(getProcessMaterialDownloadUrl("dono", "process_7", "material_1", fetcher)).resolves.toBe("https://files.example.com/signed");
+
+    const patchCall = fetcher.mock.calls.find(([url]) => url === "/api/processes/process_7");
+    expect(patchCall?.[1]).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({
+      owner: { type: "role", role_template_id: "role_controller" },
+      materials: [{ kind: "link", title: "Planilha" }]
+    });
+    const uploadCall = fetcher.mock.calls.find(([url]) => url === "/api/processes/process_7/materials/files");
+    expect(uploadCall?.[1]).toMatchObject({ method: "POST" });
+    expect(uploadCall?.[1]?.headers).not.toHaveProperty("content-type");
   });
 
   it("deletes operational content through CRUD endpoints", async () => {

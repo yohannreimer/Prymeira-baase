@@ -13,6 +13,25 @@ const employeeHeaders = {
 };
 
 describe("company routes", () => {
+  it("returns 409 for a deterministic invite code collision", async () => {
+    const base = createInMemoryCompanyRepository();
+    const app = buildApp({
+      companyRepository: {
+        ...base,
+        createTeamInvite: async () => { throw new Error("INVITE_CODE_CONFLICT"); }
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers: ownerHeaders,
+      payload: { name: "Carla Dias", role: "employee", access_scope: "workspace" }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("INVITE_CODE_CONFLICT");
+  });
+
   it("lists areas for the current workspace", async () => {
     const app = buildApp({ companyRepository: createInMemoryCompanyRepository() });
 
@@ -100,7 +119,7 @@ describe("company routes", () => {
     });
   });
 
-  it("deletes an area, removes its cargos and keeps people unassigned", async () => {
+  it("requires impact resolution through the deprecated delete alias", async () => {
     const app = buildApp({ companyRepository: createInMemoryCompanyRepository() });
 
     const areaResponse = await app.inject({
@@ -136,8 +155,16 @@ describe("company routes", () => {
       headers: ownerHeaders
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("AREA_ARCHIVE_RESOLUTION_REQUIRED");
+
+    const archiveResponse = await app.inject({
+      method: "POST",
+      url: `/areas/${areaResponse.json().area.id}/archive`,
+      headers: ownerHeaders,
+      payload: { strategy: "unassign" }
+    });
+    expect(archiveResponse.statusCode).toBe(200);
 
     const areasResponse = await app.inject({ method: "GET", url: "/areas", headers: ownerHeaders });
     const rolesResponse = await app.inject({ method: "GET", url: "/roles", headers: ownerHeaders });
@@ -153,6 +180,86 @@ describe("company routes", () => {
         roleTemplateId: null
       })
     ]);
+  });
+
+  it("reports impact and reassigns all active links", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const app = buildApp({ companyRepository });
+    const source = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Operacao" } });
+    const target = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Financeiro" } });
+    await app.inject({
+      method: "POST", url: "/people", headers: ownerHeaders,
+      payload: { name: "Ana", role: "employee", area_id: source.json().area.id }
+    });
+
+    const impact = await app.inject({ method: "GET", url: `/areas/${source.json().area.id}/impact`, headers: ownerHeaders });
+    expect(impact.statusCode).toBe(200);
+    expect(impact.json().impact).toMatchObject({
+      area: { id: source.json().area.id },
+      people: [{ name: "Ana" }]
+    });
+
+    const archive = await app.inject({
+      method: "POST", url: `/areas/${source.json().area.id}/archive`, headers: ownerHeaders,
+      payload: { strategy: "reassign", target_area_id: target.json().area.id }
+    });
+    expect(archive.statusCode).toBe(200);
+    expect(archive.json().result.reassigned.people).toBe(1);
+    expect((await companyRepository.listTeamMembers("workspace_a"))[0]?.areaId).toBe(target.json().area.id);
+  });
+
+  it("isolates area lifecycle routes by workspace and permission", async () => {
+    const app = buildApp({ companyRepository: createInMemoryCompanyRepository() });
+    const source = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Operacao" } });
+    const otherWorkspace = { ...ownerHeaders, "x-baase-workspace-id": "workspace_b" };
+
+    const isolated = await app.inject({ method: "GET", url: `/areas/${source.json().area.id}/impact`, headers: otherWorkspace });
+    expect(isolated.statusCode).toBe(404);
+    expect(isolated.json().error.code).toBe("AREA_NOT_FOUND");
+
+    const forbidden = await app.inject({
+      method: "POST", url: `/areas/${source.json().area.id}/archive`, headers: employeeHeaders,
+      payload: { strategy: "unassign" }
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.json().error.code).toBe("FORBIDDEN");
+  });
+
+  it("returns deterministic errors for invalid archive targets", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const app = buildApp({ companyRepository });
+    const source = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Operacao" } });
+    const sourceId = source.json().area.id;
+    const archivedTarget = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Arquivada" } });
+    await app.inject({ method: "DELETE", url: `/areas/${archivedTarget.json().area.id}`, headers: ownerHeaders });
+    await companyRepository.createArea({ workspaceId: "workspace_b", name: "Outra 1", description: null });
+    await companyRepository.createArea({ workspaceId: "workspace_b", name: "Outra 2", description: null });
+    const crossWorkspaceTarget = await companyRepository.createArea({ workspaceId: "workspace_b", name: "Outra 3", description: null });
+
+    const same = await app.inject({
+      method: "POST", url: `/areas/${sourceId}/archive`, headers: ownerHeaders,
+      payload: { strategy: "reassign", target_area_id: sourceId }
+    });
+    expect(same.statusCode).toBe(400);
+    expect(same.json().error.code).toBe("AREA_ARCHIVE_TARGET_SAME");
+
+    for (const targetAreaId of ["missing", archivedTarget.json().area.id, crossWorkspaceTarget.id]) {
+      const missing = await app.inject({
+      method: "POST", url: `/areas/${sourceId}/archive`, headers: ownerHeaders,
+        payload: { strategy: "reassign", target_area_id: targetAreaId }
+      });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.json().error.code).toBe("AREA_ARCHIVE_TARGET_NOT_FOUND");
+    }
+  });
+
+  it("allows the deprecated delete alias to archive an area with no impact", async () => {
+    const app = buildApp({ companyRepository: createInMemoryCompanyRepository() });
+    const area = await app.inject({ method: "POST", url: "/areas", headers: ownerHeaders, payload: { name: "Sem vinculos" } });
+    const response = await app.inject({ method: "DELETE", url: `/areas/${area.json().area.id}`, headers: ownerHeaders });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect((await app.inject({ method: "GET", url: "/areas", headers: ownerHeaders })).json().areas).toEqual([]);
   });
 
   it("creates role templates linked to existing areas", async () => {
@@ -542,5 +649,29 @@ describe("company routes", () => {
         code: "INVITE_ALREADY_ACCEPTED"
       }
     });
+  });
+
+  it("returns 409 when an invite changes during deletion", async () => {
+    const base = createInMemoryCompanyRepository();
+    const app = buildApp({
+      companyRepository: {
+        ...base,
+        deleteTeamInvite: async () => { throw new Error("INVITE_STALE"); }
+      }
+    });
+    const inviteResponse = await app.inject({
+      method: "POST",
+      url: "/invites",
+      headers: ownerHeaders,
+      payload: { name: "Carla Dias", role: "employee", access_scope: "workspace" }
+    });
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/invites/${inviteResponse.json().invite.id}`,
+      headers: ownerHeaders
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("INVITE_STALE");
   });
 });

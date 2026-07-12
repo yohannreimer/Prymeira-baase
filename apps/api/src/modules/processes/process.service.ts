@@ -5,6 +5,7 @@ import type {
   ProcessRepository,
   ProcessVersionRecord
 } from "./process.types";
+import type { CompanyRepository } from "../company/company.types";
 
 function requiredText(value: string, errorCode: string) {
   const text = value.trim();
@@ -40,7 +41,36 @@ function createVersion(input: {
   };
 }
 
-export function createProcessService(repository: ProcessRepository) {
+type ProcessServiceDependencies = {
+  companyRepository?: CompanyRepository;
+};
+
+export function createProcessService(repository: ProcessRepository, dependencies: ProcessServiceDependencies = {}) {
+  const validateReferences = async (
+    workspaceId: string,
+    areaId: string | null | undefined,
+    owner: CreateProcessInput["owner"] | undefined
+  ) => {
+    const companyRepository = dependencies.companyRepository;
+    if (!companyRepository) return;
+
+    if (areaId && !await companyRepository.findAreaById(workspaceId, areaId)) {
+      throw new Error("PROCESS_AREA_NOT_FOUND");
+    }
+    if (!owner) return;
+
+    if (owner.type === "person") {
+      const person = await companyRepository.findTeamMember(workspaceId, owner.personId);
+      if (!person || person.status !== "active") throw new Error("PROCESS_OWNER_PERSON_NOT_FOUND");
+      return;
+    }
+
+    const roleTemplate = (await companyRepository.listRoleTemplates(workspaceId))
+      .find((item) => item.id === owner.roleTemplateId);
+    if (!roleTemplate) throw new Error("PROCESS_OWNER_ROLE_NOT_FOUND");
+    if (areaId && roleTemplate.areaId !== areaId) throw new Error("PROCESS_OWNER_AREA_MISMATCH");
+  };
+
   return {
     listProcesses(workspaceId: string) {
       return repository.listProcesses(workspaceId);
@@ -49,6 +79,10 @@ export function createProcessService(repository: ProcessRepository) {
     async createProcess(workspaceId: string, editorProfileId: string, input: CreateProcessInput) {
       const title = requiredText(input.title, "PROCESS_TITLE_REQUIRED");
       const body = requiredText(input.body, "PROCESS_BODY_REQUIRED");
+      const owner = input.owner === undefined
+        ? input.ownerProfileId ? { type: "person" as const, personId: input.ownerProfileId } : null
+        : input.owner;
+      await validateReferences(workspaceId, input.areaId, owner);
       const temporaryProcessId = "new";
       const currentVersion = createVersion({
         processId: temporaryProcessId,
@@ -60,30 +94,20 @@ export function createProcessService(repository: ProcessRepository) {
         version: 1
       });
 
-      const process = await repository.createProcess({
+      return repository.createProcess({
         workspaceId,
         areaId: input.areaId ?? null,
         title,
         summary: optionalText(input.summary),
         status: "draft",
-        ownerProfileId: input.ownerProfileId ?? null,
+        ownerProfileId: owner?.type === "person" ? owner.personId : null,
+        owner,
+        materials: toProcessMaterials("new", workspaceId, normalizeMaterials(input.materials)),
         currentVersion,
         versions: [currentVersion],
         createdByProfileId: editorProfileId,
         publishedAt: null,
         archivedAt: null
-      });
-
-      const versionWithRealProcessId = {
-        ...currentVersion,
-        id: `version_${process.id}_1`,
-        processId: process.id
-      };
-
-      return repository.updateProcess({
-        ...process,
-        currentVersion: versionWithRealProcessId,
-        versions: [versionWithRealProcessId]
       });
     },
 
@@ -94,6 +118,9 @@ export function createProcessService(repository: ProcessRepository) {
       input: CreateProcessVersionInput
     ) {
       const process = await readProcessOrThrow(repository, workspaceId, processId);
+      const owner = input.owner === undefined ? process.owner ?? legacyOwner(process) : input.owner;
+      const areaId = input.areaId === undefined ? process.areaId : input.areaId;
+      await validateReferences(workspaceId, areaId, owner);
       const nextVersionNumber = process.currentVersion.version + 1;
       const title = optionalText(input.title) ?? process.title;
       const nextVersion = createVersion({
@@ -110,8 +137,10 @@ export function createProcessService(repository: ProcessRepository) {
         ...process,
         title,
         summary: input.summary === undefined ? process.summary : optionalText(input.summary),
-        areaId: input.areaId === undefined ? process.areaId : input.areaId,
-        ownerProfileId: input.ownerProfileId === undefined ? process.ownerProfileId : input.ownerProfileId,
+        areaId,
+        ownerProfileId: owner?.type === "person" ? owner.personId : null,
+        owner,
+        materials: mergeProcessMaterials(process, workspaceId, input.materials),
         currentVersion: nextVersion,
         versions: [...process.versions, nextVersion]
       });
@@ -141,6 +170,83 @@ export function createProcessService(repository: ProcessRepository) {
       return process;
     }
   };
+}
+
+function legacyOwner(process: CompanyProcess) {
+  return process.ownerProfileId ? { type: "person" as const, personId: process.ownerProfileId } : null;
+}
+
+function normalizeMaterials(materials: readonly import("./process.types").ProcessMaterialInput[] | undefined) {
+  return (materials ?? []).map((material) => {
+    const title = requiredText(material.title, "PROCESS_MATERIAL_TITLE_REQUIRED");
+    if (material.kind === "link") {
+      const url = requiredText(material.url, "PROCESS_MATERIAL_URL_REQUIRED");
+      try {
+        new URL(url);
+      } catch {
+        throw new Error("PROCESS_MATERIAL_URL_INVALID");
+      }
+      return { kind: "link" as const, title, url };
+    }
+    return {
+      kind: "file" as const,
+      title,
+      objectKey: requiredText(material.objectKey, "PROCESS_MATERIAL_OBJECT_KEY_REQUIRED"),
+      contentType: requiredText(material.contentType, "PROCESS_MATERIAL_CONTENT_TYPE_REQUIRED"),
+      sizeBytes: validFileSize(material.sizeBytes)
+    };
+  });
+}
+
+function validFileSize(value: number) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("PROCESS_MATERIAL_SIZE_INVALID");
+  return value;
+}
+
+function toProcessMaterials(
+  processId: string,
+  workspaceId: string,
+  materials: ReturnType<typeof normalizeMaterials>
+) {
+  const createdAt = new Date().toISOString();
+  return materials.map((material, index) => material.kind === "link"
+    ? {
+        id: `material_${processId}_link_${index + 1}`,
+        processId,
+        workspaceId,
+        kind: "link" as const,
+        title: material.title,
+        url: material.url,
+        objectKey: null,
+        contentType: null,
+        sizeBytes: null,
+        createdAt
+      }
+    : {
+        id: `material_${processId}_file_${index + 1}`,
+        processId,
+        workspaceId,
+        kind: "file" as const,
+        title: material.title,
+        url: null,
+        objectKey: material.objectKey,
+        contentType: material.contentType,
+        sizeBytes: material.sizeBytes,
+        createdAt
+      }
+  );
+}
+
+function mergeProcessMaterials(
+  process: CompanyProcess,
+  workspaceId: string,
+  materials: CreateProcessVersionInput["materials"]
+) {
+  if (materials === undefined) return process.materials ?? [];
+  const normalized = normalizeMaterials(materials);
+  const includesFile = normalized.some((material) => material.kind === "file");
+  const preservedFiles = includesFile ? [] : (process.materials ?? []).filter((material) => material.kind === "file");
+  return [...preservedFiles, ...toProcessMaterials(process.id, workspaceId, normalized)];
 }
 
 async function readProcessOrThrow(repository: ProcessRepository, workspaceId: string, processId: string) {

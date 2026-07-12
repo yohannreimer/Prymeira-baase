@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryProcessRepository } from "./in-memory-process.repository";
 
 const managerHeaders = {
@@ -113,6 +114,127 @@ describe("process routes", () => {
 
     expect(publishResponse.statusCode).toBe(200);
     expect(publishResponse.json().process.status).toBe("published");
+  });
+
+  it("edits a process as a versioned operation with one responsible owner and link materials", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const area = await companyRepository.createArea({
+      workspaceId: "workspace_a",
+      name: "Financeiro",
+      description: null
+    });
+    const roleTemplate = await companyRepository.createRoleTemplate({
+      workspaceId: "workspace_a",
+      areaId: area.id,
+      name: "Controlador financeiro",
+      description: null
+    });
+    const app = buildApp({
+      companyRepository,
+      processRepository: createInMemoryProcessRepository()
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: managerHeaders,
+      payload: {
+        title: "Fechamento de caixa",
+        body: "Conferir entradas e saídas.",
+        area_id: area.id
+      }
+    });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/processes/${created.json().process.id}`,
+      headers: managerHeaders,
+      payload: {
+        title: "Fechamento financeiro diário",
+        body: "Conferir entradas, saídas e comprovantes.",
+        change_note: "Define a responsabilidade e a fonte oficial.",
+        owner: { type: "role", role_template_id: roleTemplate.id },
+        materials: [{
+          kind: "link",
+          title: "Planilha oficial",
+          url: "https://example.com/fechamento"
+        }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().process).toMatchObject({
+      title: "Fechamento financeiro diário",
+      currentVersion: {
+        version: 2,
+        changeNote: "Define a responsabilidade e a fonte oficial."
+      },
+      owner: { type: "role", roleTemplateId: roleTemplate.id },
+      materials: [{
+        kind: "link",
+        title: "Planilha oficial",
+        url: "https://example.com/fechamento"
+      }]
+    });
+    expect(response.json().process.versions).toHaveLength(2);
+
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/processes/${created.json().process.id}`,
+      headers: managerHeaders,
+      payload: {
+        body: "Conferir entradas, saídas e comprovantes.",
+        change_note: "Remove responsabilidade fixa.",
+        owner: null
+      }
+    });
+
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().process.owner).toBeNull();
+  });
+
+  it("rejects a process edit without a meaningful change note", async () => {
+    const app = buildApp({ processRepository: createInMemoryProcessRepository() });
+    const created = await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: managerHeaders,
+      payload: { title: "Processo", body: "Versão inicial." }
+    });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/processes/${created.json().process.id}`,
+      headers: managerHeaders,
+      payload: { body: "Versão alterada.", change_note: "   " }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("REQUEST_VALIDATION_ERROR");
+  });
+
+  it("rejects a responsible person outside the current workspace", async () => {
+    const app = buildApp({ processRepository: createInMemoryProcessRepository() });
+    const created = await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: managerHeaders,
+      payload: { title: "Processo", body: "Versão inicial." }
+    });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/processes/${created.json().process.id}`,
+      headers: managerHeaders,
+      payload: {
+        body: "Versão alterada.",
+        change_note: "Tentativa com pessoa inválida.",
+        owner: { type: "person", person_id: "person_other_workspace" }
+      }
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("PROCESS_OWNER_PERSON_NOT_FOUND");
   });
 
   it("unpublishes processes back to draft without deleting their versions", async () => {

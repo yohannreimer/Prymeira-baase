@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { readHomeRouteForRole, type BaaseRole } from "@prymeira/baase-shared";
-import { readRequestContext, type RequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership, type RequestContext } from "../../http/auth-context";
 import type { CompanyRepository, TeamMember } from "../company/company.types";
 import type { OnboardingRepository } from "../onboarding/onboarding.types";
 
@@ -40,9 +40,7 @@ async function readWorkspaceProfile(
     : profileByRole[context.role];
   if (!companyRepository) return fallback;
 
-  const people = await companyRepository.listTeamMembers(context.workspaceId);
-  const person = people.find((member) => member.role === context.role && member.status === "active")
-    ?? people.find((member) => member.role === context.role && member.status !== "placeholder");
+  const person = context.operationalMembership?.person ?? (await companyRepository.findTeamMember(context.workspaceId, context.profileId));
   if (!person) return fallback;
 
   const areaName = await readAreaName(context.workspaceId, person, companyRepository);
@@ -76,6 +74,7 @@ export async function registerSessionRoutes(
 ) {
   app.get("/me", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const onboardingSession = onboardingRepository
       ? await onboardingRepository.getCurrentSession(context.workspaceId)
       : null;
@@ -90,13 +89,15 @@ export async function registerSessionRoutes(
         name: workspaceName
       },
       profile: {
-        id: context.profileId,
-        role: context.role,
+        id: membership.personId,
+        role: membership.role,
         display_name: profile.display_name,
         initials: profile.initials,
-        area_name: profile.area_name
+        area_name: profile.area_name,
+        area_names: await Promise.all(membership.areaAccessIds.map(async (areaId) => (await companyRepository?.findAreaById(context.workspaceId, areaId))?.name ?? areaId)),
+        access_scope: membership.accessScope
       },
-      home_route: readHomeRouteForRole(context.role)
+      home_route: readHomeRouteForRole(membership.role)
     };
   });
 }

@@ -15,6 +15,83 @@ const employeeHeaders = {
 };
 
 describe("routine routes", () => {
+  it("returns 409 when a routine aggregate changes during update", async () => {
+    const base = createInMemoryRoutineRepository();
+    const app = buildApp({
+      routineRepository: {
+        ...base,
+        updateRoutine: async () => { throw new Error("ROUTINE_STALE"); }
+      }
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: managerHeaders,
+      payload: { title: "Original", task_templates: [{ title: "Executar" }] }
+    });
+    const routine = created.json().routine;
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/routines/${routine.id}`,
+      headers: managerHeaders,
+      payload: {
+        title: "Atualizada",
+        task_templates: routine.taskTemplates.map((step: { id: string; title: string }) => ({
+          id: step.id,
+          title: step.title
+        }))
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("ROUTINE_STALE");
+  });
+
+  it.each([undefined, [], ["mon", "tue"]])(
+    "returns a deterministic 400 for an invalid weekly weekday selection: %j",
+    async (weekdays) => {
+      const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+      const response = await app.inject({
+        method: "POST",
+        url: "/routines",
+        headers: managerHeaders,
+        payload: {
+          title: "Semanal",
+          frequency: "weekly",
+          ...(weekdays === undefined ? {} : { weekdays }),
+          task_templates: [{ title: "Executar" }]
+        }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+    }
+  );
+
+  it("returns the same weekly validation error on routine update", async () => {
+    const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
+    const created = await app.inject({
+      method: "POST",
+      url: "/routines",
+      headers: managerHeaders,
+      payload: { title: "Diaria", task_templates: [{ title: "Executar" }] }
+    });
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/routines/${created.json().routine.id}`,
+      headers: managerHeaders,
+      payload: {
+        title: "Semanal invalida",
+        frequency: "weekly",
+        task_templates: created.json().routine.taskTemplates.map((step: { id: string; title: string }) => ({
+          id: step.id,
+          title: step.title
+        }))
+      }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("ROUTINE_WEEKLY_WEEKDAY_INVALID");
+  });
+
   it("runs the manager-to-employee execution flow", async () => {
     const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
 
@@ -202,7 +279,7 @@ describe("routine routes", () => {
     });
   });
 
-  it("moves pending routine occurrences to the edited responsible people", async () => {
+  it("keeps existing occurrences immutable when responsible people are edited", async () => {
     const app = buildApp({ routineRepository: createInMemoryRoutineRepository() });
 
     const routineResponse = await app.inject({
@@ -258,9 +335,21 @@ describe("routine routes", () => {
       headers: employeeHeaders
     });
 
-    expect(oldResponsibleToday.json().tasks).toEqual([]);
-    expect(newResponsibleToday.json().tasks).toHaveLength(1);
-    expect(newResponsibleToday.json().tasks[0]).toMatchObject({
+    expect(oldResponsibleToday.json().tasks).toHaveLength(1);
+    expect(oldResponsibleToday.json().tasks[0]).toMatchObject({
+      title: "Atualizar orquestrador",
+      assigneeProfileId: "profile_manager",
+      dueHint: "Até 09:00",
+      checklistItems: [{ title: "Conferir dia anterior", done: false }]
+    });
+    expect(newResponsibleToday.json().tasks).toEqual([]);
+
+    const newResponsibleFuture = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-09",
+      headers: employeeHeaders
+    });
+    expect(newResponsibleFuture.json().tasks[0]).toMatchObject({
       title: "Atualizar orquestrador revisado",
       assigneeProfileId: "profile_employee",
       dueHint: "Até 10:00",

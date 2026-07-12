@@ -1,4 +1,5 @@
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "./routine.types";
+import { normalizeRoutineRecurrence } from "./routine-recurrence";
 
 type InMemoryRoutineRepositoryOptions = {
   now?: () => string;
@@ -25,8 +26,10 @@ export function createInMemoryRoutineRepository(
     async createRoutine(input) {
       const timestamp = now();
       const routineId = `routine_${routines.length + 1}`;
+      const recurrence = normalizeRoutineRecurrence(input);
       const routine: CompanyRoutine = {
         ...input,
+        ...recurrence,
         id: routineId,
         taskTemplates: input.taskTemplates.map((template) => ({
           ...template,
@@ -43,9 +46,11 @@ export function createInMemoryRoutineRepository(
     async updateRoutine(routine) {
       const index = routines.findIndex((item) => item.workspaceId === routine.workspaceId && item.id === routine.id);
       if (index === -1) throw new Error("ROUTINE_NOT_FOUND");
+      const recurrence = normalizeRoutineRecurrence(routine);
       const updated = {
         ...routine,
-        updatedAt: now()
+        ...recurrence,
+        updatedAt: nextTimestamp(now(), routine.updatedAt)
       };
       routines[index] = updated;
       return updated;
@@ -89,6 +94,7 @@ export function createInMemoryRoutineRepository(
       const timestamp = now();
       const task: TaskOccurrence = {
         ...input,
+        origin: input.origin ?? (input.routineId ? "routine" : "manual"),
         id: `task_${tasks.length + 1}`,
         createdAt: timestamp,
         updatedAt: timestamp
@@ -111,6 +117,20 @@ export function createInMemoryRoutineRepository(
     async deleteTaskOccurrence(workspaceId, taskId) {
       const index = tasks.findIndex((item) => item.workspaceId === workspaceId && item.id === taskId);
       if (index >= 0) tasks.splice(index, 1);
+    },
+
+    getLifecycleState() {
+      return structuredClone({ routines, tasks });
+    },
+
+    commitLifecycleState(state) {
+      routines.splice(0, routines.length, ...state.routines);
+      tasks.splice(0, tasks.length, ...state.tasks);
     }
   };
+}
+
+function nextTimestamp(candidate: string, previous: string) {
+  if (new Date(candidate).getTime() > new Date(previous).getTime()) return candidate;
+  return new Date(new Date(previous).getTime() + 1).toISOString();
 }

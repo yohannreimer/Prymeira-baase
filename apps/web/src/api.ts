@@ -12,6 +12,8 @@ export type BaaseSession = {
     display_name?: string;
     initials?: string;
     area_name?: string | null;
+    area_names?: string[];
+    access_scope?: "workspace" | "area" | "assigned_only";
   };
   home_route: string;
 };
@@ -57,11 +59,27 @@ export type ApiProcess = {
   status: string;
   summary?: string | null;
   areaId?: string | null;
+  owner?: ApiProcessOwner | null;
+  materials?: ApiProcessMaterial[];
   versions?: ApiProcessVersion[];
   currentVersion?: {
     body?: string;
     version?: number;
   };
+};
+
+export type ApiProcessOwner =
+  | { type: "person"; personId: string }
+  | { type: "role"; roleTemplateId: string };
+
+export type ApiProcessMaterial = {
+  id: string;
+  kind: "link" | "file";
+  title: string;
+  url: string | null;
+  objectKey: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
 };
 
 export type ApiProcessVersion = {
@@ -197,6 +215,7 @@ export type ApiInvite = {
   email?: string | null;
   role: BaaseApiRole;
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
   accessScope?: "workspace" | "area" | "assigned_only";
   code: string;
@@ -207,6 +226,15 @@ export type ApiArea = {
   id: string;
   name: string;
   description?: string | null;
+};
+
+export type ApiAreaImpact = {
+  area: ApiArea;
+  processes: Array<{ id: string; title: string }>;
+  routines: Array<{ id: string; title: string }>;
+  roleTemplates: Array<{ id: string; name: string }>;
+  people: Array<{ id: string; name: string }>;
+  pendingInvites: Array<{ id: string; name: string; email: string | null }>;
 };
 
 export type ApiRoleTemplate = {
@@ -222,7 +250,9 @@ export type ApiPerson = {
   email?: string | null;
   role: BaaseApiRole;
   areaId?: string | null;
+  areaAccessIds?: string[];
   roleTemplateId?: string | null;
+  accessScope?: "workspace" | "area" | "assigned_only";
   status?: string;
 };
 
@@ -492,7 +522,9 @@ export type ApiProactiveSuggestion = {
   };
   target: {
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
     processId?: string | null;
     taskIds?: string[];
   };
@@ -615,9 +647,11 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 type TokenProvider = () => Promise<string | null> | string | null;
 
 let baaseTokenProvider: TokenProvider | null = null;
+let baaseAccountMode = false;
 
-export function configureBaaseApiAuth(options: { getToken: TokenProvider } | null) {
+export function configureBaaseApiAuth(options: { getToken: TokenProvider; accountMode?: boolean } | null) {
   baaseTokenProvider = options?.getToken ?? null;
+  baaseAccountMode = options?.accountMode ?? false;
 }
 
 const roleByUiRole: Record<UiRole, BaaseApiRole> = {
@@ -633,6 +667,7 @@ const profileIdByUiRole: Record<UiRole, string> = {
 };
 
 export function createBaaseHeaders(role: UiRole): HeadersInit {
+  if (baaseAccountMode) return { "content-type": "application/json" };
   return {
     "content-type": "application/json",
     "x-baase-workspace-id": "workspace_a",
@@ -642,6 +677,7 @@ export function createBaaseHeaders(role: UiRole): HeadersInit {
 }
 
 function createBaaseAuthHeaders(role: UiRole): HeadersInit {
+  if (baaseAccountMode) return {};
   return {
     "x-baase-workspace-id": "workspace_a",
     "x-baase-role": roleByUiRole[role],
@@ -1010,6 +1046,29 @@ export async function deleteArea(role: UiRole, areaId: string, fetcher: Fetcher 
   });
 }
 
+export async function getAreaImpact(role: UiRole, areaId: string, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ impact: ApiAreaImpact | null }>(fetcher, `/api/areas/${encodeURIComponent(areaId)}/impact`, {
+    headers: createBaaseAuthHeaders(role)
+  });
+  return result.impact;
+}
+
+export async function archiveArea(
+  role: UiRole,
+  areaId: string,
+  resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" },
+  fetcher: Fetcher = fetch
+) {
+  const body = resolution.strategy === "reassign"
+    ? { strategy: "reassign", target_area_id: resolution.targetAreaId }
+    : { strategy: "unassign" };
+  return readJson<{ result: unknown }>(fetcher, `/api/areas/${encodeURIComponent(areaId)}/archive`, {
+    method: "POST",
+    headers: createBaaseHeaders(role),
+    body: JSON.stringify(body)
+  });
+}
+
 export async function createRoleTemplate(
   role: UiRole,
   input: { areaId: string; name: string; description?: string | null },
@@ -1042,7 +1101,9 @@ export async function createPerson(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
   },
   fetcher: Fetcher = fetch
 ) {
@@ -1054,7 +1115,9 @@ export async function createPerson(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
-      role_template_id: input.roleTemplateId ?? null
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
+      role_template_id: input.roleTemplateId ?? null,
+      ...(input.accessScope ? { access_scope: input.accessScope } : {})
     })
   });
 
@@ -1069,7 +1132,9 @@ export async function updatePerson(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
+    accessScope?: "workspace" | "area" | "assigned_only";
     status?: string;
   },
   fetcher: Fetcher = fetch
@@ -1082,7 +1147,9 @@ export async function updatePerson(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
       role_template_id: input.roleTemplateId ?? null,
+      ...(input.accessScope ? { access_scope: input.accessScope } : {}),
       status: input.status
     })
   });
@@ -1144,6 +1211,70 @@ export async function createProcessVersion(
   });
 
   return result.process;
+}
+
+export async function updateProcess(
+  role: UiRole,
+  processId: string,
+  input: {
+    title?: string | null;
+    body: string;
+    changeNote: string;
+    summary?: string | null;
+    areaId?: string | null;
+    owner?: ApiProcessOwner | null;
+    links?: Array<{ title: string; url: string }>;
+  },
+  fetcher: Fetcher = fetch
+) {
+  const owner = input.owner === undefined ? undefined : input.owner === null ? null : input.owner.type === "person"
+    ? { type: "person", person_id: input.owner.personId }
+    : { type: "role", role_template_id: input.owner.roleTemplateId };
+  const result = await readJson<{ process: ApiProcess }>(fetcher, `/api/processes/${processId}`, {
+    method: "PATCH",
+    headers: createBaaseHeaders(role),
+    body: JSON.stringify({
+      title: input.title ?? null,
+      body: input.body,
+      change_note: input.changeNote,
+      summary: input.summary ?? null,
+      area_id: input.areaId ?? null,
+      owner,
+      materials: input.links?.map((link) => ({ kind: "link", title: link.title, url: link.url }))
+    })
+  });
+
+  return result.process;
+}
+
+export async function uploadProcessMaterial(
+  role: UiRole,
+  processId: string,
+  file: File,
+  fetcher: Fetcher = fetch
+) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  const result = await readJson<{ material: ApiProcessMaterial }>(fetcher, `/api/processes/${processId}/materials/files`, {
+    method: "POST",
+    headers: createBaaseAuthHeaders(role),
+    body: formData
+  });
+  return result.material;
+}
+
+export async function deleteProcessMaterial(role: UiRole, processId: string, materialId: string, fetcher: Fetcher = fetch) {
+  await readJson<{ ok: true }>(fetcher, `/api/processes/${processId}/materials/${materialId}`, {
+    method: "DELETE",
+    headers: createBaaseAuthHeaders(role)
+  });
+}
+
+export async function getProcessMaterialDownloadUrl(role: UiRole, processId: string, materialId: string, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ url: string }>(fetcher, `/api/processes/${processId}/materials/${materialId}/download`, {
+    headers: createBaaseAuthHeaders(role)
+  });
+  return result.url;
 }
 
 export async function unpublishProcess(role: UiRole, processId: string, fetcher: Fetcher = fetch) {
@@ -1481,6 +1612,7 @@ export async function createInvite(
     email?: string | null;
     role: BaaseApiRole;
     areaId?: string | null;
+    areaAccessIds?: string[];
     roleTemplateId?: string | null;
     accessScope?: "workspace" | "area" | "assigned_only";
   },
@@ -1494,8 +1626,9 @@ export async function createInvite(
       email: input.email ?? null,
       role: input.role,
       area_id: input.areaId ?? null,
+      ...(input.areaAccessIds ? { area_ids: input.areaAccessIds } : {}),
       role_template_id: input.roleTemplateId ?? null,
-      access_scope: input.accessScope ?? "workspace"
+      ...(input.accessScope ? { access_scope: input.accessScope } : {})
     })
   });
 

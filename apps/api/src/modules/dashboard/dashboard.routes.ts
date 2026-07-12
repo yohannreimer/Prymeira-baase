@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
 import type { CompanyRepository } from "../company/company.types";
 import type { ProcessRepository } from "../processes/process.types";
 import type { RoutineRepository } from "../routines/routine.types";
@@ -29,8 +29,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, repositories
       workspaceId: context.workspaceId,
       profileId: context.profileId,
       role: context.role,
+      membership: requireOperationalMembership(request),
       date: query.date ?? new Date().toISOString().slice(0, 10)
     });
   });
 }
-

@@ -1,8 +1,11 @@
 import { canSubmitTask, readNextTaskStatus } from "@prymeira/baase-shared";
+import { randomUUID } from "node:crypto";
+import { normalizeRoutineRecurrence } from "./routine-recurrence";
 import type {
   CompanyRoutine,
   CreateManualTaskInput,
   CreateRoutineInput,
+  CreateRoutineTaskTemplateInput,
   EvidencePolicy,
   RoutineRepository,
   RoutineWeekday,
@@ -15,9 +18,7 @@ import type {
   UpdateRoutineInput
 } from "./routine.types";
 
-const BUSINESS_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri"] as const;
 const WEEKDAY_BY_DATE_INDEX: RoutineWeekday[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-const MUTABLE_OCCURRENCE_STATUSES = new Set<TaskOccurrence["status"]>(["pending", "in_progress", "needs_adjustment", "late"]);
 
 function requiredText(value: string, errorCode: string) {
   const text = value.trim();
@@ -72,13 +73,15 @@ function hasRequiredEvidence(policy: EvidencePolicy, evidence: TaskEvidence) {
 
 function buildTemplate(
   workspaceId: string,
+  routineId: string,
   index: number,
-  input: CreateRoutineInput["taskTemplates"][number]
+  input: CreateRoutineInput["taskTemplates"][number],
+  id = input.id ?? `step_${randomUUID()}`
 ): RoutineTaskTemplate {
   const sortOrder = index + 1;
   return {
-    id: `template___routine___${sortOrder}`,
-    routineId: "__routine__",
+    id,
+    routineId,
     workspaceId,
     title: requiredText(input.title, "ROUTINE_TASK_TITLE_REQUIRED"),
     processId: input.processId ?? null,
@@ -90,26 +93,31 @@ function buildTemplate(
   };
 }
 
-function attachRoutineId(routineId: string, template: RoutineTaskTemplate): RoutineTaskTemplate {
-  return {
-    ...template,
-    id: template.id.replace("__routine__", routineId),
-    routineId
-  };
-}
-
-function buildTemplates(workspaceId: string, routineId: string, input: CreateRoutineInput["taskTemplates"]) {
+function buildTemplates(
+  workspaceId: string,
+  routineId: string,
+  input: CreateRoutineInput["taskTemplates"],
+  existing: RoutineTaskTemplate[] = []
+) {
   if (input.length === 0) throw new Error("ROUTINE_TASKS_REQUIRED");
-  return input.map((template, index) => attachRoutineId(routineId, buildTemplate(workspaceId, index, template)));
+  const unused = new Map(existing.map((template) => [template.id, template]));
+  return input.map((template, index) => {
+    let matched = template.id ? unused.get(template.id) : undefined;
+    if (template.id && !matched) throw new Error("ROUTINE_TASK_ID_INVALID");
+    matched ??= [...unused.values()].find((candidate) => sameTemplate(candidate, template));
+    if (!matched && unused.size === 1 && input.length === 1) matched = [...unused.values()][0];
+    if (matched) unused.delete(matched.id);
+    return buildTemplate(workspaceId, routineId, index, template, matched?.id);
+  });
 }
 
-function normalizedFrequency(input: CreateRoutineInput) {
-  return input.frequency ?? "daily";
-}
-
-function normalizedWeekdays(input: CreateRoutineInput) {
-  if (input.weekdays?.length) return [...new Set(input.weekdays)];
-  return normalizedFrequency(input) === "daily" ? [...BUSINESS_WEEKDAYS] : [];
+function sameTemplate(current: RoutineTaskTemplate, input: CreateRoutineTaskTemplateInput) {
+  return current.title === input.title.trim()
+    && current.processId === (input.processId ?? null)
+    && current.assigneeProfileId === (input.assigneeProfileId ?? null)
+    && (current.dueHint ?? null) === optionalText(input.dueHint)
+    && current.approvalMode === (input.approvalMode ?? "direct")
+    && current.evidencePolicy === (input.evidencePolicy ?? "optional");
 }
 
 function normalizedExecutionMode(input: CreateRoutineInput) {
@@ -118,9 +126,9 @@ function normalizedExecutionMode(input: CreateRoutineInput) {
 }
 
 function normalizedRoutineFields(input: CreateRoutineInput) {
+  const recurrence = normalizeRoutineRecurrence(input);
   return {
-    frequency: normalizedFrequency(input),
-    weekdays: normalizedWeekdays(input),
+    ...recurrence,
     dueHint: optionalText(input.dueHint),
     assigneeProfileIds: uniqueOptionalTexts(input.assigneeProfileIds),
     executionMode: normalizedExecutionMode(input),
@@ -152,10 +160,6 @@ function shouldAutoGenerateRoutine(routine: CompanyRoutine) {
   return routine.status === "active" && Boolean(routine.frequency);
 }
 
-function isMutableOccurrence(task: TaskOccurrence) {
-  return MUTABLE_OCCURRENCE_STATUSES.has(task.status);
-}
-
 function buildRoutineOccurrenceInputs(
   routine: CompanyRoutine,
   dueDate: string
@@ -169,6 +173,7 @@ function buildRoutineOccurrenceInputs(
       routineId: routine.id,
       taskTemplateId: `${routine.id}__execution__${assigneeProfileId}`,
       title: routine.title,
+      routineRevisionSnapshot: routine.updatedAt,
       areaId: routine.areaId,
       processId: null,
       assigneeProfileId,
@@ -193,6 +198,7 @@ function buildRoutineOccurrenceInputs(
     routineId: routine.id,
     taskTemplateId: template.id,
     title: template.title,
+    routineRevisionSnapshot: routine.updatedAt,
     areaId: routine.areaId,
     processId: template.processId,
     assigneeProfileId: template.assigneeProfileId,
@@ -210,33 +216,17 @@ function buildRoutineOccurrenceInputs(
   }));
 }
 
-function mergeOccurrenceTemplate(
-  current: TaskOccurrence,
-  next: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">
-): TaskOccurrence {
-  return {
-    ...current,
-    origin: next.origin,
-    routineId: next.routineId,
-    taskTemplateId: next.taskTemplateId,
-    title: next.title,
-    areaId: next.areaId,
-    processId: next.processId,
-    assigneeProfileId: next.assigneeProfileId,
-    dueHint: next.dueHint,
-    approvalMode: next.approvalMode,
-    evidencePolicy: next.evidencePolicy,
-    checklistItems: next.checklistItems
-      ? normalizedChecklistItems(next.checklistItems.map((item) => item.title), current.checklistItems)
-      : undefined
-  };
-}
-
 async function createOrReuseRoutineOccurrences(
   repository: RoutineRepository,
   routine: CompanyRoutine,
   dueDate: string
 ) {
+  const existingForDate = (await repository.listTaskOccurrences(routine.workspaceId, { dueDate }))
+    .filter((task) => task.routineId === routine.id);
+  if (existingForDate.some((task) => task.routineRevisionSnapshot !== routine.updatedAt)) {
+    return existingForDate;
+  }
+
   const generated: TaskOccurrence[] = [];
   for (const input of buildRoutineOccurrenceInputs(routine, dueDate)) {
     if (!input.taskTemplateId) continue;
@@ -259,38 +249,6 @@ async function ensureTodayOccurrences(repository: RoutineRepository, workspaceId
   }
 }
 
-async function syncMutableRoutineOccurrences(repository: RoutineRepository, routine: CompanyRoutine) {
-  const existingTasks = (await repository.listTaskOccurrences(routine.workspaceId))
-    .filter((task) => task.routineId === routine.id);
-  const dates = [...new Set(existingTasks.map((task) => task.dueDate))];
-
-  for (const dueDate of dates) {
-    const desiredInputs = buildRoutineOccurrenceInputs(routine, dueDate);
-    const desiredByTemplateId = new Map(desiredInputs
-      .filter((input) => input.taskTemplateId)
-      .map((input) => [input.taskTemplateId as string, input]));
-    const tasksForDate = existingTasks.filter((task) => task.dueDate === dueDate);
-
-    for (const task of tasksForDate) {
-      if (!isMutableOccurrence(task)) continue;
-      const desired = task.taskTemplateId ? desiredByTemplateId.get(task.taskTemplateId) : null;
-      if (!desired) {
-        await repository.deleteTaskOccurrence(routine.workspaceId, task.id);
-        continue;
-      }
-      await repository.updateTaskOccurrence(mergeOccurrenceTemplate(task, desired));
-    }
-
-    const taskByTemplateId = new Map(tasksForDate
-      .filter((task) => task.taskTemplateId)
-      .map((task) => [task.taskTemplateId as string, task]));
-    for (const desired of desiredInputs) {
-      if (!desired.taskTemplateId || taskByTemplateId.has(desired.taskTemplateId)) continue;
-      await repository.createTaskOccurrence(desired);
-    }
-  }
-}
-
 export function createRoutineService(repository: RoutineRepository) {
   return {
     listRoutines(workspaceId: string) {
@@ -308,7 +266,11 @@ export function createRoutineService(repository: RoutineRepository) {
         status: "active",
         ...normalizedRoutineFields(input),
         createdByProfileId: actorProfileId,
-        taskTemplates: input.taskTemplates.map((template, index) => buildTemplate(workspaceId, index, template))
+        taskTemplates: buildTemplates(
+          workspaceId,
+          "__routine__",
+          input.taskTemplates.map(({ id: _id, ...template }) => template)
+        )
       });
     },
 
@@ -316,15 +278,13 @@ export function createRoutineService(repository: RoutineRepository) {
       const routine = await readRoutineOrThrow(repository, workspaceId, routineId);
       const title = requiredText(input.title, "ROUTINE_TITLE_REQUIRED");
 
-      const updatedRoutine = await repository.updateRoutine({
+      return repository.updateRoutine({
         ...routine,
         title,
         areaId: input.areaId ?? null,
         ...normalizedRoutineFields(input),
-        taskTemplates: buildTemplates(workspaceId, routine.id, input.taskTemplates)
+        taskTemplates: buildTemplates(workspaceId, routine.id, input.taskTemplates, routine.taskTemplates)
       });
-      await syncMutableRoutineOccurrences(repository, updatedRoutine);
-      return updatedRoutine;
     },
 
     async archiveRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine> {

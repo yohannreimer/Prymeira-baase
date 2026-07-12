@@ -1,5 +1,7 @@
 import type { BaaseRole, TaskStatus } from "@prymeira/baase-shared";
 import type { CompanyRepository, TeamMember } from "../company/company.types";
+import { canReadAreaResource, canReadTask } from "../company/access-policy";
+import type { OperationalMembership } from "../company/company.types";
 import type { ProcessRepository } from "../processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../routines/routine.types";
 import type { TrainingAssignment, TrainingRepository } from "../trainings/training.types";
@@ -16,6 +18,7 @@ type DashboardInput = {
   workspaceId: string;
   profileId: string;
   role: BaaseRole;
+  membership: OperationalMembership;
   date: string;
 };
 
@@ -35,18 +38,24 @@ export function createDashboardService(repositories: DashboardRepositories) {
         repositories.routineRepository.listTaskOccurrences(input.workspaceId)
       ]);
 
-      const routineById = new Map(routines.map((routine) => [routine.id, routine]));
-      const todayTasks = tasks.filter((task) => task.dueDate === input.date);
+      const visibleRoutines = routines.filter((routine) => canReadAreaResource(input.membership, routine.areaId));
+      const routineById = new Map(visibleRoutines.map((routine) => [routine.id, routine]));
+      const visibleProcesses = processes.filter((process) => canReadAreaResource(input.membership, process.areaId));
+      const visibleTasks = tasks.filter((task) => canReadTask(input.membership, {
+        assigneeProfileId: task.assigneeProfileId,
+        areaId: task.areaId ?? (task.routineId ? routineById.get(task.routineId)?.areaId ?? null : null)
+      }));
+      const todayTasks = visibleTasks.filter((task) => task.dueDate === input.date);
       const todayCompleted = todayTasks.filter(isExecutedTask).length;
-      const lateTasks = tasks.filter((task) => isLateTask(task, input.date));
-      const awaitingApproval = tasks.filter((task) => task.status === "awaiting_approval");
+      const lateTasks = visibleTasks.filter((task) => isLateTask(task, input.date));
+      const awaitingApproval = visibleTasks.filter((task) => task.status === "awaiting_approval");
       const pendingTrainingAssignments = countPendingTrainingAssignments({
         assignments,
         people,
         publishedTrainingIds: new Set(trainings.filter((training) => training.status === "published").map((training) => training.id)),
         passingAttemptKeys: new Set(attempts.filter((attempt) => attempt.passed).map((attempt) => `${attempt.trainingId}:${attempt.profileId}`))
       });
-      const incompleteProcesses = processes.filter((process) => process.status !== "published" && process.status !== "archived");
+      const incompleteProcesses = visibleProcesses.filter((process) => process.status !== "published" && process.status !== "archived");
       const employeeTasks = todayTasks.filter((task) => task.assigneeProfileId === input.profileId || !task.assigneeProfileId);
       const employeeCompleted = employeeTasks.filter(isExecutedTask).length;
       const areaMetrics = buildAreaMetrics(todayTasks, routineById, new Map(areas.map((area) => [area.id, area.name])), input.date);

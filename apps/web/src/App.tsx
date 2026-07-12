@@ -10,6 +10,8 @@ import {
   createOnboardingSession,
   confirmAnnouncement,
   createArea,
+  archiveArea,
+  getAreaImpact,
   createAnnouncementDraft,
   deleteArea,
   deleteAnnouncement,
@@ -23,6 +25,8 @@ import {
   createPerson,
   createProcessDraft,
   createProcessVersion,
+  updateProcess,
+  uploadProcessMaterial,
   createRoutine,
   createRoleTemplate,
   createTask,
@@ -60,6 +64,7 @@ import {
   useTemplate as useLibraryTemplate,
   type ApiProcess,
   type ApiArea,
+  type ApiAreaImpact,
   type ApiInvite,
   type ApiPerson,
   type ApiQuizQuestionInput,
@@ -90,6 +95,7 @@ import {
   type OnboardingSetupResult
 } from "./api";
 import { OnboardingShell, createEmptyOnboardingDraft, onboardingConversationQuestions, type OnboardingDraftState } from "./onboarding";
+import { readBaaseAuthConfig } from "./auth-config";
 import "./styles.css";
 
 type Role = "dono" | "gestor" | "func";
@@ -187,6 +193,8 @@ type CrudModal =
   | { kind: "training"; mode: "edit"; training: ApiTraining }
   | { kind: "announcement"; mode: "create" }
   | { kind: "invite" };
+
+type AreaArchiveDialogState = { area: AreaDisplayRow; impact: ApiAreaImpact };
 
 type OnboardingAudioState = {
   status: "idle" | "recording" | "transcribing" | "ready" | "error";
@@ -1545,7 +1553,9 @@ function ActivationPlanPanel({
 }
 
 export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
+  const accountMode = readBaaseAuthConfig(import.meta.env).mode === "account";
   const [role, setRoleState] = useState<Role>(initialRole);
+  const [previewRole, setPreviewRole] = useState<Role | null>(null);
   const [screen, setScreen] = useState<Screen>(homeFor(initialRole));
   const [menuOpen, setMenuOpen] = useState(false);
   const [tasks, setTasks] = useState<Record<string, boolean>>({ t1: false, t2: true, t3: false, t4: false });
@@ -1558,6 +1568,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [submittingTasks, setSubmittingTasks] = useState<Record<string, boolean>>({});
   const [actionBusy, setActionBusy] = useState(false);
   const [crudModal, setCrudModal] = useState<CrudModal | null>(null);
+  const [areaArchiveDialog, setAreaArchiveDialog] = useState<AreaArchiveDialogState | null>(null);
   const [executionTask, setExecutionTask] = useState<TodayTaskRow | null>(null);
   const [returningTask, setReturningTask] = useState<ApiTask | null>(null);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
@@ -1640,6 +1651,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }, [apiEnabled, bootstrapAttempt, role]);
 
   useEffect(() => {
+    if (!accountMode || !apiBundle?.session) return;
+    const authenticatedRole = apiBundle.session.profile.role === "owner"
+      ? "dono" : apiBundle.session.profile.role === "manager" ? "gestor" : "func";
+    setRoleState(authenticatedRole);
+    setScreen(homeFor(authenticatedRole));
+  }, [accountMode, apiBundle?.session]);
+
+  useEffect(() => {
     if (!notice) return;
 
     const timeout = window.setTimeout(() => setNotice(null), 3200);
@@ -1647,14 +1666,15 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }, [notice]);
 
   const liveWorkspaceMode = apiEnabled;
-  const identity = identityFromSession(role, apiBundle?.session ?? null, liveWorkspaceMode);
+  const presentationRole = accountMode && role === "dono" && previewRole ? previewRole : role;
+  const identity = identityFromSession(presentationRole, apiBundle?.session ?? null, liveWorkspaceMode);
   const workspaceName = apiBundle?.session.workspace.name?.trim()
     || onboardingSession?.companyName?.trim()
     || (liveWorkspaceMode ? "Sua empresa" : "Estúdio Norte");
   const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
-  const baseNav = navByRole[role];
+  const baseNav = navByRole[presentationRole];
   const visibleProcesses = useMemo(() => {
     const loaded = apiBundle?.processes ?? [];
     return [...createdProcesses, ...loaded.filter((process) => !createdProcesses.some((created) => created.id === process.id))];
@@ -1787,7 +1807,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     && (onboardingSession?.status === "completed" || workspaceIsEmpty);
 
   function setRole(nextRole: Role) {
+    if (accountMode) return;
     setRoleState(nextRole);
+    setScreen(homeFor(nextRole));
+    setMenuOpen(false);
+  }
+
+  function setPreview(nextRole: Role) {
+    setPreviewRole(nextRole === role ? null : nextRole);
     setScreen(homeFor(nextRole));
     setMenuOpen(false);
   }
@@ -2202,14 +2229,22 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   function handleDeleteArea(area: AreaDisplayRow) {
     if (!area.id) return;
     const areaId = area.id;
-    const confirmed = window.confirm(`Excluir a área "${area.name}"? Os cargos dessa área serão removidos e as pessoas ficarão sem área vinculada.`);
-    if (!confirmed) return;
-
     void runAction(async () => {
-      await deleteArea(role, areaId);
+      const impact = await getAreaImpact(role, areaId);
+      if (!impact) throw new Error("Área não encontrada.");
+      setAreaArchiveDialog({ area, impact });
+    });
+  }
+
+  function handleConfirmAreaArchive(resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" }) {
+    if (!areaArchiveDialog?.area.id) return;
+    const area = areaArchiveDialog.area;
+    void runAction(async () => {
+      await archiveArea(role, area.id!, resolution);
       await reloadWorkspaceBundle();
+      setAreaArchiveDialog(null);
       setCrudModal(null);
-      showNotice(`Área ${area.name} excluída.`);
+      showNotice(`Área ${area.name} arquivada.`);
     });
   }
 
@@ -2239,7 +2274,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleSavePerson(input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; roleTemplateId?: string | null; status?: string }) {
+  function handleSavePerson(input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; areaAccessIds?: string[]; roleTemplateId?: string | null; accessScope?: "workspace" | "area" | "assigned_only"; status?: string }) {
     void runAction(async () => {
       const person = input.id
         ? await updatePerson(role, input.id, {
@@ -2247,7 +2282,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           email: input.email,
           role: input.role,
           areaId: input.areaId,
+          areaAccessIds: input.areaAccessIds,
           roleTemplateId: input.roleTemplateId,
+          accessScope: input.accessScope,
           status: input.status
         })
         : await createPerson(role, {
@@ -2255,7 +2292,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           email: input.email,
           role: input.role,
           areaId: input.areaId,
+          areaAccessIds: input.areaAccessIds,
           roleTemplateId: input.roleTemplateId
+          ,accessScope: input.accessScope
         });
       setCreatedPeople((current) => [person, ...current.filter((item) => item.id !== person.id)]);
       setCrudModal(null);
@@ -2610,24 +2649,47 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleSaveProcess(input: { id?: string; title: string; summary: string; body: string; publish: boolean }) {
+  function handleSaveProcess(input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) {
     void runAction(async () => {
+      let process: ApiProcess;
       if (input.id) {
-        const process = await createProcessVersion(role, input.id, {
+        process = await updateProcess(role, input.id, {
           title: input.title,
           summary: input.summary,
           body: input.body,
-          changeNote: "Atualização feita pelo painel."
+          areaId: input.areaId,
+          owner: input.owner,
+          changeNote: input.changeNote,
+          links: input.links
         });
-        appendOperationalContent({ process });
       } else {
         const draft = await createProcessDraft(role, {
           title: input.title,
           body: input.body,
-          summary: input.summary
+          summary: input.summary,
+          areaId: input.areaId
         });
-        appendOperationalContent({ process: input.publish ? await publishProcess(role, draft.id) : draft });
+        process = input.owner || input.links.length
+          ? await updateProcess(role, draft.id, {
+            title: input.title,
+            summary: input.summary,
+            body: input.body,
+            areaId: input.areaId,
+            owner: input.owner,
+            links: input.links,
+            changeNote: "Define a configuração inicial do processo."
+          })
+          : draft;
+        if (input.publish) process = await publishProcess(role, process.id);
       }
+      for (const file of input.files) {
+        const material = await uploadProcessMaterial(role, process.id, file);
+        process = { ...process, materials: [...(process.materials ?? []), material] };
+      }
+      appendOperationalContent({ process });
       setCrudModal(null);
     });
   }
@@ -2830,13 +2892,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleCreateInvite(input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) {
+  function handleCreateInvite(input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; areaAccessIds: string[]; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) {
     void runAction(async () => {
       const invite = await createInvite(role, {
         name: input.name,
         email: input.email,
         role: input.role,
         areaId: input.areaId,
+        areaAccessIds: input.areaAccessIds,
         roleTemplateId: input.roleTemplateId,
         accessScope: input.accessScope
       });
@@ -3181,7 +3244,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             <div className="mono kicker">{workspaceName}</div>
             <div className="header-heading">{headerTitle}</div>
           </div>
-          <div className="role-switch" aria-label="Visualização">
+          {!accountMode ? <div className="role-switch" aria-label="Visualização">
             {[
               ["dono", "Dono"],
               ["gestor", "Gestor"],
@@ -3191,7 +3254,17 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 {label}
               </button>
             ))}
-          </div>
+          </div> : role === "dono" ? <div className="role-switch" aria-label="Prévia de visualização">
+            {[
+              ["dono", "Dono"],
+              ["gestor", "Gestor"],
+              ["func", "Funcionário"]
+            ].map(([key, label]) => (
+              <button key={key} className={presentationRole === key ? "active" : ""} type="button" onClick={() => setPreview(key as Role)}>
+                {label}
+              </button>
+            ))}
+          </div> : null}
           <div className="top-actions">
             <button className="icon-btn" type="button" aria-label="Buscar" onClick={() => setTopPanel((panel) => panel === "search" ? null : "search")}><Icon name="ph-magnifying-glass" /></button>
             <button className={`icon-btn ${notificationItems.length ? "has-dot" : ""}`} type="button" aria-label="Notificações" onClick={() => setTopPanel((panel) => panel === "notifications" ? null : "notifications")}><Icon name="ph-bell" /></button>
@@ -3441,6 +3514,16 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             processes={visibleProcesses}
             currentProfileId={apiBundle?.session.profile.id ?? null}
             currentProfileName={identity.name}
+          />
+        ) : null}
+        {areaArchiveDialog ? (
+          <AreaArchiveDialog
+            area={areaArchiveDialog.area}
+            impact={areaArchiveDialog.impact}
+            areas={companyAreas.filter((area) => area.id !== areaArchiveDialog.area.id)}
+            actionBusy={actionBusy}
+            onClose={() => setAreaArchiveDialog(null)}
+            onConfirm={handleConfirmAreaArchive}
           />
         ) : null}
         {executionTask ? (
@@ -3993,6 +4076,47 @@ function TodayPage({
           ))}
           {isLiveWorkspace && !announcementRows.length && !trainingRows.length ? <EmptyState icon="ph-check-circle" title="Sem pendências" text="Comunicados e treinamentos pendentes aparecem aqui." /> : null}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function AreaArchiveDialog({
+  area,
+  impact,
+  areas,
+  actionBusy,
+  onClose,
+  onConfirm
+}: {
+  area: AreaDisplayRow;
+  impact: ApiAreaImpact;
+  areas: ApiArea[];
+  actionBusy: boolean;
+  onClose: () => void;
+  onConfirm: (resolution: { strategy: "reassign"; targetAreaId: string } | { strategy: "unassign" }) => void;
+}) {
+  const affected = [
+    { label: "processo", count: impact.processes.length },
+    { label: "rotina", count: impact.routines.length },
+    { label: "cargo", count: impact.roleTemplates.length },
+    { label: "pessoa", count: impact.people.length },
+    { label: "convite", count: impact.pendingInvites.length }
+  ].filter((item) => item.count > 0);
+  const [strategy, setStrategy] = useState<"reassign" | "unassign">(affected.length ? "reassign" : "unassign");
+  const [targetAreaId, setTargetAreaId] = useState(areas[0]?.id ?? "");
+  const disabled = actionBusy || (strategy === "reassign" && !targetAreaId);
+
+  return (
+    <div className="modal-layer" role="presentation">
+      <div className="modal-card area-archive-modal" role="dialog" aria-modal="true" aria-labelledby="archive-area-title">
+        <div className="modal-form">
+          <ModalHeader title="Arquivar área" icon="ph-warning" onClose={onClose} />
+          <p className="archive-copy">Você está arquivando <strong>{area.name}</strong>. Escolha o destino dos vínculos ativos antes de continuar.</p>
+          {affected.length ? <div className="archive-impact-list">{affected.map(({ label, count }) => <span key={label}><strong>{count}</strong> {label}{count > 1 ? "s" : ""}</span>)}</div> : <p className="archive-copy">Não há vínculos ativos nesta área.</p>}
+          <fieldset className="archive-resolution"><legend>Como resolver os vínculos?</legend><label><input type="radio" checked={strategy === "reassign"} onChange={() => setStrategy("reassign")} />Transferir para outra área</label>{strategy === "reassign" ? <select aria-label="Área de destino" value={targetAreaId} onChange={(event) => setTargetAreaId(event.target.value)}><option value="">Selecionar área</option>{areas.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select> : null}<label><input type="radio" checked={strategy === "unassign"} onChange={() => setStrategy("unassign")} />Deixar sem área</label></fieldset>
+          <footer><button className="secondary-btn" type="button" disabled={actionBusy} onClick={onClose}>Cancelar</button><button className="danger-btn" type="button" disabled={disabled} onClick={() => onConfirm(strategy === "reassign" ? { strategy, targetAreaId } : { strategy })}>Arquivar área</button></footer>
+        </div>
       </div>
     </div>
   );
@@ -5407,13 +5531,16 @@ function CrudModalView({
   onSaveTask: (input: TaskFormInput) => void;
   onSaveArea: (input: { id?: string; name: string; description: string }) => void;
   onSaveRoleTemplate: (input: { areaId: string; name: string; description: string }) => void;
-  onSavePerson: (input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; roleTemplateId?: string | null; status?: string }) => void;
+  onSavePerson: (input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; areaAccessIds?: string[]; roleTemplateId?: string | null; accessScope?: "workspace" | "area" | "assigned_only"; status?: string }) => void;
   onDeletePerson: (person: ApiPerson) => void;
-  onSaveProcess: (input: { id?: string; title: string; summary: string; body: string; publish: boolean }) => void;
+  onSaveProcess: (input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) => void;
   onSaveRoutine: (input: RoutineFormInput) => void;
   onSaveTraining: (input: TrainingFormInput) => void;
   onSaveAnnouncement: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; publish: boolean }) => void;
-  onCreateInvite: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
+  onCreateInvite: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; areaAccessIds: string[]; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
   people: ApiPerson[];
@@ -5437,7 +5564,7 @@ function CrudModalView({
           <PersonForm modal={modal} areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onSavePerson} onDelete={onDeletePerson} />
         ) : null}
         {modal.kind === "process" ? (
-          <ProcessForm modal={modal} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
+          <ProcessForm modal={modal} areas={areas} roleTemplates={roleTemplates} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
         ) : null}
         {modal.kind === "routine" ? (
           <RoutineForm modal={modal} areas={areas} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveRoutine} />
@@ -5637,7 +5764,7 @@ function PersonForm({
   roleTemplates: ApiRoleTemplate[];
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; roleTemplateId?: string | null; status?: string }) => void;
+  onSubmit: (input: { id?: string; name: string; email: string; role: ApiPerson["role"]; areaId?: string | null; areaAccessIds?: string[]; roleTemplateId?: string | null; accessScope?: "workspace" | "area" | "assigned_only"; status?: string }) => void;
   onDelete: (person: ApiPerson) => void;
 }) {
   const person = modal.mode === "edit" ? modal.person : null;
@@ -5645,6 +5772,8 @@ function PersonForm({
   const [email, setEmail] = useState(person?.email ?? "nova@empresa.com");
   const [role, setRole] = useState<ApiPerson["role"]>(person?.role ?? "employee");
   const [areaId, setAreaId] = useState(person?.areaId ?? areas[0]?.id ?? "");
+  const [areaAccessIds, setAreaAccessIds] = useState<string[]>(person?.areaAccessIds ?? (areaId ? [areaId] : []));
+  const [accessScope, setAccessScope] = useState<"workspace" | "area" | "assigned_only">(person?.accessScope ?? "workspace");
   const [roleTemplateId, setRoleTemplateId] = useState(person?.roleTemplateId ?? roleTemplates[0]?.id ?? "");
   const availableRoles = roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId);
   const selectedRoleTemplateId = availableRoles.some((roleTemplate) => roleTemplate.id === roleTemplateId)
@@ -5658,7 +5787,9 @@ function PersonForm({
       email,
       role,
       areaId: areaId || null,
+      areaAccessIds: areaAccessIds.includes(areaId) || !areaId ? areaAccessIds : [...areaAccessIds, areaId],
       roleTemplateId: selectedRoleTemplateId || null,
+      accessScope,
       status: person?.status === "inactive" ? "inactive" : "active"
     });
   }
@@ -5673,6 +5804,8 @@ function PersonForm({
         <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setRoleTemplateId(""); }}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
       </div>
       <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Sem cargo definido</option>{availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label>
+      <label>Áreas acessíveis<div className="access-area-list">{areas.map((area) => <label key={area.id} className="check-row"><input type="checkbox" checked={areaAccessIds.includes(area.id)} onChange={() => setAreaAccessIds((current) => current.includes(area.id) ? current.filter((id) => id !== area.id) : [...current, area.id])} />{area.name}</label>)}</div></label>
+      <label>Escopo<select value={accessScope} onChange={(event) => setAccessScope(event.target.value as "workspace" | "area" | "assigned_only")}><option value="workspace">Empresa inteira</option><option value="area">Áreas selecionadas</option><option value="assigned_only">Somente tarefas atribuídas</option></select></label>
       <footer>
         {person ? <button className="secondary-btn danger-btn" type="button" disabled={actionBusy} onClick={() => onDelete(person)}><Icon name="ph-trash" />Excluir pessoa</button> : null}
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
@@ -5716,35 +5849,66 @@ function AnnouncementForm({
 
 function ProcessForm({
   modal,
+  areas,
+  roleTemplates,
+  people,
   actionBusy,
   onClose,
   onSubmit
 }: {
   modal: Extract<CrudModal, { kind: "process" }>;
+  areas: ApiArea[];
+  roleTemplates: ApiRoleTemplate[];
+  people: ApiPerson[];
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { id?: string; title: string; summary: string; body: string; publish: boolean }) => void;
+  onSubmit: (input: {
+    id?: string; title: string; summary: string; body: string; publish: boolean; areaId?: string | null;
+    owner?: ApiProcess["owner"] | null; changeNote: string; links: Array<{ title: string; url: string }>; files: File[];
+  }) => void;
 }) {
   const process = modal.mode === "edit" ? modal.process : null;
   const [title, setTitle] = useState(process?.title ?? "");
   const [summary, setSummary] = useState(process?.summary ?? "");
   const [body, setBody] = useState(process?.currentVersion?.body ?? defaultProcessSopBody("Novo processo"));
+  const [areaId, setAreaId] = useState(process?.areaId ?? areas[0]?.id ?? "");
+  const [ownerMode, setOwnerMode] = useState<"none" | "person" | "role">(process?.owner?.type ?? "none");
+  const [ownerId, setOwnerId] = useState(process?.owner?.type === "person" ? process.owner.personId : process?.owner?.type === "role" ? process.owner.roleTemplateId : "");
+  const [changeNote, setChangeNote] = useState("");
+  const [links, setLinks] = useState(() => (process?.materials ?? []).filter((material) => material.kind === "link" && material.url).map((material) => ({ title: material.title, url: material.url! })));
+  const [files, setFiles] = useState<File[]>([]);
+  const ownerOptions = ownerMode === "role"
+    ? roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId).map((roleTemplate) => ({ id: roleTemplate.id, name: roleTemplate.name }))
+    : people.filter((person) => person.status !== "inactive" && (!areaId || person.areaId === areaId)).map((person) => ({ id: person.id, name: person.name }));
+  const owner = ownerMode === "person" && ownerId ? { type: "person" as const, personId: ownerId }
+    : ownerMode === "role" && ownerId ? { type: "role" as const, roleTemplateId: ownerId }
+    : null;
+  const validLinks = links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url);
+  const save = (publish: boolean) => onSubmit({ id: process?.id, title, summary, body, publish, areaId: areaId || null, owner, changeNote, links: validLinks, files });
 
   return (
     <form className="modal-form" onSubmit={(event) => event.preventDefault()}>
       <ModalHeader title={modal.mode === "edit" ? "Editar processo" : "Novo processo"} icon="ph-file-text" onClose={onClose} />
       <label>Nome do processo<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>Resumo<input value={summary} onChange={(event) => setSummary(event.target.value)} /></label>
+      <div className="form-row two-cols">
+        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setOwnerId(""); }}><option value="">Sem área</option>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
+        <label>Responsável<select value={ownerMode} onChange={(event) => { setOwnerMode(event.target.value as "none" | "person" | "role"); setOwnerId(""); }}><option value="none">Sem responsável</option><option value="person">Pessoa</option><option value="role">Cargo</option></select></label>
+      </div>
+      {ownerMode !== "none" ? <label>{ownerMode === "person" ? "Pessoa responsável" : "Cargo responsável"}<select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">Selecionar</option>{ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label> : null}
       <label>Manual do processo<textarea value={body} onChange={(event) => setBody(event.target.value)} /></label>
+      {modal.mode === "edit" ? <label>O que mudou?<input value={changeNote} onChange={(event) => setChangeNote(event.target.value)} placeholder="Descreva a alteração desta versão" /></label> : null}
+      <fieldset className="material-editor"><legend>Links de apoio</legend>{links.map((link, index) => <div className="inline-input-row" key={`${index}-${link.title}`}><input value={link.title} placeholder="Título" onChange={(event) => setLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item))} /><input value={link.url} placeholder="https://" onChange={(event) => setLinks((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} /><button className="tiny-icon" type="button" aria-label="Remover link" onClick={() => setLinks((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Icon name="ph-x" /></button></div>)}<button className="text-action" type="button" onClick={() => setLinks((current) => [...current, { title: "", url: "" }])}><Icon name="ph-plus" />Adicionar link</button></fieldset>
+      <label className="file-picker">Anexar arquivos<input type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /><small>{files.length ? `${files.length} arquivo(s) pronto(s) para enviar` : "PDFs, planilhas e outros materiais de apoio"}</small></label>
       <footer>
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
         {modal.mode === "create" ? (
           <>
-            <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, summary, body, publish: false })}>Salvar rascunho</button>
-            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ title, summary, body, publish: true })}>Salvar e publicar</button>
+            <button className="secondary-btn" type="button" disabled={actionBusy} onClick={() => save(false)}>Salvar rascunho</button>
+            <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => save(true)}>Salvar e publicar</button>
           </>
         ) : (
-          <button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ id: process?.id, title, summary, body, publish: false })}>Salvar alterações</button>
+          <button className="accent-solid" type="button" disabled={actionBusy || !changeNote.trim()} onClick={() => save(false)}>Salvar alterações</button>
         )}
       </footer>
     </form>
@@ -6170,12 +6334,13 @@ function InviteForm({
   roleTemplates: ApiRoleTemplate[];
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
+  onSubmit: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; areaAccessIds: string[]; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
 }) {
   const [name, setName] = useState("Novo funcionário");
   const [email, setEmail] = useState("novo@estudionorte.com");
   const [role, setRole] = useState<"owner" | "manager" | "employee">("employee");
   const [areaId, setAreaId] = useState(areas[0]?.id ?? "area_criacao");
+  const [areaAccessIds, setAreaAccessIds] = useState<string[]>(areaId ? [areaId] : []);
   const [roleTemplateId, setRoleTemplateId] = useState(roleTemplates[0]?.id ?? "Designer");
   const [accessScope, setAccessScope] = useState<"workspace" | "area" | "assigned_only">("area");
   const availableRoles = roleTemplates.filter((roleTemplate) => !areaId || roleTemplate.areaId === areaId);
@@ -6192,11 +6357,13 @@ function InviteForm({
         <label>Papel<select value={role} onChange={(event) => setRole(event.target.value as "owner" | "manager" | "employee")}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
         <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setRoleTemplateId(""); }}>{areas.length ? areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>) : <option value="area_criacao">Criação</option>}</select></label>
       </div>
+      <label>Áreas acessíveis<div className="access-area-list">{areas.map((area) => <label key={area.id} className="check-row"><input type="checkbox" checked={areaAccessIds.includes(area.id)} onChange={() => setAreaAccessIds((current) => current.includes(area.id) ? current.filter((id) => id !== area.id) : [...current, area.id])} />{area.name}</label>)}</div></label>
+      <p className="form-summary">{role === "owner" ? "Dono com acesso à empresa inteira." : accessScope === "area" ? `${role === "manager" ? "Gestor" : "Funcionário"} com acesso a ${areaAccessIds.length || 0} área(s).` : accessScope === "assigned_only" ? "Funcionário com acesso apenas ao trabalho atribuído." : "Acesso à empresa inteira."}</p>
       <div className="form-grid">
         <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}>{availableRoles.length ? availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>) : <option value="Designer">Designer</option>}</select></label>
         <label>Permissão<select value={accessScope} onChange={(event) => setAccessScope(event.target.value as "workspace" | "area" | "assigned_only")}><option value="workspace">Workspace inteiro</option><option value="area">Área</option><option value="assigned_only">Somente atribuídos</option></select></label>
       </div>
-      <footer><button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button><button className="accent-solid" type="button" disabled={actionBusy} onClick={() => onSubmit({ name, email, role, areaId, roleTemplateId: selectedRoleTemplateId, accessScope })}>Gerar convite</button></footer>
+      <footer><button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button><button className="accent-solid" type="button" disabled={actionBusy || (accessScope === "area" && areaAccessIds.length === 0)} onClick={() => onSubmit({ name, email, role, areaId, areaAccessIds: areaAccessIds.includes(areaId) ? areaAccessIds : [...areaAccessIds, areaId], roleTemplateId: selectedRoleTemplateId, accessScope })}>Gerar convite</button></footer>
     </form>
   );
 }
