@@ -3,6 +3,8 @@ import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
+import { requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createAnnouncementService } from "../announcements/announcement.service";
 import type { AnnouncementRepository } from "../announcements/announcement.types";
 import { createTrainingService } from "../trainings/training.service";
@@ -107,8 +109,9 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
 
   app.get("/routines", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const routines = await service.listRoutines(context.workspaceId);
-    return { routines };
+    return { routines: routines.filter((routine) => canReadAreaResource(membership, routine.areaId)) };
   });
 
   app.post("/routines", async (request, reply) => {
@@ -116,6 +119,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createRoutineSchema.parse(request.body);
+    if (!canManageAreaResource(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
     let routine;
     try {
       routine = await service.createRoutine(context.workspaceId, context.profileId, {
@@ -244,7 +248,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const tasks = await service.listApprovalTasks(context.workspaceId);
-    return { tasks };
+    const membership = requireOperationalMembership(request);
+    return { tasks: tasks.filter((task) => canManageAreaResource(membership, task.areaId ?? null)) };
   });
 
   app.post("/tasks", async (request, reply) => {
@@ -252,6 +257,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createManualTaskSchema.parse(request.body);
+    if (!canManageAreaResource(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
     const task = await service.createManualTask(context.workspaceId, context.profileId, {
       title: body.title,
       areaId: body.area_id,
@@ -350,4 +356,8 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     });
     return { task };
   });
+}
+
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
 }

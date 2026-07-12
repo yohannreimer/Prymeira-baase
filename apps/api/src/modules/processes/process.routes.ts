@@ -3,6 +3,8 @@ import { z } from "zod";
 import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
+import { requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createProcessService } from "./process.service";
 import type { ProcessRepository } from "./process.types";
 import type { CompanyRepository } from "../company/company.types";
@@ -77,8 +79,9 @@ export async function registerProcessRoutes(
 
   app.get("/processes", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const processes = await service.listProcesses(context.workspaceId);
-    return { processes };
+    return { processes: processes.filter((process) => canReadAreaResource(membership, process.areaId)) };
   });
 
   app.post("/processes", async (request, reply) => {
@@ -86,6 +89,7 @@ export async function registerProcessRoutes(
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createProcessSchema.parse(request.body);
+    if (!canManageAreaResource(requireOperationalMembership(request), body.area_id ?? null)) throw scopeForbidden();
     try {
       const process = await service.createProcess(context.workspaceId, context.profileId, {
         title: body.title,
@@ -180,4 +184,8 @@ export async function registerProcessRoutes(
       throw processMutationError(error);
     }
   });
+}
+
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
 }
