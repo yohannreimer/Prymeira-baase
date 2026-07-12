@@ -106,6 +106,43 @@ describe("routine service", () => {
     expect(tasks.map((task) => task.status)).toEqual(["pending", "pending"]);
   });
 
+  it("does not rewrite pending in-memory occurrences on a second unchanged generation", async () => {
+    let tick = 0;
+    const service = createRoutineService(createInMemoryRoutineRepository({
+      now: () => `2026-07-08T00:00:00.${String(tick++).padStart(3, "0")}Z`
+    }));
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Conferir caixa" }]
+    });
+    const [first] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const [second] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+
+    expect(second).toMatchObject({ id: first?.id, updatedAt: first?.updatedAt });
+  });
+
+  it("keeps submitted shared history on its own revision after a sibling refresh", async () => {
+    const service = createRoutineService(createInMemoryRoutineRepository());
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Portas" }, { title: "Caixa" }]
+    });
+    const original = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const historical = original.find((task) => task.title === "Portas");
+    if (!historical) throw new Error("Expected shared task");
+    await service.submitTask("workspace_a", historical.id, "profile_owner", {});
+    const revised = await service.updateRoutine("workspace_a", routine.id, {
+      title: "Abertura revisada", frequency: "daily",
+      taskTemplates: routine.taskTemplates.map((template) => ({ id: template.id, title: template.title }))
+    });
+
+    const reconciled = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    expect(reconciled.find((task) => task.id === historical.id)).toMatchObject({
+      title: "Portas", routineTitleSnapshot: "Abertura", routineRevisionSnapshot: historical.routineRevisionSnapshot
+    });
+    expect(reconciled.find((task) => task.id !== historical.id)).toMatchObject({
+      routineTitleSnapshot: "Abertura revisada", routineRevisionSnapshot: revised.updatedAt
+    });
+  });
+
   it("generates one routine execution per responsible person with the routine checklist", async () => {
     const service = createRoutineService(createInMemoryRoutineRepository());
     const routine = await service.createRoutine("workspace_a", "profile_owner", {

@@ -94,6 +94,9 @@ export function createInMemoryRoutineRepository(
       const task: TaskOccurrence = {
         ...input,
         origin: input.origin ?? (input.routineId ? "routine" : "manual"),
+        routineRevisionSnapshot: input.routineRevisionSnapshot ?? (input.routineId
+          ? routines.find((routine) => routine.workspaceId === input.workspaceId && routine.id === input.routineId)?.updatedAt ?? null
+          : null),
         id: `task_${tasks.length + 1}`,
         createdAt: timestamp,
         updatedAt: timestamp
@@ -115,20 +118,25 @@ export function createInMemoryRoutineRepository(
         const task = existingByKey.get(key);
         if (!task) {
           const timestamp = now();
-          tasks.push({ ...input, id: `task_${tasks.length + 1}`, createdAt: timestamp, updatedAt: timestamp });
+          tasks.push({ ...input, routineRevisionSnapshot: input.routineRevisionSnapshot ?? routine.updatedAt, id: `task_${tasks.length + 1}`, createdAt: timestamp, updatedAt: timestamp });
           continue;
         }
         if (!isPending(task)) continue;
         const revisionChanged = task.routineRevisionSnapshot !== routine.updatedAt;
-        const index = tasks.indexOf(task);
-        tasks[index] = {
+        const next: TaskOccurrence = {
           ...task,
           ...input,
           checklistItems: revisionChanged ? input.checklistItems : task.checklistItems,
           routineRevisionSnapshot: routine.updatedAt,
           id: task.id,
           createdAt: task.createdAt,
-          updatedAt: now()
+          updatedAt: task.updatedAt
+        };
+        if (sameRoutineOccurrence(task, next)) continue;
+        const index = tasks.indexOf(task);
+        tasks[index] = {
+          ...next,
+          updatedAt: nextTimestamp(now(), task.updatedAt)
         };
       }
 
@@ -174,6 +182,26 @@ function routineOccurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemp
 
 function isPending(task: TaskOccurrence) {
   return task.status === "pending" && task.submittedAt === null;
+}
+
+function sameRoutineOccurrence(left: TaskOccurrence, right: TaskOccurrence) {
+  return left.origin === right.origin
+    && left.routineId === right.routineId
+    && left.taskTemplateId === right.taskTemplateId
+    && left.title === right.title
+    && left.areaNameSnapshot === right.areaNameSnapshot
+    && left.routineTitleSnapshot === right.routineTitleSnapshot
+    && left.stepTitleSnapshot === right.stepTitleSnapshot
+    && left.routineRevisionSnapshot === right.routineRevisionSnapshot
+    && left.areaId === right.areaId
+    && left.processId === right.processId
+    && left.assigneeProfileId === right.assigneeProfileId
+    && left.dueHint === right.dueHint
+    && left.approvalMode === right.approvalMode
+    && left.evidencePolicy === right.evidencePolicy
+    && left.status === right.status
+    && left.dueDate === right.dueDate
+    && JSON.stringify(left.checklistItems ?? []) === JSON.stringify(right.checklistItems ?? []);
 }
 
 function nextTimestamp(candidate: string, previous: string) {

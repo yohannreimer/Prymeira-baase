@@ -949,9 +949,13 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
         await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
         const timestamp = now();
+        const routineRevisionSnapshot = input.routineRevisionSnapshot ?? (input.routineId
+          ? (await lockedStore.find<CompanyRoutine>("routine", input.workspaceId, input.routineId))?.updatedAt ?? null
+          : null);
         return lockedStore.insert<TaskOccurrence>("task_occurrence", {
           ...input,
           origin: input.origin ?? (input.routineId ? "routine" : "manual"),
+          routineRevisionSnapshot,
           id: await lockedStore.nextId("task_occurrence", input.workspaceId, "task"),
           createdAt: timestamp,
           updatedAt: timestamp
@@ -977,6 +981,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
             await lockedStore.insert<TaskOccurrence>("task_occurrence", {
               ...input,
               origin: input.origin ?? "routine",
+              routineRevisionSnapshot: input.routineRevisionSnapshot ?? routine.updatedAt,
               id: await lockedStore.nextId("task_occurrence", routine.workspaceId, "task"),
               createdAt: timestamp,
               updatedAt: timestamp
@@ -984,14 +989,20 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
             continue;
           }
           if (!isPendingTask(task)) continue;
-          await lockedStore.update<TaskOccurrence>("task_occurrence", {
+          const revisionChanged = task.routineRevisionSnapshot !== routine.updatedAt;
+          const next: TaskOccurrence = {
             ...task,
             ...input,
-            checklistItems: task.routineRevisionSnapshot !== routine.updatedAt ? input.checklistItems : task.checklistItems,
+            checklistItems: revisionChanged ? input.checklistItems : task.checklistItems,
             routineRevisionSnapshot: routine.updatedAt,
             id: task.id,
             createdAt: task.createdAt,
-            updatedAt: now()
+            updatedAt: task.updatedAt
+          };
+          if (sameRoutineOccurrence(task, next)) continue;
+          await lockedStore.update<TaskOccurrence>("task_occurrence", {
+            ...next,
+            updatedAt: nextTimestamp(task.updatedAt)
           });
         }
 
@@ -1037,6 +1048,26 @@ function routineOccurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemp
 
 function isPendingTask(task: TaskOccurrence) {
   return task.status === "pending" && task.submittedAt === null;
+}
+
+function sameRoutineOccurrence(left: TaskOccurrence, right: TaskOccurrence) {
+  return left.origin === right.origin
+    && left.routineId === right.routineId
+    && left.taskTemplateId === right.taskTemplateId
+    && left.title === right.title
+    && left.areaNameSnapshot === right.areaNameSnapshot
+    && left.routineTitleSnapshot === right.routineTitleSnapshot
+    && left.stepTitleSnapshot === right.stepTitleSnapshot
+    && left.routineRevisionSnapshot === right.routineRevisionSnapshot
+    && left.areaId === right.areaId
+    && left.processId === right.processId
+    && left.assigneeProfileId === right.assigneeProfileId
+    && left.dueHint === right.dueHint
+    && left.approvalMode === right.approvalMode
+    && left.evidencePolicy === right.evidencePolicy
+    && left.status === right.status
+    && left.dueDate === right.dueDate
+    && JSON.stringify(left.checklistItems ?? []) === JSON.stringify(right.checklistItems ?? []);
 }
 
 function createPostgresTrainingRepository(store: JsonbRecordStore): TrainingRepository {

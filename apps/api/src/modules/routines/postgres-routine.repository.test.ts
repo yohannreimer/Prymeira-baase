@@ -52,9 +52,10 @@ async function createRoutineTables(pool: ReturnType<typeof createMemoryPool>) {
       id TEXT NOT NULL, workspace_id TEXT NOT NULL, origin TEXT NOT NULL, routine_id TEXT, routine_step_id TEXT,
       source_template_key TEXT, area_id TEXT, process_id TEXT, assignee_profile_id TEXT, audience_key TEXT,
       title TEXT NOT NULL, area_name_snapshot TEXT, routine_title_snapshot TEXT, step_title_snapshot TEXT NOT NULL,
+      routine_revision_snapshot TIMESTAMPTZ,
       due_hint TEXT, approval_mode TEXT NOT NULL, evidence_policy TEXT NOT NULL, status TEXT NOT NULL,
       due_date DATE NOT NULL, submitted_by_profile_id TEXT, submitted_at TIMESTAMPTZ,
-      reviewed_by_profile_id TEXT, reviewed_at TIMESTAMPTZ, review_comment TEXT, archived_at TIMESTAMPTZ,
+      reviewed_by_profile_id TEXT, reviewed_at TIMESTAMPTZ, review_comment TEXT, completed_at TIMESTAMPTZ, archived_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, id)
     );
@@ -121,6 +122,61 @@ describe("Postgres routine repository", () => {
       ["workspace_a"]
     ) as { rows: Array<{ routine_updated_at_snapshot: Date }> };
     expect(snapshots.rows.map((row) => row.routine_updated_at_snapshot.toISOString())).toEqual([revised.updatedAt]);
+  });
+
+  it("does not rewrite a pending occurrence or parent aggregate on an unchanged generation", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const repository = createPostgresRoutineRepository(pool);
+    const service = createRoutineService(repository);
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Conferir caixa" }]
+    });
+
+    const [first] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const parentBefore = await pool.query(
+      "SELECT routine_updated_at_snapshot FROM routine_occurrences WHERE workspace_id=$1",
+      ["workspace_a"]
+    ) as { rows: Array<{ routine_updated_at_snapshot: Date }> };
+    const [second] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const parentAfter = await pool.query(
+      "SELECT routine_updated_at_snapshot FROM routine_occurrences WHERE workspace_id=$1",
+      ["workspace_a"]
+    ) as { rows: Array<{ routine_updated_at_snapshot: Date }> };
+
+    expect(second?.id).toBe(first?.id);
+    expect(second?.updatedAt).toBe(first?.updatedAt);
+    expect(parentAfter.rows[0]?.routine_updated_at_snapshot.toISOString())
+      .toBe(parentBefore.rows[0]?.routine_updated_at_snapshot.toISOString());
+  });
+
+  it("keeps a submitted shared task on its original revision while refreshing its pending sibling", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const repository = createPostgresRoutineRepository(pool);
+    const service = createRoutineService(repository);
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Portas" }, { title: "Caixa" }]
+    });
+    const initial = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const submitted = initial.find((task) => task.title === "Portas");
+    if (!submitted) throw new Error("Expected shared task");
+    await service.submitTask("workspace_a", submitted.id, "profile_owner", {});
+
+    const revised = await service.updateRoutine("workspace_a", routine.id, {
+      title: "Abertura revisada", frequency: "daily",
+      taskTemplates: routine.taskTemplates.map((template) => ({ id: template.id, title: template.title }))
+    });
+    const reconciled = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    const historical = reconciled.find((task) => task.id === submitted.id);
+    const pending = reconciled.find((task) => task.id !== submitted.id);
+
+    expect(historical).toMatchObject({
+      title: "Portas", routineTitleSnapshot: "Abertura", routineRevisionSnapshot: initial.find((task) => task.id === submitted.id)?.routineRevisionSnapshot
+    });
+    expect(pending).toMatchObject({
+      title: "Caixa", routineTitleSnapshot: "Abertura revisada", routineRevisionSnapshot: revised.updatedAt, status: "pending"
+    });
   });
 
   it("does not archive an occurrence that is no longer pending", async () => {

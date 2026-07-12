@@ -56,7 +56,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it("adds operational identity and multi-area access without changing the person key", async () => {

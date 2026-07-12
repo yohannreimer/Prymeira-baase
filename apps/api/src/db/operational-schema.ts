@@ -270,6 +270,7 @@ const migrations: Migration[] = [{
       area_name_snapshot TEXT,
       routine_title_snapshot TEXT,
       step_title_snapshot TEXT NOT NULL,
+      routine_revision_snapshot TIMESTAMPTZ,
       approval_mode TEXT NOT NULL CHECK (approval_mode IN ('direct', 'approval_required')),
       evidence_policy TEXT NOT NULL CHECK (evidence_policy IN (
         'optional', 'comment_required', 'photo_required', 'photo_or_comment_required'
@@ -491,6 +492,23 @@ const migrations: Migration[] = [{
       ON people (workspace_id, clerk_user_id) WHERE clerk_user_id IS NOT NULL AND archived_at IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS people_active_customer_identity_uidx
       ON people (workspace_id, customer_id) WHERE customer_id IS NOT NULL AND archived_at IS NULL;
+  `
+}, {
+  version: 6,
+  name: "task_occurrence_routine_revision_snapshot",
+  sql: `
+    ALTER TABLE task_occurrences
+      ADD COLUMN IF NOT EXISTS routine_revision_snapshot TIMESTAMPTZ;
+
+    UPDATE task_occurrences
+      SET routine_revision_snapshot = routine_occurrences_parent.routine_updated_at_snapshot
+      FROM routine_occurrences AS routine_occurrences_parent
+      WHERE task_occurrences.routine_revision_snapshot IS NULL
+        AND task_occurrences.origin = 'routine'
+        AND task_occurrences.workspace_id = routine_occurrences_parent.workspace_id
+        AND task_occurrences.routine_id = routine_occurrences_parent.routine_id
+        AND task_occurrences.due_date = routine_occurrences_parent.due_date
+        AND task_occurrences.audience_key = routine_occurrences_parent.audience_key;
   `
 }];
 

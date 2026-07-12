@@ -59,6 +59,7 @@ export type TaskOccurrence = {
   areaNameSnapshot?: string | null;
   routineTitleSnapshot?: string | null;
   stepTitleSnapshot?: string | null;
+  /** Revision of the routine used to materialize this individual occurrence. */
   routineRevisionSnapshot?: string | null;
   areaId?: string | null;
   processId: string | null;
