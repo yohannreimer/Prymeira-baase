@@ -250,6 +250,7 @@ async function createOrReuseRoutineOccurrences(
     await repository.reconcileRoutineOccurrence({
       ...existing,
       ...input,
+      routineRevisionSnapshot: existing.routineRevisionSnapshot,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: existing.updatedAt
