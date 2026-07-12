@@ -12,6 +12,8 @@ export type BaaseSession = {
     display_name?: string;
     initials?: string;
     area_name?: string | null;
+    area_names?: string[];
+    access_scope?: "workspace" | "area" | "assigned_only";
   };
   home_route: string;
 };
