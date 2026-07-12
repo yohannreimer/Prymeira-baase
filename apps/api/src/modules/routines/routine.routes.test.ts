@@ -1640,6 +1640,43 @@ describe("routine routes", () => {
     expect(objectStorage.keys()).toEqual([]);
   });
 
+  it("cleans evidence after a generated occurrence is archived by routine reconciliation", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/routines", headers: localManagerHeaders, payload: {
+      title: "Abertura com comprovante",
+      area_id: "area_tecnica",
+      frequency: "daily",
+      task_templates: [
+        { title: "Fotografar entrada", assignee_profile_id: employeeId },
+        { title: "Conferir caixa", assignee_profile_id: employeeId }
+      ]
+    } });
+    expect(created.statusCode).toBe(201);
+    const routine = created.json().routine;
+    const generated = await app.inject({ method: "POST", url: `/routines/${routine.id}/occurrences/generate`, headers: localManagerHeaders, payload: { due_date: "2026-07-13" } });
+    expect(generated.statusCode).toBe(201);
+    expect(generated.json().tasks).toHaveLength(2);
+    const evidenceTask = generated.json().tasks.find((task: { title: string }) => task.title === "Fotografar entrada");
+    if (!evidenceTask) throw new Error("Expected generated evidence task");
+    const upload = multipartEvidencePayload("entrada.png", "image/png", pngEvidence);
+    const attached = await app.inject({ method: "POST", url: `/tasks/${evidenceTask.id}/evidence`, headers: { ...localEmployeeHeaders, ...upload.headers }, payload: upload.payload });
+    expect(attached.statusCode).toBe(201);
+    expect(objectStorage.keys()).toHaveLength(1);
+
+    const revised = await app.inject({ method: "PATCH", url: `/routines/${routine.id}`, headers: localManagerHeaders, payload: {
+      title: "Abertura com comprovante",
+      area_id: "area_tecnica",
+      frequency: "daily",
+      task_templates: [{ id: routine.taskTemplates[1].id, title: "Conferir caixa", assignee_profile_id: employeeId }]
+    } });
+    expect(revised.statusCode).toBe(200);
+    const reconciled = await app.inject({ method: "POST", url: `/routines/${routine.id}/occurrences/generate`, headers: localManagerHeaders, payload: { due_date: "2026-07-13" } });
+
+    expect(reconciled.statusCode).toBe(201);
+    expect(reconciled.json().tasks).toEqual([expect.objectContaining({ title: "Conferir caixa" })]);
+    expect(objectStorage.keys()).toEqual([]);
+  });
+
   it("keeps the replacement metadata when cleanup of an old object fails", async () => {
     const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders, objectStorage, routineRepository } = await buildLocalRoutineAppWithEmployee("area_tecnica");
     const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {

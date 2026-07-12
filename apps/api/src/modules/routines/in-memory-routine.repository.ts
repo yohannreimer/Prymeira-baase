@@ -113,6 +113,7 @@ export function createInMemoryRoutineRepository(
       const existing = tasks.filter((task) => task.workspaceId === routine.workspaceId && task.routineId === routine.id && task.dueDate === dueDate);
       const existingByKey = new Map(existing.map((task) => [routineOccurrenceKey(task), task]));
       const desiredByKey = new Map(desired.map((task) => [routineOccurrenceKey(task), task]));
+      const removedObjectKeys = new Set<string>();
 
       for (const [key, input] of desiredByKey) {
         const task = existingByKey.get(key);
@@ -138,13 +139,24 @@ export function createInMemoryRoutineRepository(
           ...next,
           updatedAt: nextTimestamp(now(), task.updatedAt)
         };
+        const previousObjectKey = task.evidence?.attachment?.objectKey;
+        const nextObjectKey = next.evidence?.attachment?.objectKey;
+        if (previousObjectKey && previousObjectKey !== nextObjectKey) removedObjectKeys.add(previousObjectKey);
       }
 
       for (const task of existing) {
-        if (!desiredByKey.has(routineOccurrenceKey(task)) && isPending(task)) tasks.splice(tasks.indexOf(task), 1);
+        if (!desiredByKey.has(routineOccurrenceKey(task)) && isPending(task)) {
+          tasks.splice(tasks.indexOf(task), 1);
+          const objectKey = task.evidence?.attachment?.objectKey;
+          if (objectKey) removedObjectKeys.add(objectKey);
+        }
       }
 
-      return tasks.filter((task) => task.workspaceId === routine.workspaceId && task.routineId === routine.id && task.dueDate === dueDate);
+      const activeObjectKeys = new Set(tasks.flatMap((task) => task.evidence?.attachment?.objectKey ? [task.evidence.attachment.objectKey] : []));
+      return {
+        tasks: tasks.filter((task) => task.workspaceId === routine.workspaceId && task.routineId === routine.id && task.dueDate === dueDate),
+        removedObjectKeys: [...removedObjectKeys].filter((objectKey) => !activeObjectKeys.has(objectKey))
+      };
     },
 
     async updateTaskOccurrence(task) {

@@ -240,9 +240,12 @@ async function createOrReuseRoutineOccurrences(
 
 async function ensureTodayOccurrences(repository: RoutineRepository, workspaceId: string, dueDate: string) {
   const routines = await repository.listRoutines(workspaceId);
+  const removedObjectKeys = new Set<string>();
   for (const routine of routines.filter(shouldAutoGenerateRoutine)) {
-    await createOrReuseRoutineOccurrences(repository, routine, dueDate);
+    const reconciliation = await createOrReuseRoutineOccurrences(repository, routine, dueDate);
+    for (const objectKey of reconciliation.removedObjectKeys) removedObjectKeys.add(objectKey);
   }
+  return [...removedObjectKeys];
 }
 
 export function createRoutineService(repository: RoutineRepository) {
@@ -303,12 +306,22 @@ export function createRoutineService(repository: RoutineRepository) {
 
     async generateRoutineOccurrences(workspaceId: string, routineId: string, dueDate: string): Promise<TaskOccurrence[]> {
       const routine = await readRoutineOrThrow(repository, workspaceId, routineId);
+      return (await createOrReuseRoutineOccurrences(repository, routine, dueDate)).tasks;
+    },
+
+    async generateRoutineOccurrencesWithCleanup(workspaceId: string, routineId: string, dueDate: string) {
+      const routine = await readRoutineOrThrow(repository, workspaceId, routineId);
       return createOrReuseRoutineOccurrences(repository, routine, dueDate);
     },
 
     async listTodayTasks(workspaceId: string, dueDate: string) {
       await ensureTodayOccurrences(repository, workspaceId, dueDate);
       return repository.listTaskOccurrences(workspaceId, { dueDate });
+    },
+
+    async listTodayTasksWithCleanup(workspaceId: string, dueDate: string) {
+      const removedObjectKeys = await ensureTodayOccurrences(repository, workspaceId, dueDate);
+      return { tasks: await repository.listTaskOccurrences(workspaceId, { dueDate }), removedObjectKeys };
     },
 
     async getTask(workspaceId: string, taskId: string): Promise<TaskOccurrence> {

@@ -258,6 +258,34 @@ describe("Postgres routine repository", () => {
     expect(stored.rows[0]?.archived_at).toBeNull();
   });
 
+  it("returns an attachment key only after successfully archiving its pending occurrence", async () => {
+    const pool = createMemoryPool();
+    await createRoutineTables(pool);
+    const service = createRoutineService(createPostgresRoutineRepository(pool));
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ title: "Portas" }, { title: "Caixa" }]
+    });
+    const [doors] = await service.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-08");
+    if (!doors) throw new Error("Expected generated task");
+    const objectKey = "workspaces/workspace_a/task-evidence/doors.png";
+    await service.attachTaskEvidence("workspace_a", doors.id, "profile_owner", {
+      attachment: { objectKey, fileName: "doors.png", contentType: "image/png", sizeBytes: 8 }
+    });
+    await service.updateRoutine("workspace_a", routine.id, {
+      title: "Abertura", frequency: "daily", taskTemplates: [{ id: routine.taskTemplates[1]!.id, title: "Caixa" }]
+    });
+
+    const reconciliation = await service.generateRoutineOccurrencesWithCleanup("workspace_a", routine.id, "2026-07-08");
+
+    expect(reconciliation.tasks).toEqual([expect.objectContaining({ title: "Caixa" })]);
+    expect(reconciliation.removedObjectKeys).toEqual([objectKey]);
+    const archived = await pool.query(
+      "SELECT archived_at FROM task_occurrences WHERE workspace_id=$1 AND id=$2",
+      ["workspace_a", doors.id]
+    ) as { rows: Array<{ archived_at: Date | null }> };
+    expect(archived.rows[0]?.archived_at).toBeTruthy();
+  });
+
   it("rejects a stale routine snapshot without rewriting occurrences", async () => {
     const pool = createMemoryPool();
     await createRoutineTables(pool);

@@ -115,6 +115,9 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       const existingByKey=new Map(persisted.rows.map(task=>[routineOccurrenceKey(task.source_template_key??task.routine_step_id,task.assignee_profile_id),task]));
       const desiredByKey=new Map(desired.map(task=>[routineOccurrenceKey(task.taskTemplateId,task.assigneeProfileId),task]));
       const changedAudiences=new Set<string>();
+      const evidence=await client.query<{task_occurrence_id:string;object_key:string}>("SELECT task_occurrence_id,object_key FROM task_evidence WHERE workspace_id=$1 AND task_occurrence_id=ANY($2::text[]) AND object_key IS NOT NULL AND archived_at IS NULL",[routine.workspaceId,persisted.rows.map(task=>task.id)]);
+      const objectKeyByTaskId=new Map(evidence.rows.map(item=>[item.task_occurrence_id,item.object_key]));
+      const removedObjectKeys=new Set<string>();
 
       for(const [key,input] of desiredByKey){
         const existing=existingByKey.get(key);
@@ -127,7 +130,7 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
       for(const [key,task] of existingByKey){
         if(desiredByKey.has(key)||task.status!=="pending"||task.submitted_at!==null)continue;
         const archived=await client.query<{id:string}>("UPDATE task_occurrences SET archived_at=NOW(),updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL AND status='pending' AND submitted_at IS NULL RETURNING id",[routine.workspaceId,task.id]);
-        if(archived.rows[0]){changedAudiences.add(task.audience_key??"shared");await audit(client,routine.workspaceId,"task_occurrence",task.id,"archive");}
+        if(archived.rows[0]){changedAudiences.add(task.audience_key??"shared");const objectKey=objectKeyByTaskId.get(task.id);if(objectKey)removedObjectKeys.add(objectKey);await audit(client,routine.workspaceId,"task_occurrence",task.id,"archive");}
       }
       for(const audienceKey of changedAudiences){
         const sample=desired.find(task=>(task.assigneeProfileId??"shared")===audienceKey);
@@ -143,7 +146,9 @@ export function createPostgresRoutineRepository(db:OperationalPool):RoutineRepos
         }
       }
       const result=await client.query<TaskRow>("SELECT * FROM task_occurrences WHERE workspace_id=$1 AND routine_id=$2 AND due_date=$3 AND archived_at IS NULL ORDER BY created_at,id",[routine.workspaceId,routine.id,dueDate]);
-      return hydrateTasks(client,result.rows);
+      const referenced=removedObjectKeys.size?await client.query<{object_key:string}>("SELECT DISTINCT evidence.object_key FROM task_evidence evidence JOIN task_occurrences task ON task.workspace_id=evidence.workspace_id AND task.id=evidence.task_occurrence_id WHERE evidence.workspace_id=$1 AND evidence.object_key=ANY($2::text[]) AND evidence.archived_at IS NULL AND task.archived_at IS NULL",[routine.workspaceId,[...removedObjectKeys]]):{rows:[]};
+      const referencedObjectKeys=new Set(referenced.rows.map(item=>item.object_key));
+      return {tasks:await hydrateTasks(client,result.rows),removedObjectKeys:[...removedObjectKeys].filter(objectKey=>!referencedObjectKeys.has(objectKey))};
     });},
     async updateTaskOccurrence(task){return withOperationalTransaction(db,async client=>{
       await lockWorkspaceOperationalMutation(client,task.workspaceId);

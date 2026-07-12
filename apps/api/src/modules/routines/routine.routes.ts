@@ -253,8 +253,9 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     try {
       const routine = await service.getRoutine(context.workspaceId, params.id);
       if (!canManageRoutineOrTaskArea(requireOperationalMembership(request), routine.areaId)) throw scopeForbidden();
-      const tasks = await service.generateRoutineOccurrences(context.workspaceId, params.id, body.due_date);
-      return reply.status(201).send({ tasks });
+      const reconciliation = await service.generateRoutineOccurrencesWithCleanup(context.workspaceId, params.id, body.due_date);
+      await deleteEvidenceObjects(options.objectStorage, reconciliation.removedObjectKeys);
+      return reply.status(201).send({ tasks: reconciliation.tasks });
     } catch (error) {
       throw routineMutationError(error);
     }
@@ -265,8 +266,9 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     const query = todayQuerySchema.parse(request.query);
     const date = query.date ?? new Date().toISOString().slice(0, 10);
     const membership = requireOperationalMembership(request);
-    const [tasks, trainingAssignments, announcements] = await Promise.all([
-      service.listTodayTasks(context.workspaceId, date),
+    const today = await service.listTodayTasksWithCleanup(context.workspaceId, date);
+    await deleteEvidenceObjects(options.objectStorage, today.removedObjectKeys);
+    const [trainingAssignments, announcements] = await Promise.all([
       trainingService
         ? trainingService.listTrainingProgress(context.workspaceId, {
           profileId: context.profileId,
@@ -281,7 +283,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         : Promise.resolve([])
     ]);
     return {
-      tasks: await presentTasks(tasks.filter((task) => canReadTask(membership, task)), options.objectStorage),
+      tasks: await presentTasks(today.tasks.filter((task) => canReadTask(membership, task)), options.objectStorage),
       training_assignments: trainingAssignments,
       announcements
     };
@@ -548,6 +550,10 @@ async function deleteEvidenceObject(objectStorage: ObjectStorage, objectKey: str
   } catch {
     // Metadata mutation already committed; a failed cleanup must not restore stale metadata.
   }
+}
+
+async function deleteEvidenceObjects(objectStorage: ObjectStorage, objectKeys: string[]) {
+  await Promise.all(objectKeys.map((objectKey) => deleteEvidenceObject(objectStorage, objectKey)));
 }
 
 function sanitizeFilename(filename: string) {

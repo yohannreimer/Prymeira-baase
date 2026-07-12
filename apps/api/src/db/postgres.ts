@@ -975,6 +975,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
           .filter((task) => task.routineId === routine.id && task.dueDate === dueDate);
         const existingByKey = new Map(existing.map((task) => [routineOccurrenceKey(task), task]));
         const desiredByKey = new Map(desired.map((task) => [routineOccurrenceKey(task), task]));
+        const removedObjectKeys = new Set<string>();
 
         for (const [key, input] of desiredByKey) {
           const task = existingByKey.get(key);
@@ -1006,16 +1007,25 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
             ...next,
             updatedAt: nextTimestamp(task.updatedAt)
           });
+          const previousObjectKey = task.evidence?.attachment?.objectKey;
+          const nextObjectKey = next.evidence?.attachment?.objectKey;
+          if (previousObjectKey && previousObjectKey !== nextObjectKey) removedObjectKeys.add(previousObjectKey);
         }
 
         for (const task of existing) {
           if (!desiredByKey.has(routineOccurrenceKey(task)) && isPendingTask(task)) {
             await lockedStore.delete("task_occurrence", routine.workspaceId, task.id);
+            const objectKey = task.evidence?.attachment?.objectKey;
+            if (objectKey) removedObjectKeys.add(objectKey);
           }
         }
 
-        return (await lockedStore.list<TaskOccurrence>("task_occurrence", routine.workspaceId))
-          .filter((task) => task.routineId === routine.id && task.dueDate === dueDate);
+        const activeTasks = await lockedStore.list<TaskOccurrence>("task_occurrence", routine.workspaceId);
+        const activeObjectKeys = new Set(activeTasks.flatMap((task) => task.evidence?.attachment?.objectKey ? [task.evidence.attachment.objectKey] : []));
+        return {
+          tasks: activeTasks.filter((task) => task.routineId === routine.id && task.dueDate === dueDate),
+          removedObjectKeys: [...removedObjectKeys].filter((objectKey) => !activeObjectKeys.has(objectKey))
+        };
       });
     },
 

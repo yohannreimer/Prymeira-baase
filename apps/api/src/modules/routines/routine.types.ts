@@ -141,6 +141,16 @@ export type AttachTaskEvidenceInput = {
   attachment: TaskEvidenceAttachment;
 };
 
+/**
+ * Result of reconciling generated routine work. Object keys are reported only
+ * after their metadata was removed or archived successfully; application code
+ * owns the best-effort object-store cleanup.
+ */
+export type RoutineOccurrenceReconciliation = {
+  tasks: TaskOccurrence[];
+  removedObjectKeys: string[];
+};
+
 export type RoutineRepository = {
   listRoutines(workspaceId: string): Promise<CompanyRoutine[]>;
   findRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine | null>;
@@ -160,7 +170,7 @@ export type RoutineRepository = {
     routine: CompanyRoutine,
     dueDate: string,
     desired: Array<Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">>
-  ): Promise<TaskOccurrence[]>;
+  ): Promise<RoutineOccurrenceReconciliation>;
   updateTaskOccurrence(task: TaskOccurrence): Promise<TaskOccurrence>;
   deleteTaskOccurrence(workspaceId: string, taskId: string): Promise<boolean>;
   getLifecycleState?(): { routines: CompanyRoutine[]; tasks: TaskOccurrence[] };
