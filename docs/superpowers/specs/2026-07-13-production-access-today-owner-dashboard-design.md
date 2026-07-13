@@ -19,10 +19,13 @@ O nome informado no onboarding é a fonte principal do nome da empresa dentro do
 ## Hoje e checklist
 
 - Funcionário vê apenas suas ocorrências e tarefas pontuais.
-- Dono pode acompanhar todas as ocorrências; gestor permanece limitado à área.
+- Ocorrências individuais são pessoais no Hoje para qualquer papel: dono, gestor e funcionário veem somente a ocorrência atribuída à própria pessoa. A visão global do dono e a visão por área do gestor ficam nos respectivos painéis de acompanhamento.
+- Execuções compartilhadas sem responsável individual preservam o alcance operacional já definido para o papel.
 - Cada ocorrência individual mantém seu próprio progresso, por exemplo `0/9`.
+- Tarefas pontuais com checklist usam a mesma interação inline e exibem seu próprio progresso, por exemplo `0/3`.
 - Ao expandir uma ocorrência, cada item é um checkbox real. Clicar salva pela rota de checklist existente, bloqueia a repetição enquanto salva, atualiza o contador e reverte visualmente em caso de erro.
 - O botão `Abrir checklist` é removido. A tela de execução permanece disponível apenas quando for necessário concluir/enviar evidência, por uma ação final com rótulo contextual.
+- O progresso do dia é calculado a partir das tarefas efetivamente exibidas no Hoje, evitando contadores como `0 de 0` quando há linhas visíveis.
 
 ## Painel do Dono
 
