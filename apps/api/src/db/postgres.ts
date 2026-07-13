@@ -16,6 +16,8 @@ import {
 } from "../modules/company/area-lifecycle.repository";
 import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
 import { createPostgresRoutineRepository as createRelationalRoutineRepository } from "../modules/routines/postgres-routine.repository";
+import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
+import type { StudioRepository } from "../modules/studio/studio.types";
 import { lockWorkspaceOperationalMutation, withOperationalTransaction, type OperationalClient, type OperationalPool } from "./operational-repository-support";
 import type { BaaseOperationalStore } from "../config/runtime";
 
@@ -218,6 +220,18 @@ export type PostgresRepositoryBundleOptions = {
   inviteCodeGenerator?: () => string;
 };
 
+type PostgresRepositoryBundle = Required<Pick<
+  BuildAppOptions,
+  | "companyRepository"
+  | "areaLifecycleRepository"
+  | "processRepository"
+  | "routineRepository"
+  | "trainingRepository"
+  | "announcementRepository"
+  | "onboardingRepository"
+  | "aiRepository"
+>> & { studioRepository: StudioRepository };
+
 async function assertJsonbActiveArea(store: JsonbRecordStore, workspaceId: string, areaId: string | null | undefined) {
   if (!areaId) return;
   const area = await store.find<Area>("area", workspaceId, areaId);
@@ -249,17 +263,7 @@ async function assertJsonbActivePerson(
 export function createPostgresRepositoryBundle(
   db: OperationalPool,
   options: PostgresRepositoryBundleOptions = {}
-): Required<Pick<
-  BuildAppOptions,
-  | "companyRepository"
-  | "areaLifecycleRepository"
-  | "processRepository"
-  | "routineRepository"
-  | "trainingRepository"
-  | "announcementRepository"
-  | "onboardingRepository"
-  | "aiRepository"
->> {
+): PostgresRepositoryBundle {
   const store = new JsonbRecordStore(db);
   return {
     companyRepository: createJsonbCompanyRepository(store, options.inviteCodeGenerator ?? generateInviteCode),
@@ -269,7 +273,8 @@ export function createPostgresRepositoryBundle(
     trainingRepository: createPostgresTrainingRepository(store),
     announcementRepository: createPostgresAnnouncementRepository(store),
     onboardingRepository: createPostgresOnboardingRepository(store),
-    aiRepository: createPostgresAiRepository(store)
+    aiRepository: createPostgresAiRepository(store),
+    studioRepository: createPostgresStudioRepository(db)
   };
 }
 
