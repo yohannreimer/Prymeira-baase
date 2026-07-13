@@ -1591,7 +1591,6 @@ function ActivationPlanPanel({
 export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const accountMode = readBaaseAuthConfig(import.meta.env).mode === "account";
   const [role, setRoleState] = useState<Role>(initialRole);
-  const [previewRole, setPreviewRole] = useState<Role | null>(null);
   const [screen, setScreen] = useState<Screen>(homeFor(initialRole));
   const [menuOpen, setMenuOpen] = useState(false);
   const [tasks, setTasks] = useState<Record<string, boolean>>({ t1: false, t2: true, t3: false, t4: false });
@@ -1712,15 +1711,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }, [notice]);
 
   const liveWorkspaceMode = apiEnabled;
-  const presentationRole = accountMode && role === "dono" && previewRole ? previewRole : role;
-  const identity = identityFromSession(presentationRole, apiBundle?.session ?? null, liveWorkspaceMode);
+  const identity = identityFromSession(role, apiBundle?.session ?? null, liveWorkspaceMode);
   const workspaceName = apiBundle?.session.workspace.name?.trim()
     || onboardingSession?.companyName?.trim()
     || (liveWorkspaceMode ? "Sua empresa" : "Estúdio Norte");
   const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
-  const baseNav = navByRole[presentationRole];
+  const baseNav = navByRole[role];
   const visibleProcesses = useMemo(() => {
     const loaded = apiBundle?.processes ?? [];
     return [...createdProcesses, ...loaded.filter((process) => !createdProcesses.some((created) => created.id === process.id))];
@@ -1858,12 +1856,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setScreen(homeFor(nextRole));
     setMenuOpen(false);
     setOperationalPersonId(null);
-  }
-
-  function setPreview(nextRole: Role) {
-    setPreviewRole(nextRole === role ? null : nextRole);
-    setScreen(homeFor(nextRole));
-    setMenuOpen(false);
   }
 
   function go(nextScreen: Screen) {
@@ -3364,16 +3356,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 {label}
               </button>
             ))}
-          </div> : role === "dono" ? <div className="role-switch" aria-label="Prévia de visualização">
-            {[
-              ["dono", "Dono"],
-              ["gestor", "Gestor"],
-              ["func", "Funcionário"]
-            ].map(([key, label]) => (
-              <button key={key} className={presentationRole === key ? "active" : ""} type="button" onClick={() => setPreview(key as Role)}>
-                {label}
-              </button>
-            ))}
           </div> : null}
           <div className="top-actions">
             <button className="icon-btn" type="button" aria-label="Buscar" onClick={() => setTopPanel((panel) => panel === "search" ? null : "search")}><Icon name="ph-magnifying-glass" /></button>
@@ -4417,7 +4399,7 @@ function TodayPage({
   toggleTask: (task: TodayTaskRow) => void;
   go: (screen: Screen) => void;
 }) {
-  const [expandedRoutineIds, setExpandedRoutineIds] = useState<Set<string>>(() => new Set());
+  const [expandedOccurrenceIds, setExpandedOccurrenceIds] = useState<Set<string>>(() => new Set());
   const announcementRows = announcements.length ? announcements : [];
   const trainingRows = trainingAssignments.length ? trainingAssignments : [];
   const summary = dashboard?.employeeToday;
@@ -4446,11 +4428,11 @@ function TodayPage({
     return { manualTasks, routineGroups: [...routines.values()] };
   }, [taskRows]);
 
-  function toggleRoutineExpansion(routineId: string) {
-    setExpandedRoutineIds((current) => {
+  function toggleOccurrenceExpansion(taskId: string) {
+    setExpandedOccurrenceIds((current) => {
       const next = new Set(current);
-      if (next.has(routineId)) next.delete(routineId);
-      else next.add(routineId);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
       return next;
     });
   }
@@ -4479,24 +4461,44 @@ function TodayPage({
                 </div>
               ) : null}
               {routineGroups.map((routine) => {
-                const completed = routine.tasks.filter((task) => task.done).length;
-                const expanded = expandedRoutineIds.has(routine.id);
-                const needsEvidence = routine.tasks.some((task) => task.evid);
-
                 return (
                   <div className="today-routine-group" key={routine.id}>
-                    <button
-                      aria-expanded={expanded}
-                      className="today-routine-head"
-                      type="button"
-                      onClick={() => toggleRoutineExpansion(routine.id)}
-                    >
-                      <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
-                      <span className="today-routine-copy"><strong>{routine.title}</strong><small>Rotina de hoje</small></span>
-                      {needsEvidence ? <Pill><Icon name="ph-camera" /> evidência em etapas</Pill> : null}
-                      <span className="today-routine-progress">{completed}/{routine.tasks.length} concluídas</span>
-                    </button>
-                    {expanded ? <div className="today-routine-tasks">{routine.tasks.map((task) => <TodayTaskButton key={task.id} task={task} toggleTask={toggleTask} nested />)}</div> : null}
+                    <div className="today-routine-head">
+                      <span className="today-routine-copy"><strong>{routine.title}</strong><small>{routine.tasks.length === 1 ? "1 execução de hoje" : `${routine.tasks.length} execuções independentes hoje`}</small></span>
+                    </div>
+                    <div className="today-routine-tasks">
+                      {routine.tasks.map((task) => {
+                        const expanded = expandedOccurrenceIds.has(task.id);
+                        const checklistTotal = task.checklistItems?.length ?? 0;
+                        const checklistDone = task.checklistItems?.filter((item) => item.done).length ?? 0;
+
+                        return (
+                          <article className="today-routine-occurrence" key={task.id}>
+                            <div className="today-routine-occurrence-head">
+                              <button
+                                aria-expanded={expanded}
+                                aria-label={`${expanded ? "Recolher" : "Expandir"} checklist de ${task.label}`}
+                                className="today-routine-occurrence-toggle"
+                                type="button"
+                                onClick={() => toggleOccurrenceExpansion(task.id)}
+                              >
+                                <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
+                                <span className="today-routine-copy"><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
+                                {checklistTotal ? <span className="today-routine-progress">{checklistDone}/{checklistTotal} concluídos</span> : null}
+                              </button>
+                              <button className="today-routine-open" type="button" onClick={() => toggleTask(task)}>Abrir checklist</button>
+                            </div>
+                            {expanded && checklistTotal ? (
+                              <div className="today-routine-checklist" aria-label={`Checklist de ${task.label}`}>
+                                {task.checklistItems!.map((item, index) => (
+                                  <span className={item.done ? "done" : ""} key={`${task.id}-${item.title}-${index}`}><Icon name={item.done ? "ph-check" : "ph-circle"} />{item.title}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })}

@@ -180,6 +180,7 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
+    expect(screen.queryByLabelText("Prévia de visualização")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("link", { name: /Equipe/ }));
     expect(await screen.findByText(/convide por e-mail/)).toBeInTheDocument();
     expect(screen.queryByText("Link de convite do workspace")).not.toBeInTheDocument();
@@ -237,7 +238,7 @@ describe("Baase React app shell", () => {
     });
   });
 
-  it("groups routine occurrences in Hoje and replaces orphaned area ids with a clear label", async () => {
+  it("shows routine occurrences in Hoje and replaces orphaned area ids with a clear label", async () => {
     mockLoadedWorkspace({
       "/api/today?date=2026-07-07": {
         tasks: [
@@ -280,11 +281,8 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(await screen.findByRole("link", { name: /Hoje/ }));
     expect(await screen.findByText("Abertura operacional")).toBeInTheDocument();
-    expect(screen.getByText("0/2 concluídas")).toBeInTheDocument();
-    expect(screen.queryByText("Conferir agenda")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /Abertura operacional/ }));
-    expect(await screen.findByText("Conferir agenda")).toBeInTheDocument();
+    expect(screen.getByText("2 execuções independentes hoje")).toBeInTheDocument();
+    expect(screen.getByText("Conferir agenda")).toBeInTheDocument();
     expect(screen.getByText("Registrar prioridades")).toBeInTheDocument();
     expect(screen.getByText("Retornar cliente")).toBeInTheDocument();
 
@@ -1692,6 +1690,51 @@ describe("Baase React app shell", () => {
       expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_checklist/checklist", expect.objectContaining({ method: "PATCH" }));
       expect(screen.getByText("1/3 concluído")).toBeInTheDocument();
     });
+  });
+
+  it("shows each individual routine execution with its own checklist instead of aggregating people", async () => {
+    mockLoadedWorkspace({
+      "/api/today?date=2026-07-07": {
+        tasks: ["person_yohann", "person_peterson", "person_andre"].map((assigneeProfileId) => ({
+          id: `task_${assigneeProfileId}`,
+          title: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
+          origin: "routine",
+          routineId: "routine_orquestrador",
+          routineTitleSnapshot: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
+          assigneeProfileId,
+          areaId: "area_technical",
+          status: "pending",
+          dueDate: "2026-07-07",
+          dueHint: "Primeira atividade da manhã",
+          evidencePolicy: "optional",
+          checklistItems: [
+            { title: "Acessar o orquestrador", done: false },
+            { title: "Revisar registros do dia anterior", done: false },
+            { title: "Planejar o dia atual", done: false }
+          ]
+        }))
+      },
+      "/api/areas": { areas: [{ id: "area_technical", name: "Técnico, Implantação e Entregáveis" }] },
+      "/api/people": { people: [
+        { id: "person_yohann", name: "Yohann", role: "owner", areaId: "area_technical" },
+        { id: "person_peterson", name: "Peterson", role: "employee", areaId: "area_technical" },
+        { id: "person_andre", name: "André", role: "employee", areaId: "area_technical" }
+      ] }
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: /Hoje/ }));
+
+    expect(await screen.findByText("3 execuções independentes hoje")).toBeInTheDocument();
+    expect(screen.getAllByText("0/3 concluídos")).toHaveLength(3);
+    expect(screen.queryByText("0/3 concluídas")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Expandir checklist de Revisão do Dia Anterior/ })[0]!);
+    const checklist = await screen.findByLabelText("Checklist de Revisão do Dia Anterior e Planejamento Diário no Orquestrador");
+    expect(within(checklist).getByText("Acessar o orquestrador")).toBeInTheDocument();
+    expect(within(checklist).getByText("Revisar registros do dia anterior")).toBeInTheDocument();
+    expect(within(checklist).getByText("Planejar o dia atual")).toBeInTheDocument();
   });
 
   it("lets the employee attach evidence and send a task for approval", async () => {
