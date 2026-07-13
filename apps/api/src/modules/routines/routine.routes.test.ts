@@ -152,7 +152,6 @@ describe("routine routes", () => {
   it("isolates individual technical routine tasks by assignee and operational area", async () => {
     const { app, headersFor, personIdFor } = await buildOperationalAccessApp();
     const ownerHeaders = headersFor("profile_owner");
-    const ownerId = personIdFor("profile_owner");
     const petersonId = personIdFor("profile_peterson");
     const andreId = personIdFor("profile_andre");
     const routineResponse = await app.inject({
@@ -203,13 +202,9 @@ describe("routine routes", () => {
     expect(andreToday.json().tasks).toHaveLength(1);
     expect(andreToday.json().tasks[0]).toMatchObject({ assigneeProfileId: andreId });
     expect(technicalSupportToday.json().tasks).toEqual([]);
-    expect(ownerToday.json().tasks).toHaveLength(2);
-    expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
-      .toEqual([petersonId, andreId]);
-    expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
-      .not.toContain(ownerId);
+    expect(ownerToday.json().tasks).toEqual([]);
 
-    const taskId = ownerToday.json().tasks[0].id as string;
+    const taskId = petersonToday.json().tasks[0].id as string;
     const managerTask = await app.inject({
       method: "GET",
       url: `/tasks/${taskId}`,
@@ -757,9 +752,7 @@ describe("routine routes", () => {
       payload: { checklist_items: [{ title: "Executar rotina individual", done: true }] }
     });
 
-    expect(technicalManagerToday.json().tasks).toEqual([
-      expect.objectContaining({ id: individualTaskId })
-    ]);
+    expect(technicalManagerToday.json().tasks).toEqual([]);
     expect(financeManagerToday.json().tasks).toEqual([]);
     expect(individualManagerChecklist.statusCode).toBe(403);
     expect(individualManagerChecklist.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
@@ -1134,6 +1127,11 @@ describe("routine routes", () => {
       url: "/today?date=2026-07-08",
       headers: localEmployeeHeaders
     });
+    const managerTodayResponse = await app.inject({
+      method: "GET",
+      url: "/today?date=2026-07-08",
+      headers: localManagerHeaders
+    });
 
     expect(todayResponse.statusCode).toBe(200);
     expect(todayResponse.json().tasks).toHaveLength(1);
@@ -1148,6 +1146,9 @@ describe("routine routes", () => {
         ]
       })
     ]));
+    expect(managerTodayResponse.json().tasks).toEqual([
+      expect.objectContaining({ assigneeProfileId: managerId })
+    ]);
   });
 
   it("generates active routine occurrences when the employee opens today", async () => {

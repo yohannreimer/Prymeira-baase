@@ -1940,8 +1940,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       { id: "t4", label: "Publicar carrossel — Café Aurora", meta: "Criação · vence 18:00", prio: "Baixa", evid: true }
     ].map((task) => ({ ...task, done: Boolean(tasks[task.id]) })) satisfies TodayTaskRow[];
   }, [apiBundle?.tasks, companyAreas, companyPeople, liveWorkspaceMode, submittedApiTasks, submittingTasks, tasks]);
-  const tasksDone = taskRows.filter((task) => task.done).length;
-  const tasksPct = taskRows.length ? `${Math.round((tasksDone / taskRows.length) * 100)}%` : "0%";
 
   const checkRows = useMemo(() => {
     return [
@@ -3415,16 +3413,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           {screen === "hoje" && (
             <TodayPage
               identity={identity}
-              dashboard={apiBundle?.dashboard ?? null}
               taskRows={taskRows}
-              tasksDone={tasksDone}
-              tasksPct={tasksPct}
               trainingAssignments={pendingTrainingAssignments}
               announcements={pendingAnnouncements}
               isLiveWorkspace={liveWorkspaceMode}
               canCreateTask={canManageOperationalTasks}
               createTask={() => setCrudModal({ kind: "task", mode: "create" })}
               toggleTask={toggleTask}
+              manageTask={toggleTask}
               onChecklistChange={handleUpdateExecutionChecklist}
               go={go}
             />
@@ -4306,30 +4302,26 @@ function TodayTaskButton({ task, toggleTask, nested = false }: { task: TodayTask
 
 function TodayPage({
   identity,
-  dashboard,
   taskRows,
-  tasksDone,
-  tasksPct,
   trainingAssignments,
   announcements,
   isLiveWorkspace,
   canCreateTask,
   createTask,
   toggleTask,
+  manageTask,
   onChecklistChange,
   go
 }: {
   identity: Identity;
-  dashboard: ApiDashboard | null;
   taskRows: TodayTaskRow[];
-  tasksDone: number;
-  tasksPct: string;
   trainingAssignments: ApiTrainingAssignment[];
   announcements: ApiAnnouncement[];
   isLiveWorkspace: boolean;
   canCreateTask: boolean;
   createTask: () => void;
   toggleTask: (task: TodayTaskRow) => void;
+  manageTask: (task: TodayTaskRow) => void;
   onChecklistChange: (task: TodayTaskRow, checklistItems: NonNullable<ApiTask["checklistItems"]>) => Promise<void>;
   go: (screen: Screen) => void;
 }) {
@@ -4337,10 +4329,9 @@ function TodayPage({
   const [updatingChecklistIds, setUpdatingChecklistIds] = useState<Set<string>>(() => new Set());
   const announcementRows = announcements.length ? announcements : [];
   const trainingRows = trainingAssignments.length ? trainingAssignments : [];
-  const summary = dashboard?.employeeToday;
-  const effectiveTasksDone = summary?.completed ?? tasksDone;
-  const effectiveTaskTotal = summary?.total ?? taskRows.length;
-  const effectiveTasksPct = summary && summary.total > 0 ? `${Math.round((summary.completed / summary.total) * 100)}%` : tasksPct;
+  const effectiveTasksDone = taskRows.filter((task) => task.done).length;
+  const effectiveTaskTotal = taskRows.length;
+  const effectiveTasksPct = effectiveTaskTotal > 0 ? `${Math.round((effectiveTasksDone / effectiveTaskTotal) * 100)}%` : "0%";
   const { manualTasks, routineGroups } = useMemo(() => {
     const manualTasks: TodayTaskRow[] = [];
     const routines = new Map<string, { id: string; title: string; tasks: TodayTaskRow[] }>();
@@ -4387,6 +4378,60 @@ function TodayPage({
     }
   }
 
+  function renderChecklistTask(task: TodayTaskRow, kind: "manual" | "routine") {
+    const expanded = expandedOccurrenceIds.has(task.id);
+    const checklistTotal = task.checklistItems?.length ?? 0;
+    const checklistDone = task.checklistItems?.filter((item) => item.done).length ?? 0;
+
+    return (
+      <article className={`today-routine-occurrence${kind === "manual" ? " today-manual-occurrence" : ""}`} key={task.id}>
+        <div className="today-routine-occurrence-head">
+          <button
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Recolher" : "Expandir"} checklist de ${task.label}`}
+            className="today-routine-occurrence-toggle"
+            type="button"
+            onClick={() => toggleOccurrenceExpansion(task.id)}
+          >
+            <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
+            <span className="today-routine-copy"><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
+            <span className="today-routine-progress">{checklistDone}/{checklistTotal} concluídos</span>
+            {kind === "manual" ? <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill> : null}
+          </button>
+          {kind === "manual" && canCreateTask ? (
+            <button
+              aria-label={`Gerenciar tarefa: ${task.label}`}
+              className="today-manual-manage"
+              title="Gerenciar tarefa"
+              type="button"
+              onClick={() => manageTask(task)}
+            >
+              <Icon name="ph-pencil-simple" />
+            </button>
+          ) : null}
+        </div>
+        {expanded ? (
+          <div className="today-routine-checklist" aria-label={`Checklist de ${task.label}`}>
+            {task.checklistItems!.map((item, index) => (
+              <label className={item.done ? "done" : ""} key={`${task.id}-${item.title}-${index}`}>
+                <input
+                  type="checkbox"
+                  checked={item.done}
+                  disabled={task.done || updatingChecklistIds.has(task.id)}
+                  onChange={() => void toggleOccurrenceChecklistItem(task, index)}
+                />
+                <span>{item.title}</span>
+              </label>
+            ))}
+            {!task.done && checklistDone === checklistTotal ? (
+              <button className="today-routine-finish" type="button" onClick={() => toggleTask(task)}>Finalizar execução</button>
+            ) : null}
+          </div>
+        ) : null}
+      </article>
+    );
+  }
+
   return (
     <div className="screen today-grid">
       <div>
@@ -4407,7 +4452,9 @@ function TodayPage({
               {manualTasks.length ? (
                 <div className="today-task-section">
                   {routineGroups.length ? <p className="today-task-section-label">Tarefas pontuais</p> : null}
-                  {manualTasks.map((task) => <TodayTaskButton key={task.id} task={task} toggleTask={toggleTask} />)}
+                  {manualTasks.map((task) => task.checklistItems?.length
+                    ? renderChecklistTask(task, "manual")
+                    : <TodayTaskButton key={task.id} task={task} toggleTask={toggleTask} />)}
                 </div>
               ) : null}
               {routineGroups.map((routine) => {
@@ -4417,47 +4464,7 @@ function TodayPage({
                       <span className="today-routine-copy"><strong>{routine.title}</strong><small>{routine.tasks.length === 1 ? "1 execução de hoje" : `${routine.tasks.length} execuções independentes hoje`}</small></span>
                     </div>
                     <div className="today-routine-tasks">
-                      {routine.tasks.map((task) => {
-                        const expanded = expandedOccurrenceIds.has(task.id);
-                        const checklistTotal = task.checklistItems?.length ?? 0;
-                        const checklistDone = task.checklistItems?.filter((item) => item.done).length ?? 0;
-
-                        return (
-                          <article className="today-routine-occurrence" key={task.id}>
-                            <div className="today-routine-occurrence-head">
-                              <button
-                                aria-expanded={expanded}
-                                aria-label={`${expanded ? "Recolher" : "Expandir"} checklist de ${task.label}`}
-                                className="today-routine-occurrence-toggle"
-                                type="button"
-                                onClick={() => toggleOccurrenceExpansion(task.id)}
-                              >
-                                <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
-                                <span className="today-routine-copy"><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
-                                {checklistTotal ? <span className="today-routine-progress">{checklistDone}/{checklistTotal} concluídos</span> : null}
-                              </button>
-                            </div>
-                            {expanded && checklistTotal ? (
-                              <div className="today-routine-checklist" aria-label={`Checklist de ${task.label}`}>
-                                {task.checklistItems!.map((item, index) => (
-                                  <label className={item.done ? "done" : ""} key={`${task.id}-${item.title}-${index}`}>
-                                    <input
-                                      type="checkbox"
-                                      checked={item.done}
-                                      disabled={task.done || updatingChecklistIds.has(task.id)}
-                                      onChange={() => void toggleOccurrenceChecklistItem(task, index)}
-                                    />
-                                    <span>{item.title}</span>
-                                  </label>
-                                ))}
-                                {!task.done && checklistDone === checklistTotal ? (
-                                  <button className="today-routine-finish" type="button" onClick={() => toggleTask(task)}>Finalizar execução</button>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </article>
-                        );
-                      })}
+                      {routine.tasks.map((task) => renderChecklistTask(task, "routine"))}
                     </div>
                   </div>
                 );

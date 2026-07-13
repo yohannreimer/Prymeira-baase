@@ -555,6 +555,8 @@ button { cursor: pointer; }
 .today-routine-occurrence-head { display: flex; align-items: center; gap: 10px; padding: 10px 18px 10px 28px; }
 .today-routine-occurrence-toggle { min-width: 0; flex: 1; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; gap: 11px; padding: 0; text-align: left; }
 .today-routine-occurrence-toggle:hover .today-routine-copy strong { color: var(--accent-ink); }
+.today-manual-manage { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); }
+.today-manual-manage:hover { border-color: var(--accent-line); background: var(--accent-bg); color: var(--accent-ink); }
 .today-routine-checklist { border-top: 1px solid var(--line2); display: grid; gap: 0; padding: 4px 18px 10px 61px; }
 .today-routine-checklist label { align-items: center; color: var(--muted); cursor: pointer; display: flex; font-size: 12px; gap: 10px; min-height: 34px; padding: 6px 0; }
 .today-routine-checklist label:hover { color: var(--ink); }
@@ -2652,6 +2654,7 @@ button { cursor: pointer; }
   .today-routine-occurrence-head { align-items: flex-start; padding: 11px 14px 11px 20px; }
   .today-routine-occurrence-toggle { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 8px 10px; }
   .today-routine-occurrence-toggle .today-routine-progress { grid-column: 2; font-size: 11.5px; }
+  .today-manual-occurrence .today-routine-occurrence-toggle > .pill { grid-column: 2; justify-self: start; }
   .today-routine-checklist { padding-left: 52px; padding-right: 14px; }
   .attention-row {
     display: grid;

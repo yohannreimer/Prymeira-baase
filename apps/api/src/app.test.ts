@@ -516,14 +516,19 @@ describe("Baase API app", () => {
 
   it("can boot the local server with demo operational data", async () => {
     const app = buildApp({ seedDemoData: true });
-    const headers = {
+    const ownerHeaders = {
       "x-baase-workspace-id": "workspace_a",
       "x-baase-profile-id": "profile_owner",
       "x-baase-role": "owner"
     };
+    const employeeHeaders = {
+      "x-baase-workspace-id": "workspace_a",
+      "x-baase-profile-id": "profile_employee",
+      "x-baase-role": "employee"
+    };
 
-    const todayResponse = await app.inject({ method: "GET", url: "/today?date=2026-07-07", headers });
-    const processesResponse = await app.inject({ method: "GET", url: "/processes", headers });
+    const todayResponse = await app.inject({ method: "GET", url: "/today?date=2026-07-07", headers: employeeHeaders });
+    const processesResponse = await app.inject({ method: "GET", url: "/processes", headers: ownerHeaders });
 
     expect(todayResponse.statusCode).toBe(200);
     expect(todayResponse.json().tasks).toHaveLength(4);

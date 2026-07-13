@@ -1480,7 +1480,7 @@ describe("Baase React app shell", () => {
       expect(screen.getAllByText("Confirmar agenda do cliente").length).toBeGreaterThan(0);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Confirmar agenda do cliente/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerenciar tarefa: Confirmar agenda do cliente" }));
     fireEvent.click(await screen.findByRole("button", { name: /Editar tarefa/ }));
     fireEvent.change(await screen.findByLabelText("Título da tarefa"), { target: { value: "Confirmar agenda do cliente VIP" } });
     fireEvent.click(screen.getByRole("button", { name: "Salvar tarefa" }));
@@ -1493,7 +1493,7 @@ describe("Baase React app shell", () => {
       expect(screen.getAllByText("Confirmar agenda do cliente VIP").length).toBeGreaterThan(0);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Confirmar agenda do cliente VIP/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerenciar tarefa: Confirmar agenda do cliente VIP" }));
     fireEvent.click(await screen.findByRole("button", { name: /Excluir tarefa/ }));
 
     await waitFor(() => {
@@ -1629,7 +1629,7 @@ describe("Baase React app shell", () => {
     });
   });
 
-  it("shows and updates checklist progress inside the task execution modal", async () => {
+  it("shows and updates a manual task checklist inline in Today", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url === "/api/tasks/task_checklist/checklist" && init?.method === "PATCH") {
@@ -1671,6 +1671,9 @@ describe("Baase React app shell", () => {
             ]
           }]
         },
+        "/api/dashboard?date=2026-07-07": {
+          employeeToday: { total: 0, completed: 0, pending: 0, awaitingApproval: 0, late: 0, pendingTrainings: 0 }
+        },
         "/api/processes": { processes: [] },
         "/api/routines": { routines: [] },
         "/api/trainings": { trainings: [] }
@@ -1682,14 +1685,16 @@ describe("Baase React app shell", () => {
     render(<App initialRole="func" />);
 
     await screen.findByText("Bianca Ramos");
-    fireEvent.click(screen.getByRole("button", { name: /Terminar máquina virtual Krah/ }));
-
-    expect(await screen.findByText("0/3 concluído")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Instalar dependências" }));
+    expect(screen.getByText("0 de 1")).toBeInTheDocument();
+    expect(screen.getByText("0/3 concluídos")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expandir checklist de Terminar máquina virtual Krah" }));
+    const checklist = await screen.findByLabelText("Checklist de Terminar máquina virtual Krah");
+    expect(within(checklist).getAllByRole("checkbox")).toHaveLength(3);
+    fireEvent.click(within(checklist).getByRole("checkbox", { name: "Instalar dependências" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_checklist/checklist", expect.objectContaining({ method: "PATCH" }));
-      expect(screen.getByText("1/3 concluído")).toBeInTheDocument();
+      expect(screen.getByText("1/3 concluídos")).toBeInTheDocument();
     });
   });
 

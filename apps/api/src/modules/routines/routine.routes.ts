@@ -290,7 +290,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
         : Promise.resolve([])
     ]);
     return {
-      tasks: await presentTasks(today.tasks.filter((task) => canReadTask(membership, task)), options.objectStorage),
+      tasks: await presentTasks(today.tasks.filter((task) => canReadTodayTask(membership, task)), options.objectStorage),
       training_assignments: trainingAssignments,
       announcements
     };
@@ -610,6 +610,11 @@ function scopeForbidden() {
 
 function canReadRoutineOrTaskArea(membership: OperationalMembership, areaId: string | null) {
   return membership.role === "owner" || (areaId !== null && canReadAreaResource(membership, areaId));
+}
+
+function canReadTodayTask(membership: OperationalMembership, task: TaskOccurrence) {
+  if (task.assigneeProfileId) return task.assigneeProfileId === membership.personId;
+  return canReadTask(membership, task);
 }
 
 function canManageRoutineOrTaskArea(membership: OperationalMembership, areaId: string | null) {
