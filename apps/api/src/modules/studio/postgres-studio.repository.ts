@@ -9,7 +9,10 @@ import type {
   StudioOwnerScope,
   StudioSearchDocument
 } from "./studio.types";
-import { studioSearchTokens } from "./studio-search";
+import {
+  prepareStudioSearchFields,
+  prepareStudioSearchQuery
+} from "./studio-search";
 import {
   generatedId,
   iso,
@@ -76,13 +79,6 @@ type StudioSearchDocumentRow = Pick<
   StudioDocumentRow,
   "id" | "title" | "body_text" | "updated_at"
 >;
-
-const studioSearchAccentCharacters = "áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ";
-const studioSearchAsciiCharacters = "aaaaaeeeeiiiiooooouuuucaaaaaeeeeiiiiooooouuuuc";
-
-function foldedSearchSql(expression: string) {
-  return `translate(lower(normalize(${expression})),'${studioSearchAccentCharacters}','${studioSearchAsciiCharacters}')`;
-}
 
 function documentFromRow(row: StudioDocumentRow): StudioDocument {
   return {
@@ -276,12 +272,13 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async createDocument(input) {
       return withOperationalTransaction(db, async (client) => {
-        const searchTokens = studioSearchTokens(`${input.title ?? ""} ${input.bodyText}`);
+        const search = prepareStudioSearchFields(input.title, input.bodyText);
         const result = await client.query<StudioDocumentRow>(
           `INSERT INTO studio_documents
-             (id,workspace_id,owner_profile_id,title,body_json,body_text,search_tokens,
+             (id,workspace_id,owner_profile_id,title,body_json,body_text,
+              search_title_folded,search_body_folded,search_tokens,search_prefix_tokens,
               capture_mode,inbox_state,is_focused,status)
-           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::text[],$8,$9,$10,$11)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::text[],$10::text[],$11,$12,$13,$14)
            RETURNING *`,
           [
             generatedId("studio_document"),
@@ -290,7 +287,10 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             input.title,
             JSON.stringify(input.bodyJson),
             input.bodyText,
-            searchTokens,
+            search.titleFolded,
+            search.bodyFolded,
+            search.tokens,
+            search.prefixTokens,
             input.captureMode,
             input.inboxState,
             input.isFocused,
@@ -314,13 +314,15 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async updateDocument(document, expectedRevision) {
       return withOperationalTransaction(db, async (client) => {
-        const searchTokens = studioSearchTokens(`${document.title ?? ""} ${document.bodyText}`);
+        const search = prepareStudioSearchFields(document.title, document.bodyText);
         const result = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET
-             title=$4,body_json=$5::jsonb,body_text=$6,search_tokens=$7::text[],capture_mode=$8,
-             inbox_state=$9,is_focused=$10,status=$11,archived_at=$12,
+             title=$4,body_json=$5::jsonb,body_text=$6,
+             search_title_folded=$7,search_body_folded=$8,
+             search_tokens=$9::text[],search_prefix_tokens=$10::text[],capture_mode=$11,
+             inbox_state=$12,is_focused=$13,status=$14,archived_at=$15,
              revision=revision+1,updated_at=NOW()
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$13
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$16
            RETURNING *`,
           [
             document.workspaceId,
@@ -329,7 +331,10 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             document.title,
             JSON.stringify(document.bodyJson),
             document.bodyText,
-            searchTokens,
+            search.titleFolded,
+            search.bodyFolded,
+            search.tokens,
+            search.prefixTokens,
             document.captureMode,
             document.inboxState,
             document.isFocused,
@@ -381,24 +386,41 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
     },
 
     async searchDocuments(scope, input) {
-      const foldedTitle = foldedSearchSql("COALESCE(title,'')");
-      const foldedBody = foldedSearchSql("body_text");
-      const searchTokens = studioSearchTokens(input.query);
+      const query = prepareStudioSearchQuery(input.query);
+      if (!query) return [];
+      const params: unknown[] = [
+        scope.workspaceId,
+        scope.ownerProfileId,
+        query.exactTokens,
+        query.query,
+        query.tokens,
+        input.limit
+      ];
+      let prefixCondition = "";
+      if (query.prefixToken !== null) {
+        params.push([query.prefixToken]);
+        prefixCondition = `AND search_prefix_tokens @> $${params.length}::text[]`;
+      }
       const result = await db.query<StudioSearchDocumentRow>(
         `SELECT id,title,body_text,updated_at,
            (CASE
-              WHEN ${foldedTitle}=$4 THEN 400
-              WHEN ${foldedTitle} LIKE $4 || '%' THEN 300
-              WHEN ${foldedTitle} LIKE '%' || $4 || '%' THEN 200
+              WHEN search_title_folded=$4 THEN 400
+              WHEN strpos(search_title_folded,$4)=1 THEN 300
+              WHEN strpos(search_title_folded,$4)>0 THEN 200
               ELSE 0
             END
-            + CASE WHEN ${foldedBody} LIKE '%' || $4 || '%' THEN 100 ELSE 0 END) AS search_score
+            + CASE WHEN strpos(search_body_folded,$4)>0 THEN 100 ELSE 0 END
+            + (SELECT COALESCE(SUM(
+                CASE WHEN strpos(search_title_folded,token)>0 THEN 20 ELSE 0 END
+                + CASE WHEN strpos(search_body_folded,token)>0 THEN 5 ELSE 0 END
+              ),0) FROM unnest($5::text[]) AS token)) AS search_score
          FROM studio_documents
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND status='active'
            AND search_tokens @> $3::text[]
+           ${prefixCondition}
          ORDER BY search_score DESC,date_trunc('milliseconds',updated_at) DESC,id ASC
-         LIMIT $5`,
-        [scope.workspaceId, scope.ownerProfileId, searchTokens, input.query, input.limit]
+         LIMIT $6`,
+        params
       );
       return result.rows.map(searchDocumentFromRow);
     },

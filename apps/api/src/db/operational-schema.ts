@@ -556,7 +556,10 @@ const migrations: Migration[] = [{
       title TEXT,
       body_json JSONB NOT NULL,
       body_text TEXT NOT NULL,
+      search_title_folded TEXT NOT NULL DEFAULT '',
+      search_body_folded TEXT NOT NULL DEFAULT '',
       search_tokens TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+      search_prefix_tokens TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
       capture_mode TEXT NOT NULL
         CHECK (capture_mode IN ('text','audio','file','image','link','mixed')),
@@ -642,6 +645,8 @@ const migrations: Migration[] = [{
       ON studio_documents (workspace_id, owner_profile_id, status, updated_at DESC);
     CREATE INDEX studio_documents_owner_search_idx
       ON studio_documents USING GIN (search_tokens) WHERE status = 'active';
+    CREATE INDEX studio_documents_owner_search_prefix_idx
+      ON studio_documents USING GIN (search_prefix_tokens) WHERE status = 'active';
     CREATE INDEX studio_assets_document_idx
       ON studio_assets (workspace_id, owner_profile_id, document_id, created_at);
     CREATE INDEX studio_collection_items_collection_idx

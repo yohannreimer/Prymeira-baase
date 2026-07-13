@@ -80,11 +80,19 @@ describe("operational schema", () => {
       "studio_collections",
       "studio_collection_items"
     ]));
-    const searchColumn = await db.query<{ column_name: string }>(
+    const searchColumns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns
-       where table_name='studio_documents' and column_name='search_tokens'`
+       where table_name='studio_documents'
+         and column_name in (
+           'search_tokens','search_prefix_tokens','search_title_folded','search_body_folded'
+         )`
     );
-    expect(searchColumn.rows).toEqual([{ column_name: "search_tokens" }]);
+    expect(searchColumns.rows.map((row) => row.column_name).sort()).toEqual([
+      "search_body_folded",
+      "search_prefix_tokens",
+      "search_title_folded",
+      "search_tokens"
+    ]);
   });
 
   it("keeps the owner Studio lexical GIN index in migration 9", async () => {
@@ -108,6 +116,7 @@ describe("operational schema", () => {
 
     const migrationSql = statements.join("\n").toLowerCase();
     expect(migrationSql).toContain("create index studio_documents_owner_search_idx");
+    expect(migrationSql).toContain("create index studio_documents_owner_search_prefix_idx");
     expect(migrationSql).toContain("using gin");
     expect(migrationSql).toContain("search_tokens");
   });

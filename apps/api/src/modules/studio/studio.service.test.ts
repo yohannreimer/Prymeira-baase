@@ -359,4 +359,34 @@ describe("StudioService lexical search", () => {
     expect(result[0]!.excerpt).toContain(decomposedMatch);
     expect(result[0]!.excerpt.length).toBeLessThanOrEqual(240);
   });
+
+  it("returns tokenless queries without touching repository search", async () => {
+    const repository = createInMemoryStudioRepository();
+    let searchCalls = 0;
+    const instrumented = {
+      ...repository,
+      async searchDocuments(...args: Parameters<typeof repository.searchDocuments>) {
+        searchCalls += 1;
+        return repository.searchDocuments(...args);
+      }
+    };
+    const service = createStudioService(instrumented);
+
+    expect(await service.search(scope, "  % __ !!!  ", 10)).toEqual([]);
+    expect(searchCalls).toBe(0);
+  });
+
+  it("keeps context-sensitive lowercase matches inside long excerpts", async () => {
+    const service = createService();
+    const greekMatch = "ΟΣ";
+    const document = await service.createDocument(scope, "owner_a", {
+      ...documentInput(`${"contexto ".repeat(80)}${greekMatch} decisão`),
+      title: "Grego"
+    });
+
+    const result = await service.search(scope, "ος", 10);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ documentId: document.id });
+    expect(result[0]!.excerpt).toContain(greekMatch);
+  });
 });

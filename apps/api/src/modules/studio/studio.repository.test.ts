@@ -423,6 +423,79 @@ function repositoryContract(
       });
     });
 
+    it("supports final-token prefixes while keeping prior tokens exact and owner-active", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const titlePrefix = await repository.createDocument(documentInput({
+          title: "Expansão",
+          bodyText: "Direção"
+        }));
+        const multiToken = await repository.createDocument(documentInput({
+          title: "Plano de expansão",
+          bodyText: "Direção"
+        }));
+        const shortExact = await repository.createDocument(documentInput({
+          title: "Ex",
+          bodyText: "Abreviação exata"
+        }));
+        await repository.createDocument(documentInput({
+          title: "abcdefghijklmnopqrstuvwxyz",
+          bodyText: "Token além do limite de prefixo"
+        }));
+        await repository.createDocument(documentInput({
+          title: "Expansão arquivada",
+          bodyText: "Direção",
+          status: "archived"
+        }));
+        await repository.createDocument(documentInput({
+          ownerProfileId: "owner_b",
+          title: "Expansão privada",
+          bodyText: "Direção"
+        }));
+
+        expect((await repository.searchDocuments(ownerScope, {
+          query: "expan",
+          limit: 10
+        })).map((item) => item.id)).toEqual([titlePrefix.id, multiToken.id]);
+        expect((await repository.searchDocuments(ownerScope, {
+          query: "plano expan",
+          limit: 10
+        })).map((item) => item.id)).toEqual([multiToken.id]);
+        expect((await repository.searchDocuments(ownerScope, {
+          query: "ex",
+          limit: 10
+        })).map((item) => item.id)).toEqual([shortExact.id]);
+        expect(await repository.searchDocuments(ownerScope, {
+          query: "abcdefghijklmnopqrstuvwxy",
+          limit: 10
+        })).toEqual([]);
+        expect(await repository.searchDocuments(ownerScope, {
+          query: "% __ !!!",
+          limit: 10
+        })).toEqual([]);
+      });
+    });
+
+    it("ranks shared folded literals before limit without treating percent or underscore as wildcards", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const literal = await repository.createDocument(documentInput({
+          title: "  META   % _  expansa\u0303o sustentável ",
+          bodyText: "Literal"
+        }));
+        await repository.createDocument(documentInput({
+          title: "meta qualquer coisa expansao sustentável",
+          bodyText: "Wildcard trap"
+        }));
+
+        const results = await repository.searchDocuments(ownerScope, {
+          query: "meta % _ expan",
+          limit: 1
+        });
+        expect(results.map((item) => item.id)).toEqual([literal.id]);
+      });
+    });
+
     it("projects bounded home lists and an exact active pending-review count", async () => {
       await withRepository(async (repository) => {
         const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
