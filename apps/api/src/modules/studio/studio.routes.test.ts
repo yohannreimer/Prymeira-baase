@@ -1,8 +1,7 @@
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
-import { ensureOperationalSchema } from "../../db/operational-schema";
-import { createConfiguredPostgresRepositoryBundle } from "../../db/postgres";
+import { initializePostgresRuntime } from "../../server-initialization";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 
 const ownerA = {
@@ -365,7 +364,7 @@ describe("Studio routes", () => {
 });
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)("PostgreSQL Studio routes", () => {
-  it("creates and reads an owner-scoped document through the configured relational repository", async () => {
+  it("creates and reads an owner-scoped document after JSONB-mode production initialization", async () => {
     const admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     const schema = `baase_studio_routes_${process.pid}_${Date.now()}`;
     await admin.query(`CREATE SCHEMA ${schema}`);
@@ -375,8 +374,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("PostgreSQL Studio routes", () =
     });
 
     try {
-      await ensureOperationalSchema(pool);
-      const repositories = createConfiguredPostgresRepositoryBundle(pool, "relational");
+      const repositories = await initializePostgresRuntime(pool, "jsonb");
       const app = buildApp({ studioRepository: repositories.studioRepository });
       const created = await app.inject({
         method: "POST",

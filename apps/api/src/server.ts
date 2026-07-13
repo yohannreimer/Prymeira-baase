@@ -1,8 +1,8 @@
 import "dotenv/config";
 import { buildApp } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
-import { createConfiguredPostgresRepositoryBundle, createPostgresPool, ensurePostgresSchema } from "./db/postgres";
-import { ensureOperationalSchema } from "./db/operational-schema";
+import { createPostgresPool } from "./db/postgres";
+import { initializePostgresRuntime } from "./server-initialization";
 import { createS3ObjectStorage } from "./storage/s3-object-storage";
 
 const port = Number(process.env.PORT ?? 3090);
@@ -11,14 +11,13 @@ const databaseUrl = process.env.DATABASE_URL;
 const runtimeConfig = readRuntimeConfig(process.env);
 
 const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
-if (pool) {
-  await ensurePostgresSchema(pool);
-  if (runtimeConfig.operationalStore === "relational") await ensureOperationalSchema(pool);
-}
+const repositoryBundle = pool
+  ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore)
+  : null;
 
-const app = pool
+const app = repositoryBundle
   ? buildApp({
-      ...createConfiguredPostgresRepositoryBundle(pool, runtimeConfig.operationalStore),
+      ...repositoryBundle,
       runtimeConfig,
       objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
     })
