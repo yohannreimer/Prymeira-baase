@@ -1158,6 +1158,59 @@ describe("Baase React app shell", () => {
     expect(screen.getAllByText("2 tarefas atrasadas").length).toBeGreaterThan(0);
   });
 
+  it("filters the operational overview and navigates to people and existing task screens", async () => {
+    const overview = {
+      from: "2026-07-01",
+      to: "2026-07-07",
+      metrics: { lateTasks: 1, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 },
+      lateTasks: [{
+        id: "task_late_1",
+        profileId: "profile_bruno",
+        assigneeProfileId: "profile_bruno",
+        profileName: "Bruno Costa",
+        areaId: "area_design",
+        areaName: "Criação",
+        title: "Revisar peças da campanha",
+        dueDate: "2026-07-04",
+        daysLate: 3
+      }],
+      awaitingApprovals: [],
+      pendingRequiredAnnouncements: [],
+      trends: {
+        people: [{ profileId: "profile_bruno", profileName: "Bruno Costa", areaId: "area_design", areaName: "Criação", completionOnTimeRate: 80, averageApprovalDurationHours: 4 }],
+        areas: []
+      }
+    };
+    const customOverview = { ...overview, from: "2026-06-01", to: "2026-07-07" };
+    const fetchMock = mockLoadedWorkspace({
+      "/api/people": { people: [{ id: "profile_bruno", name: "Bruno Costa", role: "employee", areaId: "area_design" }] },
+      "/api/operational-overview?from=2026-07-01&to=2026-07-07": overview,
+      "/api/operational-overview?from=2026-06-01&to=2026-07-07": customOverview,
+      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07": customOverview
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Revisar peças da campanha")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Data inicial do período"), { target: { value: "2026-06-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/operational-overview?from=2026-06-01&to=2026-07-07",
+      expect.objectContaining({ headers: expect.anything() })
+    ));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Bruno Costa" })[0]!);
+    expect(await screen.findByRole("heading", { name: "Bruno Costa" })).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07",
+      expect.objectContaining({ headers: expect.anything() })
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: /Voltar ao painel/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Abrir tarefa: Revisar peças da campanha" }));
+    expect(screen.getByRole("heading", { name: "Seu dia, Yohann." })).toBeInTheDocument();
+  });
+
   it("switches to the manager and employee homes using React state", () => {
     render(<App apiEnabled={false} />);
 
@@ -1168,6 +1221,7 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Funcionário" }));
     expect(screen.getByRole("heading", { name: "Seu dia, Bruno." })).toBeInTheDocument();
     expect(screen.queryByText("Experiência mobile")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Filtro de período operacional")).not.toBeInTheDocument();
   });
 
   it("keeps the main internal pages available as React screens", () => {

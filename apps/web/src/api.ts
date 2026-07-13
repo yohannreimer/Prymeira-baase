@@ -613,6 +613,49 @@ export type ApiDashboard = {
   };
 };
 
+export type ApiOperationalMetricItem = {
+  id: string;
+  profileId: string | null;
+  assigneeProfileId?: string | null;
+  profileName: string | null;
+  areaId: string | null;
+  areaName: string;
+  title: string;
+  dueDate?: string | null;
+  submittedAt?: string | null;
+  reviewedAt?: string | null;
+  publishedAt?: string | null;
+  daysLate?: number;
+};
+
+export type ApiOperationalTrend = {
+  profileId?: string;
+  profileName?: string;
+  areaId: string | null;
+  areaName: string;
+  completionOnTimeRate: number | null;
+  averageApprovalDurationHours: number | null;
+};
+
+export type ApiOperationalOverview = {
+  from: string;
+  to: string;
+  metrics: {
+    lateTasks: number;
+    awaitingApprovals: number;
+    pendingRequiredAnnouncements: number;
+  };
+  lateTasks: ApiOperationalMetricItem[];
+  awaitingApprovals: ApiOperationalMetricItem[];
+  pendingRequiredAnnouncements: ApiOperationalMetricItem[];
+  trends: {
+    people: ApiOperationalTrend[];
+    areas: ApiOperationalTrend[];
+  };
+};
+
+export type ApiPersonOperationalOverview = ApiOperationalOverview;
+
 export type AiDraftType = "process" | "routine" | "training" | "announcement";
 
 export type AiGeneratedDraft = {
@@ -645,6 +688,7 @@ export type BaaseWorkspaceBundle = {
   templates: ApiTemplate[];
   templateFilters: ApiTemplateFilters;
   dashboard: ApiDashboard | null;
+  operationalOverview: ApiOperationalOverview | null;
   proactiveSuggestions: ApiProactiveSuggestion[];
 };
 
@@ -804,6 +848,10 @@ function isApiDashboard(value: unknown): value is ApiDashboard {
   return value !== null && typeof value === "object" && "metrics" in value && "areaMetrics" in value;
 }
 
+function isApiOperationalOverview(value: unknown): value is ApiOperationalOverview {
+  return value !== null && typeof value === "object" && "metrics" in value && "lateTasks" in value && "trends" in value;
+}
+
 type TodayResponse = {
   tasks: ApiTask[];
   training_assignments?: ApiTrainingAssignment[];
@@ -855,6 +903,12 @@ export async function loadBaaseWorkspace(
       : optionalBootstrapValue((signal) => readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers, signal }), { templates: [], filters: { segments: [], areas: [], kinds: [] } }),
     optionalBootstrapValue((signal) => readJson<ApiDashboard | Record<string, never>>(fetcher, `/api/dashboard?date=${encodeURIComponent(date)}`, { headers, signal }), {} as ApiDashboard | Record<string, never>),
     role === "func"
+      ? Promise.resolve<ApiOperationalOverview | null>(null)
+      : optionalBootstrapValue(
+        (signal) => readOperationalOverview(role, operationalOverviewPeriod(date), fetcher, signal),
+        null
+      ),
+    role === "func"
       ? Promise.resolve<{ suggestions: ApiProactiveSuggestion[] }>({ suggestions: [] })
       : optionalBootstrapValue((signal) => readJson<{ suggestions: ApiProactiveSuggestion[] }>(fetcher, "/api/ai/proactive-suggestions", { headers, signal }), { suggestions: [] })
   ]);
@@ -867,7 +921,7 @@ export async function loadBaaseWorkspace(
     readJson<{ role_templates: ApiRoleTemplate[] }>(fetcher, "/api/roles", { headers }),
     readJson<{ people: ApiPerson[] }>(fetcher, "/api/people", { headers })
   ]);
-  const [approvals, trainings, invites, templates, dashboard, proactive] = await optionalResultsPromise;
+  const [approvals, trainings, invites, templates, dashboard, operationalOverview, proactive] = await optionalResultsPromise;
 
   return {
     session,
@@ -885,8 +939,40 @@ export async function loadBaaseWorkspace(
     templates: templates.templates ?? [],
     templateFilters: templates.filters ?? { segments: [], areas: [], kinds: [] },
     dashboard: isApiDashboard(dashboard) ? dashboard : null,
+    operationalOverview: isApiOperationalOverview(operationalOverview) ? operationalOverview : null,
     proactiveSuggestions: proactive.suggestions ?? []
   };
+}
+
+export async function readOperationalOverview(
+  role: UiRole,
+  period: { from: string; to: string },
+  fetcher: Fetcher = fetch,
+  signal?: AbortSignal
+) {
+  const query = new URLSearchParams({ from: period.from, to: period.to });
+  return readJson<ApiOperationalOverview>(fetcher, `/api/operational-overview?${query.toString()}`, {
+    headers: createBaaseHeaders(role),
+    signal
+  });
+}
+
+export async function readPersonOperationalOverview(
+  role: UiRole,
+  profileId: string,
+  period: { from: string; to: string },
+  fetcher: Fetcher = fetch
+) {
+  const query = new URLSearchParams({ from: period.from, to: period.to });
+  return readJson<ApiPersonOperationalOverview>(fetcher, `/api/people/${encodeURIComponent(profileId)}/operational-overview?${query.toString()}`, {
+    headers: createBaaseHeaders(role)
+  });
+}
+
+function operationalOverviewPeriod(date: string) {
+  const end = new Date(`${date}T12:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - 6);
+  return { from: end.toISOString().slice(0, 10), to: date };
 }
 
 export async function loadFirstRunState(

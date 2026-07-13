@@ -38,6 +38,8 @@ import {
   generateOnboardingSuggestion,
   loadBaaseWorkspace,
   loadFirstRunState,
+  readOperationalOverview,
+  readPersonOperationalOverview,
   patchOnboardingSession,
   publishProcess,
   publishAnnouncement,
@@ -77,6 +79,8 @@ import {
   type ApiTask,
   type ApiTaskInput,
   type ApiDashboard,
+  type ApiOperationalOverview,
+  type ApiOperationalMetricItem,
   type ApiTemplate,
   type ApiTemplateKind,
   type ApiAnnouncement,
@@ -101,6 +105,7 @@ type Role = "dono" | "gestor" | "func";
 type Screen =
   | "painel-dono"
   | "painel-gestor"
+  | "pessoa-operacional"
   | "hoje"
   | "mapa"
   | "equipe"
@@ -225,6 +230,7 @@ const identities = {
 const titles: Record<Screen, [string, string]> = {
   "painel-dono": ["Painel do Dono", "Visão geral"],
   "painel-gestor": ["Painel da Área", "Criação"],
+  "pessoa-operacional": ["Visão da Pessoa", "Acompanhamento operacional"],
   hoje: ["Hoje", "Sua execução do dia"],
   mapa: ["Mapa da Empresa", "Estrutura organizacional"],
   equipe: ["Equipe", "Pessoas e convites"],
@@ -389,6 +395,28 @@ const baaseTemplates: BaaseTemplate[] = [
 ];
 
 const operationalDate = "2026-07-07";
+
+type OperationalPeriodPreset = "7d" | "30d" | "month" | "custom";
+type OperationalPeriod = { from: string; to: string };
+
+function periodForPreset(preset: Exclude<OperationalPeriodPreset, "custom">, to = operationalDate): OperationalPeriod {
+  const end = new Date(`${to}T12:00:00Z`);
+  if (preset === "month") {
+    return { from: `${to.slice(0, 8)}01`, to };
+  }
+  end.setUTCDate(end.getUTCDate() - (preset === "7d" ? 6 : 29));
+  return { from: end.toISOString().slice(0, 10), to };
+}
+
+function isOperationalOverview(value: unknown): value is ApiOperationalOverview {
+  return value !== null
+    && typeof value === "object"
+    && "metrics" in value
+    && "lateTasks" in value
+    && "awaitingApprovals" in value
+    && "pendingRequiredAnnouncements" in value
+    && "trends" in value;
+}
 const onboardingQuestions = [
   "Descreva sua empresa em poucas frases: o que vende e para quem.",
   "Quais são as principais áreas e quem cuida de cada uma?",
@@ -1568,6 +1596,13 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [checks, setChecks] = useState<Record<string, boolean>>({ c1: true, c2: true, c3: false, c4: false, c5: false });
   const [apiBundle, setApiBundle] = useState<BaaseWorkspaceBundle | null>(null);
   const [apiStatus, setApiStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [operationalPeriodPreset, setOperationalPeriodPreset] = useState<OperationalPeriodPreset>("7d");
+  const [operationalPeriod, setOperationalPeriod] = useState<OperationalPeriod>(() => periodForPreset("7d"));
+  const [operationalOverview, setOperationalOverview] = useState<ApiOperationalOverview | null>(null);
+  const [operationalOverviewStatus, setOperationalOverviewStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [operationalPersonId, setOperationalPersonId] = useState<string | null>(null);
+  const [personOperationalOverview, setPersonOperationalOverview] = useState<ApiOperationalOverview | null>(null);
+  const [personOperationalOverviewStatus, setPersonOperationalOverviewStatus] = useState<"idle" | "loading" | "error">("idle");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [bootstrapStatus, setBootstrapStatus] = useState<BootstrapStatus>(apiEnabled ? "loading" : "ready");
   const [submittedApiTasks, setSubmittedApiTasks] = useState<Record<string, boolean>>({});
@@ -1636,6 +1671,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       .then(({ bundle, onboardingSession, onboardingSessionLoadError }) => {
         if (cancelled) return;
         setApiBundle(bundle);
+        setOperationalOverview(bundle.operationalOverview);
+        setOperationalOverviewStatus("idle");
         setOnboardingSession(onboardingSession);
         setOnboardingSessionLoadError(onboardingSessionLoadError);
         setOnboardingDraft(createEmptyOnboardingDraft(onboardingSession));
@@ -1816,6 +1853,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setRoleState(nextRole);
     setScreen(homeFor(nextRole));
     setMenuOpen(false);
+    setOperationalPersonId(null);
   }
 
   function setPreview(nextRole: Role) {
@@ -1825,8 +1863,57 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }
 
   function go(nextScreen: Screen) {
+    if (nextScreen === "pessoa-operacional" && role === "func") return;
     setScreen(nextScreen);
     setMenuOpen(false);
+  }
+
+  function readOverviewForPeriod(nextPeriod: OperationalPeriod) {
+    if (!apiEnabled || role === "func") return;
+    setOperationalOverviewStatus("loading");
+    void readOperationalOverview(role, nextPeriod)
+      .then((overview) => {
+        if (!isOperationalOverview(overview)) throw new Error("INVALID_OPERATIONAL_OVERVIEW");
+        setOperationalOverview(overview);
+        setOperationalOverviewStatus("idle");
+      })
+      .catch(() => setOperationalOverviewStatus("error"));
+  }
+
+  function readPersonOverviewForPeriod(profileId: string, nextPeriod: OperationalPeriod) {
+    if (!apiEnabled || role === "func") return;
+    setPersonOperationalOverviewStatus("loading");
+    void readPersonOperationalOverview(role, profileId, nextPeriod)
+      .then((overview) => {
+        if (!isOperationalOverview(overview)) throw new Error("INVALID_PERSON_OPERATIONAL_OVERVIEW");
+        setPersonOperationalOverview(overview);
+        setPersonOperationalOverviewStatus("idle");
+      })
+      .catch(() => setPersonOperationalOverviewStatus("error"));
+  }
+
+  function selectOperationalPeriod(preset: Exclude<OperationalPeriodPreset, "custom">) {
+    const nextPeriod = periodForPreset(preset, operationalPeriod.to);
+    setOperationalPeriodPreset(preset);
+    setOperationalPeriod(nextPeriod);
+    readOverviewForPeriod(nextPeriod);
+    if (operationalPersonId) readPersonOverviewForPeriod(operationalPersonId, nextPeriod);
+  }
+
+  function applyCustomOperationalPeriod(nextPeriod: OperationalPeriod) {
+    if (!nextPeriod.from || !nextPeriod.to || nextPeriod.from > nextPeriod.to) return;
+    setOperationalPeriodPreset("custom");
+    setOperationalPeriod(nextPeriod);
+    readOverviewForPeriod(nextPeriod);
+    if (operationalPersonId) readPersonOverviewForPeriod(operationalPersonId, nextPeriod);
+  }
+
+  function openOperationalPerson(profileId: string) {
+    if (role === "func") return;
+    setOperationalPersonId(profileId);
+    setPersonOperationalOverview(null);
+    go("pessoa-operacional");
+    readPersonOverviewForPeriod(profileId, operationalPeriod);
   }
 
   const taskRows = useMemo(() => {
@@ -3283,6 +3370,17 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               {onboardingSession?.status === "completed" ? (
                 <ActivationPlanPanel activationPlan={onboardingSession.activationPlan} go={go} />
               ) : null}
+              <OperationalOverviewPanel
+                overview={operationalOverview}
+                status={operationalOverviewStatus}
+                preset={operationalPeriodPreset}
+                period={operationalPeriod}
+                onSelectPreset={selectOperationalPeriod}
+                onApplyCustomPeriod={applyCustomOperationalPeriod}
+                onOpenPerson={openOperationalPerson}
+                onOpenTask={() => go("hoje")}
+                onOpenAnnouncement={() => go("comunicados")}
+              />
               <OwnerDashboard
                 go={go}
                 identity={identity}
@@ -3297,14 +3395,41 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             </>
           )}
           {screen === "painel-gestor" && (
-            <ManagerDashboard
-              identity={identity}
-              dashboard={apiBundle?.dashboard ?? null}
-              approvals={apiBundle?.approvals ?? []}
-              isLiveWorkspace={liveWorkspaceMode}
-              peopleRows={visiblePeople}
-              approveTask={handleApproveTask}
-              returnTask={(task) => setReturningTask(task)}
+            <>
+              <OperationalOverviewPanel
+                overview={operationalOverview}
+                status={operationalOverviewStatus}
+                preset={operationalPeriodPreset}
+                period={operationalPeriod}
+                onSelectPreset={selectOperationalPeriod}
+                onApplyCustomPeriod={applyCustomOperationalPeriod}
+                onOpenPerson={openOperationalPerson}
+                onOpenTask={() => go("hoje")}
+                onOpenAnnouncement={() => go("comunicados")}
+              />
+              <ManagerDashboard
+                identity={identity}
+                dashboard={apiBundle?.dashboard ?? null}
+                approvals={apiBundle?.approvals ?? []}
+                isLiveWorkspace={liveWorkspaceMode}
+                peopleRows={visiblePeople}
+                approveTask={handleApproveTask}
+                returnTask={(task) => setReturningTask(task)}
+              />
+            </>
+          )}
+          {screen === "pessoa-operacional" && role !== "func" && (
+            <PersonOperationalPage
+              person={companyPeople.find((person) => person.id === operationalPersonId) ?? null}
+              overview={personOperationalOverview}
+              status={personOperationalOverviewStatus}
+              preset={operationalPeriodPreset}
+              period={operationalPeriod}
+              onSelectPreset={selectOperationalPeriod}
+              onApplyCustomPeriod={applyCustomOperationalPeriod}
+              onOpenTask={() => go("hoje")}
+              onOpenAnnouncement={() => go("comunicados")}
+              onBack={() => go(homeFor(role))}
             />
           )}
           {screen === "hoje" && (
@@ -3644,6 +3769,219 @@ function NotificationsPanel({ go, onClose, notifications }: { go: (screen: Scree
       ))}
     </div>
   );
+}
+
+type OperationalListKind = "lateTasks" | "awaitingApprovals" | "pendingRequiredAnnouncements";
+
+function OperationalPeriodControls({
+  preset,
+  period,
+  onSelectPreset,
+  onApplyCustomPeriod
+}: {
+  preset: OperationalPeriodPreset;
+  period: OperationalPeriod;
+  onSelectPreset: (preset: Exclude<OperationalPeriodPreset, "custom">) => void;
+  onApplyCustomPeriod: (period: OperationalPeriod) => void;
+}) {
+  const [from, setFrom] = useState(period.from);
+  const [to, setTo] = useState(period.to);
+
+  useEffect(() => {
+    setFrom(period.from);
+    setTo(period.to);
+  }, [period.from, period.to]);
+
+  return (
+    <div className="operational-period" aria-label="Filtro de período operacional">
+      <div className="operational-period-presets">
+        {([
+          ["7d", "7 dias"],
+          ["30d", "30 dias"],
+          ["month", "Mês atual"]
+        ] as const).map(([value, label]) => (
+          <button
+            type="button"
+            key={value}
+            className={preset === value ? "active" : ""}
+            aria-pressed={preset === value}
+            onClick={() => onSelectPreset(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <label>De<input aria-label="Data inicial do período" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+      <label>Até<input aria-label="Data final do período" type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+      <button className={preset === "custom" ? "active" : ""} type="button" onClick={() => onApplyCustomPeriod({ from, to })}>Aplicar período</button>
+    </div>
+  );
+}
+
+function OperationalMetricList({
+  items,
+  kind,
+  onOpenPerson,
+  onOpenItem
+}: {
+  items: ApiOperationalMetricItem[];
+  kind: OperationalListKind;
+  onOpenPerson: (profileId: string) => void;
+  onOpenItem: () => void;
+}) {
+  const isAnnouncement = kind === "pendingRequiredAnnouncements";
+  if (!items.length) {
+    return <EmptyState icon={isAnnouncement ? "ph-megaphone" : "ph-check-circle"} title="Nenhuma pendência neste período" text="Quando houver itens para acompanhar, as pessoas e os detalhes aparecem aqui." />;
+  }
+
+  return (
+    <div className="operational-list">
+      {items.map((item) => (
+        <div className="operational-list-row" key={`${item.id}:${item.profileId ?? "sem-responsavel"}`}>
+          <div>
+            {item.profileId && item.profileName ? <button className="operational-person-link" type="button" onClick={() => onOpenPerson(item.profileId!)}>{item.profileName}</button> : <strong>Sem responsável</strong>}
+            <small>{item.areaName}{item.daysLate ? ` · ${item.daysLate} dia(s) de atraso` : item.dueDate ? ` · vence em ${formatOperationalDate(item.dueDate)}` : item.publishedAt ? ` · publicado em ${formatOperationalDate(item.publishedAt)}` : ""}</small>
+          </div>
+          <button className="operational-item-link" type="button" onClick={onOpenItem} aria-label={`Abrir ${isAnnouncement ? "comunicado" : "tarefa"}: ${item.title}`}>
+            <span>{item.title}</span><Icon name="ph-arrow-up-right" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OperationalOverviewPanel({
+  overview,
+  status,
+  preset,
+  period,
+  onSelectPreset,
+  onApplyCustomPeriod,
+  onOpenPerson,
+  onOpenTask,
+  onOpenAnnouncement
+}: {
+  overview: ApiOperationalOverview | null;
+  status: "idle" | "loading" | "error";
+  preset: OperationalPeriodPreset;
+  period: OperationalPeriod;
+  onSelectPreset: (preset: Exclude<OperationalPeriodPreset, "custom">) => void;
+  onApplyCustomPeriod: (period: OperationalPeriod) => void;
+  onOpenPerson: (profileId: string) => void;
+  onOpenTask: () => void;
+  onOpenAnnouncement: () => void;
+}) {
+  const [listKind, setListKind] = useState<OperationalListKind>("lateTasks");
+  const metrics = overview?.metrics ?? { lateTasks: 0, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 };
+  const definitions: Array<{ kind: OperationalListKind; label: string; value: number; icon: string }> = [
+    { kind: "lateTasks", label: "Tarefas atrasadas", value: metrics.lateTasks, icon: "ph-clock-countdown" },
+    { kind: "awaitingApprovals", label: "Aguardando aprovação", value: metrics.awaitingApprovals, icon: "ph-seal-check" },
+    { kind: "pendingRequiredAnnouncements", label: "Comunicados obrigatórios", value: metrics.pendingRequiredAnnouncements, icon: "ph-megaphone" }
+  ];
+  const selectedDefinition = definitions.find((definition) => definition.kind === listKind)!;
+  const selectedItems = overview?.[listKind] ?? [];
+
+  return (
+    <section className="screen operational-overview" aria-label="Acompanhamento operacional">
+      <div className="page-head compact">
+        <div>
+          <h1 className="serif">Acompanhamento operacional</h1>
+          <p>Identifique pendências, abra os detalhes e acompanhe cada pessoa no período selecionado.</p>
+        </div>
+      </div>
+      <OperationalPeriodControls preset={preset} period={period} onSelectPreset={onSelectPreset} onApplyCustomPeriod={onApplyCustomPeriod} />
+      <div className="operational-metric-cards">
+        {definitions.map((definition) => (
+          <button key={definition.kind} type="button" className={listKind === definition.kind ? "active" : ""} onClick={() => setListKind(definition.kind)} aria-pressed={listKind === definition.kind}>
+            <span>{definition.label}<Icon name={definition.icon} /></span>
+            <strong className="serif num">{definition.value}</strong>
+            <small>Ver lista nominal</small>
+          </button>
+        ))}
+      </div>
+      <div className="two-col operational-details">
+        <section className="panel flush">
+          <PanelHeader title={selectedDefinition.label} aside={`${period.from} — ${period.to}`} />
+          {status === "loading" ? <EmptyState icon="ph-spinner-gap" title="Atualizando acompanhamento" text="Buscando as pendências do período selecionado." /> : status === "error" ? <EmptyState icon="ph-warning" title="Não foi possível carregar o acompanhamento" text="Tente ajustar o período novamente." /> : <OperationalMetricList items={selectedItems} kind={listKind} onOpenPerson={onOpenPerson} onOpenItem={listKind === "pendingRequiredAnnouncements" ? onOpenAnnouncement : onOpenTask} />}
+        </section>
+        <section className="panel flush">
+          <PanelHeader title="Tendência por pessoa" aside="No período" />
+          {overview?.trends.people.length ? overview.trends.people.map((trend) => (
+            <button className="operational-trend-row" key={trend.profileId ?? trend.areaName} type="button" onClick={() => trend.profileId && onOpenPerson(trend.profileId)} disabled={!trend.profileId}>
+              <span><strong>{trend.profileName ?? trend.areaName}</strong><small>{trend.areaName}</small></span>
+              <span><b>{formatPercent(trend.completionOnTimeRate)}</b><small>no prazo</small></span>
+              <span><b>{formatHours(trend.averageApprovalDurationHours)}</b><small>aprovação</small></span>
+            </button>
+          )) : <EmptyState icon="ph-chart-line-up" title="Sem tendência no período" text="As tendências aparecem depois que a equipe registrar tarefas e aprovações." />}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function PersonOperationalPage({
+  person,
+  overview,
+  status,
+  preset,
+  period,
+  onSelectPreset,
+  onApplyCustomPeriod,
+  onOpenTask,
+  onOpenAnnouncement,
+  onBack
+}: {
+  person: ApiPerson | null;
+  overview: ApiOperationalOverview | null;
+  status: "idle" | "loading" | "error";
+  preset: OperationalPeriodPreset;
+  period: OperationalPeriod;
+  onSelectPreset: (preset: Exclude<OperationalPeriodPreset, "custom">) => void;
+  onApplyCustomPeriod: (period: OperationalPeriod) => void;
+  onOpenTask: () => void;
+  onOpenAnnouncement: () => void;
+  onBack: () => void;
+}) {
+  const metrics = overview?.metrics ?? { lateTasks: 0, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 };
+  const trend = overview?.trends.people[0] ?? null;
+  return (
+    <div className="screen operational-person-page">
+      <div className="page-head compact">
+        <div>
+          <button className="panel-link" type="button" onClick={onBack}><Icon name="ph-arrow-left" /> Voltar ao painel</button>
+          <h1 className="serif">{person?.name ?? "Pessoa"}</h1>
+          <p>{person?.areaId ? "Visão individual de execução, aprovações e comunicados." : "Visão individual de acompanhamento operacional."}</p>
+        </div>
+      </div>
+      <OperationalPeriodControls preset={preset} period={period} onSelectPreset={onSelectPreset} onApplyCustomPeriod={onApplyCustomPeriod} />
+      {status === "loading" ? <EmptyState icon="ph-spinner-gap" title="Carregando visão da pessoa" text="Atualizando os dados do período selecionado." /> : status === "error" ? <EmptyState icon="ph-warning" title="Não foi possível abrir esta pessoa" text="Verifique o acesso e tente novamente." /> : <>
+        <div className="operational-metric-cards person-metric-cards">
+          <div><span>Tarefas em acompanhamento</span><strong className="serif num">{metrics.lateTasks + metrics.awaitingApprovals}</strong><small>atrasadas ou em aprovação</small></div>
+          <div><span>Conclusão no prazo</span><strong className="serif num">{formatPercent(trend?.completionOnTimeRate ?? null)}</strong><small>tarefas concluídas no período</small></div>
+          <div><span>Tempo até aprovação</span><strong className="serif num">{formatHours(trend?.averageApprovalDurationHours ?? null)}</strong><small>média das decisões</small></div>
+        </div>
+        <div className="two-col operational-details">
+          <section className="panel flush"><PanelHeader title="Tarefas atrasadas" /><OperationalMetricList items={overview?.lateTasks ?? []} kind="lateTasks" onOpenPerson={() => undefined} onOpenItem={onOpenTask} /></section>
+          <section className="panel flush"><PanelHeader title="Aguardando aprovação" /><OperationalMetricList items={overview?.awaitingApprovals ?? []} kind="awaitingApprovals" onOpenPerson={() => undefined} onOpenItem={onOpenTask} /></section>
+          <section className="panel flush"><PanelHeader title="Comunicados obrigatórios pendentes" /><OperationalMetricList items={overview?.pendingRequiredAnnouncements ?? []} kind="pendingRequiredAnnouncements" onOpenPerson={() => undefined} onOpenItem={onOpenAnnouncement} /></section>
+          <section className="panel padded person-trend-summary"><PanelHeader title="Tendência do período" /><p><strong>{formatPercent(trend?.completionOnTimeRate ?? null)}</strong> das tarefas concluídas no prazo.</p><p><strong>{formatHours(trend?.averageApprovalDurationHours ?? null)}</strong> em média até uma decisão de aprovação.</p></section>
+        </div>
+      </>}
+    </div>
+  );
+}
+
+function formatOperationalDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(new Date(`${value.slice(0, 10)}T12:00:00Z`));
+}
+
+function formatPercent(value: number | null) {
+  return value === null ? "—" : `${value}%`;
+}
+
+function formatHours(value: number | null) {
+  return value === null ? "—" : `${value}h`;
 }
 
 function OwnerDashboard({

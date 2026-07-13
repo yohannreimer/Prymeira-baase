@@ -448,6 +448,33 @@ button { cursor: pointer; }
 .accent-solid { border: 0; background: var(--accent); color: #fbfbf9; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 26px; }
+.operational-overview { padding-bottom: 0; }
+.operational-period { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: -10px 0 18px; }
+.operational-period-presets { display: flex; gap: 5px; }
+.operational-period button, .operational-period-presets button { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 600; }
+.operational-period button.active, .operational-period-presets button.active { background: var(--accent-bg); border-color: var(--accent-line); color: var(--accent-ink); }
+.operational-period label { display: grid; gap: 4px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.operational-period input { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); padding: 7px 8px; font: inherit; font-size: 12px; }
+.operational-metric-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.operational-metric-cards > button, .operational-metric-cards > div { text-align: left; background: var(--panel); border: 1px solid var(--line2); border-radius: 13px; padding: 14px 16px; color: var(--ink); }
+.operational-metric-cards > button.active { border-color: var(--accent-line); box-shadow: 0 0 0 2px var(--accent-bg); }
+.operational-metric-cards span { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; }
+.operational-metric-cards strong { display: block; font-size: 30px; line-height: 1; margin: 9px 0 4px; }
+.operational-metric-cards small { color: var(--faint); font-size: 11px; }
+.operational-details { margin-bottom: 24px; }
+.operational-list-row, .operational-trend-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .9fr); align-items: center; gap: 12px; padding: 13px 18px; border: 0; border-bottom: 1px solid var(--line2); background: transparent; text-align: left; color: var(--ink); }
+.operational-list-row small, .operational-trend-row small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.operational-person-link { display: block; border: 0; background: transparent; color: var(--ink); padding: 0; font-size: 13.5px; font-weight: 600; text-align: left; }
+.operational-person-link:hover, .operational-item-link:hover { color: var(--accent-ink); }
+.operational-item-link { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; color: var(--accent-ink); padding: 0; font-size: 12px; font-weight: 600; text-align: left; }
+.operational-item-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operational-trend-row { grid-template-columns: minmax(0, 1fr) 78px 84px; }
+.operational-trend-row:not(:disabled):hover { background: var(--panel2); }
+.operational-trend-row:disabled { cursor: default; }
+.operational-trend-row b { font-size: 13px; }
+.person-metric-cards { margin-top: 18px; }
+.person-trend-summary p { color: var(--muted); font-size: 13px; }
+.person-trend-summary p strong { color: var(--ink); }
 .stat-card { background: var(--panel); border: 1px solid var(--line2); border-radius: 13px; padding: 16px 17px; }
 .lift { transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease; }
 .lift:hover { border-color: var(--line); box-shadow: 0 6px 22px -12px rgba(27, 26, 23, 0.22); }

@@ -165,6 +165,15 @@ describe("Baase web API client", () => {
           areaMetrics: [],
           attentionItems: []
         },
+        "/api/operational-overview?from=2026-07-01&to=2026-07-07": {
+          from: "2026-07-01",
+          to: "2026-07-07",
+          metrics: { lateTasks: 1, awaitingApprovals: 2, pendingRequiredAnnouncements: 3 },
+          lateTasks: [],
+          awaitingApprovals: [],
+          pendingRequiredAnnouncements: [],
+          trends: { people: [], areas: [] }
+        },
         "/api/ai/proactive-suggestions": {
           suggestions: [{
             id: "suggestion_1",
@@ -188,9 +197,10 @@ describe("Baase web API client", () => {
 
     const bundle = await loadBaaseWorkspace("gestor", "2026-07-07", fetcher);
 
-    expect(fetcher).toHaveBeenCalledTimes(13);
+    expect(fetcher).toHaveBeenCalledTimes(14);
     expect(bundle.processes).toHaveLength(1);
     expect(bundle.dashboard?.metrics.executionRate).toBe(70);
+    expect(bundle.operationalOverview?.metrics.pendingRequiredAnnouncements).toBe(3);
     expect(bundle.areas).toEqual([expect.objectContaining({ name: "Criação" })]);
     expect(bundle.roleTemplates).toEqual([expect.objectContaining({ name: "Designer" })]);
     expect(bundle.people).toEqual([expect.objectContaining({ name: "Bruno Costa" })]);
