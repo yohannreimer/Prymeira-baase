@@ -3,7 +3,10 @@ import {
   createStudioDocumentSchema,
   patchStudioDocumentSchema,
   studioAssetSchema,
+  studioCollectionDocumentParamsSchema,
   studioCollectionSchema,
+  studioDocumentListQuerySchema,
+  studioSearchQuerySchema,
   studioStructurePropertiesSchema
 } from "./studio.schemas";
 
@@ -73,6 +76,24 @@ describe("Studio schemas", () => {
 
   it("rejects unknown keys", () => {
     expect(() => createStudioDocumentSchema.parse({ ...textCapture, owner_profile_id: "other-owner" })).toThrow();
+  });
+
+  it("strictly validates Studio route params and queries", () => {
+    expect(studioDocumentListQuerySchema.parse({ limit: "25", status: "active" }))
+      .toEqual({ limit: 25, status: "active" });
+    expect(studioSearchQuerySchema.parse({ query: "  expansão  " }))
+      .toEqual({ query: "expansão", limit: 20 });
+    expect(studioCollectionDocumentParamsSchema.parse({ collectionId: "collection_1", documentId: "document_1" }))
+      .toEqual({ collectionId: "collection_1", documentId: "document_1" });
+    expect(() => studioDocumentListQuerySchema.parse({ limit: "0" })).toThrow();
+    expect(() => studioDocumentListQuerySchema.parse({ status: "deleted" })).toThrow();
+    expect(() => studioDocumentListQuerySchema.parse({ owner_profile_id: "owner_b" })).toThrow();
+    expect(() => studioSearchQuerySchema.parse({ query: "busca", actor_profile_id: "owner_b" })).toThrow();
+    expect(() => studioCollectionDocumentParamsSchema.parse({
+      collectionId: "collection_1",
+      documentId: "document_1",
+      workspaceId: "workspace_b"
+    })).toThrow();
   });
 
   it("selects and parses properties for every structure kind", () => {

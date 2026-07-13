@@ -35,6 +35,10 @@ import { createInMemoryTrainingRepository } from "./modules/trainings/in-memory-
 import type { TrainingRepository } from "./modules/trainings/training.types";
 import { registerTemplateRoutes } from "./modules/templates/template.routes";
 import { registerSessionRoutes } from "./modules/session/session.routes";
+import { createInMemoryStudioRepository } from "./modules/studio/in-memory-studio.repository";
+import { registerStudioRoutes } from "./modules/studio/studio.routes";
+import { createStudioService } from "./modules/studio/studio.service";
+import type { StudioRepository } from "./modules/studio/studio.types";
 import {
   createLocalDemoProcesses,
   createLocalDemoRoutines,
@@ -53,6 +57,7 @@ export type BuildAppOptions = {
   onboardingRepository?: OnboardingRepository;
   aiRepository?: AiRepository;
   aiProvider?: AiProvider;
+  studioRepository?: StudioRepository;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -88,6 +93,10 @@ export function buildApp(options: BuildAppOptions = {}) {
   const onboardingRepository = options.onboardingRepository ?? createInMemoryOnboardingRepository();
   const aiRepository = options.aiRepository ?? createInMemoryAiRepository();
   const aiProvider = options.aiProvider ?? createDefaultAiProvider();
+  const studioRepository = options.studioRepository ?? createInMemoryStudioRepository();
+  const studioService = createStudioService(studioRepository, {
+    now: options.now ? () => options.now!().toISOString() : undefined
+  });
   const runtimeConfig = options.runtimeConfig ?? readRuntimeConfig({
     BAASE_SEED_DEMO_DATA: options.seedDemoData ? "true" : undefined
   });
@@ -250,6 +259,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     routineRepository,
     trainingRepository
   }));
+  app.register((routes) => registerStudioRoutes(routes, studioService));
 
   return app;
 }

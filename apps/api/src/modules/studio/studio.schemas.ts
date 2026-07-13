@@ -39,6 +39,35 @@ export const studioCollectionSchema = z.object({
 
 export const createStudioCollectionSchema = studioCollectionSchema;
 
+const routeIdSchema = z.string().trim().min(1).max(200);
+const routeLimitSchema = z.coerce.number().int().min(1).max(100);
+
+export const studioEmptyRouteSchema = z.object({}).strict();
+
+export const studioDocumentParamsSchema = z.object({
+  documentId: routeIdSchema
+}).strict();
+
+export const studioCollectionParamsSchema = z.object({
+  collectionId: routeIdSchema
+}).strict();
+
+export const studioCollectionDocumentParamsSchema = z.object({
+  collectionId: routeIdSchema,
+  documentId: routeIdSchema
+}).strict();
+
+export const studioDocumentListQuerySchema = z.object({
+  cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  limit: routeLimitSchema.default(50),
+  status: z.enum(["active", "archived"]).optional()
+}).strict();
+
+export const studioSearchQuerySchema = z.object({
+  query: z.string().trim().min(1).max(500),
+  limit: routeLimitSchema.default(20)
+}).strict();
+
 export const studioAssetSchema = z.object({
   kind: z.enum(["audio", "image", "file", "link_snapshot"]),
   display_name: z.string().trim().min(1).max(240),

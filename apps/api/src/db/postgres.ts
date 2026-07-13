@@ -17,7 +17,6 @@ import {
 import { createPostgresProcessRepository as createRelationalProcessRepository } from "../modules/processes/postgres-process.repository";
 import { createPostgresRoutineRepository as createRelationalRoutineRepository } from "../modules/routines/postgres-routine.repository";
 import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
-import type { StudioRepository } from "../modules/studio/studio.types";
 import { lockWorkspaceOperationalMutation, withOperationalTransaction, type OperationalClient, type OperationalPool } from "./operational-repository-support";
 import type { BaaseOperationalStore } from "../config/runtime";
 
@@ -230,7 +229,8 @@ type PostgresRepositoryBundle = Required<Pick<
   | "announcementRepository"
   | "onboardingRepository"
   | "aiRepository"
->> & { studioRepository: StudioRepository };
+  | "studioRepository"
+>>;
 
 async function assertJsonbActiveArea(store: JsonbRecordStore, workspaceId: string, areaId: string | null | undefined) {
   if (!areaId) return;
