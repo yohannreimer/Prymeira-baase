@@ -1477,8 +1477,7 @@ describe("routine routes", () => {
       url: `/tasks/${taskId}/submit`,
       headers: localEmployeeHeaders,
       payload: {
-        comment: "Relatório revisado.",
-        photo_url: "https://example.com/evidencia.jpg"
+        comment: "Relatório revisado."
       }
     });
 
@@ -1487,7 +1486,7 @@ describe("routine routes", () => {
       status: "awaiting_approval",
       evidence: {
         comment: "Relatório revisado.",
-        photoUrl: "https://example.com/evidencia.jpg"
+        photoUrl: null
       },
       submittedByProfileId: employeeId
     });
@@ -1526,8 +1525,7 @@ describe("routine routes", () => {
       url: `/tasks/${taskId}/submit`,
       headers: localEmployeeHeaders,
       payload: {
-        comment: "Print incluído.",
-        photo_url: "https://example.com/dashboard.jpg"
+        comment: "Print incluído."
       }
     });
 
@@ -1545,6 +1543,23 @@ describe("routine routes", () => {
       status: "completed",
       reviewedByProfileId: managerId
     });
+  });
+
+  it("rejects client-supplied photo URLs when submitting a task", async () => {
+    const { app, employeeId, managerHeaders: localManagerHeaders, employeeHeaders: localEmployeeHeaders } = await buildLocalRoutineAppWithEmployee("area_tecnica");
+    const created = await app.inject({ method: "POST", url: "/tasks", headers: localManagerHeaders, payload: {
+      title: "Enviar comprovante", area_id: "area_tecnica", assignee_profile_id: employeeId, due_date: "2026-07-12", evidence_policy: "photo_required"
+    } });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/tasks/${created.json().task.id}/submit`,
+      headers: localEmployeeHeaders,
+      payload: { photo_url: "https://example.com/untrusted.jpg" }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("REQUEST_VALIDATION_ERROR");
   });
 
   it("uploads an allowed task evidence file before submitting it", async () => {

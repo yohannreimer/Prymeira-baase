@@ -361,8 +361,7 @@ describe("routine service", () => {
     if (!task) throw new Error("Expected generated task");
 
     const submitted = await service.submitTask("workspace_a", task.id, "profile_employee", {
-      comment: "Caixa conferido.",
-      photoUrl: null
+      comment: "Caixa conferido."
     });
 
     expect(submitted).toMatchObject({
@@ -372,6 +371,28 @@ describe("routine service", () => {
         comment: "Caixa conferido.",
         photoUrl: null
       }
+    });
+  });
+
+  it("keeps legacy photo URLs while submitting a task", async () => {
+    const repository = createInMemoryRoutineRepository();
+    const service = createRoutineService(repository);
+    const task = await service.createManualTask("workspace_a", "profile_owner", {
+      title: "Conferir comprovante",
+      dueDate: "2026-07-07",
+      evidencePolicy: "photo_required"
+    });
+
+    // Legacy rows can contain a URL without an object-storage attachment.
+    await repository.updateTaskOccurrence({
+      ...task,
+      evidence: { comment: null, photoUrl: "https://legacy.example/comprovante.jpg", attachment: null }
+    });
+
+    const submitted = await service.submitTask("workspace_a", task.id, "profile_owner", {});
+    expect(submitted).toMatchObject({
+      status: "completed",
+      evidence: { comment: null, photoUrl: "https://legacy.example/comprovante.jpg", attachment: null }
     });
   });
 

@@ -61,7 +61,7 @@ function normalizedChecklistState(items: TaskChecklistItem[] | null | undefined)
 function normalizeEvidence(input: SubmitTaskInput): TaskEvidence {
   return {
     comment: optionalText(input.comment),
-    photoUrl: optionalText(input.photoUrl),
+    photoUrl: null,
     attachment: null
   };
 }
@@ -423,7 +423,11 @@ export function createRoutineService(repository: RoutineRepository) {
         throw new Error("TASK_NOT_ASSIGNED_TO_PROFILE");
       }
 
-      const evidence = { ...normalizeEvidence(input), attachment: task.evidence?.attachment ?? null };
+      const evidence = {
+        ...normalizeEvidence(input),
+        photoUrl: task.evidence?.photoUrl ?? null,
+        attachment: task.evidence?.attachment ?? null
+      };
       if (!hasRequiredEvidence(task.evidencePolicy, evidence)) throw new Error("TASK_EVIDENCE_REQUIRED");
 
       return repository.updateTaskOccurrence({

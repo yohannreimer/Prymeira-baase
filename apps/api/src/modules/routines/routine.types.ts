@@ -134,7 +134,6 @@ export type UpdateTaskChecklistInput = {
 
 export type SubmitTaskInput = {
   comment?: string | null;
-  photoUrl?: string | null;
 };
 
 export type AttachTaskEvidenceInput = {

@@ -67,9 +67,8 @@ const todayQuerySchema = z.object({
 });
 
 const submitTaskSchema = z.object({
-  comment: z.string().optional().nullable(),
-  photo_url: z.string().optional().nullable()
-});
+  comment: z.string().optional().nullable()
+}).strict();
 
 const returnTaskSchema = z.object({
   comment: z.string().optional().nullable()
@@ -408,8 +407,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       const task = await service.getTask(context.workspaceId, params.id);
       assertCanExecuteTask(membership, task);
       const submittedTask = await service.submitTask(context.workspaceId, params.id, context.profileId, {
-        comment: body.comment,
-        photoUrl: body.photo_url
+        comment: body.comment
       }, { allowAssigneeOverride: membership.role === "owner" });
       return { task: await presentTask(submittedTask, options.objectStorage) };
     } catch (error) {
