@@ -6,6 +6,10 @@ import type { OperationalPool } from "../../db/operational-repository-support";
 import type { StudioDocument, StudioRepository } from "./studio.types";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import { createPostgresStudioRepository } from "./postgres-studio.repository";
+import {
+  prepareStudioSearchFields,
+  STUDIO_SEARCH_MAX_PREFIX_TOKENS
+} from "./studio-search";
 
 type RepositoryFixture = {
   repository: StudioRepository;
@@ -34,6 +38,15 @@ function documentInput(
 
 function encodedCursor(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function fixedWidthBase26(value: number) {
+  let encoded = "";
+  for (let place = 0; place < 3; place += 1) {
+    encoded = String.fromCharCode(97 + (value % 26)) + encoded;
+    value = Math.floor(value / 26);
+  }
+  return encoded;
 }
 
 function repositoryContract(
@@ -496,6 +509,41 @@ function repositoryContract(
       });
     });
 
+    it("keeps exact final-token matches when bounded prefix generation reaches its cap", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const indexedWords = Array.from({ length: 1_800 }, (_, index) => (
+          `${fixedWidthBase26(index)}${"x".repeat(21)}`
+        ));
+        const exactTarget = "z".repeat(24);
+        const shorterPrefix = indexedWords[0]!.slice(0, 8);
+        const bodyText = [...indexedWords, exactTarget].join(" ");
+        const fields = prepareStudioSearchFields(null, bodyText);
+        expect(fields.prefixTokens).toHaveLength(STUDIO_SEARCH_MAX_PREFIX_TOKENS);
+        expect(fields.prefixTokens).toContain(shorterPrefix);
+        expect(fields.prefixTokens).not.toContain(exactTarget);
+
+        const active = await repository.createDocument(documentInput({ bodyText }));
+        await repository.createDocument(documentInput({
+          bodyText: `${shorterPrefix} ${exactTarget}`,
+          status: "archived"
+        }));
+        await repository.createDocument(documentInput({
+          ownerProfileId: "owner_b",
+          bodyText: `${shorterPrefix} ${exactTarget}`
+        }));
+
+        expect((await repository.searchDocuments(ownerScope, {
+          query: exactTarget,
+          limit: 10
+        })).map((item) => item.id)).toEqual([active.id]);
+        expect((await repository.searchDocuments(ownerScope, {
+          query: shorterPrefix,
+          limit: 10
+        })).map((item) => item.id)).toEqual([active.id]);
+      });
+    });
+
     it("projects bounded home lists and an exact active pending-review count", async () => {
       await withRepository(async (repository) => {
         const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -629,7 +677,9 @@ describe("in-memory StudioRepository clock behavior", () => {
   });
 });
 
-repositoryContract("PostgreSQL", async () => {
+type PostgresRepositoryFixture = RepositoryFixture & { pool: Pool };
+
+async function createPostgresRepositoryFixture(): Promise<PostgresRepositoryFixture> {
   if (!testDatabaseUrl) throw new Error("TEST_DATABASE_URL is required");
   const admin = new Pool({ connectionString: testDatabaseUrl });
   const schema = `baase_studio_repository_${process.pid}_${Date.now()}_${schemaSequence++}`;
@@ -657,10 +707,63 @@ repositoryContract("PostgreSQL", async () => {
   }
   if (!pool) throw new Error("PostgreSQL Studio repository fixture failed to initialize");
   return {
+    pool,
     repository: createPostgresStudioRepository(pool),
     cleanup
   };
-}, !testDatabaseUrl);
+}
+
+repositoryContract("PostgreSQL", createPostgresRepositoryFixture, !testDatabaseUrl);
+
+describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () => {
+  it("keeps derived values stable through focus, archive, and restore updates", async () => {
+    const fixture = await createPostgresRepositoryFixture();
+    try {
+      const created = await fixture.repository.createDocument(documentInput({
+        title: "Expansão sustentável",
+        bodyText: "Decisão com acentuação"
+      }));
+      const readSearchFields = async () => {
+        const result = await fixture.pool.query<{
+          search_title_folded: string;
+          search_body_folded: string;
+          search_tokens: string[];
+          search_prefix_tokens: string[];
+        }>(
+          `SELECT search_title_folded,search_body_folded,search_tokens,search_prefix_tokens
+           FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [created.workspaceId, created.ownerProfileId, created.id]
+        );
+        return result.rows[0];
+      };
+      const originalSearchFields = await readSearchFields();
+      expect(originalSearchFields).toBeDefined();
+
+      let updated = await fixture.repository.updateDocument({
+        ...created,
+        isFocused: true
+      }, created.revision);
+      expect(await readSearchFields()).toEqual(originalSearchFields);
+
+      updated = await fixture.repository.updateDocument({
+        ...updated,
+        status: "archived",
+        archivedAt: "2026-07-13T15:00:00.000Z"
+      }, updated.revision);
+      expect(await readSearchFields()).toEqual(originalSearchFields);
+
+      await fixture.repository.updateDocument({
+        ...updated,
+        status: "active",
+        archivedAt: null
+      }, updated.revision);
+      expect(await readSearchFields()).toEqual(originalSearchFields);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});
 
 describe("PostgreSQL repository bundle", () => {
   it("uses the relational Studio repository for either operational store", async () => {

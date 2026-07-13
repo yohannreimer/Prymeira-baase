@@ -318,8 +318,17 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const result = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET
              title=$4,body_json=$5::jsonb,body_text=$6,
-             search_title_folded=$7,search_body_folded=$8,
-             search_tokens=$9::text[],search_prefix_tokens=$10::text[],capture_mode=$11,
+             search_title_folded=CASE
+               WHEN title IS DISTINCT FROM $4 THEN $7 ELSE search_title_folded END,
+             search_body_folded=CASE
+               WHEN body_text IS DISTINCT FROM $6 THEN $8 ELSE search_body_folded END,
+             search_tokens=CASE
+               WHEN title IS DISTINCT FROM $4 OR body_text IS DISTINCT FROM $6
+               THEN $9::text[] ELSE search_tokens END,
+             search_prefix_tokens=CASE
+               WHEN title IS DISTINCT FROM $4 OR body_text IS DISTINCT FROM $6
+               THEN $10::text[] ELSE search_prefix_tokens END,
+             capture_mode=$11,
              inbox_state=$12,is_focused=$13,status=$14,archived_at=$15,
              revision=revision+1,updated_at=NOW()
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$16
@@ -399,7 +408,10 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       let prefixCondition = "";
       if (query.prefixToken !== null) {
         params.push([query.prefixToken]);
-        prefixCondition = `AND search_prefix_tokens @> $${params.length}::text[]`;
+        prefixCondition = `AND (
+          search_tokens @> $${params.length}::text[]
+          OR search_prefix_tokens @> $${params.length}::text[]
+        )`;
       }
       const result = await db.query<StudioSearchDocumentRow>(
         `SELECT id,title,body_text,updated_at,

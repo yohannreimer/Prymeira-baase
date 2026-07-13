@@ -98,7 +98,9 @@ export function matchesStudioSearchCandidate(
 ) {
   const documentTokens = new Set(fields.tokens);
   if (!query.exactTokens.every((token) => documentTokens.has(token))) return false;
-  return query.prefixToken === null || fields.prefixTokens.includes(query.prefixToken);
+  return query.prefixToken === null
+    || documentTokens.has(query.prefixToken)
+    || fields.prefixTokens.includes(query.prefixToken);
 }
 
 export function scoreStudioSearchFields(

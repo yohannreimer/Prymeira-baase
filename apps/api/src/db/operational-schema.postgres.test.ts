@@ -174,10 +174,15 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
          select id from studio_documents
          where workspace_id='workspace_a' and owner_profile_id='owner_a' and status='active'
            and search_tokens @> array[]::text[]
-           and search_prefix_tokens @> array['expan']::text[]`
+           and (
+             search_tokens @> array['expan']::text[]
+             or search_prefix_tokens @> array['expan']::text[]
+           )`
       );
-      expect(explained.rows.map((row) => row["QUERY PLAN"]).join("\n"))
-        .toContain("studio_documents_owner_search_prefix_idx");
+      const plan = explained.rows.map((row) => row["QUERY PLAN"]).join("\n");
+      expect(plan).toContain("BitmapOr");
+      expect(plan).toContain("studio_documents_owner_search_idx");
+      expect(plan).toContain("studio_documents_owner_search_prefix_idx");
     });
   });
 
