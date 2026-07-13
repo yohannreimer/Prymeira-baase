@@ -4,6 +4,7 @@ import type { AiHarness } from "../ai/ai.types";
 import { createInMemoryObjectStorage } from "../../storage/in-memory-object-storage";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import { createStudioAssetProcessor } from "./studio-asset-processor";
+import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio-asset-processor";
 import type { StudioAsset, StudioRepository } from "./studio.types";
 
 const now = "2026-07-13T12:00:00.000Z";
@@ -122,6 +123,154 @@ describe("Studio asset processor", () => {
     const results = await Promise.all([first.processNext(), second.processNext()]);
     expect(results.filter(Boolean)).toHaveLength(1);
   });
+
+  it("reclaims an expired lease and rejects stale worker completion", async () => {
+    const fixture = await createFixture();
+    const asset = await fixture.addAsset("notes.txt", "text/plain", Buffer.from("once"));
+    const first = await fixture.repository.claimNextAsset(now, 1_000);
+    expect(first?.claimToken).toBeTruthy();
+    expect(await fixture.repository.claimNextAsset("2026-07-13T12:00:00.999Z", 1_000)).toBeNull();
+    const reclaimed = await fixture.repository.claimNextAsset("2026-07-13T12:00:01.000Z", 1_000);
+    expect(reclaimed).toMatchObject({ id: asset.id, attemptCount: 2 });
+    expect(reclaimed?.claimToken).not.toBe(first?.claimToken);
+
+    expect(await fixture.repository.finishAssetProcessing({
+      scope: fixture.scope,
+      assetId: asset.id,
+      claimToken: first!.claimToken!,
+      extractionStatus: "ready",
+      extractedText: "stale",
+      extractionMetadata: {},
+      lastErrorCode: null,
+      nextAttemptAt: null
+    })).toBeNull();
+    expect(await fixture.repository.finishAssetProcessing({
+      scope: fixture.scope,
+      assetId: asset.id,
+      claimToken: reclaimed!.claimToken!,
+      extractionStatus: "ready",
+      extractedText: "fresh",
+      extractionMetadata: {},
+      lastErrorCode: null,
+      nextAttemptAt: null
+    })).toMatchObject({ extractedText: "fresh", claimToken: null, leaseExpiresAt: null });
+  });
+
+  it("stops retrying after five attempts and leaves permanent failures terminal", async () => {
+    let clock = new Date(now);
+    const fixture = await createFixture();
+    const asset = await fixture.addAsset("bad.bin", "application/octet-stream", Buffer.from([0, 1, 2]));
+    for (let attempt = 1; attempt <= STUDIO_ASSET_MAX_ATTEMPTS; attempt += 1) {
+      const claimed = await fixture.repository.claimNextAsset(clock.toISOString(), 1_000);
+      expect(claimed?.attemptCount).toBe(attempt);
+      await fixture.repository.finishAssetProcessing({
+        scope: fixture.scope,
+        assetId: asset.id,
+        claimToken: claimed!.claimToken!,
+        extractionStatus: "failed",
+        extractedText: null,
+        extractionMetadata: {},
+        lastErrorCode: "TRANSIENT",
+        nextAttemptAt: new Date(clock.getTime() + 1_000).toISOString()
+      });
+      clock = new Date(clock.getTime() + 1_000);
+    }
+    expect(await fixture.repository.claimNextAsset(clock.toISOString(), 1_000)).toBeNull();
+
+    const terminalFixture = await createFixture();
+    const terminal = await terminalFixture.addAsset("bad.bin", "application/octet-stream", Buffer.from([0, 1]));
+    const processor = createStudioAssetProcessor({
+      repository: terminalFixture.repository,
+      objectStorage: terminalFixture.objectStorage,
+      transcriptionHarness: terminalFixture.transcriptionHarness,
+      now: () => now
+    });
+    await expect(processor.processNext()).rejects.toThrow("STUDIO_ASSET_MIME_UNSUPPORTED");
+    expect(await terminalFixture.repository.findAsset(terminalFixture.scope, terminal.id)).toMatchObject({
+      extractionStatus: "failed",
+      nextAttemptAt: null,
+      attemptCount: 1
+    });
+  });
+
+  it("caps extracted text with truncation metadata", async () => {
+    const fixture = await createFixture();
+    const asset = await fixture.addAsset("large.txt", "text/plain", Buffer.from("x".repeat(500_100)));
+    const processor = createStudioAssetProcessor({
+      repository: fixture.repository,
+      objectStorage: fixture.objectStorage,
+      transcriptionHarness: fixture.transcriptionHarness,
+      now: () => now
+    });
+    await processor.processNext();
+    expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+      extractedText: "x".repeat(500_000),
+      extractionMetadata: {
+        extractor: "utf8",
+        truncated: true,
+        originalCharacterCount: 500_100
+      }
+    });
+  });
+
+  it("enforces a processing wall timeout and destroys a stalled private stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture();
+      const asset = await fixture.addAsset("stalled.txt", "text/plain", Buffer.from("stored"));
+      const stalled = new Readable({ read() {} });
+      const processor = createStudioAssetProcessor({
+        repository: fixture.repository,
+        objectStorage: {
+          ...fixture.objectStorage,
+          async get() {
+            return { body: stalled, contentType: "text/plain", sizeBytes: null };
+          }
+        },
+        transcriptionHarness: fixture.transcriptionHarness,
+        now: () => now,
+        processingTimeoutMs: 100
+      });
+      const pending = processor.processNext();
+      const assertion = expect(pending).rejects.toThrow("STUDIO_ASSET_PROCESSING_TIMEOUT");
+      await vi.advanceTimersByTimeAsync(101);
+      await assertion;
+      expect(stalled.destroyed).toBe(true);
+      expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+        extractionStatus: "failed",
+        lastErrorCode: "STUDIO_ASSET_PROCESSING_TIMEOUT"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds audio transcription wall time without persisting a late result", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture();
+      const asset = await fixture.addAsset("audio.webm", "audio/webm", Buffer.from("bounded audio"));
+      vi.mocked(fixture.transcriptionHarness.transcribeAudio).mockImplementationOnce(() => new Promise(() => undefined));
+      const processor = createStudioAssetProcessor({
+        repository: fixture.repository,
+        objectStorage: fixture.objectStorage,
+        transcriptionHarness: fixture.transcriptionHarness,
+        now: () => now,
+        processingTimeoutMs: 100
+      });
+      const pending = processor.processNext();
+      const assertion = expect(pending).rejects.toThrow("STUDIO_ASSET_PROCESSING_TIMEOUT");
+      await vi.advanceTimersByTimeAsync(101);
+      await assertion;
+      expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+        extractionStatus: "failed",
+        extractedText: null,
+        nextAttemptAt: "2026-07-13T12:01:00.000Z"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 async function createFixture(options: { transcript?: Awaited<ReturnType<AiHarness["transcribeAudio"]>> } = {}) {
@@ -162,7 +311,10 @@ async function createFixture(options: { transcript?: Awaited<ReturnType<AiHarnes
         extractionMetadata: {},
         lastErrorCode: null,
         attemptCount: 0,
-        nextAttemptAt: null
+        nextAttemptAt: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        lifecycleStatus: "active"
       });
     }
   };

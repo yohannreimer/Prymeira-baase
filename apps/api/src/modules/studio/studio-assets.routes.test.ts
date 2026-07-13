@@ -5,6 +5,7 @@ import { createInMemoryObjectStorage } from "../../storage/in-memory-object-stor
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import type { StudioRepository } from "./studio.types";
 import type { StudioLinkFetcher, StudioLinkResolver } from "./studio-assets.routes";
+import { createStudioUploadSemaphore } from "./studio-asset-upload";
 
 const ownerA = {
   "x-baase-workspace-id": "workspace_a",
@@ -89,6 +90,23 @@ describe("Studio asset routes", () => {
     })).statusCode).toBe(400);
   });
 
+  it("fails fast when the bounded upload spool is saturated", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const semaphore = createStudioUploadSemaphore(1);
+    const release = semaphore.tryAcquire()!;
+    try {
+      const app = buildApp({ studioRepository: repository, studioUploadSemaphore: semaphore });
+      const response = await upload(app, document.id, {
+        filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+      });
+      expect(response.statusCode).toBe(429);
+      expect(response.json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
+    } finally {
+      release();
+    }
+  });
+
   it("rejects empty, oversized, and unsupported uploads", async () => {
     const fixture = await createFixture();
     const empty = await upload(fixture.app, fixture.documentId, {
@@ -133,6 +151,54 @@ describe("Studio asset routes", () => {
     expect(objectStorage.keys()).toEqual([]);
   });
 
+  it("durably enqueues orphan cleanup when persistence and immediate cleanup both fail", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const objectStorage = createInMemoryObjectStorage();
+    objectStorage.failNextDelete(new Error("storage cleanup unavailable"));
+    const app = buildApp({
+      objectStorage,
+      studioRepository: {
+        ...repository,
+        async createAsset() {
+          throw new Error("database unavailable");
+        }
+      }
+    });
+    const response = await upload(app, document.id, {
+      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toMatchObject({
+      code: "STUDIO_ASSET_PERSISTENCE_FAILED",
+      details: { cleanup_pending: true }
+    });
+    expect(await repository.listAssetCleanupJobs({ workspaceId: "workspace_a", ownerProfileId: "owner_a" }))
+      .toHaveLength(1);
+    expect(objectStorage.keys()).toHaveLength(1);
+  });
+
+  it("surfaces a compound cleanup error when orphan enqueue also fails", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const objectStorage = createInMemoryObjectStorage();
+    objectStorage.failNextDelete(new Error("storage cleanup unavailable"));
+    const app = buildApp({
+      objectStorage,
+      studioRepository: {
+        ...repository,
+        async createAsset() { throw new Error("database unavailable"); },
+        async enqueueOrphanAssetCleanup() { throw new Error("cleanup database unavailable"); }
+      }
+    });
+    const response = await upload(app, document.id, {
+      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe("STUDIO_ASSET_CLEANUP_ENQUEUE_FAILED");
+    expect(objectStorage.keys()).toHaveLength(1);
+  });
+
   it("deletes the private object only after an owner-scoped asset lookup", async () => {
     const fixture = await createFixture();
     const uploaded = await upload(fixture.app, fixture.documentId, {
@@ -148,12 +214,69 @@ describe("Studio asset routes", () => {
     const removed = await fixture.app.inject({
       method: "DELETE", url: `/studio/assets/${assetId}`, headers: ownerA
     });
-    expect(removed.statusCode).toBe(200);
-    expect(removed.json()).toEqual({ ok: true });
-    expect(fixture.objectStorage.keys()).toEqual([]);
+    expect(removed.statusCode).toBe(202);
+    expect(removed.json()).toEqual({ ok: true, cleanup_pending: true });
+    expect(fixture.objectStorage.keys()).toHaveLength(1);
     expect(await fixture.repository.findAsset(
       { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
     )).toBeNull();
+    expect(await fixture.repository.findAssetIncludingDeleting(
+      { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
+    )).toMatchObject({ lifecycleStatus: "deleting" });
+    await fixture.app.studioAssetCleanupProcessor.processNext();
+    expect(fixture.objectStorage.keys()).toEqual([]);
+    expect(await fixture.repository.findAssetIncludingDeleting(
+      { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
+    )).toBeNull();
+  });
+
+  it("rejects spoofed PDF/audio signatures and extra multipart fields", async () => {
+    const fixture = await createFixture();
+    for (const candidate of [
+      { filename: "fake.pdf", mimeType: "application/pdf", body: Buffer.from("plain text") },
+      { filename: "fake.mp3", mimeType: "audio/mpeg", body: Buffer.from("plain text") }
+    ]) {
+      const response = await upload(fixture.app, fixture.documentId, candidate);
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error.code).toBe("STUDIO_ASSET_MIME_MISMATCH");
+    }
+
+    const multipartCases = [
+      [
+        'Content-Disposition: form-data; name="note"', "", "not allowed",
+        "PART", 'Content-Disposition: form-data; name="file"; filename="notes.txt"',
+        "Content-Type: text/plain", "", "private"
+      ],
+      [
+        'Content-Disposition: form-data; name="file"; filename="notes.txt"',
+        "Content-Type: text/plain", "", "private",
+        "PART", 'Content-Disposition: form-data; name="note"', "", "not allowed"
+      ],
+      [
+        'Content-Disposition: form-data; name="file"; filename="notes.txt"',
+        "Content-Type: text/plain", "", "private",
+        "PART", 'Content-Disposition: form-data; name="file"; filename="second.txt"',
+        "Content-Type: text/plain", "", "not allowed"
+      ]
+    ];
+    for (const [index, parts] of multipartCases.entries()) {
+      const boundary = `----baase-studio-extra-part-${index}`;
+      const payload = Buffer.from([
+        `--${boundary}`,
+        ...parts.flatMap((part) => part === "PART" ? [`--${boundary}`] : [part]),
+        `--${boundary}--`,
+        ""
+      ].join("\r\n"));
+      const extra = await fixture.app.inject({
+        method: "POST",
+        url: `/studio/documents/${fixture.documentId}/assets`,
+        headers: { ...ownerA, "content-type": `multipart/form-data; boundary=${boundary}` },
+        payload
+      });
+      expect(extra.statusCode, `multipart case ${index}`).toBe(400);
+      expect(extra.json().error.code).toBe("STUDIO_ASSET_MULTIPART_INVALID");
+    }
+    expect(fixture.objectStorage.keys()).toEqual([]);
   });
 
   it("captures a safe inert link snapshot and persists its final metadata", async () => {

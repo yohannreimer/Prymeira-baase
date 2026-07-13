@@ -1,6 +1,8 @@
 import type {
   StudioCaptureMode,
   StudioAsset,
+  StudioAssetCleanupJob,
+  StudioAssetCleanupStatus,
   StudioAssetExtractionStatus,
   StudioAssetKind,
   StudioCollection,
@@ -12,6 +14,7 @@ import type {
   StudioOwnerScope,
   StudioSearchDocument
 } from "./studio.types";
+import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
 import {
   prepareStudioSearchFields,
   prepareStudioSearchQuery
@@ -92,6 +95,25 @@ type StudioAssetRow = {
   last_error_code: string | null;
   attempt_count: number;
   next_attempt_at: string | Date | null;
+  claim_token: string | null;
+  lease_expires_at: string | Date | null;
+  lifecycle_status: StudioAsset["lifecycleStatus"];
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
+type StudioAssetCleanupJobRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  asset_id: string | null;
+  object_key: string | null;
+  status: StudioAssetCleanupStatus;
+  attempt_count: number;
+  next_attempt_at: string | Date | null;
+  last_error_code: string | null;
+  claim_token: string | null;
+  lease_expires_at: string | Date | null;
   created_at: string | Date;
   updated_at: string | Date;
 };
@@ -183,6 +205,27 @@ function assetFromRow(row: StudioAssetRow): StudioAsset {
     lastErrorCode: row.last_error_code,
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
+    claimToken: row.claim_token,
+    leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null,
+    lifecycleStatus: row.lifecycle_status,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
+function cleanupJobFromRow(row: StudioAssetCleanupJobRow): StudioAssetCleanupJob {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    assetId: row.asset_id,
+    objectKey: row.object_key,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
+    lastErrorCode: row.last_error_code,
+    claimToken: row.claim_token,
+    leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at)
   };
@@ -642,6 +685,15 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
     async findAsset(scope, assetId) {
       const result = await db.query<StudioAssetRow>(
         `SELECT * FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND lifecycle_status='active'`,
+        [scope.workspaceId, scope.ownerProfileId, assetId]
+      );
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async findAssetIncludingDeleting(scope, assetId) {
+      const result = await db.query<StudioAssetRow>(
+        `SELECT * FROM studio_assets
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
         [scope.workspaceId, scope.ownerProfileId, assetId]
       );
@@ -655,8 +707,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
              (id,workspace_id,owner_profile_id,document_id,kind,display_name,
               object_key,source_url,final_url,fetched_at,mime_type,size_bytes,
               extraction_status,extracted_text,extraction_metadata,last_error_code,
-              attempt_count,next_attempt_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+              attempt_count,next_attempt_at,claim_token,lease_expires_at,lifecycle_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21)
            RETURNING *`,
           [
             generatedId("studio_asset"), input.workspaceId, input.ownerProfileId,
@@ -664,7 +716,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             input.sourceUrl, input.finalUrl, input.fetchedAt, input.mimeType,
             input.sizeBytes, input.extractionStatus, input.extractedText,
             JSON.stringify(input.extractionMetadata), input.lastErrorCode,
-            input.attemptCount, input.nextAttemptAt
+            input.attemptCount, input.nextAttemptAt, input.claimToken ?? null,
+            input.leaseExpiresAt ?? null, input.lifecycleStatus ?? "active"
           ]
         );
         return assetFromRow(result.rows[0]!);
@@ -677,23 +730,18 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       }
     },
 
-    async deleteAsset(scope, assetId) {
-      const result = await db.query<{ id: string }>(
-        `DELETE FROM studio_assets
-         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
-         RETURNING id`,
-        [scope.workspaceId, scope.ownerProfileId, assetId]
-      );
-      return Boolean(result.rows[0]);
-    },
-
-    async claimNextAsset(now) {
+    async claimNextAsset(now, leaseMs = 120_000) {
+      const claimToken = generatedId("studio_asset_claim");
+      const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioAssetRow>(
         `WITH candidate AS (
            SELECT workspace_id,owner_profile_id,id
            FROM studio_assets
-           WHERE extraction_status='pending'
-              OR (extraction_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+           WHERE lifecycle_status='active' AND attempt_count < $4 AND (
+             extraction_status='pending'
+             OR (extraction_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+             OR (extraction_status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           )
            ORDER BY created_at ASC,id ASC
            FOR UPDATE SKIP LOCKED
            LIMIT 1
@@ -702,32 +750,149 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            extraction_status='processing',
            attempt_count=asset.attempt_count+1,
            next_attempt_at=NULL,
+           claim_token=$2,
+           lease_expires_at=$3,
            updated_at=NOW()
          FROM candidate
          WHERE asset.workspace_id=candidate.workspace_id
            AND asset.owner_profile_id=candidate.owner_profile_id
            AND asset.id=candidate.id
          RETURNING asset.*`,
-        [now]
+        [now, claimToken, leaseExpiresAt, STUDIO_ASSET_MAX_ATTEMPTS]
       );
       return result.rows[0] ? assetFromRow(result.rows[0]) : null;
     },
 
-    async updateAssetExtraction(input) {
+    async finishAssetProcessing(input) {
       const result = await db.query<StudioAssetRow>(
         `UPDATE studio_assets SET
            extraction_status=$4,extracted_text=$5,extraction_metadata=$6::jsonb,
-           last_error_code=$7,attempt_count=$8,next_attempt_at=$9,updated_at=NOW()
+           last_error_code=$7,next_attempt_at=$8,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND lifecycle_status='active' AND extraction_status='processing' AND claim_token=$9
          RETURNING *`,
         [
-          input.workspaceId, input.ownerProfileId, input.id, input.extractionStatus,
+          input.scope.workspaceId, input.scope.ownerProfileId, input.assetId, input.extractionStatus,
           input.extractedText, JSON.stringify(input.extractionMetadata), input.lastErrorCode,
-          input.attemptCount, input.nextAttemptAt
+          input.nextAttemptAt, input.claimToken
         ]
       );
-      if (!result.rows[0]) throw new Error("STUDIO_ASSET_NOT_FOUND");
-      return assetFromRow(result.rows[0]);
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async tombstoneAssetForCleanup(scope, assetId) {
+      return withOperationalTransaction(db, async (client) => {
+        const asset = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, assetId]
+        );
+        if (!asset.rows[0]) return null;
+        const existing = await client.query<StudioAssetCleanupJobRow>(
+          `SELECT * FROM studio_asset_cleanup_jobs
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND asset_id=$3
+           ORDER BY created_at ASC LIMIT 1`,
+          [scope.workspaceId, scope.ownerProfileId, assetId]
+        );
+        if (existing.rows[0]) return cleanupJobFromRow(existing.rows[0]);
+        await client.query(
+          `UPDATE studio_assets SET lifecycle_status='deleting',
+             extraction_status=CASE WHEN extraction_status='processing' THEN 'failed' ELSE extraction_status END,
+             claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, assetId]
+        );
+        const job = await client.query<StudioAssetCleanupJobRow>(
+          `INSERT INTO studio_asset_cleanup_jobs
+             (id,workspace_id,owner_profile_id,asset_id,object_key)
+           VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+          [generatedId("studio_asset_cleanup"), scope.workspaceId, scope.ownerProfileId, assetId, asset.rows[0].object_key]
+        );
+        return cleanupJobFromRow(job.rows[0]!);
+      });
+    },
+
+    async enqueueOrphanAssetCleanup(input) {
+      const inserted = await db.query<StudioAssetCleanupJobRow>(
+        `INSERT INTO studio_asset_cleanup_jobs
+           (id,workspace_id,owner_profile_id,asset_id,object_key)
+         VALUES ($1,$2,$3,NULL,$4)
+         ON CONFLICT (workspace_id,owner_profile_id,object_key) WHERE object_key IS NOT NULL
+         DO NOTHING RETURNING *`,
+        [generatedId("studio_asset_cleanup"), input.workspaceId, input.ownerProfileId, input.objectKey]
+      );
+      if (inserted.rows[0]) return cleanupJobFromRow(inserted.rows[0]);
+      const existing = await db.query<StudioAssetCleanupJobRow>(
+        `SELECT * FROM studio_asset_cleanup_jobs
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3`,
+        [input.workspaceId, input.ownerProfileId, input.objectKey]
+      );
+      if (!existing.rows[0]) throw new Error("STUDIO_ASSET_CLEANUP_ENQUEUE_FAILED");
+      return cleanupJobFromRow(existing.rows[0]);
+    },
+
+    async listAssetCleanupJobs(scope) {
+      const result = await db.query<StudioAssetCleanupJobRow>(
+        `SELECT * FROM studio_asset_cleanup_jobs
+         WHERE workspace_id=$1 AND owner_profile_id=$2 ORDER BY created_at ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId]
+      );
+      return result.rows.map(cleanupJobFromRow);
+    },
+
+    async claimNextAssetCleanup(now, leaseMs = 120_000) {
+      const claimToken = generatedId("studio_cleanup_claim");
+      const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
+      const result = await db.query<StudioAssetCleanupJobRow>(
+        `WITH candidate AS (
+           SELECT workspace_id,owner_profile_id,id FROM studio_asset_cleanup_jobs
+           WHERE status='pending'
+             OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+             OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
+         )
+         UPDATE studio_asset_cleanup_jobs job SET status='processing',attempt_count=job.attempt_count+1,
+           next_attempt_at=NULL,claim_token=$2,lease_expires_at=$3,updated_at=NOW()
+         FROM candidate
+         WHERE job.workspace_id=candidate.workspace_id AND job.owner_profile_id=candidate.owner_profile_id
+           AND job.id=candidate.id
+         RETURNING job.*`,
+        [now, claimToken, leaseExpiresAt]
+      );
+      return result.rows[0] ? cleanupJobFromRow(result.rows[0]) : null;
+    },
+
+    async failAssetCleanup(input) {
+      const result = await db.query<StudioAssetCleanupJobRow>(
+        `UPDATE studio_asset_cleanup_jobs SET status='failed',last_error_code=$5,
+           next_attempt_at=$6,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND claim_token=$4 AND status='processing'
+         RETURNING *`,
+        [input.scope.workspaceId, input.scope.ownerProfileId, input.jobId, input.claimToken,
+          input.lastErrorCode, input.nextAttemptAt]
+      );
+      return result.rows[0] ? cleanupJobFromRow(result.rows[0]) : null;
+    },
+
+    async completeAssetCleanup(input) {
+      return withOperationalTransaction(db, async (client) => {
+        const removedJob = await client.query<StudioAssetCleanupJobRow>(
+          `DELETE FROM studio_asset_cleanup_jobs
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             AND claim_token=$4 AND status='processing' RETURNING *`,
+          [input.scope.workspaceId, input.scope.ownerProfileId, input.jobId, input.claimToken]
+        );
+        const job = removedJob.rows[0];
+        if (!job) return false;
+        if (job.asset_id) {
+          await client.query(
+            `DELETE FROM studio_assets
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND lifecycle_status='deleting'`,
+            [job.workspace_id, job.owner_profile_id, job.asset_id]
+          );
+        }
+        return true;
+      });
     }
   };
 }

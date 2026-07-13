@@ -85,9 +85,11 @@ export const studioAssetParamsSchema = z.object({
 
 export const studioLinkCaptureSchema = z.object({
   url: z.url().max(2_000).refine((value) => {
-    const protocol = new URL(value).protocol;
-    return protocol === "http:" || protocol === "https:";
-  }, "Only HTTP and HTTPS links are supported.")
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && !url.username
+      && !url.password;
+  }, "Only credential-free HTTP and HTTPS links are supported.")
 }).strict();
 
 const metricSchema = z.object({

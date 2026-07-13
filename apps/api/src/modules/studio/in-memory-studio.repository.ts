@@ -3,10 +3,12 @@ import type {
   StudioCollection,
   StudioCollectionMembership,
   StudioAsset,
+  StudioAssetCleanupJob,
   StudioDocument,
   StudioDocumentVersion,
   StudioRepository
 } from "./studio.types";
+import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
 import { studioSearchScore } from "./studio-search";
 
 type InMemoryStudioRepositoryOptions = {
@@ -36,6 +38,10 @@ function cloneMembership(membership: StudioCollectionMembership): StudioCollecti
 
 function cloneAsset(asset: StudioAsset): StudioAsset {
   return structuredClone(asset);
+}
+
+function cloneCleanupJob(job: StudioAssetCleanupJob): StudioAssetCleanupJob {
+  return structuredClone(job);
 }
 
 function normalizeTimestamp(value: unknown) {
@@ -98,6 +104,7 @@ export function createInMemoryStudioRepository(
   const collections: StudioCollection[] = [];
   const memberships: StudioCollectionMembership[] = [];
   const assets: StudioAsset[] = [];
+  const assetCleanupJobs: StudioAssetCleanupJob[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -423,6 +430,16 @@ export function createInMemoryStudioRepository(
         item.workspaceId === scope.workspaceId
         && item.ownerProfileId === scope.ownerProfileId
         && item.id === assetId
+        && item.lifecycleStatus === "active"
+      );
+      return asset ? cloneAsset(asset) : null;
+    },
+
+    async findAssetIncludingDeleting(scope, assetId) {
+      const asset = assets.find((item) =>
+        item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.id === assetId
       );
       return asset ? cloneAsset(asset) : null;
     },
@@ -437,6 +454,9 @@ export function createInMemoryStudioRepository(
       const timestamp = now();
       const asset: StudioAsset = {
         ...structuredClone(input),
+        claimToken: input.claimToken ?? null,
+        leaseExpiresAt: input.leaseExpiresAt ?? null,
+        lifecycleStatus: input.lifecycleStatus ?? "active",
         id: `studio_asset_${randomUUID()}`,
         createdAt: timestamp,
         updatedAt: timestamp
@@ -445,41 +465,39 @@ export function createInMemoryStudioRepository(
       return cloneAsset(asset);
     },
 
-    async deleteAsset(scope, assetId) {
-      const index = assets.findIndex((asset) =>
-        asset.workspaceId === scope.workspaceId
-        && asset.ownerProfileId === scope.ownerProfileId
-        && asset.id === assetId
-      );
-      if (index === -1) return false;
-      assets.splice(index, 1);
-      return true;
-    },
-
-    async claimNextAsset(at) {
+    async claimNextAsset(at, leaseMs = 120_000) {
       const timestamp = normalizeTimestamp(at);
       const asset = assets
-        .filter((item) => item.extractionStatus === "pending" || (
-          item.extractionStatus === "failed"
-          && item.nextAttemptAt !== null
-          && item.nextAttemptAt <= timestamp
-        ))
+        .filter((item) => item.lifecycleStatus === "active")
+        .filter((item) => item.attemptCount < STUDIO_ASSET_MAX_ATTEMPTS)
+        .filter((item) => item.extractionStatus === "pending"
+          || (item.extractionStatus === "failed"
+            && item.nextAttemptAt !== null
+            && item.nextAttemptAt <= timestamp)
+          || (item.extractionStatus === "processing"
+            && item.leaseExpiresAt !== null
+            && item.leaseExpiresAt <= timestamp))
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
       if (!asset) return null;
       asset.extractionStatus = "processing";
       asset.attemptCount += 1;
       asset.nextAttemptAt = null;
+      asset.claimToken = randomUUID();
+      asset.leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMs).toISOString();
       asset.updatedAt = nextTimestamp(now, asset.updatedAt);
       return cloneAsset(asset);
     },
 
-    async updateAssetExtraction(input) {
+    async finishAssetProcessing(input) {
       const index = assets.findIndex((asset) =>
-        asset.workspaceId === input.workspaceId
-        && asset.ownerProfileId === input.ownerProfileId
-        && asset.id === input.id
+        asset.workspaceId === input.scope.workspaceId
+        && asset.ownerProfileId === input.scope.ownerProfileId
+        && asset.id === input.assetId
+        && asset.lifecycleStatus === "active"
+        && asset.extractionStatus === "processing"
+        && asset.claimToken === input.claimToken
       );
-      if (index === -1) throw new Error("STUDIO_ASSET_NOT_FOUND");
+      if (index === -1) return null;
       const persisted = assets[index]!;
       const updated: StudioAsset = {
         ...persisted,
@@ -487,12 +505,142 @@ export function createInMemoryStudioRepository(
         extractedText: input.extractedText,
         extractionMetadata: structuredClone(input.extractionMetadata),
         lastErrorCode: input.lastErrorCode,
-        attemptCount: input.attemptCount,
         nextAttemptAt: input.nextAttemptAt,
+        claimToken: null,
+        leaseExpiresAt: null,
         updatedAt: nextTimestamp(now, persisted.updatedAt)
       };
       assets[index] = updated;
       return cloneAsset(updated);
+    },
+
+    async tombstoneAssetForCleanup(scope, assetId) {
+      const asset = assets.find((item) =>
+        item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.id === assetId
+      );
+      if (!asset) return null;
+      const existing = assetCleanupJobs.find((job) =>
+        job.workspaceId === scope.workspaceId
+        && job.ownerProfileId === scope.ownerProfileId
+        && job.assetId === assetId
+      );
+      if (existing) return cloneCleanupJob(existing);
+      asset.lifecycleStatus = "deleting";
+      asset.claimToken = null;
+      asset.leaseExpiresAt = null;
+      if (asset.extractionStatus === "processing") asset.extractionStatus = "failed";
+      asset.updatedAt = nextTimestamp(now, asset.updatedAt);
+      const timestamp = now();
+      const job: StudioAssetCleanupJob = {
+        ...scope,
+        id: `studio_asset_cleanup_${randomUUID()}`,
+        assetId,
+        objectKey: asset.objectKey,
+        status: "pending",
+        attemptCount: 0,
+        nextAttemptAt: null,
+        lastErrorCode: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      assetCleanupJobs.push(job);
+      return cloneCleanupJob(job);
+    },
+
+    async enqueueOrphanAssetCleanup(input) {
+      const existing = assetCleanupJobs.find((job) =>
+        job.workspaceId === input.workspaceId
+        && job.ownerProfileId === input.ownerProfileId
+        && job.objectKey === input.objectKey
+      );
+      if (existing) return cloneCleanupJob(existing);
+      const timestamp = now();
+      const job: StudioAssetCleanupJob = {
+        workspaceId: input.workspaceId,
+        ownerProfileId: input.ownerProfileId,
+        id: `studio_asset_cleanup_${randomUUID()}`,
+        assetId: null,
+        objectKey: input.objectKey,
+        status: "pending",
+        attemptCount: 0,
+        nextAttemptAt: null,
+        lastErrorCode: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      assetCleanupJobs.push(job);
+      return cloneCleanupJob(job);
+    },
+
+    async listAssetCleanupJobs(scope) {
+      return assetCleanupJobs
+        .filter((job) => job.workspaceId === scope.workspaceId && job.ownerProfileId === scope.ownerProfileId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+        .map(cloneCleanupJob);
+    },
+
+    async claimNextAssetCleanup(at, leaseMs = 120_000) {
+      const timestamp = normalizeTimestamp(at);
+      const job = assetCleanupJobs
+        .filter((item) => item.status === "pending"
+          || (item.status === "failed" && item.nextAttemptAt !== null && item.nextAttemptAt <= timestamp)
+          || (item.status === "processing" && item.leaseExpiresAt !== null && item.leaseExpiresAt <= timestamp))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+      if (!job) return null;
+      job.status = "processing";
+      job.attemptCount += 1;
+      job.nextAttemptAt = null;
+      job.claimToken = randomUUID();
+      job.leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMs).toISOString();
+      job.updatedAt = nextTimestamp(now, job.updatedAt);
+      return cloneCleanupJob(job);
+    },
+
+    async failAssetCleanup(input) {
+      const job = assetCleanupJobs.find((item) =>
+        item.workspaceId === input.scope.workspaceId
+        && item.ownerProfileId === input.scope.ownerProfileId
+        && item.id === input.jobId
+        && item.status === "processing"
+        && item.claimToken === input.claimToken
+      );
+      if (!job) return null;
+      job.status = "failed";
+      job.lastErrorCode = input.lastErrorCode;
+      job.nextAttemptAt = input.nextAttemptAt;
+      job.claimToken = null;
+      job.leaseExpiresAt = null;
+      job.updatedAt = nextTimestamp(now, job.updatedAt);
+      return cloneCleanupJob(job);
+    },
+
+    async completeAssetCleanup(input) {
+      const jobIndex = assetCleanupJobs.findIndex((item) =>
+        item.workspaceId === input.scope.workspaceId
+        && item.ownerProfileId === input.scope.ownerProfileId
+        && item.id === input.jobId
+        && item.status === "processing"
+        && item.claimToken === input.claimToken
+      );
+      if (jobIndex === -1) return false;
+      const job = assetCleanupJobs[jobIndex]!;
+      if (job.assetId) {
+        const assetIndex = assets.findIndex((asset) =>
+          asset.workspaceId === job.workspaceId
+          && asset.ownerProfileId === job.ownerProfileId
+          && asset.id === job.assetId
+          && asset.lifecycleStatus === "deleting"
+        );
+        if (assetIndex !== -1) assets.splice(assetIndex, 1);
+      }
+      assetCleanupJobs.splice(jobIndex, 1);
+      return true;
     }
   };
 }

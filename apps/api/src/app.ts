@@ -46,6 +46,8 @@ import {
 import { createStudioService } from "./modules/studio/studio.service";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import { createStudioAssetProcessor } from "./modules/studio/studio-asset-processor";
+import { createStudioAssetCleanupProcessor } from "./modules/studio/studio-asset-cleanup";
+import type { StudioUploadSemaphore } from "./modules/studio/studio-asset-upload";
 import {
   createLocalDemoProcesses,
   createLocalDemoRoutines,
@@ -67,6 +69,7 @@ export type BuildAppOptions = {
   studioRepository?: StudioRepository;
   studioLinkResolver?: StudioLinkResolver;
   studioLinkFetcher?: StudioLinkFetcher;
+  studioUploadSemaphore?: StudioUploadSemaphore;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -114,6 +117,11 @@ export function buildApp(options: BuildAppOptions = {}) {
       provider: aiProvider,
       now: options.now ? () => options.now!().getTime() : undefined
     }),
+    now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const studioAssetCleanupProcessor = createStudioAssetCleanupProcessor({
+    repository: studioRepository,
+    objectStorage,
     now: options.now ? () => options.now!().toISOString() : undefined
   });
   const runtimeConfig = options.runtimeConfig ?? readRuntimeConfig({
@@ -284,8 +292,9 @@ export function buildApp(options: BuildAppOptions = {}) {
     objectStorage,
     resolver: options.studioLinkResolver,
     fetcher: options.studioLinkFetcher,
+    uploadSemaphore: options.studioUploadSemaphore,
     now: options.now
   }));
 
-  return Object.assign(app, { studioAssetProcessor });
+  return Object.assign(app, { studioAssetProcessor, studioAssetCleanupProcessor });
 }

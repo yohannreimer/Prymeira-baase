@@ -84,6 +84,7 @@ describe("Studio schemas", () => {
     expect(studioLinkCaptureSchema.parse({ url: "https://example.com/idea" }))
       .toEqual({ url: "https://example.com/idea" });
     expect(() => studioLinkCaptureSchema.parse({ url: "ftp://example.com/idea" })).toThrow();
+    expect(() => studioLinkCaptureSchema.parse({ url: "https://user:secret@example.com/idea" })).toThrow();
     expect(() => studioLinkCaptureSchema.parse({
       url: "https://example.com/idea",
       owner_profile_id: "owner_b"

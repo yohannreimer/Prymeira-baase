@@ -5,6 +5,9 @@ export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
+export type StudioAssetLifecycleStatus = "active" | "deleting";
+export type StudioAssetCleanupStatus = "pending" | "processing" | "failed";
+export const STUDIO_ASSET_MAX_ATTEMPTS = 5;
 
 export type CreateStudioDocument = {
   title: string | null;
@@ -113,8 +116,41 @@ export type StudioAsset = StudioOwnerScope & {
   lastErrorCode: string | null;
   attemptCount: number;
   nextAttemptAt: string | null;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  lifecycleStatus: StudioAssetLifecycleStatus;
   createdAt: string;
   updatedAt: string;
+};
+
+export type StudioAssetCleanupJob = StudioOwnerScope & {
+  id: string;
+  assetId: string | null;
+  objectKey: string | null;
+  status: StudioAssetCleanupStatus;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastErrorCode: string | null;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateStudioAsset = Omit<
+  StudioAsset,
+  "id" | "createdAt" | "updatedAt" | "claimToken" | "leaseExpiresAt" | "lifecycleStatus"
+> & Partial<Pick<StudioAsset, "claimToken" | "leaseExpiresAt" | "lifecycleStatus">>;
+
+export type FinishStudioAssetProcessing = {
+  scope: StudioOwnerScope;
+  assetId: string;
+  claimToken: string;
+  extractionStatus: "ready" | "failed";
+  extractedText: string | null;
+  extractionMetadata: Record<string, unknown>;
+  lastErrorCode: string | null;
+  nextAttemptAt: string | null;
 };
 
 export type StudioSearchCollection = Pick<StudioCollection, "id" | "name">;
@@ -176,8 +212,24 @@ export type StudioRepository = {
   removeCollectionMembership(scope: StudioOwnerScope, collectionId: string, documentId: string): Promise<boolean>;
   listDocumentCollections(scope: StudioOwnerScope, documentId: string): Promise<StudioCollection[]>;
   findAsset(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
-  createAsset(input: Omit<StudioAsset, "id" | "createdAt" | "updatedAt">): Promise<StudioAsset>;
-  deleteAsset(scope: StudioOwnerScope, assetId: string): Promise<boolean>;
-  claimNextAsset(now: string): Promise<StudioAsset | null>;
-  updateAssetExtraction(input: StudioAsset): Promise<StudioAsset>;
+  findAssetIncludingDeleting(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
+  createAsset(input: CreateStudioAsset): Promise<StudioAsset>;
+  claimNextAsset(now: string, leaseMs?: number): Promise<StudioAsset | null>;
+  finishAssetProcessing(input: FinishStudioAssetProcessing): Promise<StudioAsset | null>;
+  tombstoneAssetForCleanup(scope: StudioOwnerScope, assetId: string): Promise<StudioAssetCleanupJob | null>;
+  enqueueOrphanAssetCleanup(input: StudioOwnerScope & { objectKey: string }): Promise<StudioAssetCleanupJob>;
+  listAssetCleanupJobs(scope: StudioOwnerScope): Promise<StudioAssetCleanupJob[]>;
+  claimNextAssetCleanup(now: string, leaseMs?: number): Promise<StudioAssetCleanupJob | null>;
+  failAssetCleanup(input: {
+    scope: StudioOwnerScope;
+    jobId: string;
+    claimToken: string;
+    lastErrorCode: string;
+    nextAttemptAt: string;
+  }): Promise<StudioAssetCleanupJob | null>;
+  completeAssetCleanup(input: {
+    scope: StudioOwnerScope;
+    jobId: string;
+    claimToken: string;
+  }): Promise<boolean>;
 };

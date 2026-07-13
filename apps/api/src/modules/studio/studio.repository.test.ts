@@ -614,13 +614,18 @@ function repositoryContract(
           attemptCount: 1
         });
 
-        const failed = await repository.updateAssetExtraction({
-          ...claims.find(Boolean)!,
+        const claimed = claims.find(Boolean)!;
+        const failed = await repository.finishAssetProcessing({
+          scope,
+          assetId: claimed.id,
+          claimToken: claimed.claimToken!,
           extractionStatus: "failed",
+          extractedText: null,
+          extractionMetadata: {},
           lastErrorCode: "TRANSIENT",
           nextAttemptAt: "2026-07-13T12:01:00.000Z"
         });
-        expect(failed.extractionStatus).toBe("failed");
+        expect(failed?.extractionStatus).toBe("failed");
         expect(await repository.claimNextAsset("2026-07-13T12:00:59.999Z")).toBeNull();
         expect(await repository.claimNextAsset("2026-07-13T12:01:00.000Z")).toMatchObject({
           id: asset.id,
@@ -628,8 +633,29 @@ function repositoryContract(
           attemptCount: 2
         });
 
-        expect(await repository.deleteAsset(scope, asset.id)).toBe(true);
-        expect(await repository.deleteAsset(scope, asset.id)).toBe(false);
+        const cleanupJob = await repository.tombstoneAssetForCleanup(scope, asset.id);
+        expect(cleanupJob).toMatchObject({ assetId: asset.id });
+        expect(await repository.findAsset(scope, asset.id)).toBeNull();
+        expect(await repository.tombstoneAssetForCleanup(scope, asset.id)).toMatchObject({ assetId: asset.id });
+        const cleanupClaim = await repository.claimNextAssetCleanup("2026-07-13T12:02:00.000Z", 1_000);
+        expect(cleanupClaim).toMatchObject({ id: cleanupJob!.id, status: "processing", attemptCount: 1 });
+        const failedCleanup = await repository.failAssetCleanup({
+          scope,
+          jobId: cleanupClaim!.id,
+          claimToken: cleanupClaim!.claimToken!,
+          lastErrorCode: "STORAGE_DOWN",
+          nextAttemptAt: "2026-07-13T12:03:00.000Z"
+        });
+        expect(failedCleanup).toMatchObject({ status: "failed", claimToken: null });
+        expect(await repository.claimNextAssetCleanup("2026-07-13T12:02:59.999Z")).toBeNull();
+        const retryCleanup = await repository.claimNextAssetCleanup("2026-07-13T12:03:00.000Z");
+        expect(await repository.completeAssetCleanup({
+          scope,
+          jobId: retryCleanup!.id,
+          claimToken: retryCleanup!.claimToken!
+        })).toBe(true);
+        expect(await repository.findAssetIncludingDeleting(scope, asset.id)).toBeNull();
+        expect(await repository.listAssetCleanupJobs(scope)).toEqual([]);
       });
     });
 

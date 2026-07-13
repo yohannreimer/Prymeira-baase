@@ -670,6 +670,90 @@ const migrations: Migration[] = [{
     CREATE INDEX studio_collection_items_document_idx
       ON studio_collection_items (workspace_id, owner_profile_id, document_id);
   `
+}, {
+  version: 10,
+  name: "studio_asset_processing_hardening",
+  sql: `
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS final_url TEXT;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS extraction_status TEXT DEFAULT 'pending';
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS extracted_text TEXT;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS extraction_metadata JSONB DEFAULT '{}'::JSONB;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS attempt_count INTEGER DEFAULT 0;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS claim_token TEXT;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS lifecycle_status TEXT DEFAULT 'active';
+
+    ALTER TABLE studio_assets ALTER COLUMN object_key DROP NOT NULL;
+    ALTER TABLE studio_assets ALTER COLUMN mime_type DROP NOT NULL;
+    UPDATE studio_assets SET extraction_status='pending'
+      WHERE extraction_status IS NULL OR extraction_status='processing';
+    UPDATE studio_assets SET extraction_metadata='{}'::JSONB WHERE extraction_metadata IS NULL;
+    UPDATE studio_assets SET attempt_count=0 WHERE attempt_count IS NULL OR attempt_count < 0;
+    UPDATE studio_assets SET lifecycle_status='active' WHERE lifecycle_status IS NULL;
+    UPDATE studio_assets SET claim_token=NULL,lease_expires_at=NULL
+      WHERE extraction_status <> 'processing';
+    ALTER TABLE studio_assets ALTER COLUMN extraction_status SET DEFAULT 'pending';
+    ALTER TABLE studio_assets ALTER COLUMN extraction_status SET NOT NULL;
+    ALTER TABLE studio_assets ALTER COLUMN extraction_metadata SET DEFAULT '{}'::JSONB;
+    ALTER TABLE studio_assets ALTER COLUMN extraction_metadata SET NOT NULL;
+    ALTER TABLE studio_assets ALTER COLUMN attempt_count SET DEFAULT 0;
+    ALTER TABLE studio_assets ALTER COLUMN attempt_count SET NOT NULL;
+    ALTER TABLE studio_assets ALTER COLUMN lifecycle_status SET DEFAULT 'active';
+    ALTER TABLE studio_assets ALTER COLUMN lifecycle_status SET NOT NULL;
+    ALTER TABLE studio_assets DROP CONSTRAINT IF EXISTS studio_assets_extraction_status_check;
+    ALTER TABLE studio_assets ADD CONSTRAINT studio_assets_extraction_status_check
+      CHECK (extraction_status IN ('pending','processing','ready','failed'));
+    ALTER TABLE studio_assets DROP CONSTRAINT IF EXISTS studio_assets_attempt_count_check;
+    ALTER TABLE studio_assets ADD CONSTRAINT studio_assets_attempt_count_check CHECK (attempt_count >= 0);
+    ALTER TABLE studio_assets DROP CONSTRAINT IF EXISTS studio_assets_lifecycle_status_check;
+    ALTER TABLE studio_assets ADD CONSTRAINT studio_assets_lifecycle_status_check
+      CHECK (lifecycle_status IN ('active','deleting'));
+    ALTER TABLE studio_assets DROP CONSTRAINT IF EXISTS studio_assets_processing_lease_check;
+    ALTER TABLE studio_assets ADD CONSTRAINT studio_assets_processing_lease_check CHECK (
+      (extraction_status='processing' AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+      OR (extraction_status<>'processing' AND claim_token IS NULL AND lease_expires_at IS NULL)
+    );
+    ALTER TABLE studio_assets DROP CONSTRAINT IF EXISTS studio_assets_capture_storage_check;
+    ALTER TABLE studio_assets ADD CONSTRAINT studio_assets_capture_storage_check CHECK (
+      (kind='link_snapshot' AND object_key IS NULL AND source_url IS NOT NULL)
+      OR (kind<>'link_snapshot' AND object_key IS NOT NULL AND mime_type IS NOT NULL)
+    );
+
+    CREATE TABLE IF NOT EXISTS studio_asset_cleanup_jobs (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      asset_id TEXT,
+      object_key TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','failed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ,
+      last_error_code TEXT,
+      claim_token TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id),
+      CHECK (asset_id IS NOT NULL OR object_key IS NOT NULL),
+      CHECK (
+        (status='processing' AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR (status<>'processing' AND claim_token IS NULL AND lease_expires_at IS NULL)
+      )
+    );
+
+    DROP INDEX IF EXISTS studio_assets_processing_idx;
+    CREATE INDEX studio_assets_processing_idx
+      ON studio_assets (extraction_status, next_attempt_at, lease_expires_at, created_at)
+      WHERE lifecycle_status='active' AND extraction_status IN ('pending','processing','failed');
+    CREATE INDEX IF NOT EXISTS studio_asset_cleanup_jobs_claim_idx
+      ON studio_asset_cleanup_jobs (status, next_attempt_at, lease_expires_at, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_asset_cleanup_jobs_object_uidx
+      ON studio_asset_cleanup_jobs (workspace_id, owner_profile_id, object_key)
+      WHERE object_key IS NOT NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
