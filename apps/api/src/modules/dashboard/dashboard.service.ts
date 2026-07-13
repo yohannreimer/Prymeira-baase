@@ -7,6 +7,7 @@ import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../routi
 import type { TrainingAssignment, TrainingRepository } from "../trainings/training.types";
 import type { AnnouncementRepository } from "../announcements/announcement.types";
 import type { DashboardAreaMetric, DashboardAttentionItem, DashboardSummary, OperationalMetricItem, OperationalOverview, OperationalTrend } from "./dashboard.types";
+import { ApiError, forbiddenError } from "../../http/api-error";
 
 type DashboardRepositories = {
   companyRepository: CompanyRepository;
@@ -29,6 +30,10 @@ type OperationalOverviewInput = Pick<DashboardInput, "workspaceId" | "membership
   to: string;
 };
 
+type PersonOperationalOverviewInput = OperationalOverviewInput & {
+  profileId: string;
+};
+
 type DashboardServiceOptions = {
   now?: () => Date;
 };
@@ -38,7 +43,11 @@ const executedStatuses = new Set<TaskStatus>(["completed", "awaiting_approval"])
 export function createDashboardService(repositories: DashboardRepositories, options: DashboardServiceOptions = {}) {
   const now = options.now ?? (() => new Date());
 
-  return {
+  const service: {
+    readDashboard(input: DashboardInput): Promise<DashboardSummary>;
+    readOperationalOverview(input: OperationalOverviewInput): Promise<OperationalOverview>;
+    readPersonOperationalOverview(input: PersonOperationalOverviewInput): Promise<OperationalOverview>;
+  } = {
     async readDashboard(input: DashboardInput): Promise<DashboardSummary> {
       const [areas, people, processes, routines, trainings, assignments, attempts, tasks] = await Promise.all([
         repositories.companyRepository.listAreas(input.workspaceId),
@@ -121,7 +130,8 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const visibleTasks = tasks.filter((task) => canManageAreaResource(input.membership, taskAreaId(task, routineById)));
       const periodTasks = visibleTasks.filter((task) => isWithinPeriod(task.dueDate, input));
       const completedTasksInPeriod = visibleTasks.filter((task) => task.status === "completed" && isWithinPeriod(completionDate(task), input));
-      const trendTasks = [...new Map([...periodTasks, ...completedTasksInPeriod].map((task) => [task.id, task])).values()];
+      const decisionsInPeriod = visibleTasks.filter((task) => task.reviewedAt && isWithinPeriod(operationalDate(task.reviewedAt), input));
+      const trendTasks = [...new Map([...periodTasks, ...completedTasksInPeriod, ...decisionsInPeriod].map((task) => [task.id, task])).values()];
       const today = operationalToday(now());
       const lateTasks = periodTasks
         .filter((task) => task.dueDate < today && task.status !== "completed")
@@ -167,8 +177,37 @@ export function createDashboardService(repositories: DashboardRepositories, opti
           areas: buildOperationalTrends(trendTasks, visiblePeopleById, routineById, areaNames, "area", input)
         }
       };
+    },
+
+    async readPersonOperationalOverview(input: PersonOperationalOverviewInput): Promise<OperationalOverview> {
+      const person = await repositories.companyRepository.findTeamMember(input.workspaceId, input.profileId);
+      if (!person) throw new ApiError(404, "TEAM_MEMBER_NOT_FOUND", "Pessoa não encontrada.");
+      if (!canManageAreaResource(input.membership, person.areaId)) throw forbiddenError();
+
+      const overview = await service.readOperationalOverview(input);
+      const lateTasks = overview.lateTasks.filter((task) => task.profileId === person.id);
+      const awaitingApprovals = overview.awaitingApprovals.filter((task) => task.profileId === person.id);
+      const pendingRequiredAnnouncements = overview.pendingRequiredAnnouncements.filter((announcement) => announcement.profileId === person.id);
+
+      return {
+        ...overview,
+        metrics: {
+          lateTasks: lateTasks.length,
+          awaitingApprovals: awaitingApprovals.length,
+          pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
+        },
+        lateTasks,
+        awaitingApprovals,
+        pendingRequiredAnnouncements,
+        trends: {
+          people: overview.trends.people.filter((trend) => trend.profileId === person.id),
+          areas: overview.trends.areas.filter((trend) => trend.areaId === person.areaId)
+        }
+      };
     }
   };
+
+  return service;
 }
 
 function taskAreaId(task: TaskOccurrence, routineById: Map<string, CompanyRoutine>) {
@@ -254,7 +293,7 @@ function buildOperationalTrends(
     areaId: grouping === "person" ? profile?.areaId ?? areaId : areaId,
     areaName: areaId ? areaNames.get(areaId) ?? areaId : "Sem área",
     completionOnTimeRate: completionOnTimeRate(groupTasks, period),
-    averageApprovalDurationHours: averageApprovalDurationHours(groupTasks)
+    averageApprovalDurationHours: averageApprovalDurationHours(groupTasks, period)
   })).sort((left, right) => (left.profileName ?? left.areaName).localeCompare(right.profileName ?? right.areaName, "pt-BR"));
 }
 
@@ -269,9 +308,9 @@ function completionDate(task: TaskOccurrence) {
   return operationalDate(task.reviewedAt ?? task.submittedAt ?? task.updatedAt);
 }
 
-function averageApprovalDurationHours(tasks: TaskOccurrence[]) {
+function averageApprovalDurationHours(tasks: TaskOccurrence[], period: Pick<OperationalOverviewInput, "from" | "to">) {
   const durations = tasks.flatMap((task) => {
-    if (!task.submittedAt || !task.reviewedAt) return [];
+    if (!task.submittedAt || !task.reviewedAt || !isWithinPeriod(operationalDate(task.reviewedAt), period)) return [];
     return [(Date.parse(task.reviewedAt) - Date.parse(task.submittedAt)) / 3_600_000];
   });
   if (!durations.length) return null;

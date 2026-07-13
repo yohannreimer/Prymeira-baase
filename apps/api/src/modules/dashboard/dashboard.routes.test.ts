@@ -105,7 +105,7 @@ describe("dashboard routes", () => {
       expect.objectContaining({ id: fixture.announcementId, profileId: fixture.people.tech.id })
     ]));
     expect(owner.json().trends.people).toEqual(expect.arrayContaining([
-      expect.objectContaining({ profileId: fixture.people.tech.id, completionOnTimeRate: 50, averageApprovalDurationHours: 19.25 })
+      expect.objectContaining({ profileId: fixture.people.tech.id, completionOnTimeRate: 50, averageApprovalDurationHours: 15.17 })
     ]));
 
     const manager = await fixture.app.inject({
@@ -115,7 +115,7 @@ describe("dashboard routes", () => {
     });
 
     expect(manager.statusCode).toBe(200);
-    expect(manager.json().lateTasks).toEqual([expect.objectContaining({ areaId: fixture.areas.tech.id })]);
+    expect(manager.json().lateTasks).toEqual(expect.arrayContaining([expect.objectContaining({ areaId: fixture.areas.tech.id })]));
     expect(manager.json().lateTasks).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ title: "Atribuição externa do gestor" })
     ]));
@@ -157,6 +157,24 @@ describe("dashboard routes", () => {
     ]));
   });
 
+  it("uses São Paulo-local decision dates for approval duration", async () => {
+    const fixture = await buildOperationalOverviewApp();
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/operational-overview?from=2026-07-30&to=2026-07-30",
+      headers: fixture.headersFor("profile_owner")
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().trends.people).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        profileId: fixture.people.tech.id,
+        averageApprovalDurationHours: 10.75
+      })
+    ]));
+  });
+
   it("calculates days late using the injected São Paulo date", async () => {
     const fixture = await buildOperationalOverviewApp({ now: () => new Date("2026-07-12T02:30:00.000Z") });
 
@@ -181,6 +199,68 @@ describe("dashboard routes", () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+
+  it("returns a person's scoped operational overview for owners and the person's area manager", async () => {
+    const fixture = await buildOperationalOverviewApp();
+
+    const owner = await fixture.app.inject({
+      method: "GET",
+      url: `/people/${fixture.people.tech.id}/operational-overview?from=2026-07-01&to=2026-07-31`,
+      headers: fixture.headersFor("profile_owner")
+    });
+
+    expect(owner.statusCode).toBe(200);
+    expect(owner.json()).toMatchObject({
+      from: "2026-07-01",
+      to: "2026-07-31",
+      metrics: {
+        lateTasks: 2,
+        awaitingApprovals: 1,
+        pendingRequiredAnnouncements: 1
+      }
+    });
+    expect(owner.json().lateTasks).toEqual(expect.arrayContaining([expect.objectContaining({ assigneeProfileId: fixture.people.tech.id })]));
+    expect(owner.json().lateTasks).toHaveLength(2);
+    expect(owner.json().awaitingApprovals).toEqual([expect.objectContaining({ assigneeProfileId: fixture.people.tech.id })]);
+    expect(owner.json().pendingRequiredAnnouncements).toEqual([expect.objectContaining({ profileId: fixture.people.tech.id })]);
+    expect(owner.json().trends.people).toEqual([
+      expect.objectContaining({ profileId: fixture.people.tech.id, completionOnTimeRate: 50, averageApprovalDurationHours: 15.17 })
+    ]);
+
+    const manager = await fixture.app.inject({
+      method: "GET",
+      url: `/people/${fixture.people.tech.id}/operational-overview?from=2026-07-01&to=2026-07-31`,
+      headers: fixture.headersFor("profile_manager")
+    });
+    expect(manager.statusCode).toBe(200);
+    expect(manager.json().lateTasks).toEqual(expect.arrayContaining([expect.objectContaining({ areaId: fixture.areas.tech.id })]));
+  });
+
+  it("rejects person operational overview access outside the manager's area or without oversight permission", async () => {
+    const fixture = await buildOperationalOverviewApp();
+    const externalPersonUrl = `/people/${fixture.people.finance.id}/operational-overview?from=2026-07-01&to=2026-07-31`;
+
+    const manager = await fixture.app.inject({ method: "GET", url: externalPersonUrl, headers: fixture.headersFor("profile_manager") });
+    expect(manager.statusCode).toBe(403);
+
+    const employee = await fixture.app.inject({
+      method: "GET",
+      url: `/people/${fixture.people.tech.id}/operational-overview?from=2026-07-01&to=2026-07-31`,
+      headers: fixture.headersFor("profile_tech")
+    });
+    expect(employee.statusCode).toBe(403);
+  });
+
+  it("returns 404 when the person does not belong to the workspace", async () => {
+    const fixture = await buildOperationalOverviewApp();
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/people/person_missing/operational-overview?from=2026-07-01&to=2026-07-31",
+      headers: fixture.headersFor("profile_owner")
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 });
 
@@ -240,6 +320,7 @@ async function buildOperationalOverviewApp(options: { now?: () => Date } = {}) {
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Atribuição externa do gestor", areaId: financeArea.id, processId: null, assigneeProfileId: people.get("profile_manager")!.id, approvalMode: "direct", evidencePolicy: "optional", status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null, submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Concluída após vencimento fora do período", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "direct", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-29", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-30T12:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Concluída no limite de fuso", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-30", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-30T12:00:00.000Z", reviewedByProfileId: people.get("profile_manager")!.id, reviewedAt: "2026-07-31T02:30:00.000Z", reviewComment: null });
+  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Devolvida em decisão no período", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "needs_adjustment", dueDate: "2026-07-05", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-29T20:00:00.000Z", reviewedByProfileId: people.get("profile_manager")!.id, reviewedAt: "2026-07-30T03:00:00.000Z", reviewComment: "Ajuste a evidência." });
 
   const announcement = await announcementRepository.createAnnouncement({ workspaceId, title: "Leitura obrigatória", body: "Leia.", type: "simple", status: "published", requirement: "read_confirmation", audience: { type: "area", areaId: techArea.id }, relatedProcessId: null, relatedTrainingId: null, quizQuestions: [], createdByProfileId: people.get("profile_owner")!.id, publishedAt: "2026-07-01T08:00:00.000Z", archivedAt: null });
   await announcementRepository.upsertAnnouncementReceipt({ workspaceId, announcementId: announcement.id, profileId: tech.id, status: "pending", quizScore: null, passed: null, answers: [], readAt: "2026-07-01T09:00:00.000Z", confirmedAt: null, quizCompletedAt: null });

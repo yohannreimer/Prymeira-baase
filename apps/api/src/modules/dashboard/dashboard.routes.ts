@@ -18,6 +18,10 @@ const operationalOverviewQuerySchema = z.object({
   to: z.string().date()
 }).refine(({ from, to }) => from <= to, { message: "INVALID_PERIOD" });
 
+const personOperationalOverviewParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
 type DashboardRouteRepositories = {
   companyRepository: CompanyRepository;
   processRepository: ProcessRepository;
@@ -55,6 +59,21 @@ export async function registerDashboardRoutes(app: FastifyInstance, repositories
     return service.readOperationalOverview({
       workspaceId: context.workspaceId,
       membership: requireOperationalMembership(request),
+      from: query.from,
+      to: query.to
+    });
+  });
+
+  app.get("/people/:id/operational-overview", async (request) => {
+    const context = readRequestContext(request);
+    if (context.role === "employee") throw forbiddenError();
+    const params = personOperationalOverviewParamsSchema.parse(request.params);
+    const query = operationalOverviewQuerySchema.parse(request.query);
+
+    return service.readPersonOperationalOverview({
+      workspaceId: context.workspaceId,
+      membership: requireOperationalMembership(request),
+      profileId: params.id,
       from: query.from,
       to: query.to
     });
