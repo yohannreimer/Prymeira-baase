@@ -313,7 +313,10 @@ function repositoryContract(
           name: "Privada"
         });
 
-        expect(await repository.listCollections(scope)).toEqual([strategy, decisions]);
+        const orderedCollections = [strategy, decisions].sort((left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+        );
+        expect(await repository.listCollections(scope)).toEqual(orderedCollections);
         expect(await repository.findCollection(
           { workspaceId: "workspace_a", ownerProfileId: "owner_b" },
           strategy.id
@@ -335,7 +338,7 @@ function repositoryContract(
           documentId: document.id
         });
         expect((await repository.listDocumentCollections(scope, document.id)).map((item) => item.id))
-          .toEqual([strategy.id, decisions.id]);
+          .toEqual(orderedCollections.map((item) => item.id));
 
         await expect(repository.addCollectionMembership({
           ...scope,
@@ -376,6 +379,80 @@ function repositoryContract(
           ownerProfileId: "owner_b",
           name: "Vazada"
         })).rejects.toThrow("STUDIO_COLLECTION_NOT_FOUND");
+      });
+    });
+
+    it("searches the complete active owner corpus with deterministic lexical ranking", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const exactTitle = await repository.createDocument(documentInput({
+          title: "EXPANSÃO",
+          bodyText: "Plano principal"
+        }));
+        const bodyMatch = await repository.createDocument(documentInput({
+          title: "Reflexão",
+          bodyText: "Talvez expansa\u0303o sustentável"
+        }));
+        await repository.createDocument(documentInput({
+          title: "Expansão arquivada",
+          bodyText: "expansao",
+          status: "archived"
+        }));
+        await repository.createDocument(documentInput({
+          ownerProfileId: "owner_b",
+          title: "Expansão privada",
+          bodyText: "expansao"
+        }));
+
+        const results = await repository.searchDocuments(ownerScope, {
+          query: "expansao",
+          limit: 10
+        });
+        expect(results.map((item) => item.id)).toEqual([exactTitle.id, bodyMatch.id]);
+        expect(results.every((item) => !Object.hasOwn(item, "bodyJson"))).toBe(true);
+
+        await repository.updateDocument({
+          ...exactTitle,
+          title: "Outro assunto",
+          bodyText: "Sem o termo procurado"
+        }, exactTitle.revision);
+        expect((await repository.searchDocuments(ownerScope, {
+          query: "expansao",
+          limit: 10
+        })).map((item) => item.id)).toEqual([bodyMatch.id]);
+      });
+    });
+
+    it("projects bounded home lists and an exact active pending-review count", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const active = [];
+        for (let index = 0; index < 12; index += 1) {
+          active.push(await repository.createDocument(documentInput({
+            bodyText: `Documento ${index}`,
+            isFocused: index < 3,
+            inboxState: index < 4 ? "reviewed" : "pending_review"
+          })));
+        }
+        await repository.createDocument(documentInput({
+          bodyText: "Arquivado",
+          isFocused: true,
+          status: "archived"
+        }));
+        await repository.createDocument(documentInput({
+          ownerProfileId: "owner_b",
+          bodyText: "Privado"
+        }));
+
+        const expectedAll = await repository.listDocuments(ownerScope, {
+          status: "active",
+          limit: 100
+        });
+        expect(await repository.listRecentDocuments(ownerScope, 10)).toEqual(expectedAll.items.slice(0, 10));
+        expect((await repository.listFocusedDocuments(ownerScope, 10)).map((item) => item.id))
+          .toEqual(expectedAll.items.filter((item) => item.isFocused).map((item) => item.id));
+        expect(await repository.countPendingReviewDocuments(ownerScope)).toBe(8);
+        expect(active).toHaveLength(12);
       });
     });
   });
@@ -454,6 +531,28 @@ describe("in-memory StudioRepository clock behavior", () => {
       "2026-07-13T12:00:00.002Z"
     ]);
     expect(versions[1]!.createdAt >= updated.updatedAt).toBe(true);
+  });
+
+  it("orders equal-timestamp collections by id in lists and document context", async () => {
+    const fixedTimestamp = "2026-07-13T12:00:00.000Z";
+    const repository = createInMemoryStudioRepository({ now: () => fixedTimestamp });
+    const ownerScope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const document = await repository.createDocument(documentInput());
+    const collections = [];
+    for (let index = 0; index < 8; index += 1) {
+      const collection = await repository.createCollection({ ...ownerScope, name: `Coleção ${index}` });
+      collections.push(collection);
+      await repository.addCollectionMembership({
+        ...ownerScope,
+        collectionId: collection.id,
+        documentId: document.id
+      });
+    }
+    const expectedIds = collections.map((item) => item.id).sort((left, right) => left.localeCompare(right));
+
+    expect((await repository.listCollections(ownerScope)).map((item) => item.id)).toEqual(expectedIds);
+    expect((await repository.listDocumentCollections(ownerScope, document.id)).map((item) => item.id))
+      .toEqual(expectedIds);
   });
 });
 

@@ -109,6 +109,49 @@ describe("StudioService documents", () => {
     expect(home).not.toHaveProperty("kpis");
   });
 
+  it("reads home through bounded projections without paginating document bodies", async () => {
+    const repository = createInMemoryStudioRepository();
+    const setup = createStudioService(repository);
+    const focused = await setup.createDocument(scope, "owner_a", documentInput("Foco"));
+    const reviewed = await setup.createDocument(scope, "owner_a", documentInput("Revisado"));
+    await setup.setFocused(scope, "owner_a", focused.id, true);
+    await setup.updateDocument(scope, "owner_a", reviewed.id, {
+      revision: reviewed.revision,
+      inbox_state: "reviewed"
+    });
+    let recentCalls = 0;
+    let focusedCalls = 0;
+    let countCalls = 0;
+    const instrumented = {
+      ...repository,
+      async listDocuments() {
+        throw new Error("FULL_DOCUMENT_PAGINATION_CALLED");
+      },
+      async listRecentDocuments(ownerScope: typeof scope, limit: number) {
+        recentCalls += 1;
+        return repository.listRecentDocuments(ownerScope, limit);
+      },
+      async listFocusedDocuments(ownerScope: typeof scope, limit: number) {
+        focusedCalls += 1;
+        return repository.listFocusedDocuments(ownerScope, limit);
+      },
+      async countPendingReviewDocuments(ownerScope: typeof scope) {
+        countCalls += 1;
+        return repository.countPendingReviewDocuments(ownerScope);
+      }
+    };
+
+    const home = await createStudioService(instrumented).readHome(scope);
+    expect(home.focusedDocuments.map((item) => item.id)).toEqual([focused.id]);
+    expect(new Set(home.recentDocuments.map((item) => item.id))).toEqual(new Set([focused.id, reviewed.id]));
+    expect(home.pendingReviewCount).toBe(1);
+    expect({ recentCalls, focusedCalls, countCalls }).toEqual({
+      recentCalls: 1,
+      focusedCalls: 1,
+      countCalls: 1
+    });
+  });
+
   it("paginates by cursor and filters lifecycle status", async () => {
     const service = createService();
     const first = await service.createDocument(scope, "owner_a", documentInput("A"));
@@ -145,6 +188,54 @@ describe("StudioService documents", () => {
     await expect(service.createDocument(scope, "owner_b", documentInput()))
       .rejects.toThrow("STUDIO_ACTOR_SCOPE_MISMATCH");
   });
+
+  it("rejects future and stale revisions before a snapshot can overwrite newer content", async () => {
+    const service = createService();
+    const original = await service.createDocument(scope, "owner_a", documentInput("Original"));
+
+    await expect(service.updateDocument(scope, "owner_a", original.id, {
+      revision: original.revision + 100,
+      body_text: "Future overwrite"
+    })).rejects.toThrow("STUDIO_DOCUMENT_STALE");
+    const current = await service.updateDocument(scope, "owner_a", original.id, {
+      revision: original.revision,
+      body_text: "Current write"
+    });
+    await expect(service.updateDocument(scope, "owner_a", original.id, {
+      revision: original.revision,
+      body_text: "Stale overwrite"
+    })).rejects.toThrow("STUDIO_DOCUMENT_STALE");
+
+    expect(await service.getDocument(scope, original.id)).toMatchObject({
+      bodyText: "Current write",
+      revision: current.revision
+    });
+    expect((await service.listVersions(scope, original.id)).map((item) => item.bodyText))
+      .toEqual(["Original", "Current write"]);
+  });
+
+  it("makes concurrent identical archive, restore, and focus transitions idempotent", async () => {
+    const service = createService();
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+
+    const archived = await Promise.all([
+      service.archiveDocument(scope, "owner_a", document.id),
+      service.archiveDocument(scope, "owner_a", document.id)
+    ]);
+    expect(archived.every((item) => item.status === "archived")).toBe(true);
+
+    const restored = await Promise.all([
+      service.restoreDocument(scope, "owner_a", document.id),
+      service.restoreDocument(scope, "owner_a", document.id)
+    ]);
+    expect(restored.every((item) => item.status === "active" && item.archivedAt === null)).toBe(true);
+
+    const focused = await Promise.all([
+      service.setFocused(scope, "owner_a", document.id, true),
+      service.setFocused(scope, "owner_a", document.id, true)
+    ]);
+    expect(focused.every((item) => item.isFocused)).toBe(true);
+  });
 });
 
 describe("StudioService collections", () => {
@@ -176,8 +267,11 @@ describe("StudioService collections", () => {
     expect(await service.addDocumentToCollection(scope, "owner_a", strategy.id, document.id))
       .toEqual(firstMembership);
     await service.addDocumentToCollection(scope, "owner_a", decisions.id, document.id);
+    const expectedCollectionIds = [strategy, decisions]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      .map((item) => item.id);
     expect((await repository.listDocumentCollections(scope, document.id)).map((item) => item.id))
-      .toEqual([strategy.id, decisions.id]);
+      .toEqual(expectedCollectionIds);
 
     expect(await service.removeDocumentFromCollection(scope, "owner_a", strategy.id, document.id))
       .toBe(true);
@@ -227,5 +321,42 @@ describe("StudioService lexical search", () => {
     });
     expect(results.every((item) => item.excerpt.length <= 240)).toBe(true);
     expect(await service.search(scope, "   ", 10)).toEqual([]);
+  });
+
+  it("searches beyond one thousand newer active documents", async () => {
+    let timestamp = Date.parse("2026-07-13T12:00:00.000Z");
+    const repository = createInMemoryStudioRepository({
+      now: () => new Date(timestamp++).toISOString()
+    });
+    const service = createStudioService(repository);
+    const oldestExact = await service.createDocument(scope, "owner_a", {
+      ...documentInput("Registro histórico"),
+      title: "Agulha"
+    });
+    for (let index = 0; index < 1_001; index += 1) {
+      await service.createDocument(
+        scope,
+        "owner_a",
+        documentInput(`Documento recente ${index} menciona agulha`)
+      );
+    }
+
+    expect((await service.search(scope, "agulha", 1))[0]?.documentId).toBe(oldestExact.id);
+  });
+
+  it("maps folded Unicode matches back to the original excerpt offsets", async () => {
+    const service = createService();
+    const decomposedPrefix = `${"a\u0301".repeat(300)} `;
+    const decomposedMatch = "expansa\u0303o";
+    const document = await service.createDocument(scope, "owner_a", {
+      ...documentInput(`${decomposedPrefix}${decomposedMatch} sustentável`),
+      title: "Unicode"
+    });
+
+    const result = await service.search(scope, "expansão", 10);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ documentId: document.id });
+    expect(result[0]!.excerpt).toContain(decomposedMatch);
+    expect(result[0]!.excerpt.length).toBeLessThanOrEqual(240);
   });
 });

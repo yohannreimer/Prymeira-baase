@@ -80,6 +80,36 @@ describe("operational schema", () => {
       "studio_collections",
       "studio_collection_items"
     ]));
+    const searchColumn = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_documents' and column_name='search_tokens'`
+    );
+    expect(searchColumn.rows).toEqual([{ column_name: "search_tokens" }]);
+  });
+
+  it("keeps the owner Studio lexical GIN index in migration 9", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() {
+            client.release();
+          }
+        };
+      }
+    };
+
+    await ensureOperationalSchema(observedPool);
+
+    const migrationSql = statements.join("\n").toLowerCase();
+    expect(migrationSql).toContain("create index studio_documents_owner_search_idx");
+    expect(migrationSql).toContain("using gin");
+    expect(migrationSql).toContain("search_tokens");
   });
 
   it("rejects Studio assets that reference a document in another owner scope", async () => {

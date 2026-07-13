@@ -6,6 +6,7 @@ import type {
   StudioDocumentVersion,
   StudioRepository
 } from "./studio.types";
+import { studioSearchScore } from "./studio-search";
 
 type InMemoryStudioRepositoryOptions = {
   now?: () => string;
@@ -48,6 +49,10 @@ function nextTimestamp(now: () => string, previousTimestamp: string) {
 function compareDocuments(left: StudioDocument, right: StudioDocument) {
   const timestampOrder = right.updatedAt.localeCompare(left.updatedAt);
   return timestampOrder || right.id.localeCompare(left.id);
+}
+
+function compareCollections(left: StudioCollection, right: StudioCollection) {
+  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
 function isAfterCursor(document: StudioDocument, cursor: DocumentCursor) {
@@ -236,10 +241,61 @@ export function createInMemoryStudioRepository(
       return appendStoredVersion(input);
     },
 
+    async searchDocuments(scope, input) {
+      return documents
+        .filter((document) => document.workspaceId === scope.workspaceId)
+        .filter((document) => document.ownerProfileId === scope.ownerProfileId)
+        .filter((document) => document.status === "active")
+        .map((document) => ({ document, score: studioSearchScore(document, input.query) }))
+        .filter((item): item is { document: StudioDocument; score: number } => item.score !== null)
+        .sort((left, right) =>
+          right.score - left.score
+          || right.document.updatedAt.localeCompare(left.document.updatedAt)
+          || left.document.id.localeCompare(right.document.id)
+        )
+        .slice(0, input.limit)
+        .map(({ document }) => ({
+          id: document.id,
+          title: document.title,
+          bodyText: document.bodyText,
+          updatedAt: document.updatedAt
+        }));
+    },
+
+    async listRecentDocuments(scope, limit) {
+      return documents
+        .filter((document) => document.workspaceId === scope.workspaceId)
+        .filter((document) => document.ownerProfileId === scope.ownerProfileId)
+        .filter((document) => document.status === "active")
+        .sort(compareDocuments)
+        .slice(0, limit)
+        .map(cloneDocument);
+    },
+
+    async listFocusedDocuments(scope, limit) {
+      return documents
+        .filter((document) => document.workspaceId === scope.workspaceId)
+        .filter((document) => document.ownerProfileId === scope.ownerProfileId)
+        .filter((document) => document.status === "active" && document.isFocused)
+        .sort(compareDocuments)
+        .slice(0, limit)
+        .map(cloneDocument);
+    },
+
+    async countPendingReviewDocuments(scope) {
+      return documents.filter((document) =>
+        document.workspaceId === scope.workspaceId
+        && document.ownerProfileId === scope.ownerProfileId
+        && document.status === "active"
+        && document.inboxState === "pending_review"
+      ).length;
+    },
+
     async listCollections(scope) {
       return collections
         .filter((collection) => collection.workspaceId === scope.workspaceId)
         .filter((collection) => collection.ownerProfileId === scope.ownerProfileId)
+        .sort(compareCollections)
         .map(cloneCollection);
     },
 
@@ -352,6 +408,7 @@ export function createInMemoryStudioRepository(
         .filter((collection) => collection.workspaceId === scope.workspaceId)
         .filter((collection) => collection.ownerProfileId === scope.ownerProfileId)
         .filter((collection) => collectionIds.has(collection.id))
+        .sort(compareCollections)
         .map(cloneCollection);
     }
   };

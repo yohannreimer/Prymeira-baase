@@ -96,6 +96,16 @@ export type StudioCollectionMembership = StudioOwnerScope & {
 
 export type StudioSearchCollection = Pick<StudioCollection, "id" | "name">;
 
+export type StudioSearchDocument = Pick<
+  StudioDocument,
+  "id" | "title" | "bodyText" | "updatedAt"
+>;
+
+export type StudioLexicalSearchQuery = {
+  query: string;
+  limit: number;
+};
+
 export type StudioSearchResult = {
   documentId: string;
   title: string | null;
@@ -130,6 +140,10 @@ export type StudioRepository = {
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;
+  searchDocuments(scope: StudioOwnerScope, input: StudioLexicalSearchQuery): Promise<StudioSearchDocument[]>;
+  listRecentDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;
+  listFocusedDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;
+  countPendingReviewDocuments(scope: StudioOwnerScope): Promise<number>;
   listCollections(scope: StudioOwnerScope): Promise<StudioCollection[]>;
   findCollection(scope: StudioOwnerScope, collectionId: string): Promise<StudioCollection | null>;
   createCollection(input: StudioOwnerScope & CreateStudioCollection): Promise<StudioCollection>;

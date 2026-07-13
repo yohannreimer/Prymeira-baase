@@ -17,8 +17,8 @@ type StudioServiceOptions = {
   now?: () => string;
 };
 
-const HOME_PAGE_SIZE = 100;
 const HOME_DOCUMENT_LIMIT = 10;
+const DESIRED_STATE_UPDATE_ATTEMPTS = 3;
 
 function assertActor(scope: StudioOwnerScope, actorProfileId: string) {
   if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
@@ -62,6 +62,28 @@ async function requireCollection(
   return collection;
 }
 
+async function applyDesiredDocumentState(
+  repository: StudioRepository,
+  scope: StudioOwnerScope,
+  id: string,
+  isDesired: (document: StudioDocument) => boolean,
+  buildUpdate: (document: StudioDocument) => StudioDocument
+) {
+  for (let attempt = 0; attempt < DESIRED_STATE_UPDATE_ATTEMPTS; attempt += 1) {
+    const current = await requireDocument(repository, scope, id);
+    if (isDesired(current)) return current;
+    try {
+      return await repository.updateDocument(buildUpdate(current), current.revision);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "STUDIO_DOCUMENT_STALE") throw error;
+    }
+  }
+
+  const current = await requireDocument(repository, scope, id);
+  if (isDesired(current)) return current;
+  throw new Error("STUDIO_DOCUMENT_STALE");
+}
+
 export function createStudioService(
   repository: StudioRepository,
   options: StudioServiceOptions = {}
@@ -70,30 +92,11 @@ export function createStudioService(
 
   return {
     async readHome(scope): Promise<StudioHome> {
-      const recentDocuments: StudioDocument[] = [];
-      const focusedDocuments: StudioDocument[] = [];
-      const seenCursors = new Set<string>();
-      let pendingReviewCount = 0;
-      let cursor: string | undefined;
-
-      while (true) {
-        const page = await repository.listDocuments(scope, {
-          cursor,
-          limit: HOME_PAGE_SIZE,
-          status: "active"
-        });
-        for (const document of page.items) {
-          if (recentDocuments.length < HOME_DOCUMENT_LIMIT) recentDocuments.push(document);
-          if (document.isFocused && focusedDocuments.length < HOME_DOCUMENT_LIMIT) {
-            focusedDocuments.push(document);
-          }
-          if (document.inboxState === "pending_review") pendingReviewCount += 1;
-        }
-        if (!page.nextCursor) break;
-        if (seenCursors.has(page.nextCursor)) throw new Error("STUDIO_DOCUMENT_PAGINATION_INVALID");
-        seenCursors.add(page.nextCursor);
-        cursor = page.nextCursor;
-      }
+      const [recentDocuments, focusedDocuments, pendingReviewCount] = await Promise.all([
+        repository.listRecentDocuments(scope, HOME_DOCUMENT_LIMIT),
+        repository.listFocusedDocuments(scope, HOME_DOCUMENT_LIMIT),
+        repository.countPendingReviewDocuments(scope)
+      ]);
 
       return {
         recentDocuments,
@@ -128,6 +131,7 @@ export function createStudioService(
     async updateDocument(scope, actorProfileId, id, input: UpdateStudioDocument) {
       assertActor(scope, actorProfileId);
       const current = await requireDocument(repository, scope, id);
+      if (input.revision !== current.revision) throw new Error("STUDIO_DOCUMENT_STALE");
       return repository.updateDocument({
         ...current,
         title: input.title === undefined ? current.title : input.title,
@@ -140,36 +144,44 @@ export function createStudioService(
         captureMode: input.capture_mode ?? current.captureMode,
         inboxState: input.inbox_state ?? current.inboxState,
         isFocused: input.is_focused ?? current.isFocused
-      }, input.revision);
+      }, current.revision);
     },
 
     async archiveDocument(scope, actorProfileId, id) {
       assertActor(scope, actorProfileId);
-      const current = await requireDocument(repository, scope, id);
-      if (current.status === "archived") return current;
-      return repository.updateDocument({
-        ...current,
-        status: "archived",
-        archivedAt: currentTimestamp(clock)
-      }, current.revision);
+      return applyDesiredDocumentState(
+        repository,
+        scope,
+        id,
+        (document) => document.status === "archived",
+        (document) => ({
+          ...document,
+          status: "archived",
+          archivedAt: currentTimestamp(clock)
+        })
+      );
     },
 
     async restoreDocument(scope, actorProfileId, id) {
       assertActor(scope, actorProfileId);
-      const current = await requireDocument(repository, scope, id);
-      if (current.status === "active") return current;
-      return repository.updateDocument({
-        ...current,
-        status: "active",
-        archivedAt: null
-      }, current.revision);
+      return applyDesiredDocumentState(
+        repository,
+        scope,
+        id,
+        (document) => document.status === "active" && document.archivedAt === null,
+        (document) => ({ ...document, status: "active", archivedAt: null })
+      );
     },
 
     async setFocused(scope, actorProfileId, id, focused) {
       assertActor(scope, actorProfileId);
-      const current = await requireDocument(repository, scope, id);
-      if (current.isFocused === focused) return current;
-      return repository.updateDocument({ ...current, isFocused: focused }, current.revision);
+      return applyDesiredDocumentState(
+        repository,
+        scope,
+        id,
+        (document) => document.isFocused === focused,
+        (document) => ({ ...document, isFocused: focused })
+      );
     },
 
     async listVersions(scope, id) {

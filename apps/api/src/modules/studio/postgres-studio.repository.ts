@@ -6,8 +6,10 @@ import type {
   StudioDocumentStatus,
   StudioDocumentVersion,
   StudioRepository,
-  StudioOwnerScope
+  StudioOwnerScope,
+  StudioSearchDocument
 } from "./studio.types";
+import { studioSearchTokens } from "./studio-search";
 import {
   generatedId,
   iso,
@@ -70,6 +72,18 @@ type DocumentCursor = {
   id: string;
 };
 
+type StudioSearchDocumentRow = Pick<
+  StudioDocumentRow,
+  "id" | "title" | "body_text" | "updated_at"
+>;
+
+const studioSearchAccentCharacters = "áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ";
+const studioSearchAsciiCharacters = "aaaaaeeeeiiiiooooouuuucaaaaaeeeeiiiiooooouuuuc";
+
+function foldedSearchSql(expression: string) {
+  return `translate(lower(normalize(${expression})),'${studioSearchAccentCharacters}','${studioSearchAsciiCharacters}')`;
+}
+
 function documentFromRow(row: StudioDocumentRow): StudioDocument {
   return {
     id: row.id,
@@ -124,6 +138,15 @@ function membershipFromRow(row: StudioCollectionMembershipRow): StudioCollection
     collectionId: row.collection_id,
     documentId: row.document_id,
     createdAt: iso(row.created_at)
+  };
+}
+
+function searchDocumentFromRow(row: StudioSearchDocumentRow): StudioSearchDocument {
+  return {
+    id: row.id,
+    title: row.title,
+    bodyText: row.body_text,
+    updatedAt: iso(row.updated_at)
   };
 }
 
@@ -253,10 +276,12 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async createDocument(input) {
       return withOperationalTransaction(db, async (client) => {
+        const searchTokens = studioSearchTokens(`${input.title ?? ""} ${input.bodyText}`);
         const result = await client.query<StudioDocumentRow>(
           `INSERT INTO studio_documents
-             (id,workspace_id,owner_profile_id,title,body_json,body_text,capture_mode,inbox_state,is_focused,status)
-           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10)
+             (id,workspace_id,owner_profile_id,title,body_json,body_text,search_tokens,
+              capture_mode,inbox_state,is_focused,status)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::text[],$8,$9,$10,$11)
            RETURNING *`,
           [
             generatedId("studio_document"),
@@ -265,6 +290,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             input.title,
             JSON.stringify(input.bodyJson),
             input.bodyText,
+            searchTokens,
             input.captureMode,
             input.inboxState,
             input.isFocused,
@@ -288,12 +314,13 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async updateDocument(document, expectedRevision) {
       return withOperationalTransaction(db, async (client) => {
+        const searchTokens = studioSearchTokens(`${document.title ?? ""} ${document.bodyText}`);
         const result = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET
-             title=$4,body_json=$5::jsonb,body_text=$6,capture_mode=$7,
-             inbox_state=$8,is_focused=$9,status=$10,archived_at=$11,
+             title=$4,body_json=$5::jsonb,body_text=$6,search_tokens=$7::text[],capture_mode=$8,
+             inbox_state=$9,is_focused=$10,status=$11,archived_at=$12,
              revision=revision+1,updated_at=NOW()
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$12
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$13
            RETURNING *`,
           [
             document.workspaceId,
@@ -302,6 +329,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             document.title,
             JSON.stringify(document.bodyJson),
             document.bodyText,
+            searchTokens,
             document.captureMode,
             document.inboxState,
             document.isFocused,
@@ -352,11 +380,67 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       });
     },
 
+    async searchDocuments(scope, input) {
+      const foldedTitle = foldedSearchSql("COALESCE(title,'')");
+      const foldedBody = foldedSearchSql("body_text");
+      const searchTokens = studioSearchTokens(input.query);
+      const result = await db.query<StudioSearchDocumentRow>(
+        `SELECT id,title,body_text,updated_at,
+           (CASE
+              WHEN ${foldedTitle}=$4 THEN 400
+              WHEN ${foldedTitle} LIKE $4 || '%' THEN 300
+              WHEN ${foldedTitle} LIKE '%' || $4 || '%' THEN 200
+              ELSE 0
+            END
+            + CASE WHEN ${foldedBody} LIKE '%' || $4 || '%' THEN 100 ELSE 0 END) AS search_score
+         FROM studio_documents
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND status='active'
+           AND search_tokens @> $3::text[]
+         ORDER BY search_score DESC,date_trunc('milliseconds',updated_at) DESC,id ASC
+         LIMIT $5`,
+        [scope.workspaceId, scope.ownerProfileId, searchTokens, input.query, input.limit]
+      );
+      return result.rows.map(searchDocumentFromRow);
+    },
+
+    async listRecentDocuments(scope, limit) {
+      const result = await db.query<StudioDocumentRow>(
+        `SELECT * FROM studio_documents
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND status='active'
+         ORDER BY date_trunc('milliseconds',updated_at) DESC,id DESC
+         LIMIT $3`,
+        [scope.workspaceId, scope.ownerProfileId, limit]
+      );
+      return result.rows.map(documentFromRow);
+    },
+
+    async listFocusedDocuments(scope, limit) {
+      const result = await db.query<StudioDocumentRow>(
+        `SELECT * FROM studio_documents
+         WHERE workspace_id=$1 AND owner_profile_id=$2
+           AND status='active' AND is_focused=TRUE
+         ORDER BY date_trunc('milliseconds',updated_at) DESC,id DESC
+         LIMIT $3`,
+        [scope.workspaceId, scope.ownerProfileId, limit]
+      );
+      return result.rows.map(documentFromRow);
+    },
+
+    async countPendingReviewDocuments(scope) {
+      const result = await db.query<{ count: string | number }>(
+        `SELECT COUNT(*) AS count FROM studio_documents
+         WHERE workspace_id=$1 AND owner_profile_id=$2
+           AND status='active' AND inbox_state='pending_review'`,
+        [scope.workspaceId, scope.ownerProfileId]
+      );
+      return Number(result.rows[0]?.count ?? 0);
+    },
+
     async listCollections(scope) {
       const result = await db.query<StudioCollectionRow>(
         `SELECT * FROM studio_collections
          WHERE workspace_id=$1 AND owner_profile_id=$2
-         ORDER BY created_at ASC,id ASC`,
+         ORDER BY date_trunc('milliseconds',created_at) ASC,id ASC`,
         [scope.workspaceId, scope.ownerProfileId]
       );
       return result.rows.map(collectionFromRow);
@@ -464,7 +548,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           AND item.owner_profile_id=collection.owner_profile_id
           AND item.collection_id=collection.id
          WHERE item.workspace_id=$1 AND item.owner_profile_id=$2 AND item.document_id=$3
-         ORDER BY collection.created_at ASC,collection.id ASC`,
+         ORDER BY date_trunc('milliseconds',collection.created_at) ASC,collection.id ASC`,
         [scope.workspaceId, scope.ownerProfileId, documentId]
       );
       return result.rows.map(collectionFromRow);

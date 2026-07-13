@@ -117,9 +117,49 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "studio_documents_owner_inbox_state_idx",
         "studio_documents_owner_focused_idx",
         "studio_documents_owner_status_idx",
+        "studio_documents_owner_search_idx",
         "studio_assets_document_idx",
         "studio_collection_items_collection_idx"
       ]));
+    });
+  });
+
+  it("creates and plans against the Studio lexical GIN index", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      const index = await pool.query<{ indexdef: string }>(
+        `select indexdef from pg_indexes
+         where schemaname=current_schema() and indexname='studio_documents_owner_search_idx'`
+      );
+      expect(index.rows[0]?.indexdef.toLowerCase()).toContain("using gin");
+      expect(index.rows[0]?.indexdef.toLowerCase()).toContain("search_tokens");
+
+      await pool.query(
+        `insert into studio_documents
+          (id,workspace_id,owner_profile_id,body_json,body_text,search_tokens,capture_mode)
+         select
+           'search_document_' || sequence,
+           'workspace_a',
+           'owner_a',
+           '{}'::jsonb,
+           case when sequence=2000 then 'expansao sustentavel' else 'conteudo comum ' || sequence end,
+           case when sequence=2000
+             then array['expansao','sustentavel']::text[]
+             else array['conteudo','comum',sequence::text]::text[]
+           end,
+           'text'
+         from generate_series(1,2000) as sequence`
+      );
+      await pool.query("analyze studio_documents");
+      await pool.query("set enable_seqscan=off");
+      const explained = await pool.query<{ "QUERY PLAN": string }>(
+        `explain (format text)
+         select id from studio_documents
+         where workspace_id='workspace_a' and owner_profile_id='owner_a' and status='active'
+           and search_tokens @> array['expansao']::text[]`
+      );
+      expect(explained.rows.map((row) => row["QUERY PLAN"]).join("\n"))
+        .toContain("studio_documents_owner_search_idx");
     });
   });
 
