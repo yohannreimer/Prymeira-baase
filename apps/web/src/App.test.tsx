@@ -1226,6 +1226,44 @@ describe("Baase React app shell", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_late_1", expect.objectContaining({ headers: expect.anything() }));
   });
 
+  it("opens the manager's selected operational task by its exact ID", async () => {
+    const overview = {
+      from: "2026-07-01",
+      to: "2026-07-07",
+      metrics: { lateTasks: 1, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 },
+      lateTasks: [{
+        id: "task_manager_selected",
+        profileId: "profile_bruno",
+        assigneeProfileId: "profile_bruno",
+        profileName: "Bruno Costa",
+        areaId: "area_design",
+        areaName: "Criação",
+        title: "Revisar entrega do gestor",
+        dueDate: "2026-07-04",
+        daysLate: 3
+      }],
+      openTasks: [],
+      awaitingApprovals: [],
+      pendingRequiredAnnouncements: [],
+      trends: { people: [], areas: [] }
+    };
+    const fetchMock = mockLoadedWorkspace({
+      "/api/me": {
+        workspace: { id: "workspace_a", name: "Holand" },
+        profile: { id: "profile_manager", role: "manager", display_name: "Yohann Reimer", initials: "YR", area_name: "Criação" },
+        home_route: "/painel-gestor"
+      },
+      "/api/operational-overview?from=2026-07-01&to=2026-07-07": overview,
+      "/api/tasks/task_manager_selected": { task: { id: "task_manager_selected", title: "Revisar entrega do gestor", status: "pending", dueDate: "2026-07-04" } }
+    });
+
+    render(<App initialRole="gestor" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Abrir tarefa: Revisar entrega do gestor" }));
+    expect(await screen.findByRole("dialog", { name: "Detalhes da tarefa" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_manager_selected", expect.objectContaining({ headers: expect.anything() }));
+  });
+
   it("paginates nominal lists and opens the exact pending announcement", async () => {
     const lateTasks = Array.from({ length: 6 }, (_, index) => ({
       id: `task_${index + 1}`,

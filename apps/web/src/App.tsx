@@ -3426,8 +3426,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 onSelectPreset={selectOperationalPeriod}
                 onApplyCustomPeriod={applyCustomOperationalPeriod}
                 onOpenPerson={openOperationalPerson}
-                onOpenTask={() => go("hoje")}
-                onOpenAnnouncement={() => go("comunicados")}
+                onOpenTask={openOperationalTask}
+                onOpenAnnouncement={openOperationalAnnouncement}
               />
               <ManagerDashboard
                 identity={identity}
