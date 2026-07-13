@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BAASE_PRODUCT_KEY,
+  canAccessOwnerStudio,
   canApproveTask,
   canEditCompanyBase,
   canExecuteTask,
@@ -44,5 +45,13 @@ describe("Baase roles", () => {
     expect(canManageKnowledge("owner")).toBe(true);
     expect(canManageKnowledge("manager")).toBe(true);
     expect(canManageKnowledge("employee")).toBe(false);
+  });
+
+  it.each([
+    ["owner", true],
+    ["manager", false],
+    ["employee", false]
+  ] as const)("returns Studio access for %s", (role, expected) => {
+    expect(canAccessOwnerStudio(role)).toBe(expected);
   });
 });

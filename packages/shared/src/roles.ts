@@ -12,6 +12,10 @@ export function readHomeRouteForRole(role: BaaseRole) {
   return homeRouteByRole[role];
 }
 
+export function canAccessOwnerStudio(role: BaaseRole) {
+  return role === "owner";
+}
+
 export function canApproveTask(role: BaaseRole) {
   return role === "owner" || role === "manager";
 }
