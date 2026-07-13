@@ -188,6 +188,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const lateTasks = overview.lateTasks.filter((task) => task.profileId === person.id);
       const awaitingApprovals = overview.awaitingApprovals.filter((task) => task.profileId === person.id);
       const pendingRequiredAnnouncements = overview.pendingRequiredAnnouncements.filter((announcement) => announcement.profileId === person.id);
+      const personTrends = overview.trends.people.filter((trend) => trend.profileId === person.id);
 
       return {
         ...overview,
@@ -200,8 +201,8 @@ export function createDashboardService(repositories: DashboardRepositories, opti
         awaitingApprovals,
         pendingRequiredAnnouncements,
         trends: {
-          people: overview.trends.people.filter((trend) => trend.profileId === person.id),
-          areas: overview.trends.areas.filter((trend) => trend.areaId === person.areaId)
+          people: personTrends,
+          areas: personTrends.map(({ profileId: _profileId, profileName: _profileName, ...trend }) => trend)
         }
       };
     }
