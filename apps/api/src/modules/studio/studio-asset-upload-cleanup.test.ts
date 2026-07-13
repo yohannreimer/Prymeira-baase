@@ -15,7 +15,7 @@ describe("Studio durable upload intent cleanup", () => {
       contentType: "text/plain",
       sizeBytes: 6
     });
-    await fixture.repository.reconcileAssetUploadFailure(scope, fixture.intent.id, fixture.now);
+    await reconcile(fixture.repository, fixture.intent, fixture.now);
     expect(await fixture.processor.processNext()).toMatchObject({ id: fixture.intent.id });
     expect(fixture.storage.keys()).toEqual([]);
     expect(await fixture.repository.listAssetUploadIntents(scope)).toEqual([]);
@@ -30,7 +30,7 @@ describe("Studio durable upload intent cleanup", () => {
       contentType: "text/plain",
       sizeBytes: 6
     });
-    await fixture.repository.reconcileAssetUploadFailure(scope, fixture.intent.id, clock);
+    await reconcile(fixture.repository, fixture.intent, clock);
     fixture.storage.failNextDelete(new Error("storage unavailable"));
     await expect(fixture.processor.processNext()).rejects.toThrow("storage unavailable");
     expect(await fixture.repository.listAssetUploadIntents(scope)).toMatchObject([{
@@ -44,7 +44,8 @@ describe("Studio durable upload intent cleanup", () => {
   });
 
   it("resolves a pending intent without deletion when its active asset already exists", async () => {
-    const fixture = await createFixture();
+    let clock = "2026-07-13T12:00:00.000Z";
+    const fixture = await createFixture(() => clock);
     await fixture.storage.put({
       key: fixture.intent.objectKey,
       body: Readable.from("valid"),
@@ -69,12 +70,11 @@ describe("Studio durable upload intent cleanup", () => {
       attemptCount: 0,
       nextAttemptAt: null
     });
+    clock = "2026-07-13T12:01:00.000Z";
     expect(await fixture.processor.processNext()).toBeNull();
     expect(fixture.storage.keys()).toEqual([fixture.intent.objectKey]);
-    expect(await fixture.repository.listAssetUploadIntents(scope)).toMatchObject([{
-      status: "resolved",
-      assetId: asset.id
-    }]);
+    expect(asset.id).toBeTruthy();
+    expect(await fixture.repository.listAssetUploadIntents(scope)).toEqual([]);
   });
 });
 
@@ -98,7 +98,7 @@ async function createFixture(clock: () => string = () => "2026-07-13T12:00:00.00
     kind: "file",
     mimeType: "text/plain",
     sizeBytes: 6,
-    nextAttemptAt: clock()
+    uploadLeaseExpiresAt: new Date(new Date(clock()).getTime() + 60_000).toISOString()
   });
   const storage = createInMemoryObjectStorage();
   return {
@@ -109,4 +109,18 @@ async function createFixture(clock: () => string = () => "2026-07-13T12:00:00.00
     now: clock(),
     processor: createStudioAssetUploadCleanupProcessor({ repository, objectStorage: storage, now: clock })
   };
+}
+
+function reconcile(
+  repository: ReturnType<typeof createInMemoryStudioRepository>,
+  intent: Awaited<ReturnType<typeof repository.createAssetUploadIntent>>,
+  now: string
+) {
+  return repository.reconcileAssetUploadFailure({
+    scope,
+    intentId: intent.id,
+    uploadToken: intent.uploadToken!,
+    objectKey: intent.objectKey,
+    now
+  });
 }

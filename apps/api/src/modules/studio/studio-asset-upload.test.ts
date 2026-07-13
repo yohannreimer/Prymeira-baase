@@ -68,6 +68,32 @@ describe("Studio bounded upload inspection", () => {
     }
   });
 
+  it("accepts an MP3 frame after a valid ID3 tag larger than the inspection prefix", async () => {
+    const tagSize = 70 * 1024;
+    const body = Buffer.concat([
+      Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00,
+        (tagSize >> 21) & 0x7f, (tagSize >> 14) & 0x7f, (tagSize >> 7) & 0x7f, tagSize & 0x7f]),
+      Buffer.alloc(tagSize),
+      Buffer.from([0xff, 0xfb, 0x90, 0x64]),
+      Buffer.alloc(2_048)
+    ]);
+    await withTempFile(body, async (path) => {
+      expect(await inspectStudioUploadFile(path, "audio/mpeg")).toEqual({ mimeType: "audio/mpeg" });
+    });
+  });
+
+  it("rejects malformed or out-of-range ID3 frame offsets", async () => {
+    for (const header of [
+      Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00]),
+      Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x7f, 0x7f, 0x7f, 0x7f])
+    ]) {
+      await withTempFile(Buffer.concat([header, Buffer.alloc(128)]), async (path) => {
+        await expect(inspectStudioUploadFile(path, "audio/mpeg"))
+          .rejects.toMatchObject({ code: "STUDIO_ASSET_MIME_MISMATCH" });
+      });
+    }
+  });
+
   it("accepts an isom-branded M4A with an audio track and rejects MP4 spoofing or video", async () => {
     await withTempFile(Buffer.from(validM4aBase64, "base64"), async (path) => {
       expect(await inspectStudioUploadFile(path, "audio/mp4")).toEqual({ mimeType: "audio/mp4" });
@@ -135,17 +161,73 @@ describe("Studio bounded upload inspection", () => {
       await writeFile(outside, "do not remove");
       await symlink(outside, linked);
       await utimes(oldDirectory, new Date(0), new Date(0));
-      const removed = await scavengeStaleStudioUploadDirectories({
+      const result = await scavengeStaleStudioUploadDirectories({
         root,
         now: () => 2 * 24 * 60 * 60_000,
         olderThanMs: 24 * 60 * 60_000,
         maxEntries: 10
       });
-      expect(removed).toBe(1);
+      expect(result.removed).toBe(1);
       await expect(access(oldDirectory)).rejects.toThrow();
       await access(freshDirectory);
       await access(linked);
       await access(outside);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the batch cap after filtering unrelated temp entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "baase-scavenger-filter-test-"));
+    try {
+      await Promise.all(Array.from({ length: 125 }, (_, index) =>
+        mkdir(join(root, `aaa-unrelated-${String(index).padStart(3, "0")}`))));
+      const studioDirectories = Array.from({ length: 3 }, (_, index) =>
+        join(root, `baase-studio-upload-${String(index).padStart(3, "0")}`));
+      await Promise.all(studioDirectories.map(async (path) => {
+        await mkdir(path);
+        await utimes(path, new Date(0), new Date(0));
+      }));
+      const result = await scavengeStaleStudioUploadDirectories({
+        root,
+        now: () => 2 * 24 * 60 * 60_000,
+        olderThanMs: 24 * 60 * 60_000,
+        maxEntries: 2
+      });
+      expect(result.removed).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates bounded batches until every stale Studio directory is visited", async () => {
+    const root = await mkdtemp(join(tmpdir(), "baase-scavenger-rotation-test-"));
+    try {
+      await Promise.all(Array.from({ length: 125 }, (_, index) =>
+        mkdir(join(root, `aaa-unrelated-${String(index).padStart(3, "0")}`))));
+      const studioDirectories = Array.from({ length: 205 }, (_, index) =>
+        join(root, `baase-studio-upload-${String(index).padStart(3, "0")}`));
+      await Promise.all(studioDirectories.map(async (path) => {
+        await mkdir(path);
+        await utimes(path, new Date(0), new Date(0));
+      }));
+      let cursor: string | null = null;
+      let removed = 0;
+      for (let batch = 0; batch < 3; batch += 1) {
+        const result = await scavengeStaleStudioUploadDirectories({
+          root,
+          cursor,
+          now: () => 2 * 24 * 60 * 60_000,
+          olderThanMs: 24 * 60 * 60_000,
+          maxEntries: 100
+        });
+        removed += result.removed;
+        cursor = result.nextCursor;
+      }
+      expect(removed).toBe(205);
+      await Promise.all(studioDirectories.map(async (path) => {
+        await expect(access(path)).rejects.toThrow();
+      }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

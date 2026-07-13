@@ -25,15 +25,20 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig): ObjectStor
   });
 
   return {
-    async put(input) {
-      await ensureBucket(client, config.bucket);
-      await client.send(new PutObjectCommand({
-        Bucket: config.bucket,
-        Key: input.key,
-        Body: input.body,
-        ContentType: input.contentType,
-        ContentLength: input.sizeBytes
-      }));
+    async put(input, options) {
+      const unbind = bindAbortToBody(input.body, options?.signal);
+      try {
+        await ensureBucket(client, config.bucket, options?.signal);
+        await client.send(new PutObjectCommand({
+          Bucket: config.bucket,
+          Key: input.key,
+          Body: input.body,
+          ContentType: input.contentType,
+          ContentLength: input.sizeBytes
+        }), { abortSignal: options?.signal });
+      } finally {
+        unbind();
+      }
     },
     async get(key, options) {
       const response = await client.send(
@@ -51,17 +56,20 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig): ObjectStor
     createDownloadUrl(key, expiresInSeconds) {
       return getSignedUrl(client, new GetObjectCommand({ Bucket: config.bucket, Key: key }), { expiresIn: expiresInSeconds });
     },
-    async delete(key) {
-      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
+    async delete(key, options) {
+      await client.send(
+        new DeleteObjectCommand({ Bucket: config.bucket, Key: key }),
+        { abortSignal: options?.signal }
+      );
     }
   };
 }
 
 function bindAbortToBody(body: Readable, signal?: AbortSignal) {
-  if (!signal) return;
+  if (!signal) return () => undefined;
   if (signal.aborted) {
     body.destroy();
-    return;
+    return () => undefined;
   }
   const abort = () => body.destroy();
   const cleanup = () => signal.removeEventListener("abort", abort);
@@ -69,6 +77,7 @@ function bindAbortToBody(body: Readable, signal?: AbortSignal) {
   body.once("close", cleanup);
   body.once("end", cleanup);
   body.once("error", cleanup);
+  return cleanup;
 }
 
 export function objectBodyToNodeReadable(body: unknown): Readable {
@@ -89,15 +98,17 @@ export function objectBodyToNodeReadable(body: unknown): Readable {
   throw new Error("OBJECT_BODY_UNSUPPORTED");
 }
 
-async function ensureBucket(client: S3Client, bucket: string) {
+async function ensureBucket(client: S3Client, bucket: string, signal?: AbortSignal) {
   try {
-    await client.send(new HeadBucketCommand({ Bucket: bucket }));
-  } catch {
+    await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: signal });
+  } catch (headError) {
+    if (signal?.aborted) throw headError;
     try {
-      await client.send(new CreateBucketCommand({ Bucket: bucket }));
+      await client.send(new CreateBucketCommand({ Bucket: bucket }), { abortSignal: signal });
     } catch (error) {
+      if (signal?.aborted) throw error;
       try {
-        await client.send(new HeadBucketCommand({ Bucket: bucket }));
+        await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: signal });
       } catch {
         throw error;
       }

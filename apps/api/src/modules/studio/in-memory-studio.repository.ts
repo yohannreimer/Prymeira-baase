@@ -490,11 +490,13 @@ export function createInMemoryStudioRepository(
       const intent: StudioAssetUploadIntent = {
         ...structuredClone(input),
         id: `studio_asset_upload_${randomUUID()}`,
-        status: "pending",
+        status: "uploading",
         assetId: null,
         attemptCount: 0,
-        nextAttemptAt: input.nextAttemptAt ?? new Date(new Date(timestamp).getTime() + 15 * 60_000).toISOString(),
+        nextAttemptAt: null,
         lastErrorCode: null,
+        uploadToken: randomUUID(),
+        uploadLeaseExpiresAt: normalizeTimestamp(input.uploadLeaseExpiresAt),
         claimToken: null,
         leaseExpiresAt: null,
         createdAt: timestamp,
@@ -505,20 +507,26 @@ export function createInMemoryStudioRepository(
     },
 
     async finalizeAssetUpload(input) {
-      const intent = assetUploadIntents.find((item) => item.workspaceId === input.scope.workspaceId
+      const intentIndex = assetUploadIntents.findIndex((item) => item.workspaceId === input.scope.workspaceId
         && item.ownerProfileId === input.scope.ownerProfileId && item.id === input.intentId);
-      if (!intent) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
+      const intent = assetUploadIntents[intentIndex];
+      if (!intent) {
+        const existing = assets.find((asset) => asset.workspaceId === input.scope.workspaceId
+          && asset.ownerProfileId === input.scope.ownerProfileId && asset.objectKey === input.asset.objectKey
+          && asset.lifecycleStatus === "active");
+        if (existing) return cloneAsset(existing);
+        throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
+      }
+      if (intent.status !== "uploading" || intent.uploadToken !== input.uploadToken) {
+        throw new Error("STUDIO_ASSET_UPLOAD_INTENT_STALE");
+      }
       const existing = assets.find((asset) => asset.workspaceId === intent.workspaceId
         && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
       if (existing) {
-        intent.status = "resolved";
-        intent.assetId = existing.id;
-        intent.nextAttemptAt = null;
-        intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+        assetUploadIntents.splice(intentIndex, 1);
         return cloneAsset(existing);
       }
-      if (intent.status !== "pending") throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_PENDING");
       const timestamp = now();
       const asset: StudioAsset = {
         ...structuredClone(input.asset),
@@ -530,31 +538,45 @@ export function createInMemoryStudioRepository(
         updatedAt: timestamp
       };
       assets.push(asset);
-      intent.status = "resolved";
-      intent.assetId = asset.id;
-      intent.nextAttemptAt = null;
-      intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+      assetUploadIntents.splice(intentIndex, 1);
       return cloneAsset(asset);
     },
 
-    async reconcileAssetUploadFailure(scope, intentId, at) {
-      const intent = assetUploadIntents.find((item) => item.workspaceId === scope.workspaceId
-        && item.ownerProfileId === scope.ownerProfileId && item.id === intentId);
-      if (!intent) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
-      const existing = assets.find((asset) => asset.workspaceId === scope.workspaceId
-        && asset.ownerProfileId === scope.ownerProfileId && asset.objectKey === intent.objectKey
+    async renewAssetUploadIntentLease(input) {
+      const intent = assetUploadIntents.find((item) => item.workspaceId === input.scope.workspaceId
+        && item.ownerProfileId === input.scope.ownerProfileId && item.id === input.intentId
+        && item.status === "uploading" && item.uploadToken === input.uploadToken);
+      if (!intent) return false;
+      intent.uploadLeaseExpiresAt = normalizeTimestamp(input.uploadLeaseExpiresAt);
+      intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+      return true;
+    },
+
+    async reconcileAssetUploadFailure(input) {
+      const intentIndex = assetUploadIntents.findIndex((item) => item.workspaceId === input.scope.workspaceId
+        && item.ownerProfileId === input.scope.ownerProfileId && item.id === input.intentId);
+      const intent = assetUploadIntents[intentIndex];
+      if (!intent) {
+        const existing = assets.find((asset) => asset.workspaceId === input.scope.workspaceId
+          && asset.ownerProfileId === input.scope.ownerProfileId && asset.objectKey === input.objectKey
+          && asset.lifecycleStatus === "active");
+        if (existing) return cloneAsset(existing);
+        throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
+      }
+      if (intent.objectKey !== input.objectKey) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_MISMATCH");
+      const existing = assets.find((asset) => asset.workspaceId === input.scope.workspaceId
+        && asset.ownerProfileId === input.scope.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
       if (existing) {
-        intent.status = "resolved";
-        intent.assetId = existing.id;
-        intent.nextAttemptAt = null;
-        intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+        assetUploadIntents.splice(intentIndex, 1);
         return cloneAsset(existing);
       }
-      if (intent.status !== "processing") {
+      if (intent.status === "uploading" && intent.uploadToken === input.uploadToken) {
         intent.status = "cleanup_pending";
-        intent.nextAttemptAt = normalizeTimestamp(at);
+        intent.nextAttemptAt = normalizeTimestamp(input.now);
         intent.lastErrorCode = "STUDIO_ASSET_UPLOAD_INCOMPLETE";
+        intent.uploadToken = null;
+        intent.uploadLeaseExpiresAt = null;
         intent.claimToken = null;
         intent.leaseExpiresAt = null;
         intent.updatedAt = nextTimestamp(now, intent.updatedAt);
@@ -570,8 +592,10 @@ export function createInMemoryStudioRepository(
     async claimNextAssetUploadCleanup(at, leaseMs = 120_000) {
       const timestamp = normalizeTimestamp(at);
       const intent = assetUploadIntents.filter((item) =>
-        ((item.status === "pending" || item.status === "cleanup_pending" || item.status === "failed")
+        ((item.status === "cleanup_pending" || item.status === "failed")
           && item.nextAttemptAt !== null && item.nextAttemptAt <= timestamp)
+        || (item.status === "uploading" && item.uploadLeaseExpiresAt !== null
+          && item.uploadLeaseExpiresAt <= timestamp)
         || (item.status === "processing" && item.leaseExpiresAt !== null && item.leaseExpiresAt <= timestamp))
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
       if (!intent) return null;
@@ -579,17 +603,14 @@ export function createInMemoryStudioRepository(
         && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
       if (existing) {
-        intent.status = "resolved";
-        intent.assetId = existing.id;
-        intent.nextAttemptAt = null;
-        intent.claimToken = null;
-        intent.leaseExpiresAt = null;
-        intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+        assetUploadIntents.splice(assetUploadIntents.indexOf(intent), 1);
         return null;
       }
       intent.status = "processing";
       intent.attemptCount += 1;
       intent.nextAttemptAt = null;
+      intent.uploadToken = null;
+      intent.uploadLeaseExpiresAt = null;
       intent.claimToken = randomUUID();
       intent.leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMs).toISOString();
       intent.updatedAt = nextTimestamp(now, intent.updatedAt);
@@ -605,11 +626,7 @@ export function createInMemoryStudioRepository(
         && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
       if (!existing) return null;
-      intent.status = "resolved";
-      intent.assetId = existing.id;
-      intent.claimToken = null;
-      intent.leaseExpiresAt = null;
-      intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+      assetUploadIntents.splice(assetUploadIntents.indexOf(intent), 1);
       return cloneAsset(existing);
     },
 
@@ -704,6 +721,11 @@ export function createInMemoryStudioRepository(
         && item.id === assetId
       );
       if (!asset) return null;
+      for (let index = assetUploadIntents.length - 1; index >= 0; index -= 1) {
+        const intent = assetUploadIntents[index]!;
+        if (intent.workspaceId === scope.workspaceId && intent.ownerProfileId === scope.ownerProfileId
+          && intent.objectKey === asset.objectKey) assetUploadIntents.splice(index, 1);
+      }
       const existing = assetCleanupJobs.find((job) =>
         job.workspaceId === scope.workspaceId
         && job.ownerProfileId === scope.ownerProfileId
@@ -830,6 +852,11 @@ export function createInMemoryStudioRepository(
       );
       if (jobIndex === -1) return false;
       const job = assetCleanupJobs[jobIndex]!;
+      for (let index = assetUploadIntents.length - 1; index >= 0; index -= 1) {
+        const intent = assetUploadIntents[index]!;
+        if (intent.workspaceId === job.workspaceId && intent.ownerProfileId === job.ownerProfileId
+          && intent.objectKey === job.objectKey) assetUploadIntents.splice(index, 1);
+      }
       if (job.assetId) {
         const assetIndex = assets.findIndex((asset) =>
           asset.workspaceId === job.workspaceId

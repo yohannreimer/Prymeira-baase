@@ -315,6 +315,43 @@ describe("Studio asset processor", () => {
       vi.useRealTimers();
     }
   });
+
+  it("propagates runner cancellation to transcription and leaves the claim retryable", async () => {
+    const fixture = await createFixture();
+    const asset = await fixture.addAsset("shutdown.webm", "audio/webm", Buffer.from("audio"));
+    let started!: () => void;
+    const transcriptionStarted = new Promise<void>((resolve) => { started = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    let resolveLate!: (value: Awaited<ReturnType<AiHarness["transcribeAudio"]>>) => void;
+    vi.mocked(fixture.transcriptionHarness.transcribeAudio).mockImplementationOnce((request) => {
+      observedSignal = request.signal;
+      started();
+      return new Promise((resolve) => { resolveLate = resolve; });
+    });
+    const processor = createStudioAssetProcessor({
+      repository: fixture.repository,
+      objectStorage: fixture.objectStorage,
+      transcriptionHarness: fixture.transcriptionHarness,
+      now: () => now,
+      processingTimeoutMs: 60_000
+    });
+    const controller = new AbortController();
+    const pending = processor.processNext(controller.signal);
+    await transcriptionStarted;
+    controller.abort(new Error("shutdown"));
+    await expect(pending).rejects.toThrow("shutdown");
+    expect(observedSignal?.aborted).toBe(true);
+    expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+      extractionStatus: "processing",
+      attemptCount: 1
+    });
+    resolveLate({ text: "late", confidence: 1, durationSeconds: 1 });
+    await Promise.resolve();
+    expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+      extractionStatus: "processing",
+      extractedText: null
+    });
+  });
 });
 
 async function createFixture(options: { transcript?: Awaited<ReturnType<AiHarness["transcribeAudio"]>> } = {}) {

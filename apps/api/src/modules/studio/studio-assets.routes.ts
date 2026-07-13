@@ -28,6 +28,7 @@ import type { createStudioAssetCleanupProcessor } from "./studio-asset-cleanup";
 export type { StudioLinkFetcher, StudioLinkResolver } from "./studio-link-fetcher";
 
 const DOWNLOAD_LIFETIME_SECONDS = 600;
+const DEFAULT_UPLOAD_PUT_TIMEOUT_MS = 120_000;
 
 export type RegisterStudioAssetRoutesOptions = {
   repository: StudioRepository;
@@ -37,6 +38,9 @@ export type RegisterStudioAssetRoutesOptions = {
   uploadSemaphore?: StudioUploadSemaphore;
   cleanupProcessor?: Pick<ReturnType<typeof createStudioAssetCleanupProcessor>, "processJob">;
   now?: () => Date;
+  uploadPutTimeoutMs?: number;
+  uploadLeaseMs?: number;
+  uploadLeaseHeartbeatMs?: number;
 };
 
 export async function registerStudioAssetRoutes(app: FastifyInstance, options: RegisterStudioAssetRoutesOptions) {
@@ -200,6 +204,11 @@ async function uploadFileAsset(
       let intent;
       try {
         const currentTime = (options.now ?? (() => new Date()))();
+        const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
+        const uploadLeaseMs = Math.max(
+          putTimeoutMs + 1,
+          options.uploadLeaseMs ?? putTimeoutMs * 2
+        );
         intent = await options.repository.createAssetUploadIntent({
           ...scope,
           documentId,
@@ -208,20 +217,78 @@ async function uploadFileAsset(
           kind,
           mimeType: spooled.mimeType,
           sizeBytes: spooled.sizeBytes,
-          nextAttemptAt: new Date(currentTime.getTime() + 15 * 60_000).toISOString()
+          uploadLeaseExpiresAt: new Date(currentTime.getTime() + uploadLeaseMs).toISOString()
         });
       } catch (error) {
         if (error instanceof Error && error.message === "STUDIO_DOCUMENT_NOT_FOUND") throw documentNotFound();
         throw persistenceFailed();
       }
-      try {
-        await options.objectStorage.put({
+      const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
+      const uploadLeaseMs = Math.max(
+        putTimeoutMs + 1,
+        options.uploadLeaseMs ?? putTimeoutMs * 2
+      );
+      const uploadLeaseHeartbeatMs = options.uploadLeaseHeartbeatMs
+        ?? Math.max(1_000, Math.floor(uploadLeaseMs / 3));
+      const putController = new AbortController();
+      let putTimeout: ReturnType<typeof setTimeout> | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      let renewalActive = false;
+      heartbeat = setInterval(() => {
+        if (renewalActive) return;
+        renewalActive = true;
+        const currentTime = (options.now ?? (() => new Date()))();
+        void options.repository.renewAssetUploadIntentLease({
+          scope,
+          intentId: intent.id,
+          uploadToken: intent.uploadToken!,
+          uploadLeaseExpiresAt: new Date(currentTime.getTime() + uploadLeaseMs).toISOString()
+        }).catch((error) => {
+          request.log.error({ err: error, intentId: intent.id }, "Studio upload lease renewal failed");
+        }).finally(() => {
+          renewalActive = false;
+        });
+      }, uploadLeaseHeartbeatMs);
+      heartbeat.unref?.();
+      const putSettlement = Promise.resolve().then(() => options.objectStorage.put({
           key,
           body: studioAssetReadStream(spooled.path),
           contentType: spooled.mimeType,
           sizeBytes: spooled.sizeBytes
+        }, { signal: putController.signal }))
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error })
+        )
+        .finally(() => {
+          if (heartbeat) clearInterval(heartbeat);
+          heartbeat = undefined;
         });
-      } catch {
+      const timeout = new Promise<{ timedOut: true }>((resolve) => {
+        putTimeout = setTimeout(() => {
+          putController.abort(new Error("STUDIO_ASSET_UPLOAD_TIMEOUT"));
+          resolve({ timedOut: true });
+        }, putTimeoutMs);
+        putTimeout.unref?.();
+      });
+      const putOutcome = await Promise.race([putSettlement, timeout]);
+      if (putTimeout) clearTimeout(putTimeout);
+      if ("timedOut" in putOutcome) {
+        void putSettlement.then(async () => {
+          try {
+            await transitionUploadToCleanup(options.repository, scope, intent, key, options.now);
+          } catch (error) {
+            request.log.error({ err: error, intentId: intent.id }, "Studio timed-out upload reconciliation failed");
+          }
+        });
+        throw storageUnavailable({ upload_timeout: true });
+      }
+      if (!putOutcome.ok) {
+        try {
+          await transitionUploadToCleanup(options.repository, scope, intent, key, options.now);
+        } catch (error) {
+          request.log.error({ err: error, intentId: intent.id }, "Studio failed upload reconciliation failed");
+        }
         throw storageUnavailable();
       }
       const assetInput = {
@@ -246,16 +313,13 @@ async function uploadFileAsset(
         return await options.repository.finalizeAssetUpload({
           scope,
           intentId: intent.id,
+          uploadToken: intent.uploadToken!,
           asset: assetInput
         });
       } catch {
         let reconciled: StudioAsset | null;
         try {
-          reconciled = await options.repository.reconcileAssetUploadFailure(
-            scope,
-            intent.id,
-            (options.now ?? (() => new Date()))().toISOString()
-          );
+          reconciled = await transitionUploadToCleanup(options.repository, scope, intent, key, options.now);
         } catch {
           throw persistenceFailed({ upload_intent_pending: true });
         }
@@ -272,6 +336,22 @@ async function uploadFileAsset(
     if (candidate.code === "FST_REQ_FILE_TOO_LARGE" || candidate.statusCode === 413) throw payloadTooLarge();
     throw error;
   }
+}
+
+function transitionUploadToCleanup(
+  repository: StudioRepository,
+  scope: StudioOwnerScope,
+  intent: { id: string; uploadToken: string | null },
+  objectKey: string,
+  now?: () => Date
+) {
+  return repository.reconcileAssetUploadFailure({
+    scope,
+    intentId: intent.id,
+    uploadToken: intent.uploadToken!,
+    objectKey,
+    now: (now ?? (() => new Date()))().toISOString()
+  });
 }
 
 function multipartError(error: unknown) {
@@ -322,8 +402,13 @@ function documentNotFound() {
 function assetNotFound() {
   return new ApiError(404, "STUDIO_ASSET_NOT_FOUND", "Captura do Studio não encontrada.");
 }
-function storageUnavailable() {
-  return new ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "Não foi possível acessar o armazenamento de arquivos. Tente novamente.");
+function storageUnavailable(details?: Record<string, unknown>) {
+  return new ApiError(
+    503,
+    "OBJECT_STORAGE_UNAVAILABLE",
+    "Não foi possível acessar o armazenamento de arquivos. Tente novamente.",
+    details
+  );
 }
 function persistenceFailed(details?: Record<string, unknown>) {
   return new ApiError(

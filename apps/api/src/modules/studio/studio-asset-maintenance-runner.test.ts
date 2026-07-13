@@ -71,4 +71,66 @@ describe("Studio asset maintenance runner", () => {
       vi.useRealTimers();
     }
   });
+
+  it("aborts stalled work and resolves stop within the configured shutdown bound", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const processor = {
+      processNext: vi.fn((signal?: AbortSignal) => {
+        observedSignal = signal;
+        return new Promise<null>(() => undefined);
+      })
+    };
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: processor,
+      cleanupProcessor: idle,
+      uploadCleanupProcessor: idle,
+      logger: { error: vi.fn() },
+      shutdownTimeoutMs: 25,
+      perItemTimeoutMs: 60_000,
+      scavenge: vi.fn(async () => undefined)
+    });
+    runner.start();
+    await vi.waitFor(() => expect(observedSignal).toBeDefined());
+    await expect(runner.stop()).resolves.toBeUndefined();
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("aborts an item at its deadline and periodically rotates scavenger cursors", async () => {
+    vi.useFakeTimers();
+    try {
+      const seenCursors: Array<string | null | undefined> = [];
+      let stalledSignal: AbortSignal | undefined;
+      const processor = {
+        processNext: vi.fn((signal?: AbortSignal) => {
+          stalledSignal = signal;
+          return new Promise<null>(() => undefined);
+        })
+      };
+      const scavenge = vi.fn(async (input?: { cursor?: string | null }) => {
+        seenCursors.push(input?.cursor);
+        return { nextCursor: seenCursors.length === 1 ? "batch-1" : null };
+      });
+      const runner = createStudioAssetMaintenanceRunner({
+        assetProcessor: processor,
+        cleanupProcessor: idle,
+        uploadCleanupProcessor: idle,
+        logger: { error: vi.fn() },
+        maxItemsPerProcessor: 1,
+        intervalMs: 100,
+        jitterRatio: 0,
+        perItemTimeoutMs: 10,
+        scavengeIntervalMs: 100,
+        scavenge
+      });
+      runner.start();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(stalledSignal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(120);
+      expect(scavenge).toHaveBeenCalledTimes(2);
+      expect(seenCursors).toEqual([null, "batch-1"]);
+      await runner.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

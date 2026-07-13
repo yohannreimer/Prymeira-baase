@@ -84,6 +84,8 @@ export async function scavengeStaleStudioUploadDirectories(options: {
   now?: () => number;
   olderThanMs?: number;
   maxEntries?: number;
+  cursor?: string | null;
+  signal?: AbortSignal;
   onError?: (error: unknown, path: string) => void;
 } = {}) {
   const root = options.root ?? tmpdir();
@@ -94,23 +96,37 @@ export async function scavengeStaleStudioUploadDirectories(options: {
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
-    options.onError?.(error, root);
-    return 0;
+    reportScavengeError(options.onError, error, root);
+    return { removed: 0, nextCursor: null };
   }
+  const matchingNames = entries
+    .filter((entry) => entry.isDirectory() && /^baase-studio-upload-[A-Za-z0-9_-]+$/u.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+  const cursor = options.cursor ?? null;
+  const orderedNames = cursor === null
+    ? matchingNames
+    : [...matchingNames.filter((name) => name > cursor), ...matchingNames.filter((name) => name <= cursor)];
+  const selectedNames = orderedNames.slice(0, maxEntries);
   let removed = 0;
-  for (const entry of entries.slice(0, maxEntries)) {
-    if (!entry.isDirectory() || !/^baase-studio-upload-[A-Za-z0-9_-]+$/u.test(entry.name)) continue;
-    const path = join(root, entry.name);
+  for (const name of selectedNames) {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    const path = join(root, name);
     try {
       const metadata = await stat(path, { bigint: false });
       if (now() - metadata.mtimeMs < olderThanMs) continue;
       await rm(path, { recursive: true, force: true });
       removed += 1;
     } catch (error) {
-      options.onError?.(error, path);
+      reportScavengeError(options.onError, error, path);
     }
   }
-  return removed;
+  return {
+    removed,
+    nextCursor: matchingNames.length > selectedNames.length
+      ? selectedNames.at(-1) ?? cursor
+      : null
+  };
 }
 
 export async function inspectStudioUploadFile(path: string, declaredMimeType: string) {
@@ -133,7 +149,7 @@ export async function inspectStudioUploadFile(path: string, declaredMimeType: st
     return { mimeType: declared };
   }
   if (declared.startsWith("audio/")) {
-    return { mimeType: await inspectAudioFile(path, declared, header.subarray(0, bytesRead)) };
+    return { mimeType: await inspectAudioFile(path, declared) };
   }
   if (!supportedDeclaredMime(declared)) {
     throw new ApiError(415, "STUDIO_ASSET_MIME_UNSUPPORTED", "Este tipo de arquivo não é aceito no Studio.");
@@ -153,11 +169,11 @@ function detectBinaryMime(header: Buffer): string | null {
   return null;
 }
 
-async function inspectAudioFile(path: string, declared: string, header: Buffer) {
+async function inspectAudioFile(path: string, declared: string) {
   const detected = await fileTypeFromFile(path);
   const canonical = detectedAudioMime(detected?.mime, detected?.ext);
   if (!canonical || !mimeMatches(declared, canonical)) throw mimeMismatch();
-  if (canonical === "audio/mpeg" && !hasValidMp3Frame(header)) throw mimeMismatch();
+  if (canonical === "audio/mpeg" && !await hasValidMp3Frame(path)) throw mimeMismatch();
   try {
     const metadata = await parseFile(path, { duration: false, skipCovers: true });
     if (metadata.format.hasAudio !== true || metadata.format.hasVideo === true
@@ -186,17 +202,36 @@ function detectedAudioMime(mime?: string, extension?: string) {
   return null;
 }
 
-function hasValidMp3Frame(header: Buffer) {
+async function hasValidMp3Frame(path: string) {
+  const handle = await open(path, "r");
   let offset = 0;
-  if (header.subarray(0, 3).toString("ascii") === "ID3") {
-    if (header.length < 10 || [...header.subarray(6, 10)].some((value) => (value & 0x80) !== 0)) return false;
-    const size = (header[6]! << 21) | (header[7]! << 14) | (header[8]! << 7) | header[9]!;
-    offset = 10 + size;
+  try {
+    const metadata = await handle.stat();
+    const id3Header = Buffer.alloc(10);
+    const { bytesRead } = await handle.read(id3Header, 0, id3Header.length, 0);
+    if (bytesRead >= 3 && id3Header.subarray(0, 3).toString("ascii") === "ID3") {
+      const version = id3Header[3]!;
+      if (bytesRead < 10 || version < 2 || version > 4
+        || [...id3Header.subarray(6, 10)].some((value) => (value & 0x80) !== 0)) return false;
+      const tagSize = (id3Header[6]! << 21) | (id3Header[7]! << 14)
+        | (id3Header[8]! << 7) | id3Header[9]!;
+      const footerSize = version === 4 && (id3Header[5]! & 0x10) !== 0 ? 10 : 0;
+      offset = 10 + tagSize + footerSize;
+    }
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset + 4 > metadata.size) return false;
+    const framePrefix = Buffer.alloc(Math.min(64 * 1024, metadata.size - offset));
+    const frameRead = await handle.read(framePrefix, 0, framePrefix.length, offset);
+    return containsValidMp3Frame(framePrefix.subarray(0, frameRead.bytesRead));
+  } finally {
+    await handle.close();
   }
-  for (; offset + 4 <= header.length; offset += 1) {
-    const first = header[offset]!;
-    const second = header[offset + 1]!;
-    const third = header[offset + 2]!;
+}
+
+function containsValidMp3Frame(buffer: Buffer) {
+  for (let offset = 0; offset + 4 <= buffer.length; offset += 1) {
+    const first = buffer[offset]!;
+    const second = buffer[offset + 1]!;
+    const third = buffer[offset + 2]!;
     if (first !== 0xff || (second & 0xe0) !== 0xe0) continue;
     const version = (second >> 3) & 0x03;
     const layer = (second >> 1) & 0x03;
@@ -206,6 +241,22 @@ function hasValidMp3Frame(header: Buffer) {
       && bitrateIndex !== 0x00 && bitrateIndex !== 0x0f && sampleRateIndex !== 0x03;
   }
   return false;
+}
+
+function reportScavengeError(
+  onError: ((error: unknown, path: string) => void) | undefined,
+  error: unknown,
+  path: string
+) {
+  try {
+    onError?.(error, path);
+  } catch {
+    // Reporting cannot make maintenance fail or widen deletion scope.
+  }
+}
+
+function abortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error ? signal.reason : new Error("STUDIO_UPLOAD_SCAVENGE_ABORTED");
 }
 
 async function validateUtf8Text(path: string) {

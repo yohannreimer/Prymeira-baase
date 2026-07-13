@@ -20,7 +20,7 @@ type StudioAssetProcessorOptions = {
 };
 
 export type StudioAssetProcessor = {
-  processNext(): Promise<StudioAsset | null>;
+  processNext(signal?: AbortSignal): Promise<StudioAsset | null>;
 };
 
 export function createStudioAssetProcessor(options: StudioAssetProcessorOptions): StudioAssetProcessor {
@@ -30,15 +30,18 @@ export function createStudioAssetProcessor(options: StudioAssetProcessorOptions)
   const processingTimeoutMs = options.processingTimeoutMs ?? 30_000;
 
   return {
-    async processNext() {
+    async processNext(signal) {
+      throwIfAborted(signal);
       const claimed = await options.repository.claimNextAsset(now(), leaseMs);
       if (!claimed) return null;
       const scope = { workspaceId: claimed.workspaceId, ownerProfileId: claimed.ownerProfileId };
       try {
         const result = await withWallTimeout(
           (signal) => extractAsset(claimed, options, pdfExtractor, signal),
-          processingTimeoutMs
+          processingTimeoutMs,
+          signal
         );
+        throwIfAborted(signal);
         return await options.repository.finishAssetProcessing({
           scope,
           assetId: claimed.id,
@@ -50,6 +53,7 @@ export function createStudioAssetProcessor(options: StudioAssetProcessorOptions)
           nextAttemptAt: null
         });
       } catch (error) {
+        if (signal?.aborted) throw error;
         const errorCode = processingErrorCode(error);
         const terminal = isPermanentProcessingError(errorCode)
           || claimed.attemptCount >= STUDIO_ASSET_MAX_ATTEMPTS;
@@ -176,13 +180,28 @@ async function readBoundedObject(body: import("node:stream").Readable, limit: nu
   }
 }
 
-async function withWallTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number) {
+async function withWallTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  parentSignal?: AbortSignal
+) {
   const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   const timeout = setTimeout(() => controller.abort(new Error("STUDIO_ASSET_PROCESSING_TIMEOUT")), timeoutMs);
+  timeout.unref?.();
   try {
     return await abortable(operation(controller.signal), controller.signal);
   } finally {
     clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("STUDIO_ASSET_MAINTENANCE_ABORTED");
   }
 }
 

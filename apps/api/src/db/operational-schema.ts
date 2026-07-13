@@ -796,6 +796,53 @@ const migrations: Migration[] = [{
       ON studio_asset_upload_intents (status, next_attempt_at, lease_expires_at, created_at)
       WHERE status IN ('pending','cleanup_pending','processing','failed');
   `
+}, {
+  version: 12,
+  name: "studio_asset_upload_lifecycle",
+  sql: `
+    DELETE FROM studio_asset_upload_intents WHERE status='resolved';
+    UPDATE studio_asset_upload_intents
+      SET status='cleanup_pending',asset_id=NULL,next_attempt_at=COALESCE(next_attempt_at,NOW())
+      WHERE status='pending';
+    UPDATE studio_asset_upload_intents
+      SET asset_id=NULL,next_attempt_at=COALESCE(next_attempt_at,NOW())
+      WHERE status IN ('cleanup_pending','failed');
+
+    ALTER TABLE studio_asset_upload_intents ADD COLUMN upload_token TEXT;
+    ALTER TABLE studio_asset_upload_intents ADD COLUMN upload_lease_expires_at TIMESTAMPTZ;
+    ALTER TABLE studio_asset_upload_intents ALTER COLUMN status SET DEFAULT 'cleanup_pending';
+
+    ALTER TABLE studio_asset_upload_intents DROP CONSTRAINT IF EXISTS studio_asset_upload_intents_status_check;
+    ALTER TABLE studio_asset_upload_intents DROP CONSTRAINT IF EXISTS studio_asset_upload_intents_check;
+    ALTER TABLE studio_asset_upload_intents DROP CONSTRAINT IF EXISTS studio_asset_upload_intents_check1;
+
+    ALTER TABLE studio_asset_upload_intents ADD CONSTRAINT studio_asset_upload_intents_status_check
+      CHECK (status IN ('uploading','cleanup_pending','processing','failed'));
+    ALTER TABLE studio_asset_upload_intents ADD CONSTRAINT studio_asset_upload_intents_lifecycle_check CHECK (
+      (status='uploading'
+        AND upload_token IS NOT NULL AND upload_lease_expires_at IS NOT NULL
+        AND claim_token IS NULL AND lease_expires_at IS NULL AND next_attempt_at IS NULL)
+      OR (status='processing'
+        AND upload_token IS NULL AND upload_lease_expires_at IS NULL
+        AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL AND next_attempt_at IS NULL)
+      OR (status IN ('cleanup_pending','failed')
+        AND upload_token IS NULL AND upload_lease_expires_at IS NULL
+        AND claim_token IS NULL AND lease_expires_at IS NULL AND next_attempt_at IS NOT NULL)
+    );
+
+    ALTER TABLE studio_asset_upload_intents
+      DROP CONSTRAINT IF EXISTS studio_asset_upload_intents_workspace_id_owner_profile_id__fkey;
+    ALTER TABLE studio_asset_upload_intents
+      ADD CONSTRAINT studio_asset_upload_intents_document_fkey
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+      REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE;
+
+    DROP INDEX studio_asset_upload_intents_claim_idx;
+    CREATE INDEX studio_asset_upload_intents_claim_idx
+      ON studio_asset_upload_intents
+        (status,next_attempt_at,upload_lease_expires_at,lease_expires_at,created_at)
+      WHERE status IN ('uploading','cleanup_pending','processing','failed');
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

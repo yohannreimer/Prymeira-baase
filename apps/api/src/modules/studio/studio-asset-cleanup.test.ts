@@ -74,6 +74,41 @@ describe("Studio asset cleanup outbox", () => {
     )).toBeNull();
     expect(await fixture.repository.findAsset(scope, fixture.assetId)).not.toBeNull();
   });
+
+  it("aborts a stalled delete and keeps the cleanup job durably retryable", async () => {
+    const now = "2026-07-13T12:00:00.000Z";
+    const fixture = await createFixture(() => now);
+    await fixture.repository.tombstoneAssetForCleanup(scope, fixture.assetId);
+    let started!: () => void;
+    const deleteStarted = new Promise<void>((resolve) => { started = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const cleanup = createStudioAssetCleanupProcessor({
+      repository: fixture.repository,
+      objectStorage: {
+        ...fixture.objectStorage,
+        delete(_key, options) {
+          observedSignal = options?.signal;
+          started();
+          return new Promise<void>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+          });
+        }
+      },
+      now: () => now
+    });
+    const controller = new AbortController();
+    const pending = cleanup.processNext(controller.signal);
+    await deleteStarted;
+    controller.abort(new Error("shutdown"));
+    await expect(pending).rejects.toThrow("shutdown");
+    expect(observedSignal?.aborted).toBe(true);
+    expect(await fixture.repository.listAssetCleanupJobs(scope)).toMatchObject([{
+      status: "failed",
+      lastErrorCode: "STUDIO_ASSET_STORAGE_DELETE_FAILED"
+    }]);
+    expect(await fixture.repository.findAssetIncludingDeleting(scope, fixture.assetId))
+      .toMatchObject({ lifecycleStatus: "deleting" });
+  });
 });
 
 async function createFixture(now: () => string) {

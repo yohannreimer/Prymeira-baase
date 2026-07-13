@@ -71,6 +71,9 @@ export type BuildAppOptions = {
   studioLinkResolver?: StudioLinkResolver;
   studioLinkFetcher?: StudioLinkFetcher;
   studioUploadSemaphore?: StudioUploadSemaphore;
+  studioUploadPutTimeoutMs?: number;
+  studioUploadLeaseMs?: number;
+  studioUploadLeaseHeartbeatMs?: number;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -299,6 +302,9 @@ export function buildApp(options: BuildAppOptions = {}) {
     resolver: options.studioLinkResolver,
     fetcher: options.studioLinkFetcher,
     uploadSemaphore: options.studioUploadSemaphore,
+    uploadPutTimeoutMs: options.studioUploadPutTimeoutMs,
+    uploadLeaseMs: options.studioUploadLeaseMs,
+    uploadLeaseHeartbeatMs: options.studioUploadLeaseHeartbeatMs,
     cleanupProcessor: studioAssetCleanupProcessor,
     now: options.now
   }));

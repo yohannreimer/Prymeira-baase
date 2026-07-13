@@ -7,7 +7,7 @@ export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioAssetLifecycleStatus = "active" | "deleting";
 export type StudioAssetCleanupStatus = "pending" | "processing" | "failed";
-export type StudioAssetUploadIntentStatus = "pending" | "cleanup_pending" | "processing" | "failed" | "resolved";
+export type StudioAssetUploadIntentStatus = "uploading" | "cleanup_pending" | "processing" | "failed";
 export const STUDIO_ASSET_MAX_ATTEMPTS = 5;
 
 export type CreateStudioDocument = {
@@ -151,6 +151,8 @@ export type StudioAssetUploadIntent = StudioOwnerScope & {
   attemptCount: number;
   nextAttemptAt: string | null;
   lastErrorCode: string | null;
+  uploadToken: string | null;
+  uploadLeaseExpiresAt: string | null;
   claimToken: string | null;
   leaseExpiresAt: string | null;
   createdAt: string;
@@ -237,14 +239,27 @@ export type StudioRepository = {
   findAssetByObjectKey(scope: StudioOwnerScope, objectKey: string): Promise<StudioAsset | null>;
   createAssetUploadIntent(input: Omit<StudioAssetUploadIntent,
     "id" | "status" | "assetId" | "attemptCount" | "nextAttemptAt" | "lastErrorCode"
-    | "claimToken" | "leaseExpiresAt" | "createdAt" | "updatedAt"
-  > & { nextAttemptAt?: string }): Promise<StudioAssetUploadIntent>;
+    | "uploadToken" | "uploadLeaseExpiresAt" | "claimToken" | "leaseExpiresAt" | "createdAt" | "updatedAt"
+  > & { uploadLeaseExpiresAt: string }): Promise<StudioAssetUploadIntent>;
   finalizeAssetUpload(input: {
     scope: StudioOwnerScope;
     intentId: string;
+    uploadToken: string;
     asset: CreateStudioAsset;
   }): Promise<StudioAsset>;
-  reconcileAssetUploadFailure(scope: StudioOwnerScope, intentId: string, now: string): Promise<StudioAsset | null>;
+  renewAssetUploadIntentLease(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    uploadToken: string;
+    uploadLeaseExpiresAt: string;
+  }): Promise<boolean>;
+  reconcileAssetUploadFailure(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    uploadToken: string;
+    objectKey: string;
+    now: string;
+  }): Promise<StudioAsset | null>;
   listAssetUploadIntents(scope: StudioOwnerScope): Promise<StudioAssetUploadIntent[]>;
   claimNextAssetUploadCleanup(now: string, leaseMs?: number): Promise<StudioAssetUploadIntent | null>;
   resolveClaimedAssetUploadIntent(input: {

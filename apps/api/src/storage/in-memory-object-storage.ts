@@ -14,16 +14,27 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
   let nextDeleteError: Error | null = null;
 
   return {
-    async put(input: PutObjectInput) {
+    async put(input: PutObjectInput, options) {
+      throwIfAborted(options?.signal);
       if (nextPutError) {
         const error = nextPutError;
         nextPutError = null;
         throw error;
       }
       const chunks: Buffer[] = [];
-      for await (const chunk of input.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const body = Buffer.concat(chunks);
-      objects.set(input.key, { body, contentType: input.contentType, sizeBytes: body.length });
+      const abort = () => input.body.destroy(abortError(options?.signal));
+      options?.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        for await (const chunk of input.body) {
+          throwIfAborted(options?.signal);
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        throwIfAborted(options?.signal);
+        const body = Buffer.concat(chunks);
+        objects.set(input.key, { body, contentType: input.contentType, sizeBytes: body.length });
+      } finally {
+        options?.signal?.removeEventListener("abort", abort);
+      }
     },
     async get(key, options) {
       if (options?.signal?.aborted) throw options.signal.reason ?? new Error("ABORTED");
@@ -43,12 +54,14 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       if (!objects.has(key)) throw new Error("OBJECT_NOT_FOUND");
       return `memory://${encodeURIComponent(key)}?expires_in=${expiresInSeconds}`;
     },
-    async delete(key) {
+    async delete(key, options) {
+      throwIfAborted(options?.signal);
       if (nextDeleteError) {
         const error = nextDeleteError;
         nextDeleteError = null;
         throw error;
       }
+      throwIfAborted(options?.signal);
       objects.delete(key);
     },
     failNextPut(error) {
@@ -61,4 +74,12 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       return [...objects.keys()].sort();
     }
   };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortError(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error("ABORTED");
 }

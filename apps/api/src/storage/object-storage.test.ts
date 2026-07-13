@@ -45,4 +45,32 @@ describe("ObjectStorage private reads", () => {
     after.abort();
     expect(object.body.destroyed).toBe(true);
   });
+
+  it("honors cancellation for memory puts and deletes without committing late state", async () => {
+    const storage = createInMemoryObjectStorage();
+    const stalled = new Readable({ read() {} });
+    const putController = new AbortController();
+    const pendingPut = storage.put({
+      key: "private/stalled",
+      body: stalled,
+      contentType: "text/plain",
+      sizeBytes: 6
+    }, { signal: putController.signal });
+    putController.abort(new Error("put cancelled"));
+    await expect(pendingPut).rejects.toThrow("put cancelled");
+    expect(stalled.destroyed).toBe(true);
+    expect(storage.keys()).toEqual([]);
+
+    await storage.put({
+      key: "private/existing",
+      body: Readable.from("secret"),
+      contentType: "text/plain",
+      sizeBytes: 6
+    });
+    const deleteController = new AbortController();
+    deleteController.abort(new Error("delete cancelled"));
+    await expect(storage.delete("private/existing", { signal: deleteController.signal }))
+      .rejects.toThrow("delete cancelled");
+    expect(storage.keys()).toEqual(["private/existing"]);
+  });
 });

@@ -180,7 +180,7 @@ describe("Studio asset routes", () => {
     expect(response.statusCode).toBe(201);
     expect(response.json().asset.objectKey).toBe(objectStorage.keys()[0]);
     expect(objectStorage.keys()).toHaveLength(1);
-    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{ status: "resolved" }]);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
   });
 
   it("leaves the durable pending intent when reconciliation is temporarily unavailable", async () => {
@@ -206,10 +206,130 @@ describe("Studio asset routes", () => {
       details: { upload_intent_pending: true }
     });
     expect(objectStorage.keys()).toHaveLength(1);
-    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{ status: "pending" }]);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{ status: "uploading" }]);
     clock = "2026-07-13T12:15:00.000Z";
     await app.studioAssetUploadCleanupProcessor.processNext();
     expect(objectStorage.keys()).toEqual([]);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+  });
+
+  it("keeps a slow put leased beyond the former fifteen-minute cleanup threshold", async () => {
+    let clock = new Date("2026-07-13T12:00:00.000Z");
+    let releasePut!: () => void;
+    const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+    const repository = createInMemoryStudioRepository({ now: () => clock.toISOString() });
+    const document = await repository.createDocument(documentInput());
+    const memoryStorage = createInMemoryObjectStorage();
+    const objectStorage = {
+      ...memoryStorage,
+      async put(input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+        await putGate;
+        return memoryStorage.put(input, options);
+      }
+    };
+    const app = buildApp({
+      studioRepository: repository,
+      objectStorage,
+      now: () => clock,
+      studioUploadPutTimeoutMs: 20 * 60_000,
+      studioUploadLeaseMs: 30 * 60_000,
+      studioUploadLeaseHeartbeatMs: 60 * 60_000
+    });
+    const pending = upload(app, document.id, {
+      filename: "slow.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    await vi.waitFor(async () => {
+      expect(await repository.listAssetUploadIntents(ownerScope())).toHaveLength(1);
+    });
+    clock = new Date("2026-07-13T12:16:00.000Z");
+    expect(await repository.claimNextAssetUploadCleanup(clock.toISOString())).toBeNull();
+    releasePut();
+    expect((await pending).statusCode).toBe(201);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+  });
+
+  it("aborts a put at its hard deadline and moves the settled intent to cleanup", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+    const document = await repository.createDocument(documentInput());
+    const memoryStorage = createInMemoryObjectStorage();
+    let abortObserved = false;
+    const objectStorage = {
+      ...memoryStorage,
+      async put(_input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+        return new Promise<void>((_resolve, reject) => {
+          const abort = () => {
+            abortObserved = true;
+            reject(options?.signal?.reason);
+          };
+          if (options?.signal?.aborted) abort();
+          else options?.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+    };
+    const app = buildApp({
+      studioRepository: repository,
+      objectStorage,
+      now: () => new Date("2026-07-13T12:00:00.000Z"),
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100,
+      studioUploadLeaseHeartbeatMs: 20
+    });
+    const response = await upload(app, document.id, {
+      filename: "timeout.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toMatchObject({
+      code: "OBJECT_STORAGE_UNAVAILABLE",
+      details: { upload_timeout: true }
+    });
+    expect(abortObserved).toBe(true);
+    await vi.waitFor(async () => {
+      expect(await repository.listAssetUploadIntents(ownerScope()))
+        .toMatchObject([{ status: "cleanup_pending" }]);
+    });
+  });
+
+  it("keeps cleanup fenced while an abort-ignoring put settles late", async () => {
+    let clock = new Date("2026-07-13T12:00:00.000Z");
+    let releasePut!: () => void;
+    const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+    const repository = createInMemoryStudioRepository({ now: () => clock.toISOString() });
+    const document = await repository.createDocument(documentInput());
+    const memoryStorage = createInMemoryObjectStorage();
+    let abortObserved = false;
+    const objectStorage = {
+      ...memoryStorage,
+      async put(input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+        options?.signal?.addEventListener("abort", () => { abortObserved = true; }, { once: true });
+        await putGate;
+        input.body.destroy();
+        await memoryStorage.put({ ...input, body: Readable.from("private") });
+      }
+    };
+    const app = buildApp({
+      studioRepository: repository,
+      objectStorage,
+      now: () => clock,
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100,
+      studioUploadLeaseHeartbeatMs: 5
+    });
+    const response = await upload(app, document.id, {
+      filename: "late.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(abortObserved).toBe(true);
+    clock = new Date("2026-07-13T12:16:00.000Z");
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await repository.claimNextAssetUploadCleanup(clock.toISOString())).toBeNull();
+    releasePut();
+    await vi.waitFor(async () => {
+      expect(await repository.listAssetUploadIntents(ownerScope()))
+        .toMatchObject([{ status: "cleanup_pending" }]);
+    });
+    expect(memoryStorage.keys()).toHaveLength(1);
+    await app.studioAssetUploadCleanupProcessor.processNext();
+    expect(memoryStorage.keys()).toEqual([]);
     expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
   });
 

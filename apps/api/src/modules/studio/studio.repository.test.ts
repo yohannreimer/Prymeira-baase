@@ -720,7 +720,7 @@ function repositoryContract(
         const intent = await repository.createAssetUploadIntent({
           ...scope, documentId: document.id, objectKey: "private/upload.txt", displayName: "upload.txt",
           kind: "file", mimeType: "text/plain", sizeBytes: 7,
-          nextAttemptAt: "2026-07-13T12:15:00.000Z"
+          uploadLeaseExpiresAt: "2026-07-13T12:15:00.000Z"
         });
         const assetInput = {
           ...scope, documentId: document.id, kind: "file" as const, displayName: "upload.txt",
@@ -728,10 +728,18 @@ function repositoryContract(
           mimeType: "text/plain", sizeBytes: 7, extractionStatus: "pending" as const,
           extractedText: null, extractionMetadata: {}, lastErrorCode: null, attemptCount: 0, nextAttemptAt: null
         };
-        const asset = await repository.finalizeAssetUpload({ scope, intentId: intent.id, asset: assetInput });
-        expect(await repository.finalizeAssetUpload({ scope, intentId: intent.id, asset: assetInput }))
+        const asset = await repository.finalizeAssetUpload({
+          scope, intentId: intent.id, uploadToken: intent.uploadToken!, asset: assetInput
+        });
+        expect(await repository.finalizeAssetUpload({
+          scope, intentId: intent.id, uploadToken: intent.uploadToken!, asset: assetInput
+        }))
           .toMatchObject({ id: asset.id });
-        expect(await repository.reconcileAssetUploadFailure(scope, intent.id, "2026-07-13T12:00:00.000Z"))
+        expect(await repository.listAssetUploadIntents(scope)).toEqual([]);
+        expect(await repository.reconcileAssetUploadFailure({
+          scope, intentId: intent.id, uploadToken: intent.uploadToken!, objectKey: intent.objectKey,
+          now: "2026-07-13T12:00:00.000Z"
+        }))
           .toMatchObject({ id: asset.id });
         expect(await repository.findAssetByObjectKey(scope, intent.objectKey)).toMatchObject({ id: asset.id });
         expect(await repository.findAssetByObjectKey(
@@ -741,9 +749,12 @@ function repositoryContract(
         const orphan = await repository.createAssetUploadIntent({
           ...scope, documentId: document.id, objectKey: "private/orphan.txt", displayName: "orphan.txt",
           kind: "file", mimeType: "text/plain", sizeBytes: 6,
-          nextAttemptAt: "2026-07-13T12:00:00.000Z"
+          uploadLeaseExpiresAt: "2026-07-13T12:15:00.000Z"
         });
-        expect(await repository.reconcileAssetUploadFailure(scope, orphan.id, "2026-07-13T12:00:00.000Z"))
+        expect(await repository.reconcileAssetUploadFailure({
+          scope, intentId: orphan.id, uploadToken: orphan.uploadToken!, objectKey: orphan.objectKey,
+          now: "2026-07-13T12:00:00.000Z"
+        }))
           .toBeNull();
         const claimed = await repository.claimNextAssetUploadCleanup("2026-07-13T12:00:00.000Z", 1_000);
         expect(claimed).toMatchObject({ id: orphan.id, status: "processing", attemptCount: 1 });
@@ -754,6 +765,65 @@ function repositoryContract(
         expect(await repository.completeAssetUploadCleanup({
           scope, intentId: orphan.id, claimToken: claimed!.claimToken!
         })).toBe(true);
+      });
+    });
+
+    it("never claims an actively leased upload and fences lease renewal by token", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const intent = await repository.createAssetUploadIntent({
+          ...scope,
+          documentId: document.id,
+          objectKey: "private/slow-upload.txt",
+          displayName: "slow-upload.txt",
+          kind: "file",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          uploadLeaseExpiresAt: "2026-07-13T12:10:00.000Z"
+        });
+        expect(await repository.claimNextAssetUploadCleanup("2026-07-13T12:09:59.999Z", 1_000)).toBeNull();
+        expect(await repository.renewAssetUploadIntentLease({
+          scope,
+          intentId: intent.id,
+          uploadToken: "stale-token",
+          uploadLeaseExpiresAt: "2026-07-13T12:20:00.000Z"
+        })).toBe(false);
+        expect(await repository.renewAssetUploadIntentLease({
+          scope,
+          intentId: intent.id,
+          uploadToken: intent.uploadToken!,
+          uploadLeaseExpiresAt: "2026-07-13T12:20:00.000Z"
+        })).toBe(true);
+        expect(await repository.claimNextAssetUploadCleanup("2026-07-13T12:10:00.000Z", 1_000)).toBeNull();
+        expect(await repository.claimNextAssetUploadCleanup("2026-07-13T12:20:00.000Z", 1_000))
+          .toMatchObject({ id: intent.id, status: "processing", uploadToken: null });
+      });
+    });
+
+    it("removes associated private upload metadata when an asset is tombstoned", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const objectKey = "private/associated-secret.txt";
+        await repository.createAssetUploadIntent({
+          ...scope,
+          documentId: document.id,
+          objectKey,
+          displayName: "associated-secret.txt",
+          kind: "file",
+          mimeType: "text/plain",
+          sizeBytes: 6,
+          uploadLeaseExpiresAt: "2026-07-13T12:20:00.000Z"
+        });
+        const asset = await repository.createAsset({
+          ...scope, documentId: document.id, kind: "file", displayName: "associated-secret.txt",
+          objectKey, sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "text/plain",
+          sizeBytes: 6, extractionStatus: "pending", extractedText: null, extractionMetadata: {},
+          lastErrorCode: null, attemptCount: 0, nextAttemptAt: null
+        });
+        await repository.tombstoneAssetForCleanup(scope, asset.id);
+        expect(await repository.listAssetUploadIntents(scope)).toEqual([]);
       });
     });
   });

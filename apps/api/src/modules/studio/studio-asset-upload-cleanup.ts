@@ -10,7 +10,8 @@ export function createStudioAssetUploadCleanupProcessor(options: {
   const now = options.now ?? (() => new Date().toISOString());
   const leaseMs = options.leaseMs ?? 120_000;
   return {
-    async processNext(): Promise<StudioAssetUploadIntent | null> {
+    async processNext(signal?: AbortSignal): Promise<StudioAssetUploadIntent | null> {
+      throwIfAborted(signal);
       const intent = await options.repository.claimNextAssetUploadCleanup(now(), leaseMs);
       if (!intent) return null;
       const scope = { workspaceId: intent.workspaceId, ownerProfileId: intent.ownerProfileId };
@@ -21,7 +22,8 @@ export function createStudioAssetUploadCleanupProcessor(options: {
       });
       if (existing) return intent;
       try {
-        await options.objectStorage.delete(intent.objectKey);
+        await options.objectStorage.delete(intent.objectKey, { signal });
+        throwIfAborted(signal);
       } catch (error) {
         const nextAttemptAt = new Date(
           new Date(now()).getTime() + Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, intent.attemptCount - 1))
@@ -35,6 +37,7 @@ export function createStudioAssetUploadCleanupProcessor(options: {
         });
         throw error;
       }
+      throwIfAborted(signal);
       const completed = await options.repository.completeAssetUploadCleanup({
         scope,
         intentId: intent.id,
@@ -43,4 +46,10 @@ export function createStudioAssetUploadCleanupProcessor(options: {
       return completed ? intent : null;
     }
   };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("STUDIO_ASSET_MAINTENANCE_ABORTED");
+  }
 }
