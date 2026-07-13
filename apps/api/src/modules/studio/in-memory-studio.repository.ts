@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
+  StudioCollection,
+  StudioCollectionMembership,
   StudioDocument,
   StudioDocumentVersion,
   StudioRepository
@@ -20,6 +22,14 @@ function cloneDocument(document: StudioDocument): StudioDocument {
 
 function cloneVersion(version: StudioDocumentVersion): StudioDocumentVersion {
   return structuredClone(version);
+}
+
+function cloneCollection(collection: StudioCollection): StudioCollection {
+  return structuredClone(collection);
+}
+
+function cloneMembership(membership: StudioCollectionMembership): StudioCollectionMembership {
+  return structuredClone(membership);
 }
 
 function normalizeTimestamp(value: unknown) {
@@ -75,6 +85,8 @@ export function createInMemoryStudioRepository(
 ): StudioRepository {
   const documents: StudioDocument[] = [];
   const versions: StudioDocumentVersion[] = [];
+  const collections: StudioCollection[] = [];
+  const memberships: StudioCollectionMembership[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -222,6 +234,125 @@ export function createInMemoryStudioRepository(
       );
       if (!documentExists) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       return appendStoredVersion(input);
+    },
+
+    async listCollections(scope) {
+      return collections
+        .filter((collection) => collection.workspaceId === scope.workspaceId)
+        .filter((collection) => collection.ownerProfileId === scope.ownerProfileId)
+        .map(cloneCollection);
+    },
+
+    async findCollection(scope, collectionId) {
+      const collection = collections.find((item) =>
+        item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.id === collectionId
+      );
+      return collection ? cloneCollection(collection) : null;
+    },
+
+    async createCollection(input) {
+      const timestamp = now();
+      const collection: StudioCollection = {
+        ...structuredClone(input),
+        id: `studio_collection_${randomUUID()}`,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      collections.push(collection);
+      return cloneCollection(collection);
+    },
+
+    async updateCollection(input) {
+      const index = collections.findIndex((collection) =>
+        collection.workspaceId === input.workspaceId
+        && collection.ownerProfileId === input.ownerProfileId
+        && collection.id === input.id
+      );
+      if (index === -1) throw new Error("STUDIO_COLLECTION_NOT_FOUND");
+      const persisted = collections[index]!;
+      const updated: StudioCollection = {
+        ...persisted,
+        name: input.name,
+        updatedAt: nextTimestamp(now, persisted.updatedAt)
+      };
+      collections[index] = updated;
+      return cloneCollection(updated);
+    },
+
+    async deleteCollection(scope, collectionId) {
+      const collectionIndex = collections.findIndex((collection) =>
+        collection.workspaceId === scope.workspaceId
+        && collection.ownerProfileId === scope.ownerProfileId
+        && collection.id === collectionId
+      );
+      if (collectionIndex === -1) return false;
+      collections.splice(collectionIndex, 1);
+      for (let index = memberships.length - 1; index >= 0; index -= 1) {
+        const membership = memberships[index]!;
+        if (
+          membership.workspaceId === scope.workspaceId
+          && membership.ownerProfileId === scope.ownerProfileId
+          && membership.collectionId === collectionId
+        ) memberships.splice(index, 1);
+      }
+      return true;
+    },
+
+    async addCollectionMembership(input) {
+      const collectionExists = collections.some((collection) =>
+        collection.workspaceId === input.workspaceId
+        && collection.ownerProfileId === input.ownerProfileId
+        && collection.id === input.collectionId
+      );
+      if (!collectionExists) throw new Error("STUDIO_COLLECTION_NOT_FOUND");
+      const documentExists = documents.some((document) =>
+        document.workspaceId === input.workspaceId
+        && document.ownerProfileId === input.ownerProfileId
+        && document.id === input.documentId
+      );
+      if (!documentExists) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const existing = memberships.find((membership) =>
+        membership.workspaceId === input.workspaceId
+        && membership.ownerProfileId === input.ownerProfileId
+        && membership.collectionId === input.collectionId
+        && membership.documentId === input.documentId
+      );
+      if (existing) return cloneMembership(existing);
+
+      const membership: StudioCollectionMembership = {
+        ...structuredClone(input),
+        id: `studio_collection_item_${randomUUID()}`,
+        createdAt: now()
+      };
+      memberships.push(membership);
+      return cloneMembership(membership);
+    },
+
+    async removeCollectionMembership(scope, collectionId, documentId) {
+      const index = memberships.findIndex((membership) =>
+        membership.workspaceId === scope.workspaceId
+        && membership.ownerProfileId === scope.ownerProfileId
+        && membership.collectionId === collectionId
+        && membership.documentId === documentId
+      );
+      if (index === -1) return false;
+      memberships.splice(index, 1);
+      return true;
+    },
+
+    async listDocumentCollections(scope, documentId) {
+      const collectionIds = new Set(memberships
+        .filter((membership) => membership.workspaceId === scope.workspaceId)
+        .filter((membership) => membership.ownerProfileId === scope.ownerProfileId)
+        .filter((membership) => membership.documentId === documentId)
+        .map((membership) => membership.collectionId));
+      return collections
+        .filter((collection) => collection.workspaceId === scope.workspaceId)
+        .filter((collection) => collection.ownerProfileId === scope.ownerProfileId)
+        .filter((collection) => collectionIds.has(collection.id))
+        .map(cloneCollection);
     }
   };
 }

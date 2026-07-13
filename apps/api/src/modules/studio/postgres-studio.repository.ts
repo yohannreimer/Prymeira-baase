@@ -1,5 +1,7 @@
 import type {
   StudioCaptureMode,
+  StudioCollection,
+  StudioCollectionMembership,
   StudioDocument,
   StudioDocumentStatus,
   StudioDocumentVersion,
@@ -45,6 +47,24 @@ type StudioDocumentVersionRow = {
   created_at: string | Date;
 };
 
+type StudioCollectionRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  name: string;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
+type StudioCollectionMembershipRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  collection_id: string;
+  document_id: string;
+  created_at: string | Date;
+};
+
 type DocumentCursor = {
   updatedAt: string;
   id: string;
@@ -85,6 +105,28 @@ function versionFromRow(row: StudioDocumentVersionRow): StudioDocumentVersion {
   };
 }
 
+function collectionFromRow(row: StudioCollectionRow): StudioCollection {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    name: row.name,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
+function membershipFromRow(row: StudioCollectionMembershipRow): StudioCollectionMembership {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    collectionId: row.collection_id,
+    documentId: row.document_id,
+    createdAt: iso(row.created_at)
+  };
+}
+
 function encodeCursor(document: StudioDocument) {
   return Buffer.from(JSON.stringify({ updatedAt: document.updatedAt, id: document.id })).toString("base64url");
 }
@@ -121,6 +163,27 @@ async function findDocument(
     [scope.workspaceId, scope.ownerProfileId, documentId]
   );
   return result.rows[0] ? documentFromRow(result.rows[0]) : null;
+}
+
+async function findCollection(
+  db: OperationalPool | OperationalClient,
+  scope: StudioOwnerScope,
+  collectionId: string
+) {
+  const result = await db.query<StudioCollectionRow>(
+    `SELECT * FROM studio_collections
+     WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+    [scope.workspaceId, scope.ownerProfileId, collectionId]
+  );
+  return result.rows[0] ? collectionFromRow(result.rows[0]) : null;
+}
+
+function foreignKeyDomainError(error: unknown) {
+  const candidate = error as { code?: string; constraint?: string };
+  if (candidate?.code !== "23503") return null;
+  return candidate.constraint?.includes("document")
+    ? new Error("STUDIO_DOCUMENT_NOT_FOUND")
+    : new Error("STUDIO_COLLECTION_NOT_FOUND");
 }
 
 async function insertVersion(
@@ -287,6 +350,124 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         if (!document.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
         return insertVersion(client, input);
       });
+    },
+
+    async listCollections(scope) {
+      const result = await db.query<StudioCollectionRow>(
+        `SELECT * FROM studio_collections
+         WHERE workspace_id=$1 AND owner_profile_id=$2
+         ORDER BY created_at ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId]
+      );
+      return result.rows.map(collectionFromRow);
+    },
+
+    findCollection(scope, collectionId) {
+      return findCollection(db, scope, collectionId);
+    },
+
+    async createCollection(input) {
+      const result = await db.query<StudioCollectionRow>(
+        `INSERT INTO studio_collections (id,workspace_id,owner_profile_id,name)
+         VALUES ($1,$2,$3,$4)
+         RETURNING *`,
+        [generatedId("studio_collection"), input.workspaceId, input.ownerProfileId, input.name]
+      );
+      return collectionFromRow(result.rows[0]!);
+    },
+
+    async updateCollection(input) {
+      const result = await db.query<StudioCollectionRow>(
+        `UPDATE studio_collections SET name=$4,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+         RETURNING *`,
+        [input.workspaceId, input.ownerProfileId, input.id, input.name]
+      );
+      if (!result.rows[0]) throw new Error("STUDIO_COLLECTION_NOT_FOUND");
+      return collectionFromRow(result.rows[0]);
+    },
+
+    async deleteCollection(scope, collectionId) {
+      const result = await db.query<{ id: string }>(
+        `DELETE FROM studio_collections
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+         RETURNING id`,
+        [scope.workspaceId, scope.ownerProfileId, collectionId]
+      );
+      return Boolean(result.rows[0]);
+    },
+
+    async addCollectionMembership(input) {
+      try {
+        return await withOperationalTransaction(db, async (client) => {
+          const collection = await client.query<{ id: string }>(
+            `SELECT id FROM studio_collections
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             FOR KEY SHARE`,
+            [input.workspaceId, input.ownerProfileId, input.collectionId]
+          );
+          if (!collection.rows[0]) throw new Error("STUDIO_COLLECTION_NOT_FOUND");
+          const document = await client.query<{ id: string }>(
+            `SELECT id FROM studio_documents
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             FOR KEY SHARE`,
+            [input.workspaceId, input.ownerProfileId, input.documentId]
+          );
+          if (!document.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+
+          const inserted = await client.query<StudioCollectionMembershipRow>(
+            `INSERT INTO studio_collection_items
+               (id,workspace_id,owner_profile_id,collection_id,document_id)
+             VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT (workspace_id,owner_profile_id,collection_id,document_id) DO NOTHING
+             RETURNING *`,
+            [
+              generatedId("studio_collection_item"),
+              input.workspaceId,
+              input.ownerProfileId,
+              input.collectionId,
+              input.documentId
+            ]
+          );
+          if (inserted.rows[0]) return membershipFromRow(inserted.rows[0]);
+
+          const existing = await client.query<StudioCollectionMembershipRow>(
+            `SELECT * FROM studio_collection_items
+             WHERE workspace_id=$1 AND owner_profile_id=$2
+               AND collection_id=$3 AND document_id=$4`,
+            [input.workspaceId, input.ownerProfileId, input.collectionId, input.documentId]
+          );
+          if (!existing.rows[0]) throw new Error("STUDIO_COLLECTION_MEMBERSHIP_NOT_FOUND");
+          return membershipFromRow(existing.rows[0]);
+        });
+      } catch (error) {
+        throw foreignKeyDomainError(error) ?? error;
+      }
+    },
+
+    async removeCollectionMembership(scope, collectionId, documentId) {
+      const result = await db.query<{ id: string }>(
+        `DELETE FROM studio_collection_items
+         WHERE workspace_id=$1 AND owner_profile_id=$2
+           AND collection_id=$3 AND document_id=$4
+         RETURNING id`,
+        [scope.workspaceId, scope.ownerProfileId, collectionId, documentId]
+      );
+      return Boolean(result.rows[0]);
+    },
+
+    async listDocumentCollections(scope, documentId) {
+      const result = await db.query<StudioCollectionRow>(
+        `SELECT collection.* FROM studio_collections collection
+         JOIN studio_collection_items item
+           ON item.workspace_id=collection.workspace_id
+          AND item.owner_profile_id=collection.owner_profile_id
+          AND item.collection_id=collection.id
+         WHERE item.workspace_id=$1 AND item.owner_profile_id=$2 AND item.document_id=$3
+         ORDER BY collection.created_at ASC,collection.id ASC`,
+        [scope.workspaceId, scope.ownerProfileId, documentId]
+      );
+      return result.rows.map(collectionFromRow);
     }
   };
 }

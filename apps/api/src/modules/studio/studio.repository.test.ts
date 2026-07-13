@@ -300,6 +300,84 @@ function repositoryContract(
         )).map((version) => version.versionNumber)).toEqual([1, 2, 3]);
       });
     });
+
+    it("persists owner-scoped collections and idempotent many-to-many membership", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const strategy = await repository.createCollection({ ...scope, name: "Estratégia" });
+        const decisions = await repository.createCollection({ ...scope, name: "Decisões" });
+        const privateCollection = await repository.createCollection({
+          workspaceId: "workspace_a",
+          ownerProfileId: "owner_b",
+          name: "Privada"
+        });
+
+        expect(await repository.listCollections(scope)).toEqual([strategy, decisions]);
+        expect(await repository.findCollection(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" },
+          strategy.id
+        )).toBeNull();
+
+        const membership = await repository.addCollectionMembership({
+          ...scope,
+          collectionId: strategy.id,
+          documentId: document.id
+        });
+        expect(await repository.addCollectionMembership({
+          ...scope,
+          collectionId: strategy.id,
+          documentId: document.id
+        })).toEqual(membership);
+        await repository.addCollectionMembership({
+          ...scope,
+          collectionId: decisions.id,
+          documentId: document.id
+        });
+        expect((await repository.listDocumentCollections(scope, document.id)).map((item) => item.id))
+          .toEqual([strategy.id, decisions.id]);
+
+        await expect(repository.addCollectionMembership({
+          ...scope,
+          collectionId: privateCollection.id,
+          documentId: document.id
+        })).rejects.toThrow("STUDIO_COLLECTION_NOT_FOUND");
+        await expect(repository.addCollectionMembership({
+          ...scope,
+          collectionId: strategy.id,
+          documentId: "studio_document_missing"
+        })).rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
+
+        expect(await repository.removeCollectionMembership(
+          scope, strategy.id, document.id
+        )).toBe(true);
+        expect(await repository.removeCollectionMembership(
+          scope, strategy.id, document.id
+        )).toBe(false);
+        expect(await repository.deleteCollection(scope, decisions.id)).toBe(true);
+        expect(await repository.deleteCollection(scope, decisions.id)).toBe(false);
+        expect(await repository.findDocument(scope, document.id)).toMatchObject({ id: document.id });
+        expect(await repository.listDocumentCollections(scope, document.id)).toEqual([]);
+      });
+    });
+
+    it("updates collection names without exposing cross-owner ids or mutable state", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const created = await repository.createCollection({ ...scope, name: "Original" });
+        created.name = "external mutation";
+        const persisted = await repository.findCollection(scope, created.id);
+        expect(persisted?.name).toBe("Original");
+
+        const updated = await repository.updateCollection({ ...persisted!, name: "Renomeada" });
+        expect(updated.name).toBe("Renomeada");
+        await expect(repository.updateCollection({
+          ...updated,
+          ownerProfileId: "owner_b",
+          name: "Vazada"
+        })).rejects.toThrow("STUDIO_COLLECTION_NOT_FOUND");
+      });
+    });
   });
 }
 
