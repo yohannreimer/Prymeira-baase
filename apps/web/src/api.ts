@@ -892,7 +892,8 @@ function optionalBootstrapValue<T>(request: (signal: AbortSignal) => Promise<T>,
 export async function loadBaaseWorkspace(
   role: UiRole,
   date: string,
-  fetcher: Fetcher = fetch
+  fetcher: Fetcher = fetch,
+  overviewPeriod = operationalOverviewPeriod(date)
 ): Promise<BaaseWorkspaceBundle> {
   const headers = createBaaseHeaders(role);
   const optionalResultsPromise = Promise.all([
@@ -908,7 +909,7 @@ export async function loadBaaseWorkspace(
     role === "func"
       ? Promise.resolve<ApiOperationalOverview | null>(null)
       : optionalBootstrapValue(
-        (signal) => readOperationalOverview(role, operationalOverviewPeriod(date), fetcher, signal),
+        (signal) => readOperationalOverview(role, overviewPeriod, fetcher, signal),
         null
       ),
     role === "func"

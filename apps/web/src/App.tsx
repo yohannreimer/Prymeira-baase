@@ -2194,10 +2194,22 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }
 
   async function reloadWorkspaceBundle() {
-    const bundle = await loadBaaseWorkspace(role, operationalDate);
+    const bundle = await loadBaaseWorkspace(role, operationalDate, fetch, operationalPeriod);
     clearLocalWorkspaceOverrides();
     setSubmittedApiTasks({});
     setApiBundle(bundle);
+    setOperationalOverview(bundle.operationalOverview);
+    setOperationalOverviewStatus("idle");
+    if (operationalPersonId) {
+      if (bundle.people.some((person) => person.id === operationalPersonId)) {
+        setPersonOperationalOverview(null);
+        readPersonOverviewForPeriod(operationalPersonId, operationalPeriod);
+      } else {
+        setOperationalPersonId(null);
+        setPersonOperationalOverview(null);
+        setPersonOperationalOverviewStatus("idle");
+      }
+    }
     setApiStatus("ready");
     return bundle;
   }
@@ -3568,6 +3580,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               comRead={comRead}
               setComRead={setComRead}
               selectedAnnouncementId={selectedOperationalAnnouncementId}
+              onSelectAnnouncement={() => setSelectedOperationalAnnouncementId(null)}
             />
           )}
           {screen === "modelos" && (
@@ -5294,7 +5307,8 @@ function AnnouncementsPage({
   actionBusy,
   comRead,
   setComRead,
-  selectedAnnouncementId
+  selectedAnnouncementId,
+  onSelectAnnouncement
 }: {
   announcements: ApiAnnouncement[];
   isLiveWorkspace: boolean;
@@ -5309,6 +5323,7 @@ function AnnouncementsPage({
   comRead: boolean;
   setComRead: (read: boolean) => void;
   selectedAnnouncementId: string | null;
+  onSelectAnnouncement: () => void;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const fallbackAnnouncements = [
@@ -5339,7 +5354,10 @@ function AnnouncementsPage({
         announcementTypeLabel(announcement.type),
         announcement.receipt?.status === "pending" ? "Pendente" : announcement.status === "published" ? "Lido" : statusLabel(announcement.status),
         index === safeIndex
-      ])} onSelect={setSelectedIndex} />
+      ])} onSelect={(index) => {
+        setSelectedIndex(index);
+        onSelectAnnouncement();
+      }} />
       <section className="panel detail-panel announcement-detail">
         {selectedAnnouncement ? (
           <>

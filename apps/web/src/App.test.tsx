@@ -985,6 +985,27 @@ describe("Baase React app shell", () => {
           })
         }), { status: 201 });
       }
+      if (url === "/api/operational-overview?from=2026-07-01&to=2026-07-07") {
+        return new Response(JSON.stringify({
+          from: "2026-07-01",
+          to: "2026-07-07",
+          metrics: { lateTasks: completed ? 0 : 1, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 },
+          lateTasks: completed ? [] : [{
+            id: "task_before_onboarding",
+            profileId: "person_peterson",
+            profileName: "Peterson",
+            areaId: "area_holand",
+            areaName: "Implantação Técnica",
+            title: "Pendência antes do onboarding",
+            dueDate: "2026-07-07",
+            daysLate: 1
+          }],
+          openTasks: [],
+          awaitingApprovals: [],
+          pendingRequiredAnnouncements: [],
+          trends: { people: [], areas: [] }
+        }), { status: 200 });
+      }
 
       const dataByUrl: Record<string, unknown> = {
         "/api/me": {
@@ -1018,6 +1039,8 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ir para o Painel" }));
 
     expect(await screen.findAllByText("Holand")).not.toHaveLength(0);
+    expect(await screen.findByText("Nenhuma pendência neste período")).toBeInTheDocument();
+    expect(screen.queryByText("Pendência antes do onboarding")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: /Mapa da Empresa/ }));
     expect(await screen.findByText("Implantação Técnica")).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/me", expect.anything()));
@@ -1313,6 +1336,9 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Abrir comunicado: Mudança obrigatória" }));
     expect(await screen.findByRole("heading", { name: "Mudança obrigatória" })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/announcements", expect.objectContaining({ headers: expect.anything() }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Outro comunicado/ }));
+    expect(await screen.findByRole("heading", { name: "Outro comunicado" })).toBeInTheDocument();
   });
 
   it("switches to the manager and employee homes using React state", () => {
