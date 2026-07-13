@@ -82,6 +82,28 @@ describe("operational schema", () => {
     ]));
   });
 
+  it("rejects Studio assets that reference a document in another owner scope", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_assets' and column_name='document_id'`
+    );
+    expect(columns.rows).toEqual([{ column_name: "document_id" }]);
+
+    await db.query(
+      `insert into studio_documents
+        (id, workspace_id, owner_profile_id, body_json, body_text, capture_mode)
+       values ('document_b', 'workspace_a', 'owner_b', '{}', 'Privado', 'text')`
+    );
+    await expect(db.query(
+      `insert into studio_assets
+        (id, workspace_id, owner_profile_id, document_id, kind, display_name,
+         object_key, mime_type, size_bytes)
+       values ('asset_a', 'workspace_a', 'owner_a', 'document_b', 'file', 'Plano.pdf',
+         'studio/asset-a', 'application/pdf', 42)`
+    )).rejects.toThrow();
+  });
+
   it("migrates legacy people to the safe access scope for their role", async () => {
     await ensureOperationalSchemaThrough(db, 7);
     await db.query("insert into areas (id,workspace_id,name) values ('area_ops','workspace_a','Operações')");

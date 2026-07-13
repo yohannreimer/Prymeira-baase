@@ -591,6 +591,7 @@ const migrations: Migration[] = [{
       id TEXT NOT NULL,
       workspace_id TEXT NOT NULL,
       owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN ('audio','image','file','link_snapshot')),
       display_name TEXT NOT NULL,
       object_key TEXT NOT NULL,
@@ -599,7 +600,9 @@ const migrations: Migration[] = [{
       size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (workspace_id, owner_profile_id, id)
+      PRIMARY KEY (workspace_id, owner_profile_id, id),
+      FOREIGN KEY (workspace_id, owner_profile_id, document_id)
+        REFERENCES studio_documents(workspace_id, owner_profile_id, id) ON DELETE CASCADE
     );
 
     CREATE TABLE studio_collections (
@@ -636,6 +639,8 @@ const migrations: Migration[] = [{
       WHERE is_focused = TRUE;
     CREATE INDEX studio_documents_owner_status_idx
       ON studio_documents (workspace_id, owner_profile_id, status, updated_at DESC);
+    CREATE INDEX studio_assets_document_idx
+      ON studio_assets (workspace_id, owner_profile_id, document_id, created_at);
     CREATE INDEX studio_collection_items_collection_idx
       ON studio_collection_items (workspace_id, owner_profile_id, collection_id, created_at);
     CREATE INDEX studio_collection_items_document_idx

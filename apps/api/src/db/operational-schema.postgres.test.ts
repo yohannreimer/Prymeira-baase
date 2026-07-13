@@ -117,6 +117,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "studio_documents_owner_inbox_state_idx",
         "studio_documents_owner_focused_idx",
         "studio_documents_owner_status_idx",
+        "studio_assets_document_idx",
         "studio_collection_items_collection_idx"
       ]));
     });
@@ -139,6 +140,25 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         `insert into studio_collection_items
           (id, workspace_id, owner_profile_id, collection_id, document_id)
          values ('item_cross_owner', 'workspace_a', 'owner_a', 'collection_a', 'document_b')`
+      )).rejects.toMatchObject({ code: "23503" });
+    });
+  });
+
+  it("rejects assets that reference documents across owner scopes", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      await pool.query(
+        `insert into studio_documents
+          (id, workspace_id, owner_profile_id, body_json, body_text, capture_mode)
+         values ('document_b', 'workspace_a', 'owner_b', '{}'::jsonb, 'Privado', 'text')`
+      );
+
+      await expect(pool.query(
+        `insert into studio_assets
+          (id, workspace_id, owner_profile_id, document_id, kind, display_name,
+           object_key, mime_type, size_bytes)
+         values ('asset_a', 'workspace_a', 'owner_a', 'document_b', 'file', 'Plano.pdf',
+           'studio/asset-a', 'application/pdf', 42)`
       )).rejects.toMatchObject({ code: "23503" });
     });
   });
