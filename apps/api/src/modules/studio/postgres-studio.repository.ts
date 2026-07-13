@@ -91,9 +91,20 @@ function encodeCursor(document: StudioDocument) {
 
 function decodeCursor(cursor: string): DocumentCursor {
   try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<DocumentCursor>;
-    if (typeof value.updatedAt !== "string" || typeof value.id !== "string") throw new Error();
-    return { updatedAt: value.updatedAt, id: value.id };
+    if (!cursor || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error();
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error();
+    const value = JSON.parse(decoded.toString("utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    if (Object.keys(value).length !== 2) throw new Error();
+    const candidate = value as Partial<DocumentCursor>;
+    if (typeof candidate.updatedAt !== "string" || typeof candidate.id !== "string" || !candidate.id) {
+      throw new Error();
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(candidate.updatedAt)) throw new Error();
+    const timestamp = new Date(candidate.updatedAt);
+    if (Number.isNaN(timestamp.getTime()) || timestamp.toISOString() !== candidate.updatedAt) throw new Error();
+    return { updatedAt: candidate.updatedAt, id: candidate.id };
   } catch {
     throw new Error("STUDIO_DOCUMENT_CURSOR_INVALID");
   }

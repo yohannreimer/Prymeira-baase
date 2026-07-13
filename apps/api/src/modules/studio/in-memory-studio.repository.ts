@@ -44,9 +44,20 @@ function encodeCursor(document: StudioDocument) {
 
 function decodeCursor(cursor: string): DocumentCursor {
   try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<DocumentCursor>;
-    if (typeof value.updatedAt !== "string" || typeof value.id !== "string") throw new Error();
-    return { updatedAt: value.updatedAt, id: value.id };
+    if (!cursor || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error();
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error();
+    const value = JSON.parse(decoded.toString("utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    if (Object.keys(value).length !== 2) throw new Error();
+    const candidate = value as Partial<DocumentCursor>;
+    if (typeof candidate.updatedAt !== "string" || typeof candidate.id !== "string" || !candidate.id) {
+      throw new Error();
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(candidate.updatedAt)) throw new Error();
+    const timestamp = new Date(candidate.updatedAt);
+    if (Number.isNaN(timestamp.getTime()) || timestamp.toISOString() !== candidate.updatedAt) throw new Error();
+    return { updatedAt: candidate.updatedAt, id: candidate.id };
   } catch {
     throw new Error("STUDIO_DOCUMENT_CURSOR_INVALID");
   }
@@ -60,7 +71,8 @@ export function createInMemoryStudioRepository(
   const now = options.now ?? (() => new Date().toISOString());
 
   function appendStoredVersion(
-    input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">
+    input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">,
+    minimumCreatedAt?: string
   ) {
     const versionNumber = versions.reduce((maximum, version) => {
       if (
@@ -70,11 +82,28 @@ export function createInMemoryStudioRepository(
       ) return maximum;
       return Math.max(maximum, version.versionNumber);
     }, 0) + 1;
+    let previousVersion: StudioDocumentVersion | undefined;
+    for (let index = versions.length - 1; index >= 0; index -= 1) {
+      const candidate = versions[index]!;
+      if (
+        candidate.workspaceId === input.workspaceId
+        && candidate.ownerProfileId === input.ownerProfileId
+        && candidate.documentId === input.documentId
+      ) {
+        previousVersion = candidate;
+        break;
+      }
+    }
+    const timestamp = new Date(Math.max(
+      new Date(now()).getTime(),
+      minimumCreatedAt ? new Date(minimumCreatedAt).getTime() : Number.NEGATIVE_INFINITY,
+      previousVersion ? new Date(previousVersion.createdAt).getTime() + 1 : Number.NEGATIVE_INFINITY
+    )).toISOString();
     const version: StudioDocumentVersion = {
       ...structuredClone(input),
       id: `studio_version_${randomUUID()}`,
       versionNumber,
-      createdAt: now()
+      createdAt: timestamp
     };
     versions.push(version);
     return cloneVersion(version);
@@ -127,7 +156,7 @@ export function createInMemoryStudioRepository(
         origin: "user",
         actorProfileId: document.ownerProfileId,
         aiRunId: null
-      });
+      }, document.createdAt);
       return cloneDocument(document);
     },
 
@@ -164,7 +193,7 @@ export function createInMemoryStudioRepository(
         origin: "user",
         actorProfileId: updated.ownerProfileId,
         aiRunId: null
-      });
+      }, updated.updatedAt);
       return cloneDocument(updated);
     },
 

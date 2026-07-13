@@ -32,6 +32,10 @@ function documentInput(
   };
 }
 
+function encodedCursor(value: unknown) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
 function repositoryContract(
   name: string,
   createFixture: () => Promise<RepositoryFixture>,
@@ -120,6 +124,25 @@ function repositoryContract(
       });
     });
 
+    it("rejects semantically invalid cursors with the domain error", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const invalidCursors = [
+          "%%%",
+          Buffer.from("{").toString("base64url"),
+          encodedCursor([]),
+          encodedCursor({ updatedAt: "2026-07-13T12:00:00.000Z", id: "document_a", extra: true }),
+          encodedCursor({ updatedAt: "not-a-date", id: "document_a" }),
+          encodedCursor({ updatedAt: "2026-07-13T12:00:00Z", id: "document_a" }),
+          encodedCursor({ updatedAt: "2026-07-13T12:00:00.000Z", id: "" })
+        ];
+        for (const cursor of invalidCursors) {
+          await expect(repository.listDocuments(scope, { limit: 10, cursor }))
+            .rejects.toThrowError(/^STUDIO_DOCUMENT_CURSOR_INVALID$/);
+        }
+      });
+    });
+
     it("updates atomically at the current revision and appends one ordered version", async () => {
       await withRepository(async (repository) => {
         const created = await repository.createDocument(documentInput());
@@ -159,6 +182,28 @@ function repositoryContract(
           { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
           created.id
         )).toHaveLength(2);
+      });
+    });
+
+    it("allows exactly one concurrent update for the same expected revision", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const results = await Promise.allSettled([
+          repository.updateDocument({ ...created, bodyText: "update_a" }, created.revision),
+          repository.updateDocument({ ...created, bodyText: "update_b" }, created.revision)
+        ]);
+
+        const fulfilled = results.filter((result) => result.status === "fulfilled");
+        const rejected = results.filter((result) => result.status === "rejected");
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+          message: "STUDIO_DOCUMENT_STALE"
+        });
+        expect((await repository.listVersions(
+          { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
+          created.id
+        )).map((version) => version.versionNumber)).toEqual([1, 2]);
       });
     });
 
@@ -232,6 +277,29 @@ function repositoryContract(
         )).toEqual([]);
       });
     });
+
+    it("numbers concurrent explicit appends uniquely and sequentially", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const append = (bodyText: string) => repository.appendVersion({
+          workspaceId: created.workspaceId,
+          ownerProfileId: created.ownerProfileId,
+          documentId: created.id,
+          bodyJson: { type: "doc", bodyText },
+          bodyText,
+          origin: "user",
+          actorProfileId: created.ownerProfileId,
+          aiRunId: null
+        });
+
+        const appended = await Promise.all([append("append_a"), append("append_b")]);
+        expect(appended.map((version) => version.versionNumber).sort()).toEqual([2, 3]);
+        expect((await repository.listVersions(
+          { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
+          created.id
+        )).map((version) => version.versionNumber)).toEqual([1, 2, 3]);
+      });
+    });
   });
 }
 
@@ -240,27 +308,69 @@ repositoryContract("in-memory", async () => ({
   async cleanup() {}
 }));
 
+describe("in-memory StudioRepository clock behavior", () => {
+  it("keeps version timestamps monotonic when the clock is frozen", async () => {
+    const fixedTimestamp = "2026-07-13T12:00:00.000Z";
+    const repository = createInMemoryStudioRepository({ now: () => fixedTimestamp });
+    const created = await repository.createDocument(documentInput());
+    const updated = await repository.updateDocument(
+      { ...created, bodyText: "updated" },
+      created.revision
+    );
+    await repository.appendVersion({
+      workspaceId: created.workspaceId,
+      ownerProfileId: created.ownerProfileId,
+      documentId: created.id,
+      bodyJson: { type: "doc", content: [] },
+      bodyText: "appended",
+      origin: "user",
+      actorProfileId: created.ownerProfileId,
+      aiRunId: null
+    });
+
+    const versions = await repository.listVersions(
+      { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
+      created.id
+    );
+    expect(versions.map((version) => version.createdAt)).toEqual([
+      "2026-07-13T12:00:00.000Z",
+      "2026-07-13T12:00:00.001Z",
+      "2026-07-13T12:00:00.002Z"
+    ]);
+    expect(versions[1]!.createdAt >= updated.updatedAt).toBe(true);
+  });
+});
+
 repositoryContract("PostgreSQL", async () => {
   if (!testDatabaseUrl) throw new Error("TEST_DATABASE_URL is required");
   const admin = new Pool({ connectionString: testDatabaseUrl });
   const schema = `baase_studio_repository_${process.pid}_${Date.now()}_${schemaSequence++}`;
-  await admin.query(`CREATE SCHEMA ${schema}`);
-  const pool = new Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${schema}` });
+  let pool: Pool | undefined;
+  let schemaCreated = false;
+  const cleanup = async () => {
+    try {
+      await pool?.end();
+    } finally {
+      try {
+        if (schemaCreated) await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      } finally {
+        await admin.end();
+      }
+    }
+  };
   try {
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    schemaCreated = true;
+    pool = new Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${schema}` });
     await ensureOperationalSchema(pool);
   } catch (error) {
-    await pool.end();
-    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin.end();
+    await cleanup();
     throw error;
   }
+  if (!pool) throw new Error("PostgreSQL Studio repository fixture failed to initialize");
   return {
     repository: createPostgresStudioRepository(pool),
-    async cleanup() {
-      await pool.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      await admin.end();
-    }
+    cleanup
   };
 }, !testDatabaseUrl);
 
