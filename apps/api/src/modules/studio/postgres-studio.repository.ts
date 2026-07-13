@@ -137,6 +137,8 @@ type StudioAssetUploadIntentRow = {
   last_error_code: string | null;
   upload_token: string | null;
   upload_lease_expires_at: string | Date | null;
+  storage_upload_id: string | null;
+  storage_session_state: StudioAssetUploadIntent["storageSessionState"];
   claim_token: string | null;
   lease_expires_at: string | Date | null;
   created_at: string | Date;
@@ -274,6 +276,8 @@ function uploadIntentFromRow(row: StudioAssetUploadIntentRow): StudioAssetUpload
     lastErrorCode: row.last_error_code,
     uploadToken: row.upload_token,
     uploadLeaseExpiresAt: row.upload_lease_expires_at ? iso(row.upload_lease_expires_at) : null,
+    storageUploadId: row.storage_upload_id,
+    storageSessionState: row.storage_session_state,
     claimToken: row.claim_token,
     leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null,
     createdAt: iso(row.created_at),
@@ -812,6 +816,20 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       }
     },
 
+    async attachAssetUploadSession(input) {
+      const result = await db.query<{ id: string }>(
+        `UPDATE studio_asset_upload_intents
+         SET storage_upload_id=$5,storage_session_state='active',updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND status='uploading' AND upload_token=$4
+           AND storage_session_state='creating' AND storage_upload_id IS NULL
+         RETURNING id`,
+        [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId,
+          input.uploadToken, input.storageUploadId]
+      );
+      return Boolean(result.rows[0]);
+    },
+
     async finalizeAssetUpload(input) {
       return withOperationalTransaction(db, async (client) => {
         const intentResult = await client.query<StudioAssetUploadIntentRow>(
@@ -833,7 +851,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           || input.asset.documentId !== intent.document_id || input.asset.objectKey !== intent.object_key) {
           throw new Error("STUDIO_ASSET_UPLOAD_INTENT_MISMATCH");
         }
-        if (intent.status !== "uploading" || intent.upload_token !== input.uploadToken) {
+        if (intent.status !== "uploading" || intent.upload_token !== input.uploadToken
+          || intent.storage_session_state !== "active" || intent.storage_upload_id === null) {
           throw new Error("STUDIO_ASSET_UPLOAD_INTENT_STALE");
         }
         const existing = await client.query<StudioAssetRow>(
@@ -904,6 +923,9 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
         }
         if (intent.object_key !== input.objectKey) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_MISMATCH");
+        if (input.storageUploadId && intent.storage_upload_id && intent.storage_upload_id !== input.storageUploadId) {
+          throw new Error("STUDIO_ASSET_UPLOAD_SESSION_MISMATCH");
+        }
         const existing = await client.query<StudioAssetRow>(
           `SELECT * FROM studio_assets
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
@@ -921,9 +943,11 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           await client.query(
             `UPDATE studio_asset_upload_intents SET status='cleanup_pending',next_attempt_at=$4,
                last_error_code='STUDIO_ASSET_UPLOAD_INCOMPLETE',upload_token=NULL,
-               upload_lease_expires_at=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+               upload_lease_expires_at=NULL,claim_token=NULL,lease_expires_at=NULL,
+               storage_upload_id=COALESCE(storage_upload_id,$6),storage_session_state='abort_pending',updated_at=NOW()
              WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND upload_token=$5`,
-            [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId, input.now, input.uploadToken]
+            [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId, input.now,
+              input.uploadToken, input.storageUploadId ?? null]
           );
         }
         return null;
@@ -969,7 +993,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const claimed = await client.query<StudioAssetUploadIntentRow>(
           `UPDATE studio_asset_upload_intents SET status='processing',attempt_count=attempt_count+1,
              next_attempt_at=NULL,upload_token=NULL,upload_lease_expires_at=NULL,
-             claim_token=$4,lease_expires_at=$5,updated_at=NOW()
+             storage_session_state='abort_pending',claim_token=$4,lease_expires_at=$5,updated_at=NOW()
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
           [intent.workspace_id, intent.owner_profile_id, intent.id, token, leaseExpiresAt]
         );

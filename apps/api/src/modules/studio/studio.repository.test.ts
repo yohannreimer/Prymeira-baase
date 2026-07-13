@@ -728,6 +728,12 @@ function repositoryContract(
           mimeType: "text/plain", sizeBytes: 7, extractionStatus: "pending" as const,
           extractedText: null, extractionMetadata: {}, lastErrorCode: null, attemptCount: 0, nextAttemptAt: null
         };
+        expect(await repository.attachAssetUploadSession({
+          scope, intentId: intent.id, uploadToken: intent.uploadToken!, storageUploadId: "multipart-upload-1"
+        })).toBe(true);
+        expect(await repository.attachAssetUploadSession({
+          scope, intentId: intent.id, uploadToken: intent.uploadToken!, storageUploadId: "multipart-upload-2"
+        })).toBe(false);
         const asset = await repository.finalizeAssetUpload({
           scope, intentId: intent.id, uploadToken: intent.uploadToken!, asset: assetInput
         });

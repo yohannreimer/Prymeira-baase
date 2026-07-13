@@ -8,6 +8,7 @@ export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "
 export type StudioAssetLifecycleStatus = "active" | "deleting";
 export type StudioAssetCleanupStatus = "pending" | "processing" | "failed";
 export type StudioAssetUploadIntentStatus = "uploading" | "cleanup_pending" | "processing" | "failed";
+export type StudioAssetStorageSessionState = "creating" | "active" | "abort_pending";
 export const STUDIO_ASSET_MAX_ATTEMPTS = 5;
 
 export type CreateStudioDocument = {
@@ -153,6 +154,8 @@ export type StudioAssetUploadIntent = StudioOwnerScope & {
   lastErrorCode: string | null;
   uploadToken: string | null;
   uploadLeaseExpiresAt: string | null;
+  storageUploadId: string | null;
+  storageSessionState: StudioAssetStorageSessionState;
   claimToken: string | null;
   leaseExpiresAt: string | null;
   createdAt: string;
@@ -239,8 +242,15 @@ export type StudioRepository = {
   findAssetByObjectKey(scope: StudioOwnerScope, objectKey: string): Promise<StudioAsset | null>;
   createAssetUploadIntent(input: Omit<StudioAssetUploadIntent,
     "id" | "status" | "assetId" | "attemptCount" | "nextAttemptAt" | "lastErrorCode"
-    | "uploadToken" | "uploadLeaseExpiresAt" | "claimToken" | "leaseExpiresAt" | "createdAt" | "updatedAt"
+    | "uploadToken" | "uploadLeaseExpiresAt" | "storageUploadId" | "storageSessionState"
+    | "claimToken" | "leaseExpiresAt" | "createdAt" | "updatedAt"
   > & { uploadLeaseExpiresAt: string }): Promise<StudioAssetUploadIntent>;
+  attachAssetUploadSession(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    uploadToken: string;
+    storageUploadId: string;
+  }): Promise<boolean>;
   finalizeAssetUpload(input: {
     scope: StudioOwnerScope;
     intentId: string;
@@ -258,6 +268,7 @@ export type StudioRepository = {
     intentId: string;
     uploadToken: string;
     objectKey: string;
+    storageUploadId?: string;
     now: string;
   }): Promise<StudioAsset | null>;
   listAssetUploadIntents(scope: StudioOwnerScope): Promise<StudioAssetUploadIntent[]>;

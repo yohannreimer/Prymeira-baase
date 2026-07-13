@@ -74,6 +74,7 @@ export type BuildAppOptions = {
   studioUploadPutTimeoutMs?: number;
   studioUploadLeaseMs?: number;
   studioUploadLeaseHeartbeatMs?: number;
+  studioUploadAbortTimeoutMs?: number;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -305,6 +306,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     uploadPutTimeoutMs: options.studioUploadPutTimeoutMs,
     uploadLeaseMs: options.studioUploadLeaseMs,
     uploadLeaseHeartbeatMs: options.studioUploadLeaseHeartbeatMs,
+    uploadAbortTimeoutMs: options.studioUploadAbortTimeoutMs,
     cleanupProcessor: studioAssetCleanupProcessor,
     now: options.now
   }));

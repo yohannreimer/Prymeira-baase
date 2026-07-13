@@ -73,4 +73,47 @@ describe("ObjectStorage private reads", () => {
       .rejects.toThrow("delete cancelled");
     expect(storage.keys()).toEqual(["private/existing"]);
   });
+
+  it("keeps atomic upload sessions hidden until explicit completion", async () => {
+    const storage = createInMemoryObjectStorage();
+    const session = await storage.beginAtomicUpload({
+      key: "private/atomic",
+      contentType: "text/plain",
+      sizeBytes: 6
+    });
+    expect(storage.keys()).toEqual([]);
+    expect(storage.atomicUploadIds()).toEqual([session.uploadId]);
+    await storage.completeAtomicUploadFromStream({
+      key: "private/atomic",
+      uploadId: session.uploadId,
+      body: Readable.from("secret"),
+      sizeBytes: 6
+    });
+    expect(storage.keys()).toEqual(["private/atomic"]);
+    expect(storage.atomicUploadIds()).toEqual([]);
+  });
+
+  it("never publishes a late atomic stream after the session is aborted", async () => {
+    const storage = createInMemoryObjectStorage();
+    const session = await storage.beginAtomicUpload({
+      key: "private/late",
+      contentType: "text/plain",
+      sizeBytes: 6
+    });
+    const stalled = new Readable({ read() {} });
+    const controller = new AbortController();
+    const completion = storage.completeAtomicUploadFromStream({
+      key: "private/late",
+      uploadId: session.uploadId,
+      body: stalled,
+      sizeBytes: 6
+    }, { signal: controller.signal });
+    controller.abort(new Error("lease lost"));
+    await storage.abortAtomicUpload({ key: "private/late", uploadId: session.uploadId });
+    stalled.push("secret");
+    stalled.push(null);
+    await expect(completion).rejects.toThrow("lease lost");
+    expect(storage.keys()).toEqual([]);
+    expect(storage.atomicUploadIds()).toEqual([]);
+  });
 });

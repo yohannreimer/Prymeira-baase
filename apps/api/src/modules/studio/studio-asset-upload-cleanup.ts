@@ -22,6 +22,13 @@ export function createStudioAssetUploadCleanupProcessor(options: {
       });
       if (existing) return intent;
       try {
+        if (intent.storageUploadId) {
+          await options.objectStorage.abortAtomicUpload({
+            key: intent.objectKey,
+            uploadId: intent.storageUploadId
+          }, { signal });
+          throwIfAborted(signal);
+        }
         await options.objectStorage.delete(intent.objectKey, { signal });
         throwIfAborted(signal);
       } catch (error) {

@@ -57,7 +57,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -182,6 +182,19 @@ describe("operational schema", () => {
     );
     expect(columns.rows.map((row) => row.column_name)).toEqual([
       "upload_lease_expires_at", "upload_token"
+    ]);
+  });
+
+  it("adds atomic storage session fields in additive migration 13", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_asset_upload_intents'
+         and column_name in ('storage_upload_id','storage_session_state')
+       order by column_name`
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual([
+      "storage_session_state", "storage_upload_id"
     ]);
   });
 

@@ -213,7 +213,7 @@ describe("Studio asset routes", () => {
     expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
   });
 
-  it("keeps a slow put leased beyond the former fifteen-minute cleanup threshold", async () => {
+  it("keeps a slow multipart completion leased beyond the former fifteen-minute cleanup threshold", async () => {
     let clock = new Date("2026-07-13T12:00:00.000Z");
     let releasePut!: () => void;
     const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
@@ -222,9 +222,12 @@ describe("Studio asset routes", () => {
     const memoryStorage = createInMemoryObjectStorage();
     const objectStorage = {
       ...memoryStorage,
-      async put(input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+      async completeAtomicUploadFromStream(
+        input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
+        options?: { signal?: AbortSignal }
+      ) {
         await putGate;
-        return memoryStorage.put(input, options);
+        return memoryStorage.completeAtomicUploadFromStream(input, options);
       }
     };
     const app = buildApp({
@@ -248,14 +251,17 @@ describe("Studio asset routes", () => {
     expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
   });
 
-  it("aborts a put at its hard deadline and moves the settled intent to cleanup", async () => {
+  it("aborts multipart completion at its hard deadline and moves the intent to cleanup", async () => {
     const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
     const document = await repository.createDocument(documentInput());
     const memoryStorage = createInMemoryObjectStorage();
     let abortObserved = false;
     const objectStorage = {
       ...memoryStorage,
-      async put(_input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+      async completeAtomicUploadFromStream(
+        _input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
+        options?: { signal?: AbortSignal }
+      ) {
         return new Promise<void>((_resolve, reject) => {
           const abort = () => {
             abortObserved = true;
@@ -289,7 +295,61 @@ describe("Studio asset routes", () => {
     });
   });
 
-  it("keeps cleanup fenced while an abort-ignoring put settles late", async () => {
+  it.each(["false", "error"] as const)(
+    "aborts immediately when multipart lease renewal returns %s",
+    async (renewalFailure) => {
+      const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+      const document = await repository.createDocument(documentInput());
+      const memoryStorage = createInMemoryObjectStorage();
+      let releasePart!: () => void;
+      const partGate = new Promise<void>((resolve) => { releasePart = resolve; });
+      let abortObserved = false;
+      const objectStorage = {
+        ...memoryStorage,
+        async completeAtomicUploadFromStream(
+          input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
+          options?: { signal?: AbortSignal }
+        ) {
+          options?.signal?.addEventListener("abort", () => { abortObserved = true; }, { once: true });
+          await partGate;
+          return memoryStorage.completeAtomicUploadFromStream({ ...input, body: Readable.from("private") });
+        }
+      };
+      const app = buildApp({
+        studioRepository: {
+          ...repository,
+          async renewAssetUploadIntentLease() {
+            if (renewalFailure === "error") throw new Error("database unavailable");
+            return false;
+          }
+        },
+        objectStorage,
+        studioUploadPutTimeoutMs: 1_000,
+        studioUploadLeaseMs: 2_000,
+        studioUploadLeaseHeartbeatMs: 5
+      });
+      const response = await upload(app, document.id, {
+        filename: `lease-${renewalFailure}.txt`, mimeType: "text/plain", body: Buffer.from("private")
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().error).toMatchObject({
+        code: "OBJECT_STORAGE_UNAVAILABLE",
+        details: { upload_lease_lost: true }
+      });
+      expect(abortObserved).toBe(true);
+      expect(memoryStorage.keys()).toEqual([]);
+      expect(memoryStorage.atomicUploadIds()).toEqual([]);
+      expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+        status: "cleanup_pending",
+        storageSessionState: "abort_pending"
+      }]);
+      releasePart();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(memoryStorage.keys()).toEqual([]);
+    }
+  );
+
+  it("releases the request while an abort-ignoring part settles late without publishing", async () => {
     let clock = new Date("2026-07-13T12:00:00.000Z");
     let releasePut!: () => void;
     const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
@@ -297,18 +357,25 @@ describe("Studio asset routes", () => {
     const document = await repository.createDocument(documentInput());
     const memoryStorage = createInMemoryObjectStorage();
     let abortObserved = false;
+    let completionCalls = 0;
     const objectStorage = {
       ...memoryStorage,
-      async put(input: Parameters<typeof memoryStorage.put>[0], options?: { signal?: AbortSignal }) {
+      async completeAtomicUploadFromStream(
+        input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
+        options?: { signal?: AbortSignal }
+      ) {
+        completionCalls += 1;
+        if (completionCalls > 1) return memoryStorage.completeAtomicUploadFromStream(input, options);
         options?.signal?.addEventListener("abort", () => { abortObserved = true; }, { once: true });
         await putGate;
         input.body.destroy();
-        await memoryStorage.put({ ...input, body: Readable.from("private") });
+        await memoryStorage.completeAtomicUploadFromStream({ ...input, body: Readable.from("private") });
       }
     };
     const app = buildApp({
       studioRepository: repository,
       objectStorage,
+      studioUploadSemaphore: createStudioUploadSemaphore(1),
       now: () => clock,
       studioUploadPutTimeoutMs: 15,
       studioUploadLeaseMs: 100,
@@ -320,17 +387,18 @@ describe("Studio asset routes", () => {
     expect(response.statusCode).toBe(503);
     expect(abortObserved).toBe(true);
     clock = new Date("2026-07-13T12:16:00.000Z");
-    await new Promise((resolve) => setTimeout(resolve, 15));
-    expect(await repository.claimNextAssetUploadCleanup(clock.toISOString())).toBeNull();
-    releasePut();
-    await vi.waitFor(async () => {
-      expect(await repository.listAssetUploadIntents(ownerScope()))
-        .toMatchObject([{ status: "cleanup_pending" }]);
-    });
-    expect(memoryStorage.keys()).toHaveLength(1);
     await app.studioAssetUploadCleanupProcessor.processNext();
     expect(memoryStorage.keys()).toEqual([]);
     expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+    const next = await upload(app, document.id, {
+      filename: "next.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(next.statusCode).toBe(201);
+    const publishedKeys = [...memoryStorage.keys()];
+    expect(publishedKeys).toHaveLength(1);
+    releasePut();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(memoryStorage.keys()).toEqual(publishedKeys);
   });
 
   it("deletes the private object only after an owner-scoped asset lookup", async () => {

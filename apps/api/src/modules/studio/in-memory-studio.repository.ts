@@ -497,6 +497,8 @@ export function createInMemoryStudioRepository(
         lastErrorCode: null,
         uploadToken: randomUUID(),
         uploadLeaseExpiresAt: normalizeTimestamp(input.uploadLeaseExpiresAt),
+        storageUploadId: null,
+        storageSessionState: "creating",
         claimToken: null,
         leaseExpiresAt: null,
         createdAt: timestamp,
@@ -504,6 +506,18 @@ export function createInMemoryStudioRepository(
       };
       assetUploadIntents.push(intent);
       return cloneUploadIntent(intent);
+    },
+
+    async attachAssetUploadSession(input) {
+      const intent = assetUploadIntents.find((item) => item.workspaceId === input.scope.workspaceId
+        && item.ownerProfileId === input.scope.ownerProfileId && item.id === input.intentId
+        && item.status === "uploading" && item.uploadToken === input.uploadToken
+        && item.storageSessionState === "creating" && item.storageUploadId === null);
+      if (!intent) return false;
+      intent.storageUploadId = input.storageUploadId;
+      intent.storageSessionState = "active";
+      intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+      return true;
     },
 
     async finalizeAssetUpload(input) {
@@ -517,7 +531,8 @@ export function createInMemoryStudioRepository(
         if (existing) return cloneAsset(existing);
         throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
       }
-      if (intent.status !== "uploading" || intent.uploadToken !== input.uploadToken) {
+      if (intent.status !== "uploading" || intent.uploadToken !== input.uploadToken
+        || intent.storageSessionState !== "active" || intent.storageUploadId === null) {
         throw new Error("STUDIO_ASSET_UPLOAD_INTENT_STALE");
       }
       const existing = assets.find((asset) => asset.workspaceId === intent.workspaceId
@@ -564,6 +579,9 @@ export function createInMemoryStudioRepository(
         throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
       }
       if (intent.objectKey !== input.objectKey) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_MISMATCH");
+      if (input.storageUploadId && intent.storageUploadId && intent.storageUploadId !== input.storageUploadId) {
+        throw new Error("STUDIO_ASSET_UPLOAD_SESSION_MISMATCH");
+      }
       const existing = assets.find((asset) => asset.workspaceId === input.scope.workspaceId
         && asset.ownerProfileId === input.scope.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
@@ -572,6 +590,8 @@ export function createInMemoryStudioRepository(
         return cloneAsset(existing);
       }
       if (intent.status === "uploading" && intent.uploadToken === input.uploadToken) {
+        intent.storageUploadId ??= input.storageUploadId ?? null;
+        intent.storageSessionState = "abort_pending";
         intent.status = "cleanup_pending";
         intent.nextAttemptAt = normalizeTimestamp(input.now);
         intent.lastErrorCode = "STUDIO_ASSET_UPLOAD_INCOMPLETE";
@@ -607,6 +627,7 @@ export function createInMemoryStudioRepository(
         return null;
       }
       intent.status = "processing";
+      intent.storageSessionState = "abort_pending";
       intent.attemptCount += 1;
       intent.nextAttemptAt = null;
       intent.uploadToken = null;

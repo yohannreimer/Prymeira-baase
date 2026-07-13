@@ -843,6 +843,27 @@ const migrations: Migration[] = [{
         (status,next_attempt_at,upload_lease_expires_at,lease_expires_at,created_at)
       WHERE status IN ('uploading','cleanup_pending','processing','failed');
   `
+}, {
+  version: 13,
+  name: "studio_asset_atomic_upload_sessions",
+  sql: `
+    ALTER TABLE studio_asset_upload_intents ADD COLUMN storage_upload_id TEXT;
+    ALTER TABLE studio_asset_upload_intents ADD COLUMN storage_session_state TEXT;
+
+    UPDATE studio_asset_upload_intents
+      SET status='cleanup_pending',next_attempt_at=COALESCE(next_attempt_at,NOW()),
+        upload_token=NULL,upload_lease_expires_at=NULL
+      WHERE status='uploading';
+    UPDATE studio_asset_upload_intents SET storage_session_state='abort_pending';
+
+    ALTER TABLE studio_asset_upload_intents ALTER COLUMN storage_session_state SET DEFAULT 'creating';
+    ALTER TABLE studio_asset_upload_intents ALTER COLUMN storage_session_state SET NOT NULL;
+    ALTER TABLE studio_asset_upload_intents ADD CONSTRAINT studio_asset_upload_intents_storage_session_check CHECK (
+      (storage_session_state='creating' AND storage_upload_id IS NULL AND status='uploading')
+      OR (storage_session_state='active' AND storage_upload_id IS NOT NULL AND status='uploading')
+      OR (storage_session_state='abort_pending' AND status IN ('cleanup_pending','processing','failed'))
+    );
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

@@ -1,17 +1,26 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import type { ObjectStorage, PutObjectInput } from "./object-storage";
+import type { CompleteAtomicUploadInput, ObjectStorage, PutObjectInput } from "./object-storage";
 
 export type InMemoryObjectStorage = ObjectStorage & {
   failNextPut(error: Error): void;
   failNextDelete(error: Error): void;
+  failNextAtomicAbort(error: Error): void;
   keys(): string[];
+  atomicUploadIds(): string[];
 };
 
 export function createInMemoryObjectStorage(): InMemoryObjectStorage {
   const objects = new Map<string, { body: Buffer; contentType: string; sizeBytes: number }>();
+  const atomicUploads = new Map<string, {
+    key: string;
+    contentType: string;
+    sizeBytes: number;
+  }>();
   let nextPutError: Error | null = null;
   let nextDeleteError: Error | null = null;
+  let nextAtomicAbortError: Error | null = null;
 
   return {
     async put(input: PutObjectInput, options) {
@@ -35,6 +44,51 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       } finally {
         options?.signal?.removeEventListener("abort", abort);
       }
+    },
+    async beginAtomicUpload(input, options) {
+      throwIfAborted(options?.signal);
+      const uploadId = randomUUID();
+      atomicUploads.set(uploadId, {
+        key: input.key,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes
+      });
+      return { uploadId };
+    },
+    async completeAtomicUploadFromStream(input: CompleteAtomicUploadInput, options) {
+      throwIfAborted(options?.signal);
+      const session = atomicUploads.get(input.uploadId);
+      if (!session || session.key !== input.key) throw new Error("ATOMIC_UPLOAD_NOT_FOUND");
+      if (session.sizeBytes !== input.sizeBytes) throw new Error("ATOMIC_UPLOAD_SIZE_MISMATCH");
+
+      const chunks: Buffer[] = [];
+      const abort = () => input.body.destroy(abortError(options?.signal));
+      options?.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        for await (const chunk of input.body) {
+          throwIfAborted(options?.signal);
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        throwIfAborted(options?.signal);
+        const current = atomicUploads.get(input.uploadId);
+        if (!current || current.key !== input.key) throw new Error("ATOMIC_UPLOAD_NOT_FOUND");
+        const body = Buffer.concat(chunks);
+        if (body.length !== input.sizeBytes) throw new Error("ATOMIC_UPLOAD_SIZE_MISMATCH");
+        objects.set(input.key, { body, contentType: current.contentType, sizeBytes: body.length });
+        atomicUploads.delete(input.uploadId);
+      } finally {
+        options?.signal?.removeEventListener("abort", abort);
+      }
+    },
+    async abortAtomicUpload(input, options) {
+      throwIfAborted(options?.signal);
+      if (nextAtomicAbortError) {
+        const error = nextAtomicAbortError;
+        nextAtomicAbortError = null;
+        throw error;
+      }
+      const session = atomicUploads.get(input.uploadId);
+      if (session?.key === input.key) atomicUploads.delete(input.uploadId);
     },
     async get(key, options) {
       if (options?.signal?.aborted) throw options.signal.reason ?? new Error("ABORTED");
@@ -70,8 +124,14 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
     failNextDelete(error) {
       nextDeleteError = error;
     },
+    failNextAtomicAbort(error) {
+      nextAtomicAbortError = error;
+    },
     keys() {
       return [...objects.keys()].sort();
+    },
+    atomicUploadIds() {
+      return [...atomicUploads.keys()].sort();
     }
   };
 }
