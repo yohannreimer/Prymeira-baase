@@ -99,6 +99,115 @@ describe("announcement routes", () => {
     expect(today.json().announcements.map((announcement: { title: string }) => announcement.title)).toEqual(["Somente Técnica"]);
   });
 
+  it("applies access scope to Today announcements and preserves only manageable drafts on reload", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const announcementRepository = createInMemoryAnnouncementRepository();
+    const [technicalArea, financialArea] = await Promise.all([
+      companyRepository.createArea({ workspaceId: "workspace_a", name: "Técnica", description: null }),
+      companyRepository.createArea({ workspaceId: "workspace_a", name: "Financeira", description: null })
+    ]);
+    const [technicalRole, financialRole] = await Promise.all([
+      companyRepository.createRoleTemplate({ workspaceId: "workspace_a", areaId: technicalArea.id, name: "Técnico", description: null }),
+      companyRepository.createRoleTemplate({ workspaceId: "workspace_a", areaId: financialArea.id, name: "Financeiro", description: null })
+    ]);
+    const owner = await companyRepository.createTeamMember({
+      workspaceId: "workspace_a", name: "Owner", email: "owner@example.test", role: "owner", areaId: null,
+      areaAccessIds: [], roleTemplateId: null, accessScope: "workspace", clerkUserId: "user_owner", customerId: "customer_owner", createdByProfileId: "seed"
+    });
+    const manager = await companyRepository.createTeamMember({
+      workspaceId: "workspace_a", name: "Gestora técnica", email: "manager@example.test", role: "manager", areaId: technicalArea.id,
+      areaAccessIds: [technicalArea.id], roleTemplateId: technicalRole.id, accessScope: "area", clerkUserId: "user_manager", customerId: "customer_manager", createdByProfileId: owner.id
+    });
+    const assignedOnly = await companyRepository.createTeamMember({
+      workspaceId: "workspace_a", name: "Pessoa técnica", email: "assigned@example.test", role: "employee", areaId: technicalArea.id,
+      areaAccessIds: [technicalArea.id], roleTemplateId: technicalRole.id, accessScope: "assigned_only", clerkUserId: "user_assigned", customerId: "customer_assigned", createdByProfileId: owner.id
+    });
+    const financialPerson = await companyRepository.createTeamMember({
+      workspaceId: "workspace_a", name: "Pessoa financeira", email: "financial@example.test", role: "employee", areaId: financialArea.id,
+      areaAccessIds: [financialArea.id], roleTemplateId: financialRole.id, accessScope: "area", clerkUserId: "user_financial", customerId: "customer_financial", createdByProfileId: owner.id
+    });
+    const users = {
+      user_owner: owner,
+      user_manager: manager,
+      user_assigned: assignedOnly,
+      user_financial: financialPerson
+    } as const;
+    const app = buildApp({
+      runtimeConfig: accountRuntimeConfig,
+      companyRepository,
+      announcementRepository,
+      accountAccessFetch: async (_input, init) => {
+        const authorization = new Headers(init?.headers).get("authorization") ?? "";
+        const subject = JSON.parse(Buffer.from(authorization.split(".")[1]!, "base64url").toString("utf8")).sub as keyof typeof users;
+        const user = users[subject];
+        if (String(_input).endsWith("/me/products")) return new Response(JSON.stringify({ customer: { email: user.email, name: user.name } }));
+        return new Response(JSON.stringify({
+          allowed: true, workspace_id: "workspace_a", workspace_name: "Baase", workspace_role: user.role,
+          product_key: "base", product_role: user.role, customer_id: user.customerId, customer_name: user.name, status: "active", reason: "active"
+        }));
+      }
+    });
+    const headersFor = (subject: keyof typeof users) => ({ authorization: accountBearer(subject) });
+    const create = async (title: string, audience: Record<string, unknown>, subject: keyof typeof users = "user_owner") => {
+      const response = await app.inject({
+        method: "POST", url: "/announcements", headers: headersFor(subject),
+        payload: { title, body: title, type: "simple", requirement: "none", ...audience }
+      });
+      return response;
+    };
+    const publish = async (response: Awaited<ReturnType<typeof create>>) => {
+      await app.inject({ method: "POST", url: `/announcements/${response.json().announcement.id}/publish`, headers: headersFor("user_owner") });
+    };
+
+    await publish(await create("Para todos", { audience_type: "all" }));
+    await publish(await create("Para a área", { audience_type: "area", area_id: technicalArea.id }));
+    await publish(await create("Para o cargo", { audience_type: "role", role_template_id: technicalRole.id }));
+    await publish(await create("Para a pessoa", { audience_type: "person", profile_id: assignedOnly.id }));
+    await create("Rascunho técnico", { audience_type: "area", area_id: technicalArea.id }, "user_manager");
+    const managerRoleDraft = await create("Rascunho por cargo", { audience_type: "role", role_template_id: technicalRole.id }, "user_manager");
+    expect(managerRoleDraft.statusCode).toBe(201);
+    const managerPersonDraft = await create("Rascunho por pessoa", { audience_type: "person", profile_id: assignedOnly.id }, "user_manager");
+    expect(managerPersonDraft.statusCode).toBe(201);
+    expect((await app.inject({
+      method: "POST",
+      url: `/announcements/${managerRoleDraft.json().announcement.id}/publish`,
+      headers: headersFor("user_manager")
+    })).statusCode).toBe(200);
+    const financialDraft = await create("Rascunho financeiro", { audience_type: "area", area_id: financialArea.id });
+
+    const today = await app.inject({ method: "GET", url: "/today?date=2026-07-12", headers: headersFor("user_assigned") });
+    expect(today.statusCode).toBe(200);
+    expect(today.json().announcements.map((announcement: { title: string }) => announcement.title)).toEqual(["Para a pessoa"]);
+
+    const managerList = await app.inject({ method: "GET", url: "/announcements", headers: headersFor("user_manager") });
+    expect(managerList.statusCode).toBe(200);
+    expect(managerList.json().announcements.map((announcement: { title: string }) => announcement.title)).toContain("Rascunho técnico");
+    expect(managerList.json().announcements.map((announcement: { title: string }) => announcement.title)).not.toContain("Rascunho financeiro");
+    expect((await app.inject({
+      method: "POST",
+      url: `/announcements/${financialDraft.json().announcement.id}/publish`,
+      headers: headersFor("user_manager")
+    })).statusCode).toBe(403);
+
+    for (const audience of [
+      { audience_type: "all" },
+      { audience_type: "area", area_id: financialArea.id },
+      { audience_type: "role", role_template_id: financialRole.id },
+      { audience_type: "person", profile_id: financialPerson.id }
+    ]) {
+      const response = await create("Fora do escopo", audience, "user_manager");
+      expect(response.statusCode).toBe(403);
+    }
+
+    expect((await create("Sem id de área", { audience_type: "area" })).statusCode).toBe(400);
+    const missingRole = await create("Cargo inexistente", { audience_type: "role", role_template_id: "role_missing" });
+    expect(missingRole.statusCode).toBe(422);
+    expect(missingRole.json().error.code).toBe("ANNOUNCEMENT_AUDIENCE_ROLE_NOT_FOUND");
+    const foreignPerson = await create("Pessoa de outro workspace", { audience_type: "person", profile_id: "person_missing" });
+    expect(foreignPerson.statusCode).toBe(422);
+    expect(foreignPerson.json().error.code).toBe("ANNOUNCEMENT_AUDIENCE_PERSON_NOT_FOUND");
+  });
+
   it("creates, publishes, lists, and confirms an announcement", async () => {
     const app = buildApp({ announcementRepository: createInMemoryAnnouncementRepository() });
 

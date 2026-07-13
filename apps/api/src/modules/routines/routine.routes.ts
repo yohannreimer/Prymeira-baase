@@ -9,6 +9,7 @@ import { requireOperationalMembership } from "../../http/auth-context";
 import { canExecuteTask, canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
 import type { CompanyRepository, OperationalMembership } from "../company/company.types";
 import { createAnnouncementService } from "../announcements/announcement.service";
+import { canReadAnnouncementAudience } from "../announcements/announcement.access-policy";
 import type { AnnouncementRepository } from "../announcements/announcement.types";
 import { createTrainingService } from "../trainings/training.service";
 import type { TrainingRepository } from "../trainings/training.types";
@@ -281,7 +282,12 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
           role: context.role,
           areaId: membership.person.areaId,
           roleTemplateId: membership.person.roleTemplateId
-        })
+        }).then((items) => filterAnnouncementsForMembership(
+          items,
+          options.companyRepository,
+          context.workspaceId,
+          membership
+        ))
         : Promise.resolve([])
     ]);
     return {
@@ -496,6 +502,21 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       throw taskMutationError(error);
     }
   });
+}
+
+async function filterAnnouncementsForMembership(
+  announcements: import("../announcements/announcement.types").AnnouncementWithReceipt[],
+  companyRepository: CompanyRepository,
+  workspaceId: string,
+  membership: ReturnType<typeof requireOperationalMembership>
+) {
+  const matches = await Promise.all(announcements.map((announcement) => canReadAnnouncementAudience(
+    companyRepository,
+    workspaceId,
+    membership,
+    announcement.audience
+  )));
+  return announcements.filter((_announcement, index) => matches[index]);
 }
 
 const TASK_EVIDENCE_MAX_BYTES = 25 * 1024 * 1024;

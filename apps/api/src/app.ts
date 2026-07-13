@@ -236,7 +236,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     announcementRepository
   }));
   app.register((routes) => registerTrainingRoutes(routes, trainingRepository));
-  app.register((routes) => registerAnnouncementRoutes(routes, announcementRepository));
+  app.register((routes) => registerAnnouncementRoutes(routes, announcementRepository, companyRepository));
   app.register((routes) => registerTemplateRoutes(routes, {
     processRepository,
     routineRepository,
