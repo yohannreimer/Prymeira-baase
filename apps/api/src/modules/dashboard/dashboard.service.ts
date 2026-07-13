@@ -5,13 +5,15 @@ import type { OperationalMembership } from "../company/company.types";
 import type { ProcessRepository } from "../processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../routines/routine.types";
 import type { TrainingAssignment, TrainingRepository } from "../trainings/training.types";
-import type { DashboardAreaMetric, DashboardAttentionItem, DashboardSummary } from "./dashboard.types";
+import type { AnnouncementRepository } from "../announcements/announcement.types";
+import type { DashboardAreaMetric, DashboardAttentionItem, DashboardSummary, OperationalMetricItem, OperationalOverview, OperationalTrend } from "./dashboard.types";
 
 type DashboardRepositories = {
   companyRepository: CompanyRepository;
   processRepository: ProcessRepository;
   routineRepository: RoutineRepository;
   trainingRepository: TrainingRepository;
+  announcementRepository: AnnouncementRepository;
 };
 
 type DashboardInput = {
@@ -20,6 +22,11 @@ type DashboardInput = {
   role: BaaseRole;
   membership: OperationalMembership;
   date: string;
+};
+
+type OperationalOverviewInput = Pick<DashboardInput, "workspaceId" | "membership"> & {
+  from: string;
+  to: string;
 };
 
 const executedStatuses = new Set<TaskStatus>(["completed", "awaiting_approval"]);
@@ -89,8 +96,176 @@ export function createDashboardService(repositories: DashboardRepositories) {
           pendingTrainings: pendingTrainingAssignments
         }
       };
+    },
+
+    async readOperationalOverview(input: OperationalOverviewInput): Promise<OperationalOverview> {
+      const [areas, people, routines, tasks, announcements, receipts] = await Promise.all([
+        repositories.companyRepository.listAreas(input.workspaceId),
+        repositories.companyRepository.listTeamMembers(input.workspaceId),
+        repositories.routineRepository.listRoutines(input.workspaceId),
+        repositories.routineRepository.listTaskOccurrences(input.workspaceId),
+        repositories.announcementRepository.listAnnouncements(input.workspaceId),
+        repositories.announcementRepository.listAnnouncementReceipts(input.workspaceId)
+      ]);
+      const routineById = new Map(routines.map((routine) => [routine.id, routine]));
+      const areaNames = new Map(areas.map((area) => [area.id, area.name]));
+      const peopleById = new Map(people.map((person) => [person.id, person]));
+      const visiblePeople = people.filter((person) => canReadAreaResource(input.membership, person.areaId));
+      const visiblePeopleById = new Map(visiblePeople.map((person) => [person.id, person]));
+      const visibleTasks = tasks.filter((task) => canReadTask(input.membership, {
+        assigneeProfileId: task.assigneeProfileId,
+        areaId: taskAreaId(task, routineById)
+      }));
+      const periodTasks = visibleTasks.filter((task) => isWithinPeriod(task.dueDate, input));
+      const today = operationalToday();
+      const lateTasks = periodTasks
+        .filter((task) => task.dueDate < today && task.status !== "completed")
+        .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
+      const awaitingApprovals = periodTasks
+        .filter((task) => task.status === "awaiting_approval")
+        .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
+      const receiptsByAnnouncementAndProfile = new Map(receipts.map((receipt) => [`${receipt.announcementId}:${receipt.profileId}`, receipt]));
+      const pendingRequiredAnnouncements = announcements
+        .filter((announcement) => announcement.status === "published")
+        .filter((announcement) => announcement.requirement === "read_confirmation" || announcement.requirement === "quiz_confirmation")
+        .filter((announcement) => !announcement.publishedAt || announcement.publishedAt.slice(0, 10) <= input.to)
+        .flatMap((announcement) => visiblePeople
+          .filter((person) => announcementAudienceMatchesPerson(announcement.audience, person))
+          .filter((person) => {
+            const receipt = receiptsByAnnouncementAndProfile.get(`${announcement.id}:${person.id}`);
+            return receipt?.status !== "confirmed" && receipt?.status !== "quiz_completed";
+          })
+          .map((person): OperationalMetricItem => ({
+            id: announcement.id,
+            profileId: person.id,
+            profileName: person.name,
+            areaId: person.areaId,
+            areaName: person.areaId ? areaNames.get(person.areaId) ?? person.areaId : "Sem área",
+            title: announcement.title,
+            publishedAt: announcement.publishedAt
+          }))
+        );
+
+      return {
+        from: input.from,
+        to: input.to,
+        metrics: {
+          lateTasks: lateTasks.length,
+          awaitingApprovals: awaitingApprovals.length,
+          pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
+        },
+        lateTasks,
+        awaitingApprovals,
+        pendingRequiredAnnouncements,
+        trends: {
+          people: buildOperationalTrends(periodTasks, peopleById, routineById, areaNames, "person"),
+          areas: buildOperationalTrends(periodTasks, visiblePeopleById, routineById, areaNames, "area")
+        }
+      };
     }
   };
+}
+
+function taskAreaId(task: TaskOccurrence, routineById: Map<string, CompanyRoutine>) {
+  return task.areaId ?? (task.routineId ? routineById.get(task.routineId)?.areaId ?? null : null);
+}
+
+function operationalTaskItem(
+  task: TaskOccurrence,
+  peopleById: Map<string, TeamMember>,
+  routineById: Map<string, CompanyRoutine>,
+  areaNames: Map<string, string>,
+  today: string
+): OperationalMetricItem {
+  const areaId = taskAreaId(task, routineById);
+  const person = task.assigneeProfileId ? peopleById.get(task.assigneeProfileId) : null;
+  return {
+    id: task.id,
+    profileId: task.assigneeProfileId,
+    assigneeProfileId: task.assigneeProfileId,
+    profileName: person?.name ?? null,
+    areaId,
+    areaName: areaId ? areaNames.get(areaId) ?? areaId : "Sem área",
+    title: task.title,
+    dueDate: task.dueDate,
+    submittedAt: task.submittedAt,
+    reviewedAt: task.reviewedAt,
+    ...(task.dueDate < today && task.status !== "completed" ? { daysLate: daysBetween(task.dueDate, today) } : {})
+  };
+}
+
+function isWithinPeriod(date: string, period: Pick<OperationalOverviewInput, "from" | "to">) {
+  return date >= period.from && date <= period.to;
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.floor((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000);
+}
+
+function operationalToday() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const value = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function announcementAudienceMatchesPerson(
+  audience: import("../announcements/announcement.types").AnnouncementAudience,
+  person: TeamMember
+) {
+  if (audience.type === "all") return true;
+  if (audience.type === "person") return audience.profileId === person.id;
+  if (audience.type === "area") return audience.areaId === person.areaId;
+  return audience.roleTemplateId === person.roleTemplateId;
+}
+
+function buildOperationalTrends(
+  tasks: TaskOccurrence[],
+  peopleById: Map<string, TeamMember>,
+  routinesById: Map<string, CompanyRoutine>,
+  areaNames: Map<string, string>,
+  grouping: "person" | "area"
+): OperationalTrend[] {
+  const groups = new Map<string, { tasks: TaskOccurrence[]; profile?: TeamMember; areaId: string | null }>();
+  for (const task of tasks) {
+    const areaId = taskAreaId(task, routinesById);
+    const profile = task.assigneeProfileId ? peopleById.get(task.assigneeProfileId) : undefined;
+    const key = grouping === "person" ? task.assigneeProfileId ?? "__unassigned__" : areaId ?? "__none__";
+    const current = groups.get(key) ?? { tasks: [], profile, areaId };
+    current.tasks.push(task);
+    groups.set(key, current);
+  }
+  return [...groups.values()].map(({ tasks: groupTasks, profile, areaId }) => ({
+    ...(grouping === "person" && profile ? { profileId: profile.id, profileName: profile.name } : {}),
+    areaId: grouping === "person" ? profile?.areaId ?? areaId : areaId,
+    areaName: areaId ? areaNames.get(areaId) ?? areaId : "Sem área",
+    completionOnTimeRate: completionOnTimeRate(groupTasks),
+    averageApprovalDurationHours: averageApprovalDurationHours(groupTasks)
+  })).sort((left, right) => (left.profileName ?? left.areaName).localeCompare(right.profileName ?? right.areaName, "pt-BR"));
+}
+
+function completionOnTimeRate(tasks: TaskOccurrence[]) {
+  const completed = tasks.filter((task) => task.status === "completed" && Boolean(task.dueDate));
+  if (!completed.length) return null;
+  const onTime = completed.filter((task) => completionDate(task) <= task.dueDate).length;
+  return Math.round((onTime / completed.length) * 100);
+}
+
+function completionDate(task: TaskOccurrence) {
+  return (task.reviewedAt ?? task.submittedAt ?? task.updatedAt).slice(0, 10);
+}
+
+function averageApprovalDurationHours(tasks: TaskOccurrence[]) {
+  const durations = tasks.flatMap((task) => {
+    if (!task.submittedAt || !task.reviewedAt) return [];
+    return [(Date.parse(task.reviewedAt) - Date.parse(task.submittedAt)) / 3_600_000];
+  });
+  if (!durations.length) return null;
+  return Math.round((durations.reduce((total, duration) => total + duration, 0) / durations.length) * 100) / 100;
 }
 
 function isExecutedTask(task: TaskOccurrence) {

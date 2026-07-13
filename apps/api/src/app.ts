@@ -215,7 +215,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     companyRepository,
     processRepository,
     routineRepository,
-    trainingRepository
+    trainingRepository,
+    announcementRepository
   }));
   app.register((routes) => registerOnboardingRoutes(routes, {
     companyRepository,

@@ -48,3 +48,43 @@ export type DashboardSummary = {
   employeeToday: EmployeeTodaySummary;
 };
 
+export type OperationalMetricItem = {
+  id: string;
+  profileId: string | null;
+  assigneeProfileId?: string | null;
+  profileName: string | null;
+  areaId: string | null;
+  areaName: string;
+  title: string;
+  dueDate?: string | null;
+  submittedAt?: string | null;
+  reviewedAt?: string | null;
+  publishedAt?: string | null;
+  daysLate?: number;
+};
+
+export type OperationalTrend = {
+  profileId?: string;
+  profileName?: string;
+  areaId: string | null;
+  areaName: string;
+  completionOnTimeRate: number | null;
+  averageApprovalDurationHours: number | null;
+};
+
+export type OperationalOverview = {
+  from: string;
+  to: string;
+  metrics: {
+    lateTasks: number;
+    awaitingApprovals: number;
+    pendingRequiredAnnouncements: number;
+  };
+  lateTasks: OperationalMetricItem[];
+  awaitingApprovals: OperationalMetricItem[];
+  pendingRequiredAnnouncements: OperationalMetricItem[];
+  trends: {
+    people: OperationalTrend[];
+    areas: OperationalTrend[];
+  };
+};
