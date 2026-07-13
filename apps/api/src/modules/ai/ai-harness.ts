@@ -109,7 +109,8 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           audioBuffer: request.audioBuffer,
           mimeType: request.mimeType,
           language: request.language,
-          keyterms: request.keyterms
+          keyterms: request.keyterms,
+          signal: request.signal
         });
 
         await options.repository.updateRun({

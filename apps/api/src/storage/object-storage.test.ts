@@ -27,4 +27,22 @@ describe("ObjectStorage private reads", () => {
       expect(["node", "bytes"]).toContain(Buffer.concat(chunks).toString("utf8"));
     }
   });
+
+  it("honors cancellation before and after a private memory read", async () => {
+    const storage = createInMemoryObjectStorage();
+    await storage.put({
+      key: "private/key",
+      body: Readable.from("secret"),
+      contentType: "text/plain",
+      sizeBytes: 6
+    });
+    const before = new AbortController();
+    before.abort(new Error("cancelled"));
+    await expect(storage.get("private/key", { signal: before.signal })).rejects.toThrow("cancelled");
+
+    const after = new AbortController();
+    const object = await storage.get("private/key", { signal: after.signal });
+    after.abort();
+    expect(object.body.destroyed).toBe(true);
+  });
 });

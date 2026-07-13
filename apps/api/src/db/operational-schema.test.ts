@@ -57,7 +57,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -158,6 +158,18 @@ describe("operational schema", () => {
        where table_name='studio_asset_cleanup_jobs'`
     );
     expect(cleanupTable.rows).toEqual([{ table_name: "studio_asset_cleanup_jobs" }]);
+  });
+
+  it("adds durable Studio upload intents in migration 11", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_asset_upload_intents'
+         and column_name in ('object_key','status','asset_id','claim_token','lease_expires_at')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual([
+      "asset_id", "claim_token", "lease_expires_at", "object_key", "status"
+    ]);
   });
 
   it("rejects Studio assets that reference a document in another owner scope", async () => {

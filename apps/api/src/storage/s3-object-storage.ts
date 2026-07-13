@@ -35,10 +35,15 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig): ObjectStor
         ContentLength: input.sizeBytes
       }));
     },
-    async get(key) {
-      const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
+    async get(key, options) {
+      const response = await client.send(
+        new GetObjectCommand({ Bucket: config.bucket, Key: key }),
+        { abortSignal: options?.signal }
+      );
+      const body = objectBodyToNodeReadable(response.Body);
+      bindAbortToBody(body, options?.signal);
       return {
-        body: objectBodyToNodeReadable(response.Body),
+        body,
         contentType: response.ContentType ?? null,
         sizeBytes: response.ContentLength ?? null
       };
@@ -50,6 +55,20 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig): ObjectStor
       await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
     }
   };
+}
+
+function bindAbortToBody(body: Readable, signal?: AbortSignal) {
+  if (!signal) return;
+  if (signal.aborted) {
+    body.destroy();
+    return;
+  }
+  const abort = () => body.destroy();
+  const cleanup = () => signal.removeEventListener("abort", abort);
+  signal.addEventListener("abort", abort, { once: true });
+  body.once("close", cleanup);
+  body.once("end", cleanup);
+  body.once("error", cleanup);
 }
 
 export function objectBodyToNodeReadable(body: unknown): Readable {

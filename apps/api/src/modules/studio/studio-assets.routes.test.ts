@@ -17,6 +17,10 @@ const ownerB = { ...ownerA, "x-baase-profile-id": "owner_b" };
 const manager = { ...ownerA, "x-baase-role": "manager", "x-baase-profile-id": "manager_a" };
 const employee = { ...ownerA, "x-baase-role": "employee", "x-baase-profile-id": "employee_a" };
 
+function ownerScope() {
+  return { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+}
+
 describe("Studio asset routes", () => {
   it("uploads a private text asset and creates an exactly ten-minute download URL", async () => {
     const fixture = await createFixture();
@@ -129,7 +133,7 @@ describe("Studio asset routes", () => {
     expect(fixture.objectStorage.keys()).toEqual([]);
   });
 
-  it("removes the stored object when asset persistence fails", async () => {
+  it("transitions the durable upload intent to cleanup after a crash following object put", async () => {
     const repository = createInMemoryStudioRepository();
     const document = await repository.createDocument(documentInput());
     const objectStorage = createInMemoryObjectStorage();
@@ -137,7 +141,7 @@ describe("Studio asset routes", () => {
       objectStorage,
       studioRepository: {
         ...repository,
-        async createAsset() {
+        async finalizeAssetUpload() {
           throw new Error("database unavailable");
         }
       }
@@ -148,22 +152,50 @@ describe("Studio asset routes", () => {
     });
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe("STUDIO_ASSET_PERSISTENCE_FAILED");
-    expect(objectStorage.keys()).toEqual([]);
+    expect(response.json().error.details).toEqual({ cleanup_pending: true });
+    expect(objectStorage.keys()).toHaveLength(1);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+      status: "cleanup_pending",
+      objectKey: objectStorage.keys()[0]
+    }]);
   });
 
-  it("durably enqueues orphan cleanup when persistence and immediate cleanup both fail", async () => {
+  it("reconciles an ambiguous commit to the valid asset without scheduling object deletion", async () => {
     const repository = createInMemoryStudioRepository();
     const document = await repository.createDocument(documentInput());
     const objectStorage = createInMemoryObjectStorage();
-    objectStorage.failNextDelete(new Error("storage cleanup unavailable"));
     const app = buildApp({
       objectStorage,
       studioRepository: {
         ...repository,
-        async createAsset() {
-          throw new Error("database unavailable");
+        async finalizeAssetUpload(input) {
+          await repository.finalizeAssetUpload(input);
+          throw new Error("commit result lost");
         }
       }
+    });
+    const response = await upload(app, document.id, {
+      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().asset.objectKey).toBe(objectStorage.keys()[0]);
+    expect(objectStorage.keys()).toHaveLength(1);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{ status: "resolved" }]);
+  });
+
+  it("leaves the durable pending intent when reconciliation is temporarily unavailable", async () => {
+    let clock = "2026-07-13T12:00:00.000Z";
+    const repository = createInMemoryStudioRepository({ now: () => clock });
+    const document = await repository.createDocument(documentInput());
+    const objectStorage = createInMemoryObjectStorage();
+    const app = buildApp({
+      objectStorage,
+      studioRepository: {
+        ...repository,
+        async finalizeAssetUpload() { throw new Error("database unavailable"); },
+        async reconcileAssetUploadFailure() { throw new Error("database unavailable"); }
+      },
+      now: () => new Date(clock)
     });
     const response = await upload(app, document.id, {
       filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
@@ -171,32 +203,14 @@ describe("Studio asset routes", () => {
     expect(response.statusCode).toBe(503);
     expect(response.json().error).toMatchObject({
       code: "STUDIO_ASSET_PERSISTENCE_FAILED",
-      details: { cleanup_pending: true }
+      details: { upload_intent_pending: true }
     });
-    expect(await repository.listAssetCleanupJobs({ workspaceId: "workspace_a", ownerProfileId: "owner_a" }))
-      .toHaveLength(1);
     expect(objectStorage.keys()).toHaveLength(1);
-  });
-
-  it("surfaces a compound cleanup error when orphan enqueue also fails", async () => {
-    const repository = createInMemoryStudioRepository();
-    const document = await repository.createDocument(documentInput());
-    const objectStorage = createInMemoryObjectStorage();
-    objectStorage.failNextDelete(new Error("storage cleanup unavailable"));
-    const app = buildApp({
-      objectStorage,
-      studioRepository: {
-        ...repository,
-        async createAsset() { throw new Error("database unavailable"); },
-        async enqueueOrphanAssetCleanup() { throw new Error("cleanup database unavailable"); }
-      }
-    });
-    const response = await upload(app, document.id, {
-      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
-    });
-    expect(response.statusCode).toBe(503);
-    expect(response.json().error.code).toBe("STUDIO_ASSET_CLEANUP_ENQUEUE_FAILED");
-    expect(objectStorage.keys()).toHaveLength(1);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{ status: "pending" }]);
+    clock = "2026-07-13T12:15:00.000Z";
+    await app.studioAssetUploadCleanupProcessor.processNext();
+    expect(objectStorage.keys()).toEqual([]);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
   });
 
   it("deletes the private object only after an owner-scoped asset lookup", async () => {
@@ -214,20 +228,57 @@ describe("Studio asset routes", () => {
     const removed = await fixture.app.inject({
       method: "DELETE", url: `/studio/assets/${assetId}`, headers: ownerA
     });
-    expect(removed.statusCode).toBe(202);
-    expect(removed.json()).toEqual({ ok: true, cleanup_pending: true });
-    expect(fixture.objectStorage.keys()).toHaveLength(1);
+    expect(removed.statusCode).toBe(204);
+    expect(fixture.objectStorage.keys()).toEqual([]);
     expect(await fixture.repository.findAsset(
       { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
     )).toBeNull();
     expect(await fixture.repository.findAssetIncludingDeleting(
       { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
-    )).toMatchObject({ lifecycleStatus: "deleting" });
-    await fixture.app.studioAssetCleanupProcessor.processNext();
-    expect(fixture.objectStorage.keys()).toEqual([]);
+    )).toBeNull();
+  });
+
+  it("returns accepted with a durable tombstone when immediate storage cleanup fails", async () => {
+    const fixture = await createFixture();
+    const uploaded = await upload(fixture.app, fixture.documentId, {
+      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    const assetId = uploaded.json().asset.id as string;
+    fixture.objectStorage.failNextDelete(new Error("storage unavailable"));
+
+    const removed = await fixture.app.inject({
+      method: "DELETE", url: `/studio/assets/${assetId}`, headers: ownerA
+    });
+    expect(removed.statusCode).toBe(202);
+    expect(removed.json()).toEqual({ ok: true, cleanup_pending: true });
     expect(await fixture.repository.findAssetIncludingDeleting(
       { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, assetId
-    )).toBeNull();
+    )).toMatchObject({ lifecycleStatus: "deleting" });
+    expect(await fixture.repository.listAssetCleanupJobs(
+      { workspaceId: "workspace_a", ownerProfileId: "owner_a" }
+    )).toHaveLength(1);
+  });
+
+  it("returns accepted and retains the tombstone when immediate database finalization fails", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const objectStorage = createInMemoryObjectStorage();
+    const app = buildApp({
+      objectStorage,
+      studioRepository: {
+        ...repository,
+        async completeAssetCleanup() { throw new Error("database unavailable"); }
+      }
+    });
+    const uploaded = await upload(app, document.id, {
+      filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    const assetId = uploaded.json().asset.id as string;
+    const removed = await app.inject({ method: "DELETE", url: `/studio/assets/${assetId}`, headers: ownerA });
+    expect(removed.statusCode).toBe(202);
+    expect(await repository.findAssetIncludingDeleting(ownerScope(), assetId))
+      .toMatchObject({ lifecycleStatus: "deleting" });
+    expect(await repository.listAssetCleanupJobs(ownerScope())).toHaveLength(1);
   });
 
   it("rejects spoofed PDF/audio signatures and extra multipart fields", async () => {

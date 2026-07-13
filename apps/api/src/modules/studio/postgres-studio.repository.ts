@@ -3,6 +3,8 @@ import type {
   StudioAsset,
   StudioAssetCleanupJob,
   StudioAssetCleanupStatus,
+  StudioAssetUploadIntent,
+  StudioAssetUploadIntentStatus,
   StudioAssetExtractionStatus,
   StudioAssetKind,
   StudioCollection,
@@ -118,6 +120,27 @@ type StudioAssetCleanupJobRow = {
   updated_at: string | Date;
 };
 
+type StudioAssetUploadIntentRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  document_id: string;
+  object_key: string;
+  display_name: string;
+  kind: StudioAssetUploadIntent["kind"];
+  mime_type: string;
+  size_bytes: string | number;
+  status: StudioAssetUploadIntentStatus;
+  asset_id: string | null;
+  attempt_count: number;
+  next_attempt_at: string | Date | null;
+  last_error_code: string | null;
+  claim_token: string | null;
+  lease_expires_at: string | Date | null;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
 type DocumentCursor = {
   updatedAt: string;
   id: string;
@@ -221,6 +244,29 @@ function cleanupJobFromRow(row: StudioAssetCleanupJobRow): StudioAssetCleanupJob
     assetId: row.asset_id,
     objectKey: row.object_key,
     status: row.status,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
+    lastErrorCode: row.last_error_code,
+    claimToken: row.claim_token,
+    leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  };
+}
+
+function uploadIntentFromRow(row: StudioAssetUploadIntentRow): StudioAssetUploadIntent {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id,
+    objectKey: row.object_key,
+    displayName: row.display_name,
+    kind: row.kind,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes),
+    status: row.status,
+    assetId: row.asset_id,
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
     lastErrorCode: row.last_error_code,
@@ -730,11 +776,231 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       }
     },
 
+    async findAssetByObjectKey(scope, objectKey) {
+      const result = await db.query<StudioAssetRow>(
+        `SELECT * FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
+        [scope.workspaceId, scope.ownerProfileId, objectKey]
+      );
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async createAssetUploadIntent(input) {
+      try {
+        const result = await db.query<StudioAssetUploadIntentRow>(
+          `INSERT INTO studio_asset_upload_intents
+             (id,workspace_id,owner_profile_id,document_id,object_key,display_name,kind,mime_type,size_bytes,next_attempt_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (workspace_id,owner_profile_id,object_key) DO UPDATE SET object_key=EXCLUDED.object_key
+           RETURNING *`,
+          [generatedId("studio_asset_upload"), input.workspaceId, input.ownerProfileId, input.documentId,
+            input.objectKey, input.displayName, input.kind, input.mimeType, input.sizeBytes,
+            input.nextAttemptAt ?? new Date(Date.now() + 15 * 60_000).toISOString()]
+        );
+        return uploadIntentFromRow(result.rows[0]!);
+      } catch (error) {
+        const candidate = error as { code?: string; constraint?: string };
+        if (candidate.code === "23503" && candidate.constraint?.includes("document")) {
+          throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        }
+        throw error;
+      }
+    },
+
+    async finalizeAssetUpload(input) {
+      return withOperationalTransaction(db, async (client) => {
+        const intentResult = await client.query<StudioAssetUploadIntentRow>(
+          `SELECT * FROM studio_asset_upload_intents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId]
+        );
+        const intent = intentResult.rows[0];
+        if (!intent) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
+        if (input.asset.workspaceId !== intent.workspace_id || input.asset.ownerProfileId !== intent.owner_profile_id
+          || input.asset.documentId !== intent.document_id || input.asset.objectKey !== intent.object_key) {
+          throw new Error("STUDIO_ASSET_UPLOAD_INTENT_MISMATCH");
+        }
+        const existing = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
+          [intent.workspace_id, intent.owner_profile_id, intent.object_key]
+        );
+        if (existing.rows[0]) {
+          await client.query(
+            `UPDATE studio_asset_upload_intents SET status='resolved',asset_id=$4,next_attempt_at=NULL,
+               last_error_code=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [intent.workspace_id, intent.owner_profile_id, intent.id, existing.rows[0].id]
+          );
+          return assetFromRow(existing.rows[0]);
+        }
+        if (intent.status !== "pending") throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_PENDING");
+        const asset = await client.query<StudioAssetRow>(
+          `INSERT INTO studio_assets
+             (id,workspace_id,owner_profile_id,document_id,kind,display_name,object_key,source_url,
+              final_url,fetched_at,mime_type,size_bytes,extraction_status,extracted_text,
+              extraction_metadata,last_error_code,attempt_count,next_attempt_at,claim_token,
+              lease_expires_at,lifecycle_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21)
+           RETURNING *`,
+          [generatedId("studio_asset"), input.asset.workspaceId, input.asset.ownerProfileId,
+            input.asset.documentId, input.asset.kind, input.asset.displayName, input.asset.objectKey,
+            input.asset.sourceUrl, input.asset.finalUrl, input.asset.fetchedAt, input.asset.mimeType,
+            input.asset.sizeBytes, input.asset.extractionStatus, input.asset.extractedText,
+            JSON.stringify(input.asset.extractionMetadata), input.asset.lastErrorCode,
+            input.asset.attemptCount, input.asset.nextAttemptAt, input.asset.claimToken ?? null,
+            input.asset.leaseExpiresAt ?? null, input.asset.lifecycleStatus ?? "active"]
+        );
+        await client.query(
+          `UPDATE studio_asset_upload_intents SET status='resolved',asset_id=$4,next_attempt_at=NULL,
+             last_error_code=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [intent.workspace_id, intent.owner_profile_id, intent.id, asset.rows[0]!.id]
+        );
+        return assetFromRow(asset.rows[0]!);
+      });
+    },
+
+    async reconcileAssetUploadFailure(scope, intentId, now) {
+      return withOperationalTransaction(db, async (client) => {
+        const intentResult = await client.query<StudioAssetUploadIntentRow>(
+          `SELECT * FROM studio_asset_upload_intents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, intentId]
+        );
+        const intent = intentResult.rows[0];
+        if (!intent) throw new Error("STUDIO_ASSET_UPLOAD_INTENT_NOT_FOUND");
+        const existing = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
+          [scope.workspaceId, scope.ownerProfileId, intent.object_key]
+        );
+        if (existing.rows[0]) {
+          await client.query(
+            `UPDATE studio_asset_upload_intents SET status='resolved',asset_id=$4,next_attempt_at=NULL,
+               last_error_code=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [scope.workspaceId, scope.ownerProfileId, intentId, existing.rows[0].id]
+          );
+          return assetFromRow(existing.rows[0]);
+        }
+        if (intent.status !== "processing") {
+          await client.query(
+            `UPDATE studio_asset_upload_intents SET status='cleanup_pending',next_attempt_at=$4,
+               last_error_code='STUDIO_ASSET_UPLOAD_INCOMPLETE',claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [scope.workspaceId, scope.ownerProfileId, intentId, now]
+          );
+        }
+        return null;
+      });
+    },
+
+    async listAssetUploadIntents(scope) {
+      const result = await db.query<StudioAssetUploadIntentRow>(
+        `SELECT * FROM studio_asset_upload_intents
+         WHERE workspace_id=$1 AND owner_profile_id=$2 ORDER BY created_at ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId]
+      );
+      return result.rows.map(uploadIntentFromRow);
+    },
+
+    async claimNextAssetUploadCleanup(now, leaseMs = 120_000) {
+      return withOperationalTransaction(db, async (client) => {
+        const candidate = await client.query<StudioAssetUploadIntentRow>(
+          `SELECT * FROM studio_asset_upload_intents
+           WHERE ((status IN ('pending','cleanup_pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+             OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1))
+           ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1`,
+          [now]
+        );
+        const intent = candidate.rows[0];
+        if (!intent) return null;
+        const existing = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
+          [intent.workspace_id, intent.owner_profile_id, intent.object_key]
+        );
+        if (existing.rows[0]) {
+          await client.query(
+            `UPDATE studio_asset_upload_intents SET status='resolved',asset_id=$4,next_attempt_at=NULL,
+               last_error_code=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [intent.workspace_id, intent.owner_profile_id, intent.id, existing.rows[0].id]
+          );
+          return null;
+        }
+        const token = generatedId("studio_upload_cleanup_claim");
+        const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
+        const claimed = await client.query<StudioAssetUploadIntentRow>(
+          `UPDATE studio_asset_upload_intents SET status='processing',attempt_count=attempt_count+1,
+             next_attempt_at=NULL,claim_token=$4,lease_expires_at=$5,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [intent.workspace_id, intent.owner_profile_id, intent.id, token, leaseExpiresAt]
+        );
+        return uploadIntentFromRow(claimed.rows[0]!);
+      });
+    },
+
+    async resolveClaimedAssetUploadIntent(input) {
+      return withOperationalTransaction(db, async (client) => {
+        const intentResult = await client.query<StudioAssetUploadIntentRow>(
+          `SELECT * FROM studio_asset_upload_intents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             AND status='processing' AND claim_token=$4 FOR UPDATE`,
+          [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId, input.claimToken]
+        );
+        const intent = intentResult.rows[0];
+        if (!intent) return null;
+        const existing = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
+          [intent.workspace_id, intent.owner_profile_id, intent.object_key]
+        );
+        if (!existing.rows[0]) return null;
+        await client.query(
+          `UPDATE studio_asset_upload_intents SET status='resolved',asset_id=$4,next_attempt_at=NULL,
+             last_error_code=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [intent.workspace_id, intent.owner_profile_id, intent.id, existing.rows[0].id]
+        );
+        return assetFromRow(existing.rows[0]);
+      });
+    },
+
+    async failAssetUploadCleanup(input) {
+      const result = await db.query<StudioAssetUploadIntentRow>(
+        `UPDATE studio_asset_upload_intents SET status='failed',last_error_code=$5,next_attempt_at=$6,
+           claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND status='processing' AND claim_token=$4
+         RETURNING *`,
+        [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId, input.claimToken,
+          input.lastErrorCode, input.nextAttemptAt]
+      );
+      return result.rows[0] ? uploadIntentFromRow(result.rows[0]) : null;
+    },
+
+    async completeAssetUploadCleanup(input) {
+      const result = await db.query<{ id: string }>(
+        `DELETE FROM studio_asset_upload_intents
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND status='processing' AND claim_token=$4
+         RETURNING id`,
+        [input.scope.workspaceId, input.scope.ownerProfileId, input.intentId, input.claimToken]
+      );
+      return Boolean(result.rows[0]);
+    },
+
     async claimNextAsset(now, leaseMs = 120_000) {
       const claimToken = generatedId("studio_asset_claim");
       const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioAssetRow>(
-        `WITH candidate AS (
+        `WITH expired AS (
+           UPDATE studio_assets SET extraction_status='failed',last_error_code='STUDIO_ASSET_LEASE_EXPIRED',
+             next_attempt_at=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+           WHERE lifecycle_status='active' AND extraction_status='processing' AND attempt_count >= $4
+             AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1
+           RETURNING id
+         ), candidate AS (
            SELECT workspace_id,owner_profile_id,id
            FROM studio_assets
            WHERE lifecycle_status='active' AND attempt_count < $4 AND (
@@ -858,6 +1124,22 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            AND job.id=candidate.id
          RETURNING job.*`,
         [now, claimToken, leaseExpiresAt]
+      );
+      return result.rows[0] ? cleanupJobFromRow(result.rows[0]) : null;
+    },
+
+    async claimAssetCleanup(scope, jobId, now, leaseMs = 120_000) {
+      const claimToken = generatedId("studio_cleanup_claim");
+      const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
+      const result = await db.query<StudioAssetCleanupJobRow>(
+        `UPDATE studio_asset_cleanup_jobs SET status='processing',attempt_count=attempt_count+1,
+           next_attempt_at=NULL,claim_token=$5,lease_expires_at=$6,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND (
+           status='pending'
+           OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $4)
+           OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $4)
+         ) RETURNING *`,
+        [scope.workspaceId, scope.ownerProfileId, jobId, now, claimToken, leaseExpiresAt]
       );
       return result.rows[0] ? cleanupJobFromRow(result.rows[0]) : null;
     },

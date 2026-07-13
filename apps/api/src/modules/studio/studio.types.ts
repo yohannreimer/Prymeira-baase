@@ -7,6 +7,7 @@ export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioAssetLifecycleStatus = "active" | "deleting";
 export type StudioAssetCleanupStatus = "pending" | "processing" | "failed";
+export type StudioAssetUploadIntentStatus = "pending" | "cleanup_pending" | "processing" | "failed" | "resolved";
 export const STUDIO_ASSET_MAX_ATTEMPTS = 5;
 
 export type CreateStudioDocument = {
@@ -137,6 +138,25 @@ export type StudioAssetCleanupJob = StudioOwnerScope & {
   updatedAt: string;
 };
 
+export type StudioAssetUploadIntent = StudioOwnerScope & {
+  id: string;
+  documentId: string;
+  objectKey: string;
+  displayName: string;
+  kind: Exclude<StudioAssetKind, "link_snapshot">;
+  mimeType: string;
+  sizeBytes: number;
+  status: StudioAssetUploadIntentStatus;
+  assetId: string | null;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastErrorCode: string | null;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type CreateStudioAsset = Omit<
   StudioAsset,
   "id" | "createdAt" | "updatedAt" | "claimToken" | "leaseExpiresAt" | "lifecycleStatus"
@@ -214,12 +234,43 @@ export type StudioRepository = {
   findAsset(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   findAssetIncludingDeleting(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   createAsset(input: CreateStudioAsset): Promise<StudioAsset>;
+  findAssetByObjectKey(scope: StudioOwnerScope, objectKey: string): Promise<StudioAsset | null>;
+  createAssetUploadIntent(input: Omit<StudioAssetUploadIntent,
+    "id" | "status" | "assetId" | "attemptCount" | "nextAttemptAt" | "lastErrorCode"
+    | "claimToken" | "leaseExpiresAt" | "createdAt" | "updatedAt"
+  > & { nextAttemptAt?: string }): Promise<StudioAssetUploadIntent>;
+  finalizeAssetUpload(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    asset: CreateStudioAsset;
+  }): Promise<StudioAsset>;
+  reconcileAssetUploadFailure(scope: StudioOwnerScope, intentId: string, now: string): Promise<StudioAsset | null>;
+  listAssetUploadIntents(scope: StudioOwnerScope): Promise<StudioAssetUploadIntent[]>;
+  claimNextAssetUploadCleanup(now: string, leaseMs?: number): Promise<StudioAssetUploadIntent | null>;
+  resolveClaimedAssetUploadIntent(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    claimToken: string;
+  }): Promise<StudioAsset | null>;
+  failAssetUploadCleanup(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    claimToken: string;
+    lastErrorCode: string;
+    nextAttemptAt: string;
+  }): Promise<StudioAssetUploadIntent | null>;
+  completeAssetUploadCleanup(input: {
+    scope: StudioOwnerScope;
+    intentId: string;
+    claimToken: string;
+  }): Promise<boolean>;
   claimNextAsset(now: string, leaseMs?: number): Promise<StudioAsset | null>;
   finishAssetProcessing(input: FinishStudioAssetProcessing): Promise<StudioAsset | null>;
   tombstoneAssetForCleanup(scope: StudioOwnerScope, assetId: string): Promise<StudioAssetCleanupJob | null>;
   enqueueOrphanAssetCleanup(input: StudioOwnerScope & { objectKey: string }): Promise<StudioAssetCleanupJob>;
   listAssetCleanupJobs(scope: StudioOwnerScope): Promise<StudioAssetCleanupJob[]>;
   claimNextAssetCleanup(now: string, leaseMs?: number): Promise<StudioAssetCleanupJob | null>;
+  claimAssetCleanup(scope: StudioOwnerScope, jobId: string, now: string, leaseMs?: number): Promise<StudioAssetCleanupJob | null>;
   failAssetCleanup(input: {
     scope: StudioOwnerScope;
     jobId: string;

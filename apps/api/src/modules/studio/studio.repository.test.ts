@@ -683,6 +683,79 @@ function repositoryContract(
         })).rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
       });
     });
+
+    it("terminalizes an expired fifth processing attempt and fences its stale worker", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const asset = await repository.createAsset({
+          ...scope, documentId: document.id, kind: "file", displayName: "crash.txt",
+          objectKey: "private/crash.txt", sourceUrl: null, finalUrl: null, fetchedAt: null,
+          mimeType: "text/plain", sizeBytes: 5, extractionStatus: "pending", extractedText: null,
+          extractionMetadata: {}, lastErrorCode: null, attemptCount: 4, nextAttemptAt: null
+        });
+        const fifth = await repository.claimNextAsset("2026-07-13T12:00:00.000Z", 1_000);
+        expect(fifth).toMatchObject({ id: asset.id, attemptCount: 5, extractionStatus: "processing" });
+
+        expect(await repository.claimNextAsset("2026-07-13T12:00:01.000Z", 1_000)).toBeNull();
+        expect(await repository.findAsset(scope, asset.id)).toMatchObject({
+          extractionStatus: "failed",
+          attemptCount: 5,
+          lastErrorCode: "STUDIO_ASSET_LEASE_EXPIRED",
+          nextAttemptAt: null,
+          claimToken: null,
+          leaseExpiresAt: null
+        });
+        expect(await repository.finishAssetProcessing({
+          scope, assetId: asset.id, claimToken: fifth!.claimToken!, extractionStatus: "ready",
+          extractedText: "late", extractionMetadata: {}, lastErrorCode: null, nextAttemptAt: null
+        })).toBeNull();
+      });
+    });
+
+    it("finalizes and reconciles durable owner-scoped upload intents idempotently", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const intent = await repository.createAssetUploadIntent({
+          ...scope, documentId: document.id, objectKey: "private/upload.txt", displayName: "upload.txt",
+          kind: "file", mimeType: "text/plain", sizeBytes: 7,
+          nextAttemptAt: "2026-07-13T12:15:00.000Z"
+        });
+        const assetInput = {
+          ...scope, documentId: document.id, kind: "file" as const, displayName: "upload.txt",
+          objectKey: intent.objectKey, sourceUrl: null, finalUrl: null, fetchedAt: null,
+          mimeType: "text/plain", sizeBytes: 7, extractionStatus: "pending" as const,
+          extractedText: null, extractionMetadata: {}, lastErrorCode: null, attemptCount: 0, nextAttemptAt: null
+        };
+        const asset = await repository.finalizeAssetUpload({ scope, intentId: intent.id, asset: assetInput });
+        expect(await repository.finalizeAssetUpload({ scope, intentId: intent.id, asset: assetInput }))
+          .toMatchObject({ id: asset.id });
+        expect(await repository.reconcileAssetUploadFailure(scope, intent.id, "2026-07-13T12:00:00.000Z"))
+          .toMatchObject({ id: asset.id });
+        expect(await repository.findAssetByObjectKey(scope, intent.objectKey)).toMatchObject({ id: asset.id });
+        expect(await repository.findAssetByObjectKey(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" }, intent.objectKey
+        )).toBeNull();
+
+        const orphan = await repository.createAssetUploadIntent({
+          ...scope, documentId: document.id, objectKey: "private/orphan.txt", displayName: "orphan.txt",
+          kind: "file", mimeType: "text/plain", sizeBytes: 6,
+          nextAttemptAt: "2026-07-13T12:00:00.000Z"
+        });
+        expect(await repository.reconcileAssetUploadFailure(scope, orphan.id, "2026-07-13T12:00:00.000Z"))
+          .toBeNull();
+        const claimed = await repository.claimNextAssetUploadCleanup("2026-07-13T12:00:00.000Z", 1_000);
+        expect(claimed).toMatchObject({ id: orphan.id, status: "processing", attemptCount: 1 });
+        expect(await repository.completeAssetUploadCleanup({
+          scope: { workspaceId: "workspace_a", ownerProfileId: "owner_b" },
+          intentId: orphan.id, claimToken: claimed!.claimToken!
+        })).toBe(false);
+        expect(await repository.completeAssetUploadCleanup({
+          scope, intentId: orphan.id, claimToken: claimed!.claimToken!
+        })).toBe(true);
+      });
+    });
   });
 }
 

@@ -5,12 +5,18 @@ type DeepgramPrerecordedClient = {
   listen: {
     v1: {
       media: {
-        transcribeUrl?: (request: Record<string, unknown>) => Promise<unknown>;
-        transcribeFile?: (source: DeepgramUploadable, options: Record<string, unknown>) => Promise<unknown>;
+        transcribeUrl?: (request: Record<string, unknown>, options?: DeepgramRequestOptions) => Promise<unknown>;
+        transcribeFile?: (
+          source: DeepgramUploadable,
+          options: Record<string, unknown>,
+          requestOptions?: DeepgramRequestOptions
+        ) => Promise<unknown>;
       };
     };
   };
 };
+
+type DeepgramRequestOptions = { abortSignal?: AbortSignal };
 
 type DeepgramUploadable = Buffer | {
   data: Buffer;
@@ -37,10 +43,14 @@ export function createDeepgramProvider(options: CreateDeepgramProviderOptions = 
       const deepgramOptions = buildDeepgramOptions(request);
       const mediaClient = client.listen.v1.media;
       const response = request.audioUrl
-        ? await mediaClient.transcribeUrl?.({ url: request.audioUrl, ...deepgramOptions })
+        ? await mediaClient.transcribeUrl?.(
+            { url: request.audioUrl, ...deepgramOptions },
+            { abortSignal: request.signal }
+          )
         : await mediaClient.transcribeFile?.(
             buildDeepgramAudioUpload(request.audioBuffer ?? Buffer.alloc(0), request.mimeType),
-            deepgramOptions
+            deepgramOptions,
+            { abortSignal: request.signal }
           );
 
       if (!response) throw new Error("DEEPGRAM_TRANSCRIPTION_FAILED");

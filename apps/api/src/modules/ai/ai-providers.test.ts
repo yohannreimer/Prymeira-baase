@@ -211,8 +211,8 @@ describe("Deepgram provider", () => {
         listen: {
           v1: {
             media: {
-              transcribeFile: async (source: unknown, options: unknown) => {
-                calls.push({ source, options });
+              transcribeFile: async (source: unknown, options: unknown, requestOptions: unknown) => {
+                calls.push({ source, options, requestOptions });
                 return {
                   result: {
                     metadata: { duration: 42 },
@@ -240,11 +240,13 @@ describe("Deepgram provider", () => {
       }
     });
 
+    const controller = new AbortController();
     const transcript = await provider.transcribeAudio({
       audioBuffer: Buffer.from("browser-audio"),
       mimeType: "audio/webm",
       language: "pt-BR",
-      keyterms: ["Baase", "WhatsApp", "Atendimento"]
+      keyterms: ["Baase", "WhatsApp", "Atendimento"],
+      signal: controller.signal
     });
 
     expect(transcript).toEqual({
@@ -273,7 +275,8 @@ describe("Deepgram provider", () => {
         utterances: true,
         diarize_model: "latest",
         keyterm: ["Baase", "WhatsApp", "Atendimento"]
-      }
+      },
+      requestOptions: { abortSignal: controller.signal }
     });
   });
 });

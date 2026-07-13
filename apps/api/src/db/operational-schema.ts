@@ -754,6 +754,48 @@ const migrations: Migration[] = [{
       ON studio_asset_cleanup_jobs (workspace_id, owner_profile_id, object_key)
       WHERE object_key IS NOT NULL;
   `
+}, {
+  version: 11,
+  name: "studio_asset_upload_intents",
+  sql: `
+    CREATE TABLE studio_asset_upload_intents (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('audio','image','file')),
+      mime_type TEXT NOT NULL,
+      size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','cleanup_pending','processing','failed','resolved')),
+      asset_id TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ,
+      last_error_code TEXT,
+      claim_token TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id),
+      UNIQUE (workspace_id, owner_profile_id, object_key),
+      CHECK (
+        (status='processing' AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR (status<>'processing' AND claim_token IS NULL AND lease_expires_at IS NULL)
+      ),
+      CHECK ((status='resolved' AND asset_id IS NOT NULL) OR status<>'resolved'),
+      FOREIGN KEY (workspace_id, owner_profile_id, document_id)
+        REFERENCES studio_documents(workspace_id, owner_profile_id, id)
+    );
+
+    CREATE UNIQUE INDEX studio_assets_object_key_uidx
+      ON studio_assets (workspace_id, owner_profile_id, object_key)
+      WHERE object_key IS NOT NULL;
+    CREATE INDEX studio_asset_upload_intents_claim_idx
+      ON studio_asset_upload_intents (status, next_attempt_at, lease_expires_at, created_at)
+      WHERE status IN ('pending','cleanup_pending','processing','failed');
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

@@ -1,0 +1,74 @@
+import { describe, expect, it, vi } from "vitest";
+import { createStudioAssetMaintenanceRunner } from "./studio-asset-maintenance-runner";
+
+const idle = { processNext: vi.fn(async () => null) };
+
+describe("Studio asset maintenance runner", () => {
+  it("runs single-flight drains with a bounded item count", async () => {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => { release = resolve; });
+    const processor = {
+      processNext: vi.fn()
+        .mockImplementationOnce(async () => { await first; return {}; })
+        .mockResolvedValue({})
+    };
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: processor,
+      cleanupProcessor: idle,
+      uploadCleanupProcessor: idle,
+      logger: { error: vi.fn() },
+      maxItemsPerProcessor: 2,
+      scavenge: vi.fn(async () => undefined)
+    });
+    const left = runner.runOnce();
+    const right = runner.runOnce();
+    expect(left).toBe(right);
+    release();
+    await left;
+    expect(processor.processNext).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts immediately, survives errors, schedules without overlap, and awaits stop", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const processor = {
+        processNext: vi.fn()
+          .mockRejectedValueOnce(new Error("worker failed"))
+          .mockResolvedValueOnce(null)
+          .mockImplementationOnce(async () => { await blocked; return null; })
+      };
+      const logger = { error: vi.fn() };
+      const scavenge = vi.fn(async () => undefined);
+      const runner = createStudioAssetMaintenanceRunner({
+        assetProcessor: processor,
+        cleanupProcessor: { processNext: vi.fn(async () => null) },
+        uploadCleanupProcessor: { processNext: vi.fn(async () => null) },
+        logger,
+        maxItemsPerProcessor: 2,
+        intervalMs: 100,
+        jitterRatio: 0,
+        scavenge
+      });
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(scavenge).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(expect.any(Error), expect.stringContaining("maintenance failed"));
+      expect(processor.processNext).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(processor.processNext).toHaveBeenCalledTimes(3);
+      let stopped = false;
+      const stopping = runner.stop().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(processor.processNext).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -25,11 +25,16 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       const body = Buffer.concat(chunks);
       objects.set(input.key, { body, contentType: input.contentType, sizeBytes: body.length });
     },
-    async get(key) {
+    async get(key, options) {
+      if (options?.signal?.aborted) throw options.signal.reason ?? new Error("ABORTED");
       const object = objects.get(key);
       if (!object) throw new Error("OBJECT_NOT_FOUND");
+      const body = Readable.from(Buffer.from(object.body));
+      const abort = () => body.destroy();
+      options?.signal?.addEventListener("abort", abort, { once: true });
+      body.once("close", () => options?.signal?.removeEventListener("abort", abort));
       return {
-        body: Readable.from(Buffer.from(object.body)),
+        body,
         contentType: object.contentType,
         sizeBytes: object.sizeBytes
       };

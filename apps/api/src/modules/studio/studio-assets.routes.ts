@@ -23,6 +23,7 @@ import {
   type StudioLinkResolver
 } from "./studio-link-fetcher";
 import type { StudioAsset, StudioOwnerScope, StudioRepository } from "./studio.types";
+import type { createStudioAssetCleanupProcessor } from "./studio-asset-cleanup";
 
 export type { StudioLinkFetcher, StudioLinkResolver } from "./studio-link-fetcher";
 
@@ -34,6 +35,7 @@ export type RegisterStudioAssetRoutesOptions = {
   resolver?: StudioLinkResolver;
   fetcher?: StudioLinkFetcher;
   uploadSemaphore?: StudioUploadSemaphore;
+  cleanupProcessor?: Pick<ReturnType<typeof createStudioAssetCleanupProcessor>, "processJob">;
   now?: () => Date;
 };
 
@@ -125,8 +127,27 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
     await requireAsset(options.repository, scope, assetId);
     const job = await options.repository.tombstoneAssetForCleanup(scope, assetId);
     if (!job) throw assetNotFound();
+    const finalized = options.cleanupProcessor
+      ? await boundedImmediateCleanup(options.cleanupProcessor.processJob(scope, job.id), 2_000)
+      : false;
+    if (finalized) return reply.status(204).send();
     return reply.status(202).send({ ok: true, cleanup_pending: true });
   });
+}
+
+async function boundedImmediateCleanup(operation: Promise<boolean>, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation.catch(() => false),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+        timeout.unref?.();
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 async function uploadFileAsset(
@@ -173,7 +194,26 @@ async function uploadFileAsset(
         throw multipartError(error);
       }
       const key = studioAssetKey(scope, documentId, displayName);
-      let stored = false;
+      const kind = spooled.mimeType.startsWith("audio/")
+        ? "audio" as const
+        : spooled.mimeType.startsWith("image/") ? "image" as const : "file" as const;
+      let intent;
+      try {
+        const currentTime = (options.now ?? (() => new Date()))();
+        intent = await options.repository.createAssetUploadIntent({
+          ...scope,
+          documentId,
+          objectKey: key,
+          displayName,
+          kind,
+          mimeType: spooled.mimeType,
+          sizeBytes: spooled.sizeBytes,
+          nextAttemptAt: new Date(currentTime.getTime() + 15 * 60_000).toISOString()
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === "STUDIO_DOCUMENT_NOT_FOUND") throw documentNotFound();
+        throw persistenceFailed();
+      }
       try {
         await options.objectStorage.put({
           key,
@@ -181,50 +221,50 @@ async function uploadFileAsset(
           contentType: spooled.mimeType,
           sizeBytes: spooled.sizeBytes
         });
-        stored = true;
-        return await options.repository.createAsset({
-          ...scope,
-          documentId,
-          kind: spooled.mimeType.startsWith("audio/")
-            ? "audio"
-            : spooled.mimeType.startsWith("image/") ? "image" : "file",
-          displayName,
-          objectKey: key,
-          sourceUrl: null,
-          finalUrl: null,
-          fetchedAt: null,
-          mimeType: spooled.mimeType,
-          sizeBytes: spooled.sizeBytes,
-          extractionStatus: "pending",
-          extractedText: null,
-          extractionMetadata: {},
-          lastErrorCode: null,
-          attemptCount: 0,
-          nextAttemptAt: null
+      } catch {
+        throw storageUnavailable();
+      }
+      const assetInput = {
+        ...scope,
+        documentId,
+        kind,
+        displayName,
+        objectKey: key,
+        sourceUrl: null,
+        finalUrl: null,
+        fetchedAt: null,
+        mimeType: spooled.mimeType,
+        sizeBytes: spooled.sizeBytes,
+        extractionStatus: "pending" as const,
+        extractedText: null,
+        extractionMetadata: {},
+        lastErrorCode: null,
+        attemptCount: 0,
+        nextAttemptAt: null
+      };
+      try {
+        return await options.repository.finalizeAssetUpload({
+          scope,
+          intentId: intent.id,
+          asset: assetInput
         });
-      } catch (error) {
-        if (!stored) throw storageUnavailable();
+      } catch {
+        let reconciled: StudioAsset | null;
         try {
-          await options.objectStorage.delete(key);
-        } catch {
-          try {
-            await options.repository.enqueueOrphanAssetCleanup({ ...scope, objectKey: key });
-          } catch {
-            throw new ApiError(
-              503,
-              "STUDIO_ASSET_CLEANUP_ENQUEUE_FAILED",
-              "A captura falhou e a limpeza pendente não pôde ser registrada. Acione o suporte."
-            );
-          }
-          throw new ApiError(
-            503,
-            "STUDIO_ASSET_PERSISTENCE_FAILED",
-            "Não foi possível salvar a captura. Tente novamente.",
-            { cleanup_pending: true }
+          reconciled = await options.repository.reconcileAssetUploadFailure(
+            scope,
+            intent.id,
+            (options.now ?? (() => new Date()))().toISOString()
           );
+        } catch {
+          throw persistenceFailed({ upload_intent_pending: true });
         }
-        if (error instanceof Error && error.message === "STUDIO_DOCUMENT_NOT_FOUND") throw documentNotFound();
-        throw persistenceFailed();
+        if (reconciled) return reconciled;
+        throw persistenceFailed({ cleanup_pending: true });
+      }
+    }, {
+      onCleanupError(error, path) {
+        request.log.error({ err: error, path }, "Studio upload temp cleanup failed");
       }
     });
   } catch (error) {
@@ -285,6 +325,11 @@ function assetNotFound() {
 function storageUnavailable() {
   return new ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "Não foi possível acessar o armazenamento de arquivos. Tente novamente.");
 }
-function persistenceFailed() {
-  return new ApiError(503, "STUDIO_ASSET_PERSISTENCE_FAILED", "Não foi possível salvar a captura. Tente novamente.");
+function persistenceFailed(details?: Record<string, unknown>) {
+  return new ApiError(
+    503,
+    "STUDIO_ASSET_PERSISTENCE_FAILED",
+    "Não foi possível salvar a captura. Tente novamente.",
+    details
+  );
 }

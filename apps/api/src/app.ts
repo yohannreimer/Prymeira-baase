@@ -47,6 +47,7 @@ import { createStudioService } from "./modules/studio/studio.service";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import { createStudioAssetProcessor } from "./modules/studio/studio-asset-processor";
 import { createStudioAssetCleanupProcessor } from "./modules/studio/studio-asset-cleanup";
+import { createStudioAssetUploadCleanupProcessor } from "./modules/studio/studio-asset-upload-cleanup";
 import type { StudioUploadSemaphore } from "./modules/studio/studio-asset-upload";
 import {
   createLocalDemoProcesses,
@@ -120,6 +121,11 @@ export function buildApp(options: BuildAppOptions = {}) {
     now: options.now ? () => options.now!().toISOString() : undefined
   });
   const studioAssetCleanupProcessor = createStudioAssetCleanupProcessor({
+    repository: studioRepository,
+    objectStorage,
+    now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const studioAssetUploadCleanupProcessor = createStudioAssetUploadCleanupProcessor({
     repository: studioRepository,
     objectStorage,
     now: options.now ? () => options.now!().toISOString() : undefined
@@ -293,8 +299,13 @@ export function buildApp(options: BuildAppOptions = {}) {
     resolver: options.studioLinkResolver,
     fetcher: options.studioLinkFetcher,
     uploadSemaphore: options.studioUploadSemaphore,
+    cleanupProcessor: studioAssetCleanupProcessor,
     now: options.now
   }));
 
-  return Object.assign(app, { studioAssetProcessor, studioAssetCleanupProcessor });
+  return Object.assign(app, {
+    studioAssetProcessor,
+    studioAssetCleanupProcessor,
+    studioAssetUploadCleanupProcessor
+  });
 }

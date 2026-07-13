@@ -82,7 +82,11 @@ async function extractAsset(
   signal: AbortSignal
 ) {
   if (!asset.objectKey) throw new Error("STUDIO_ASSET_OBJECT_MISSING");
-  const object = await abortable(options.objectStorage.get(asset.objectKey), signal);
+  const pendingObject = options.objectStorage.get(asset.objectKey, { signal });
+  void pendingObject.then((object) => {
+    if (signal.aborted) object.body.destroy();
+  }, () => undefined);
+  const object = await abortable(pendingObject, signal);
   if (object.sizeBytes !== null && object.sizeBytes > MAX_PRIVATE_OBJECT_BYTES) {
     object.body.destroy();
     throw new Error("STUDIO_ASSET_OBJECT_TOO_LARGE");
@@ -121,7 +125,8 @@ async function extractAsset(
       actorProfileId: asset.ownerProfileId,
       source: "proactive",
       audioBuffer: buffer,
-      mimeType
+      mimeType,
+      signal
     }), signal);
     return cappedExtraction(transcript.text.trim(), {
       extractor: "ai_transcription",

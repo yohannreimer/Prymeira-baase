@@ -250,7 +250,12 @@ describe("Studio asset processor", () => {
     try {
       const fixture = await createFixture();
       const asset = await fixture.addAsset("audio.webm", "audio/webm", Buffer.from("bounded audio"));
-      vi.mocked(fixture.transcriptionHarness.transcribeAudio).mockImplementationOnce(() => new Promise(() => undefined));
+      let observedSignal: AbortSignal | undefined;
+      let resolveLate!: (value: Awaited<ReturnType<AiHarness["transcribeAudio"]>>) => void;
+      vi.mocked(fixture.transcriptionHarness.transcribeAudio).mockImplementationOnce((request) => {
+        observedSignal = request.signal;
+        return new Promise((resolve) => { resolveLate = resolve; });
+      });
       const processor = createStudioAssetProcessor({
         repository: fixture.repository,
         objectStorage: fixture.objectStorage,
@@ -262,10 +267,49 @@ describe("Studio asset processor", () => {
       const assertion = expect(pending).rejects.toThrow("STUDIO_ASSET_PROCESSING_TIMEOUT");
       await vi.advanceTimersByTimeAsync(101);
       await assertion;
+      expect(observedSignal?.aborted).toBe(true);
+      resolveLate({ text: "late", confidence: 1, durationSeconds: 1 });
+      await Promise.resolve();
       expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
         extractionStatus: "failed",
         extractedText: null,
         nextAttemptAt: "2026-07-13T12:01:00.000Z"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("destroys a private object stream that resolves after the processing timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture();
+      const asset = await fixture.addAsset("late.txt", "text/plain", Buffer.from("stored"));
+      const lateBody = Readable.from("late private body");
+      let resolveGet!: (value: Awaited<ReturnType<typeof fixture.objectStorage.get>>) => void;
+      const processor = createStudioAssetProcessor({
+        repository: fixture.repository,
+        objectStorage: {
+          ...fixture.objectStorage,
+          get: vi.fn((_key, options) => new Promise<Awaited<ReturnType<typeof fixture.objectStorage.get>>>((resolve) => {
+            expect(options?.signal).toBeInstanceOf(AbortSignal);
+            resolveGet = resolve;
+          }))
+        },
+        transcriptionHarness: fixture.transcriptionHarness,
+        now: () => now,
+        processingTimeoutMs: 100
+      });
+      const pending = processor.processNext();
+      const assertion = expect(pending).rejects.toThrow("STUDIO_ASSET_PROCESSING_TIMEOUT");
+      await vi.advanceTimersByTimeAsync(101);
+      await assertion;
+      resolveGet({ body: lateBody, contentType: "text/plain", sizeBytes: null });
+      await Promise.resolve();
+      expect(lateBody.destroyed).toBe(true);
+      expect(await fixture.repository.findAsset(fixture.scope, asset.id)).toMatchObject({
+        extractionStatus: "failed",
+        extractedText: null
       });
     } finally {
       vi.useRealTimers();

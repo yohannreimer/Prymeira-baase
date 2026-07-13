@@ -75,6 +75,7 @@ export type AudioTranscriptionProviderRequest = {
   mimeType?: string | null;
   language?: string | null;
   keyterms?: string[];
+  signal?: AbortSignal;
 };
 
 export type AudioTranscriptionResult = {
@@ -126,6 +127,7 @@ export type AiTranscriptionRunRequest = {
   mimeType?: string | null;
   language?: string | null;
   keyterms?: string[];
+  signal?: AbortSignal;
 };
 
 export type AiHarness = {

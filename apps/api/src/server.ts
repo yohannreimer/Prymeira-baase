@@ -4,6 +4,7 @@ import { readRuntimeConfig } from "./config/runtime";
 import { createPostgresPool } from "./db/postgres";
 import { initializePostgresRuntime } from "./server-initialization";
 import { createS3ObjectStorage } from "./storage/s3-object-storage";
+import { startStudioAssetMaintenance } from "./modules/studio/studio-asset-maintenance-runner";
 
 const port = Number(process.env.PORT ?? 3090);
 const host = process.env.HOST ?? "0.0.0.0";
@@ -26,8 +27,10 @@ const app = repositoryBundle
       runtimeConfig,
       objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
     });
+let maintenanceRunner: ReturnType<typeof startStudioAssetMaintenance> | null = null;
 
 async function shutdown() {
+  await maintenanceRunner?.stop();
   await app.close();
   await pool?.end();
 }
@@ -41,6 +44,7 @@ process.once("SIGTERM", () => {
 
 try {
   await app.listen({ port, host });
+  maintenanceRunner = startStudioAssetMaintenance(app);
   app.log.info(`Baase API listening on ${host}:${port}`);
 } catch (error) {
   app.log.error(error);
