@@ -22,6 +22,13 @@ function cloneVersion(version: StudioDocumentVersion): StudioDocumentVersion {
   return structuredClone(version);
 }
 
+function normalizeTimestamp(value: unknown) {
+  if (typeof value !== "string") throw new Error("STUDIO_CLOCK_INVALID");
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) throw new Error("STUDIO_CLOCK_INVALID");
+  return timestamp.toISOString();
+}
+
 function nextTimestamp(now: () => string, previousTimestamp: string) {
   const timestamp = now();
   if (new Date(timestamp).getTime() > new Date(previousTimestamp).getTime()) return timestamp;
@@ -68,7 +75,8 @@ export function createInMemoryStudioRepository(
 ): StudioRepository {
   const documents: StudioDocument[] = [];
   const versions: StudioDocumentVersion[] = [];
-  const now = options.now ?? (() => new Date().toISOString());
+  const clock = options.now ?? (() => new Date().toISOString());
+  const now = () => normalizeTimestamp(clock());
 
   function appendStoredVersion(
     input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">,
@@ -95,7 +103,7 @@ export function createInMemoryStudioRepository(
       }
     }
     const timestamp = new Date(Math.max(
-      new Date(now()).getTime(),
+      new Date(minimumCreatedAt ?? now()).getTime(),
       minimumCreatedAt ? new Date(minimumCreatedAt).getTime() : Number.NEGATIVE_INFINITY,
       previousVersion ? new Date(previousVersion.createdAt).getTime() + 1 : Number.NEGATIVE_INFINITY
     )).toISOString();

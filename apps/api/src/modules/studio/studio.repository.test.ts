@@ -309,6 +309,44 @@ repositoryContract("in-memory", async () => ({
 }));
 
 describe("in-memory StudioRepository clock behavior", () => {
+  it("normalizes a valid noncanonical clock before cursor round-tripping", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00Z" });
+    const created = await Promise.all([
+      repository.createDocument(documentInput({ bodyText: "first" })),
+      repository.createDocument(documentInput({ bodyText: "second" })),
+      repository.createDocument(documentInput({ bodyText: "third" }))
+    ]);
+    expect(created.every((document) =>
+      document.createdAt === "2026-07-13T12:00:00.000Z"
+      && document.updatedAt === "2026-07-13T12:00:00.000Z"
+    )).toBe(true);
+
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const firstPage = await repository.listDocuments(scope, { limit: 2 });
+    expect(firstPage.nextCursor).not.toBeNull();
+    const decoded = JSON.parse(Buffer.from(firstPage.nextCursor!, "base64url").toString("utf8"));
+    expect(decoded.updatedAt).toBe("2026-07-13T12:00:00.000Z");
+    const secondPage = await repository.listDocuments(scope, {
+      limit: 2,
+      cursor: firstPage.nextCursor!
+    });
+    expect(secondPage.items).toHaveLength(1);
+    expect(new Set([...firstPage.items, ...secondPage.items].map((document) => document.id))).toEqual(
+      new Set(created.map((document) => document.id))
+    );
+  });
+
+  it("rejects an invalid injected clock without storing a document", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "not-a-date" });
+
+    await expect(repository.createDocument(documentInput()))
+      .rejects.toThrowError(/^STUDIO_CLOCK_INVALID$/);
+    expect(await repository.listDocuments(
+      { workspaceId: "workspace_a", ownerProfileId: "owner_a" },
+      { limit: 10 }
+    )).toEqual({ items: [], nextCursor: null });
+  });
+
   it("keeps version timestamps monotonic when the clock is frozen", async () => {
     const fixedTimestamp = "2026-07-13T12:00:00.000Z";
     const repository = createInMemoryStudioRepository({ now: () => fixedTimestamp });
