@@ -55,6 +55,7 @@ export type BuildAppOptions = {
   aiProvider?: AiProvider;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
+  now?: () => Date;
   accountAccessFetch?: typeof fetch;
   accountTeamFetch?: typeof fetch;
 };
@@ -217,7 +218,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     routineRepository,
     trainingRepository,
     announcementRepository
-  }));
+  }, { now: options.now }));
   app.register((routes) => registerOnboardingRoutes(routes, {
     companyRepository,
     processRepository,

@@ -1,6 +1,6 @@
 import type { BaaseRole, TaskStatus } from "@prymeira/baase-shared";
 import type { CompanyRepository, TeamMember } from "../company/company.types";
-import { canReadAreaResource, canReadTask } from "../company/access-policy";
+import { canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
 import type { OperationalMembership } from "../company/company.types";
 import type { ProcessRepository } from "../processes/process.types";
 import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../routines/routine.types";
@@ -29,9 +29,15 @@ type OperationalOverviewInput = Pick<DashboardInput, "workspaceId" | "membership
   to: string;
 };
 
+type DashboardServiceOptions = {
+  now?: () => Date;
+};
+
 const executedStatuses = new Set<TaskStatus>(["completed", "awaiting_approval"]);
 
-export function createDashboardService(repositories: DashboardRepositories) {
+export function createDashboardService(repositories: DashboardRepositories, options: DashboardServiceOptions = {}) {
+  const now = options.now ?? (() => new Date());
+
   return {
     async readDashboard(input: DashboardInput): Promise<DashboardSummary> {
       const [areas, people, processes, routines, trainings, assignments, attempts, tasks] = await Promise.all([
@@ -110,14 +116,13 @@ export function createDashboardService(repositories: DashboardRepositories) {
       const routineById = new Map(routines.map((routine) => [routine.id, routine]));
       const areaNames = new Map(areas.map((area) => [area.id, area.name]));
       const peopleById = new Map(people.map((person) => [person.id, person]));
-      const visiblePeople = people.filter((person) => canReadAreaResource(input.membership, person.areaId));
+      const visiblePeople = people.filter((person) => canManageAreaResource(input.membership, person.areaId));
       const visiblePeopleById = new Map(visiblePeople.map((person) => [person.id, person]));
-      const visibleTasks = tasks.filter((task) => canReadTask(input.membership, {
-        assigneeProfileId: task.assigneeProfileId,
-        areaId: taskAreaId(task, routineById)
-      }));
+      const visibleTasks = tasks.filter((task) => canManageAreaResource(input.membership, taskAreaId(task, routineById)));
       const periodTasks = visibleTasks.filter((task) => isWithinPeriod(task.dueDate, input));
-      const today = operationalToday();
+      const completedTasksInPeriod = visibleTasks.filter((task) => task.status === "completed" && isWithinPeriod(completionDate(task), input));
+      const trendTasks = [...new Map([...periodTasks, ...completedTasksInPeriod].map((task) => [task.id, task])).values()];
+      const today = operationalToday(now());
       const lateTasks = periodTasks
         .filter((task) => task.dueDate < today && task.status !== "completed")
         .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
@@ -158,8 +163,8 @@ export function createDashboardService(repositories: DashboardRepositories) {
         awaitingApprovals,
         pendingRequiredAnnouncements,
         trends: {
-          people: buildOperationalTrends(periodTasks, peopleById, routineById, areaNames, "person"),
-          areas: buildOperationalTrends(periodTasks, visiblePeopleById, routineById, areaNames, "area")
+          people: buildOperationalTrends(trendTasks, peopleById, routineById, areaNames, "person", input),
+          areas: buildOperationalTrends(trendTasks, visiblePeopleById, routineById, areaNames, "area", input)
         }
       };
     }
@@ -202,13 +207,17 @@ function daysBetween(from: string, to: string) {
   return Math.floor((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000);
 }
 
-function operationalToday() {
+function operationalToday(now: Date) {
+  return operationalDate(now);
+}
+
+function operationalDate(date: string | Date) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Sao_Paulo",
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
-  }).formatToParts(new Date());
+  }).formatToParts(typeof date === "string" ? new Date(date) : date);
   const value = (type: string) => parts.find((part) => part.type === type)?.value;
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
@@ -228,7 +237,8 @@ function buildOperationalTrends(
   peopleById: Map<string, TeamMember>,
   routinesById: Map<string, CompanyRoutine>,
   areaNames: Map<string, string>,
-  grouping: "person" | "area"
+  grouping: "person" | "area",
+  period: Pick<OperationalOverviewInput, "from" | "to">
 ): OperationalTrend[] {
   const groups = new Map<string, { tasks: TaskOccurrence[]; profile?: TeamMember; areaId: string | null }>();
   for (const task of tasks) {
@@ -243,20 +253,20 @@ function buildOperationalTrends(
     ...(grouping === "person" && profile ? { profileId: profile.id, profileName: profile.name } : {}),
     areaId: grouping === "person" ? profile?.areaId ?? areaId : areaId,
     areaName: areaId ? areaNames.get(areaId) ?? areaId : "Sem área",
-    completionOnTimeRate: completionOnTimeRate(groupTasks),
+    completionOnTimeRate: completionOnTimeRate(groupTasks, period),
     averageApprovalDurationHours: averageApprovalDurationHours(groupTasks)
   })).sort((left, right) => (left.profileName ?? left.areaName).localeCompare(right.profileName ?? right.areaName, "pt-BR"));
 }
 
-function completionOnTimeRate(tasks: TaskOccurrence[]) {
-  const completed = tasks.filter((task) => task.status === "completed" && Boolean(task.dueDate));
+function completionOnTimeRate(tasks: TaskOccurrence[], period: Pick<OperationalOverviewInput, "from" | "to">) {
+  const completed = tasks.filter((task) => task.status === "completed" && Boolean(task.dueDate) && isWithinPeriod(completionDate(task), period));
   if (!completed.length) return null;
   const onTime = completed.filter((task) => completionDate(task) <= task.dueDate).length;
   return Math.round((onTime / completed.length) * 100);
 }
 
 function completionDate(task: TaskOccurrence) {
-  return (task.reviewedAt ?? task.submittedAt ?? task.updatedAt).slice(0, 10);
+  return operationalDate(task.reviewedAt ?? task.submittedAt ?? task.updatedAt);
 }
 
 function averageApprovalDurationHours(tasks: TaskOccurrence[]) {

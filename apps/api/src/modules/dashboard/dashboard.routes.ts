@@ -26,8 +26,13 @@ type DashboardRouteRepositories = {
   announcementRepository: AnnouncementRepository;
 };
 
-export async function registerDashboardRoutes(app: FastifyInstance, repositories: DashboardRouteRepositories) {
-  const service = createDashboardService(repositories);
+type DashboardRouteOptions = {
+  now?: () => Date;
+};
+
+export async function registerDashboardRoutes(app: FastifyInstance, repositories: DashboardRouteRepositories, options: DashboardRouteOptions = {}) {
+  const now = options.now ?? (() => new Date());
+  const service = createDashboardService(repositories, { now });
 
   app.get("/dashboard", async (request) => {
     const context = readRequestContext(request);
@@ -38,7 +43,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, repositories
       profileId: context.profileId,
       role: context.role,
       membership: requireOperationalMembership(request),
-      date: query.date ?? new Date().toISOString().slice(0, 10)
+      date: query.date ?? operationalToday(now())
     });
   });
 
@@ -54,4 +59,15 @@ export async function registerDashboardRoutes(app: FastifyInstance, repositories
       to: query.to
     });
   });
+}
+
+function operationalToday(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${value("year")}-${value("month")}-${value("day")}`;
 }

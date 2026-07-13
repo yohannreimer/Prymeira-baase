@@ -105,7 +105,7 @@ describe("dashboard routes", () => {
       expect.objectContaining({ id: fixture.announcementId, profileId: fixture.people.tech.id })
     ]));
     expect(owner.json().trends.people).toEqual(expect.arrayContaining([
-      expect.objectContaining({ profileId: fixture.people.tech.id, completionOnTimeRate: 50, averageApprovalDurationHours: 24 })
+      expect.objectContaining({ profileId: fixture.people.tech.id, completionOnTimeRate: 50, averageApprovalDurationHours: 19.25 })
     ]));
 
     const manager = await fixture.app.inject({
@@ -116,6 +116,9 @@ describe("dashboard routes", () => {
 
     expect(manager.statusCode).toBe(200);
     expect(manager.json().lateTasks).toEqual([expect.objectContaining({ areaId: fixture.areas.tech.id })]);
+    expect(manager.json().lateTasks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Atribuição externa do gestor" })
+    ]));
     expect(manager.json().awaitingApprovals).toEqual([expect.objectContaining({ areaId: fixture.areas.tech.id })]);
     expect(manager.json().pendingRequiredAnnouncements).toEqual([expect.objectContaining({ profileId: fixture.people.tech.id })]);
     expect(manager.json().trends.people).not.toEqual(expect.arrayContaining([
@@ -128,6 +131,45 @@ describe("dashboard routes", () => {
       headers: fixture.headersFor("profile_tech")
     });
     expect(employee.statusCode).toBe(403);
+  });
+
+  it("uses completion dates in the São Paulo operational period and excludes completed announcement receipts", async () => {
+    const fixture = await buildOperationalOverviewApp();
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/operational-overview?from=2026-07-30&to=2026-07-30",
+      headers: fixture.headersFor("profile_owner")
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().trends.people).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        profileId: fixture.people.tech.id,
+        completionOnTimeRate: 50
+      })
+    ]));
+    expect(response.json().pendingRequiredAnnouncements).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Leitura já confirmada" })
+    ]));
+    expect(response.json().pendingRequiredAnnouncements).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Quiz já concluído" })
+    ]));
+  });
+
+  it("calculates days late using the injected São Paulo date", async () => {
+    const fixture = await buildOperationalOverviewApp({ now: () => new Date("2026-07-12T02:30:00.000Z") });
+
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/operational-overview?from=2026-07-01&to=2026-07-31",
+      headers: fixture.headersFor("profile_owner")
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().lateTasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Tarefa atrasada", daysLate: 1 })
+    ]));
   });
 
   it("rejects invalid operational overview periods", async () => {
@@ -156,7 +198,7 @@ const operationalRuntimeConfig: BaaseRuntimeConfig = {
   warnings: []
 };
 
-async function buildOperationalOverviewApp() {
+async function buildOperationalOverviewApp(options: { now?: () => Date } = {}) {
   const companyRepository = createInMemoryCompanyRepository();
   const routineRepository = createInMemoryRoutineRepository();
   const announcementRepository = createInMemoryAnnouncementRepository();
@@ -195,15 +237,23 @@ async function buildOperationalOverviewApp() {
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "No prazo", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-21", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-20T10:00:00.000Z", reviewedByProfileId: people.get("profile_manager")!.id, reviewedAt: "2026-07-21T10:00:00.000Z", reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Fora do prazo", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "direct", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-21", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-22T10:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Financeiro externo", areaId: financeArea.id, processId: null, assigneeProfileId: finance.id, approvalMode: "direct", evidencePolicy: "optional", status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null, submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
+  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Atribuição externa do gestor", areaId: financeArea.id, processId: null, assigneeProfileId: people.get("profile_manager")!.id, approvalMode: "direct", evidencePolicy: "optional", status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null, submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
+  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Concluída após vencimento fora do período", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "direct", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-29", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-30T12:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
+  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Concluída no limite de fuso", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-30", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-30T12:00:00.000Z", reviewedByProfileId: people.get("profile_manager")!.id, reviewedAt: "2026-07-31T02:30:00.000Z", reviewComment: null });
 
   const announcement = await announcementRepository.createAnnouncement({ workspaceId, title: "Leitura obrigatória", body: "Leia.", type: "simple", status: "published", requirement: "read_confirmation", audience: { type: "area", areaId: techArea.id }, relatedProcessId: null, relatedTrainingId: null, quizQuestions: [], createdByProfileId: people.get("profile_owner")!.id, publishedAt: "2026-07-01T08:00:00.000Z", archivedAt: null });
   await announcementRepository.upsertAnnouncementReceipt({ workspaceId, announcementId: announcement.id, profileId: tech.id, status: "pending", quizScore: null, passed: null, answers: [], readAt: "2026-07-01T09:00:00.000Z", confirmedAt: null, quizCompletedAt: null });
+  const confirmedAnnouncement = await announcementRepository.createAnnouncement({ workspaceId, title: "Leitura já confirmada", body: "Leia.", type: "simple", status: "published", requirement: "read_confirmation", audience: { type: "person", profileId: tech.id }, relatedProcessId: null, relatedTrainingId: null, quizQuestions: [], createdByProfileId: people.get("profile_owner")!.id, publishedAt: "2026-07-01T08:00:00.000Z", archivedAt: null });
+  await announcementRepository.upsertAnnouncementReceipt({ workspaceId, announcementId: confirmedAnnouncement.id, profileId: tech.id, status: "confirmed", quizScore: null, passed: null, answers: [], readAt: "2026-07-01T09:00:00.000Z", confirmedAt: "2026-07-01T09:01:00.000Z", quizCompletedAt: null });
+  const completedQuizAnnouncement = await announcementRepository.createAnnouncement({ workspaceId, title: "Quiz já concluído", body: "Responda.", type: "simple", status: "published", requirement: "quiz_confirmation", audience: { type: "person", profileId: tech.id }, relatedProcessId: null, relatedTrainingId: null, quizQuestions: [], createdByProfileId: people.get("profile_owner")!.id, publishedAt: "2026-07-01T08:00:00.000Z", archivedAt: null });
+  await announcementRepository.upsertAnnouncementReceipt({ workspaceId, announcementId: completedQuizAnnouncement.id, profileId: tech.id, status: "quiz_completed", quizScore: 100, passed: true, answers: [], readAt: "2026-07-01T09:00:00.000Z", confirmedAt: null, quizCompletedAt: "2026-07-01T09:01:00.000Z" });
 
   const app = buildApp({
     companyRepository,
     routineRepository,
     announcementRepository,
     runtimeConfig: operationalRuntimeConfig,
+    now: options.now ?? (() => new Date("2026-07-12T15:00:00.000Z")),
     accountAccessFetch: async (input, init) => {
       const authorization = new Headers(init?.headers).get("authorization")!;
       const token = authorization.slice("Bearer ".length);
