@@ -98,6 +98,9 @@ describe("dashboard routes", () => {
     expect(owner.json().lateTasks).toEqual(expect.arrayContaining([
       expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, daysLate: 2 })
     ]));
+    expect(owner.json().openTasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, title: "Tarefa atrasada", status: "pending" })
+    ]));
     expect(owner.json().awaitingApprovals).toEqual(expect.arrayContaining([
       expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, title: "Aprovar checklist" })
     ]));
@@ -222,6 +225,9 @@ describe("dashboard routes", () => {
     });
     expect(owner.json().lateTasks).toEqual(expect.arrayContaining([expect.objectContaining({ assigneeProfileId: fixture.people.tech.id })]));
     expect(owner.json().lateTasks).toHaveLength(2);
+    expect(owner.json().openTasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, title: "Aprovar checklist", status: "awaiting_approval" })
+    ]));
     expect(owner.json().awaitingApprovals).toEqual([expect.objectContaining({ assigneeProfileId: fixture.people.tech.id })]);
     expect(owner.json().pendingRequiredAnnouncements).toEqual([expect.objectContaining({ profileId: fixture.people.tech.id })]);
     expect(owner.json().trends.people).toEqual([

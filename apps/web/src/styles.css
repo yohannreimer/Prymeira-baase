@@ -468,6 +468,7 @@ button { cursor: pointer; }
 .operational-person-link:hover, .operational-item-link:hover { color: var(--accent-ink); }
 .operational-item-link { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; color: var(--accent-ink); padding: 0; font-size: 12px; font-weight: 600; text-align: left; }
 .operational-item-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operational-show-more { margin: 12px 18px; }
 .operational-trend-row { grid-template-columns: minmax(0, 1fr) 78px 84px; }
 .operational-trend-row:not(:disabled):hover { background: var(--panel2); }
 .operational-trend-row:disabled { cursor: default; }
@@ -2524,6 +2525,16 @@ button { cursor: pointer; }
   color: var(--muted);
   text-decoration: line-through;
 }
+.execution-checks > span {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line2);
+}
+.execution-checks > span.done { color: var(--muted); text-decoration: line-through; }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--muted); font-size: 12px; }
 .return-note {
   margin-top: 12px;
   display: flex;

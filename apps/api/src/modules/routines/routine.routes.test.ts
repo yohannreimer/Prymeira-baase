@@ -208,6 +208,23 @@ describe("routine routes", () => {
       .toEqual([petersonId, andreId]);
     expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
       .not.toContain(ownerId);
+
+    const taskId = ownerToday.json().tasks[0].id as string;
+    const managerTask = await app.inject({
+      method: "GET",
+      url: `/tasks/${taskId}`,
+      headers: headersFor("profile_gestor_tecnico")
+    });
+    const financeTask = await app.inject({
+      method: "GET",
+      url: `/tasks/${taskId}`,
+      headers: headersFor("profile_gestor_financeiro")
+    });
+
+    expect(managerTask.statusCode).toBe(200);
+    expect(managerTask.json().task).toMatchObject({ id: taskId, assigneeProfileId: petersonId });
+    expect(financeTask.statusCode).toBe(403);
+    expect(financeTask.json().error.code).toBe("BAASE_SCOPE_FORBIDDEN");
   });
 
   it("keeps null-area routines and approvals owner-only and validates manual task assignees", async () => {

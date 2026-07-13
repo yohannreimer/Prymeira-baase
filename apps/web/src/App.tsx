@@ -38,8 +38,10 @@ import {
   generateOnboardingSuggestion,
   loadBaaseWorkspace,
   loadFirstRunState,
+  readAnnouncements,
   readOperationalOverview,
   readPersonOperationalOverview,
+  readTask,
   patchOnboardingSession,
   publishProcess,
   publishAnnouncement,
@@ -1611,6 +1613,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [crudModal, setCrudModal] = useState<CrudModal | null>(null);
   const [areaArchiveDialog, setAreaArchiveDialog] = useState<AreaArchiveDialogState | null>(null);
   const [executionTask, setExecutionTask] = useState<TodayTaskRow | null>(null);
+  const [operationalTaskDetail, setOperationalTaskDetail] = useState<ApiTask | null>(null);
+  const [selectedOperationalAnnouncementId, setSelectedOperationalAnnouncementId] = useState<string | null>(null);
   const [returningTask, setReturningTask] = useState<ApiTask | null>(null);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1914,6 +1918,24 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setPersonOperationalOverview(null);
     go("pessoa-operacional");
     readPersonOverviewForPeriod(profileId, operationalPeriod);
+  }
+
+  function openOperationalTask(taskId: string) {
+    if (role === "func") return;
+    void readTask(role, taskId)
+      .then(setOperationalTaskDetail)
+      .catch(() => showNotice("Não foi possível abrir esta tarefa. Verifique o acesso e tente novamente."));
+  }
+
+  function openOperationalAnnouncement(announcementId: string) {
+    if (role === "func") return;
+    void readAnnouncements(role)
+      .then((announcements) => {
+        setApiBundle((current) => current ? { ...current, announcements } : current);
+        setSelectedOperationalAnnouncementId(announcementId);
+        go("comunicados");
+      })
+      .catch(() => showNotice("Não foi possível abrir este comunicado. Verifique o acesso e tente novamente."));
   }
 
   const taskRows = useMemo(() => {
@@ -3375,11 +3397,11 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 status={operationalOverviewStatus}
                 preset={operationalPeriodPreset}
                 period={operationalPeriod}
-                onSelectPreset={selectOperationalPeriod}
-                onApplyCustomPeriod={applyCustomOperationalPeriod}
-                onOpenPerson={openOperationalPerson}
-                onOpenTask={() => go("hoje")}
-                onOpenAnnouncement={() => go("comunicados")}
+              onSelectPreset={selectOperationalPeriod}
+              onApplyCustomPeriod={applyCustomOperationalPeriod}
+              onOpenPerson={openOperationalPerson}
+              onOpenTask={openOperationalTask}
+              onOpenAnnouncement={openOperationalAnnouncement}
               />
               <OwnerDashboard
                 go={go}
@@ -3427,8 +3449,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               period={operationalPeriod}
               onSelectPreset={selectOperationalPeriod}
               onApplyCustomPeriod={applyCustomOperationalPeriod}
-              onOpenTask={() => go("hoje")}
-              onOpenAnnouncement={() => go("comunicados")}
+              onOpenTask={openOperationalTask}
+              onOpenAnnouncement={openOperationalAnnouncement}
               onBack={() => go(homeFor(role))}
             />
           )}
@@ -3545,6 +3567,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               actionBusy={actionBusy}
               comRead={comRead}
               setComRead={setComRead}
+              selectedAnnouncementId={selectedOperationalAnnouncementId}
             />
           )}
           {screen === "modelos" && (
@@ -3653,6 +3676,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             onChecklistChange={handleUpdateExecutionChecklist}
           />
         ) : null}
+        {operationalTaskDetail ? <TaskDetailModal task={operationalTaskDetail} onClose={() => setOperationalTaskDetail(null)} /> : null}
         {returningTask ? (
           <ReturnTaskModal
             task={returningTask}
@@ -3822,31 +3846,40 @@ function OperationalMetricList({
   items,
   kind,
   onOpenPerson,
-  onOpenItem
+  onOpenItem,
+  pageSize = 5
 }: {
   items: ApiOperationalMetricItem[];
   kind: OperationalListKind;
   onOpenPerson: (profileId: string) => void;
-  onOpenItem: () => void;
+  onOpenItem: (itemId: string) => void;
+  pageSize?: number;
 }) {
   const isAnnouncement = kind === "pendingRequiredAnnouncements";
+  const [visibleCount, setVisibleCount] = useState(pageSize);
+
+  useEffect(() => {
+    setVisibleCount(pageSize);
+  }, [kind, pageSize]);
+
   if (!items.length) {
     return <EmptyState icon={isAnnouncement ? "ph-megaphone" : "ph-check-circle"} title="Nenhuma pendência neste período" text="Quando houver itens para acompanhar, as pessoas e os detalhes aparecem aqui." />;
   }
 
   return (
     <div className="operational-list">
-      {items.map((item) => (
+      {items.slice(0, visibleCount).map((item) => (
         <div className="operational-list-row" key={`${item.id}:${item.profileId ?? "sem-responsavel"}`}>
           <div>
             {item.profileId && item.profileName ? <button className="operational-person-link" type="button" onClick={() => onOpenPerson(item.profileId!)}>{item.profileName}</button> : <strong>Sem responsável</strong>}
             <small>{item.areaName}{item.daysLate ? ` · ${item.daysLate} dia(s) de atraso` : item.dueDate ? ` · vence em ${formatOperationalDate(item.dueDate)}` : item.publishedAt ? ` · publicado em ${formatOperationalDate(item.publishedAt)}` : ""}</small>
           </div>
-          <button className="operational-item-link" type="button" onClick={onOpenItem} aria-label={`Abrir ${isAnnouncement ? "comunicado" : "tarefa"}: ${item.title}`}>
+          <button className="operational-item-link" type="button" onClick={() => onOpenItem(item.id)} aria-label={`Abrir ${isAnnouncement ? "comunicado" : "tarefa"}: ${item.title}`}>
             <span>{item.title}</span><Icon name="ph-arrow-up-right" />
           </button>
         </div>
       ))}
+      {items.length > visibleCount ? <button className="panel-link operational-show-more" type="button" onClick={() => setVisibleCount((current) => current + pageSize)}>Ver mais ({items.length - visibleCount})</button> : null}
     </div>
   );
 }
@@ -3869,8 +3902,8 @@ function OperationalOverviewPanel({
   onSelectPreset: (preset: Exclude<OperationalPeriodPreset, "custom">) => void;
   onApplyCustomPeriod: (period: OperationalPeriod) => void;
   onOpenPerson: (profileId: string) => void;
-  onOpenTask: () => void;
-  onOpenAnnouncement: () => void;
+  onOpenTask: (taskId: string) => void;
+  onOpenAnnouncement: (announcementId: string) => void;
 }) {
   const [listKind, setListKind] = useState<OperationalListKind>("lateTasks");
   const metrics = overview?.metrics ?? { lateTasks: 0, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 };
@@ -3939,8 +3972,8 @@ function PersonOperationalPage({
   period: OperationalPeriod;
   onSelectPreset: (preset: Exclude<OperationalPeriodPreset, "custom">) => void;
   onApplyCustomPeriod: (period: OperationalPeriod) => void;
-  onOpenTask: () => void;
-  onOpenAnnouncement: () => void;
+  onOpenTask: (taskId: string) => void;
+  onOpenAnnouncement: (announcementId: string) => void;
   onBack: () => void;
 }) {
   const metrics = overview?.metrics ?? { lateTasks: 0, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 };
@@ -3957,11 +3990,12 @@ function PersonOperationalPage({
       <OperationalPeriodControls preset={preset} period={period} onSelectPreset={onSelectPreset} onApplyCustomPeriod={onApplyCustomPeriod} />
       {status === "loading" ? <EmptyState icon="ph-spinner-gap" title="Carregando visão da pessoa" text="Atualizando os dados do período selecionado." /> : status === "error" ? <EmptyState icon="ph-warning" title="Não foi possível abrir esta pessoa" text="Verifique o acesso e tente novamente." /> : <>
         <div className="operational-metric-cards person-metric-cards">
-          <div><span>Tarefas em acompanhamento</span><strong className="serif num">{metrics.lateTasks + metrics.awaitingApprovals}</strong><small>atrasadas ou em aprovação</small></div>
+          <div><span>Tarefas abertas</span><strong className="serif num">{overview?.openTasks?.length ?? 0}</strong><small>pendentes, em ajuste ou aguardando aprovação</small></div>
           <div><span>Conclusão no prazo</span><strong className="serif num">{formatPercent(trend?.completionOnTimeRate ?? null)}</strong><small>tarefas concluídas no período</small></div>
           <div><span>Tempo até aprovação</span><strong className="serif num">{formatHours(trend?.averageApprovalDurationHours ?? null)}</strong><small>média das decisões</small></div>
         </div>
         <div className="two-col operational-details">
+          <section className="panel flush"><PanelHeader title="Tarefas abertas" aside={`${overview?.openTasks?.length ?? 0} no período`} /><OperationalMetricList items={overview?.openTasks ?? []} kind="lateTasks" onOpenPerson={() => undefined} onOpenItem={onOpenTask} /></section>
           <section className="panel flush"><PanelHeader title="Tarefas atrasadas" /><OperationalMetricList items={overview?.lateTasks ?? []} kind="lateTasks" onOpenPerson={() => undefined} onOpenItem={onOpenTask} /></section>
           <section className="panel flush"><PanelHeader title="Aguardando aprovação" /><OperationalMetricList items={overview?.awaitingApprovals ?? []} kind="awaitingApprovals" onOpenPerson={() => undefined} onOpenItem={onOpenTask} /></section>
           <section className="panel flush"><PanelHeader title="Comunicados obrigatórios pendentes" /><OperationalMetricList items={overview?.pendingRequiredAnnouncements ?? []} kind="pendingRequiredAnnouncements" onOpenPerson={() => undefined} onOpenItem={onOpenAnnouncement} /></section>
@@ -5259,7 +5293,8 @@ function AnnouncementsPage({
   deleteAnnouncement,
   actionBusy,
   comRead,
-  setComRead
+  setComRead,
+  selectedAnnouncementId
 }: {
   announcements: ApiAnnouncement[];
   isLiveWorkspace: boolean;
@@ -5273,6 +5308,7 @@ function AnnouncementsPage({
   actionBusy: boolean;
   comRead: boolean;
   setComRead: (read: boolean) => void;
+  selectedAnnouncementId: string | null;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const fallbackAnnouncements = [
@@ -5289,7 +5325,8 @@ function AnnouncementsPage({
     { id: "demo_training", title: "Nova identidade visual v2", body: "Treinamento obrigatório publicado.", type: "mandatory_training", status: "published", requirement: "read_confirmation", receipt: { status: "confirmed" } }
   ] as ApiAnnouncement[];
   const rows = announcements.length ? announcements : isLiveWorkspace ? [] : fallbackAnnouncements;
-  const safeIndex = Math.min(selectedIndex, Math.max(rows.length - 1, 0));
+  const selectedAnnouncementIndex = selectedAnnouncementId ? rows.findIndex((announcement) => announcement.id === selectedAnnouncementId) : -1;
+  const safeIndex = selectedAnnouncementIndex >= 0 ? selectedAnnouncementIndex : Math.min(selectedIndex, Math.max(rows.length - 1, 0));
   const selectedAnnouncement = rows[safeIndex] ?? null;
   const selectedApiAnnouncement = selectedAnnouncement && announcements.some((announcement) => announcement.id === selectedAnnouncement.id) ? selectedAnnouncement : null;
   const isConfirmed = selectedAnnouncement?.receipt?.status === "confirmed" || selectedAnnouncement?.receipt?.status === "quiz_completed";
@@ -5784,6 +5821,32 @@ function ReviewPage({
         </section>
       </div>
       <div className="final-bar"><div><strong>Tudo pronto para começar</strong><span>Você poderá ajustar qualquer coisa depois no Mapa da Empresa.</span></div><button className="secondary-btn" type="button" onClick={() => go("onboarding")}>Editar antes</button><button className="accent-solid" type="button" disabled={actionBusy} onClick={createReviewedCompany}><Icon name="ph-check" />Criar minha empresa</button></div>
+    </div>
+  );
+}
+
+function TaskDetailModal({ task, onClose }: { task: ApiTask; onClose: () => void }) {
+  const due = task.dueDate ? formatOperationalDate(task.dueDate) : "Sem prazo";
+  const submitted = task.submittedAt ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(task.submittedAt)) : null;
+  const reviewed = task.reviewedAt ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(task.reviewedAt)) : null;
+
+  return (
+    <div className="modal-layer" role="presentation">
+      <div className="modal-card" role="dialog" aria-modal="true" aria-label="Detalhes da tarefa">
+        <div className="modal-form execution-form">
+          <ModalHeader title="Detalhes da tarefa" icon="ph-list-checks" onClose={onClose} />
+          <div className="execution-summary">
+            <Pill tone={task.status === "awaiting_approval" ? "warn" : task.status === "completed" ? "accent" : "neutral"}>{statusLabel(task.status)}</Pill>
+            <h2>{task.title}</h2>
+            <p>Vencimento: {due}{task.dueHint ? ` · ${task.dueHint}` : ""}</p>
+          </div>
+          {task.checklistItems?.length ? <section className="execution-checklist"><strong>Checklist</strong><div className="execution-checks">{task.checklistItems.map((item, index) => <span className={item.done ? "done" : ""} key={`${item.title}-${index}`}><Icon name={item.done ? "ph-check" : "ph-circle"} />{item.title}</span>)}</div></section> : null}
+          {task.evidence?.comment ? <section className="execution-checklist"><strong>Comentário da execução</strong><p>{task.evidence.comment}</p></section> : null}
+          {task.reviewComment ? <div className="return-note"><Icon name="ph-arrow-u-down-left" />{task.reviewComment}</div> : null}
+          <div className="detail-meta"><span>Enviada: {submitted ?? "Ainda não enviada"}</span>{reviewed ? <span>Revisada: {reviewed}</span> : null}</div>
+          <footer><button className="secondary-btn" type="button" onClick={onClose}>Fechar</button></footer>
+        </div>
+      </div>
     </div>
   );
 }

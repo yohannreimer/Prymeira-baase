@@ -1174,6 +1174,18 @@ describe("Baase React app shell", () => {
         dueDate: "2026-07-04",
         daysLate: 3
       }],
+      openTasks: [{
+        id: "task_late_1",
+        profileId: "profile_bruno",
+        assigneeProfileId: "profile_bruno",
+        profileName: "Bruno Costa",
+        areaId: "area_design",
+        areaName: "Criação",
+        title: "Revisar peças da campanha",
+        dueDate: "2026-07-04",
+        status: "pending",
+        daysLate: 3
+      }],
       awaitingApprovals: [],
       pendingRequiredAnnouncements: [],
       trends: {
@@ -1186,7 +1198,8 @@ describe("Baase React app shell", () => {
       "/api/people": { people: [{ id: "profile_bruno", name: "Bruno Costa", role: "employee", areaId: "area_design" }] },
       "/api/operational-overview?from=2026-07-01&to=2026-07-07": overview,
       "/api/operational-overview?from=2026-06-01&to=2026-07-07": customOverview,
-      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07": customOverview
+      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07": customOverview,
+      "/api/tasks/task_late_1": { task: { id: "task_late_1", title: "Revisar peças da campanha", status: "pending", dueDate: "2026-07-04" } }
     });
 
     render(<App />);
@@ -1201,6 +1214,7 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "Bruno Costa" })[0]!);
     expect(await screen.findByRole("heading", { name: "Bruno Costa" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tarefas abertas" })).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07",
       expect.objectContaining({ headers: expect.anything() })
@@ -1208,7 +1222,59 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Voltar ao painel/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Abrir tarefa: Revisar peças da campanha" }));
-    expect(screen.getByRole("heading", { name: "Seu dia, Yohann." })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Detalhes da tarefa" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task_late_1", expect.objectContaining({ headers: expect.anything() }));
+  });
+
+  it("paginates nominal lists and opens the exact pending announcement", async () => {
+    const lateTasks = Array.from({ length: 6 }, (_, index) => ({
+      id: `task_${index + 1}`,
+      profileId: "profile_bruno",
+      assigneeProfileId: "profile_bruno",
+      profileName: "Bruno Costa",
+      areaId: "area_design",
+      areaName: "Criação",
+      title: `Tarefa operacional ${index + 1}`,
+      dueDate: "2026-07-01",
+      daysLate: 6
+    }));
+    const overview = {
+      from: "2026-07-01",
+      to: "2026-07-07",
+      metrics: { lateTasks: 6, awaitingApprovals: 0, pendingRequiredAnnouncements: 1 },
+      lateTasks,
+      openTasks: lateTasks,
+      awaitingApprovals: [],
+      pendingRequiredAnnouncements: [{
+        id: "announcement_required",
+        profileId: "profile_bruno",
+        profileName: "Bruno Costa",
+        areaId: "area_design",
+        areaName: "Criação",
+        title: "Mudança obrigatória",
+        publishedAt: "2026-07-01T12:00:00.000Z"
+      }],
+      trends: { people: [], areas: [] }
+    };
+    const fetchMock = mockLoadedWorkspace({
+      "/api/operational-overview?from=2026-07-01&to=2026-07-07": overview,
+      "/api/announcements": { announcements: [
+        { id: "announcement_other", title: "Outro comunicado", type: "simple", status: "published", requirement: "none" },
+        { id: "announcement_required", title: "Mudança obrigatória", body: "Leia esta mudança.", type: "simple", status: "published", requirement: "read_confirmation", receipt: { status: "pending" } }
+      ] }
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Tarefa operacional 5")).toBeInTheDocument();
+    expect(screen.queryByText("Tarefa operacional 6")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Ver mais (1)" }));
+    expect(screen.getByText("Tarefa operacional 6")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Comunicados obrigatórios1Ver lista nominal/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Abrir comunicado: Mudança obrigatória" }));
+    expect(await screen.findByRole("heading", { name: "Mudança obrigatória" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/announcements", expect.objectContaining({ headers: expect.anything() }));
   });
 
   it("switches to the manager and employee homes using React state", () => {

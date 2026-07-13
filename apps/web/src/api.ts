@@ -50,6 +50,7 @@ export type ApiTask = {
   reviewComment?: string | null;
   submittedByProfileId?: string | null;
   submittedAt?: string | null;
+  reviewedAt?: string | null;
 };
 
 export type ApiTaskInput = {
@@ -621,6 +622,7 @@ export type ApiOperationalMetricItem = {
   areaId: string | null;
   areaName: string;
   title: string;
+  status?: string;
   dueDate?: string | null;
   submittedAt?: string | null;
   reviewedAt?: string | null;
@@ -646,6 +648,7 @@ export type ApiOperationalOverview = {
     pendingRequiredAnnouncements: number;
   };
   lateTasks: ApiOperationalMetricItem[];
+  openTasks?: ApiOperationalMetricItem[];
   awaitingApprovals: ApiOperationalMetricItem[];
   pendingRequiredAnnouncements: ApiOperationalMetricItem[];
   trends: {
@@ -1016,6 +1019,13 @@ export async function submitTaskExecution(
     })
   });
 
+  return result.task;
+}
+
+export async function readTask(role: UiRole, taskId: string, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ task: ApiTask }>(fetcher, `/api/tasks/${encodeURIComponent(taskId)}`, {
+    headers: createBaaseHeaders(role)
+  });
   return result.task;
 }
 
@@ -1679,6 +1689,13 @@ export async function createAnnouncementDraft(
   });
 
   return result.announcement;
+}
+
+export async function readAnnouncements(role: UiRole, fetcher: Fetcher = fetch) {
+  const result = await readJson<{ announcements: ApiAnnouncement[] }>(fetcher, "/api/announcements", {
+    headers: createBaaseHeaders(role)
+  });
+  return result.announcements;
 }
 
 export async function publishAnnouncement(role: UiRole, announcementId: string, fetcher: Fetcher = fetch) {

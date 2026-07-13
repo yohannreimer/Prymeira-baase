@@ -136,6 +136,9 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const lateTasks = periodTasks
         .filter((task) => task.dueDate < today && task.status !== "completed")
         .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
+      const openTasks = periodTasks
+        .filter(isOpenTask)
+        .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
       const awaitingApprovals = periodTasks
         .filter((task) => task.status === "awaiting_approval")
         .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
@@ -170,6 +173,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
           pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
         },
         lateTasks,
+        openTasks,
         awaitingApprovals,
         pendingRequiredAnnouncements,
         trends: {
@@ -186,6 +190,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
 
       const overview = await service.readOperationalOverview(input);
       const lateTasks = overview.lateTasks.filter((task) => task.profileId === person.id);
+      const openTasks = overview.openTasks.filter((task) => task.profileId === person.id);
       const awaitingApprovals = overview.awaitingApprovals.filter((task) => task.profileId === person.id);
       const pendingRequiredAnnouncements = overview.pendingRequiredAnnouncements.filter((announcement) => announcement.profileId === person.id);
       const personTrends = overview.trends.people.filter((trend) => trend.profileId === person.id);
@@ -198,6 +203,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
           pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
         },
         lateTasks,
+        openTasks,
         awaitingApprovals,
         pendingRequiredAnnouncements,
         trends: {
@@ -232,6 +238,7 @@ function operationalTaskItem(
     areaId,
     areaName: areaId ? areaNames.get(areaId) ?? areaId : "Sem área",
     title: task.title,
+    status: task.status,
     dueDate: task.dueDate,
     submittedAt: task.submittedAt,
     reviewedAt: task.reviewedAt,
@@ -320,6 +327,10 @@ function averageApprovalDurationHours(tasks: TaskOccurrence[], period: Pick<Oper
 
 function isExecutedTask(task: TaskOccurrence) {
   return executedStatuses.has(task.status);
+}
+
+function isOpenTask(task: TaskOccurrence) {
+  return task.status !== "completed" && task.status !== "dismissed";
 }
 
 function isLateTask(task: TaskOccurrence, date: string) {

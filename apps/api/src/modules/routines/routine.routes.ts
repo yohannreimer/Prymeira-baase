@@ -328,6 +328,19 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
     return reply.status(201).send({ task });
   });
 
+  app.get("/tasks/:id", async (request) => {
+    const context = readRequestContext(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+
+    try {
+      const task = await service.getTask(context.workspaceId, params.id);
+      if (!canReadTask(requireOperationalMembership(request), task)) throw scopeForbidden();
+      return { task: await presentTask(task, options.objectStorage) };
+    } catch (error) {
+      throw taskMutationError(error);
+    }
+  });
+
   app.delete("/tasks/:id", async (request) => {
     const context = readRequestContext(request);
     if (!canManageKnowledge(context.role)) throw forbiddenError();

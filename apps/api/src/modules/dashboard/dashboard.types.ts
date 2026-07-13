@@ -56,6 +56,7 @@ export type OperationalMetricItem = {
   areaId: string | null;
   areaName: string;
   title: string;
+  status?: string;
   dueDate?: string | null;
   submittedAt?: string | null;
   reviewedAt?: string | null;
@@ -81,6 +82,7 @@ export type OperationalOverview = {
     pendingRequiredAnnouncements: number;
   };
   lateTasks: OperationalMetricItem[];
+  openTasks: OperationalMetricItem[];
   awaitingApprovals: OperationalMetricItem[];
   pendingRequiredAnnouncements: OperationalMetricItem[];
   trends: {
