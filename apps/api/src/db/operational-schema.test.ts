@@ -57,7 +57,29 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it("creates owner-scoped Studio tables", async () => {
+    await ensureOperationalSchema(db);
+    const tables = await db.query<{ table_name: string }>(
+      `select table_name from information_schema.tables
+       where table_name in (
+         'studio_documents',
+         'studio_document_versions',
+         'studio_assets',
+         'studio_collections',
+         'studio_collection_items'
+       ) order by table_name`
+    );
+
+    expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining([
+      "studio_documents",
+      "studio_document_versions",
+      "studio_assets",
+      "studio_collections",
+      "studio_collection_items"
+    ]));
   });
 
   it("migrates legacy people to the safe access scope for their role", async () => {

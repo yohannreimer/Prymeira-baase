@@ -545,6 +545,102 @@ const migrations: Migration[] = [{
       WHERE role = 'manager' AND area_id IS NOT NULL AND archived_at IS NULL
       ON CONFLICT DO NOTHING;
   `
+}, {
+  version: 9,
+  name: "owner_studio_foundation",
+  sql: `
+    CREATE TABLE studio_documents (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      title TEXT,
+      body_json JSONB NOT NULL,
+      body_text TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+      capture_mode TEXT NOT NULL
+        CHECK (capture_mode IN ('text','audio','file','image','link','mixed')),
+      inbox_state TEXT NOT NULL DEFAULT 'pending_review'
+        CHECK (inbox_state IN ('pending_review','reviewed')),
+      is_focused BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+      archived_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id)
+    );
+
+    CREATE TABLE studio_document_versions (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL CHECK (version_number > 0),
+      body_json JSONB NOT NULL,
+      body_text TEXT NOT NULL,
+      origin TEXT NOT NULL CHECK (origin IN ('user','import','accepted_ai_suggestion')),
+      actor_profile_id TEXT NOT NULL,
+      ai_run_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id),
+      UNIQUE (workspace_id, owner_profile_id, document_id, version_number),
+      FOREIGN KEY (workspace_id, owner_profile_id, document_id)
+        REFERENCES studio_documents(workspace_id, owner_profile_id, id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE studio_assets (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('audio','image','file','link_snapshot')),
+      display_name TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      source_url TEXT,
+      mime_type TEXT NOT NULL,
+      size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id)
+    );
+
+    CREATE TABLE studio_collections (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id)
+    );
+
+    CREATE TABLE studio_collection_items (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      collection_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id, owner_profile_id, id),
+      UNIQUE (workspace_id, owner_profile_id, collection_id, document_id),
+      FOREIGN KEY (workspace_id, owner_profile_id, collection_id)
+        REFERENCES studio_collections(workspace_id, owner_profile_id, id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id, owner_profile_id, document_id)
+        REFERENCES studio_documents(workspace_id, owner_profile_id, id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX studio_documents_owner_updated_idx
+      ON studio_documents (workspace_id, owner_profile_id, updated_at DESC);
+    CREATE INDEX studio_documents_owner_inbox_state_idx
+      ON studio_documents (workspace_id, owner_profile_id, inbox_state, updated_at DESC);
+    CREATE INDEX studio_documents_owner_focused_idx
+      ON studio_documents (workspace_id, owner_profile_id, updated_at DESC)
+      WHERE is_focused = TRUE;
+    CREATE INDEX studio_documents_owner_status_idx
+      ON studio_documents (workspace_id, owner_profile_id, status, updated_at DESC);
+    CREATE INDEX studio_collection_items_collection_idx
+      ON studio_collection_items (workspace_id, owner_profile_id, collection_id, created_at);
+    CREATE INDEX studio_collection_items_document_idx
+      ON studio_collection_items (workspace_id, owner_profile_id, document_id);
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
