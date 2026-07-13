@@ -79,9 +79,8 @@ export async function registerSessionRoutes(
       ? await onboardingRepository.getCurrentSession(context.workspaceId)
       : null;
     const profile = await readWorkspaceProfile(context, companyRepository);
-    const workspaceName = context.accountAuthenticated
-      ? context.workspaceName || "Empresa em configuração"
-      : onboardingSession?.companyName?.trim() || "Estúdio Norte";
+    const workspaceName = onboardingSession?.companyName?.trim()
+      || (context.accountAuthenticated ? context.workspaceName || "Empresa em configuração" : "Estúdio Norte");
 
     return {
       workspace: {

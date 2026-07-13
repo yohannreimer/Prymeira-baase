@@ -456,12 +456,14 @@ button { cursor: pointer; }
 .operational-period label { display: grid; gap: 4px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .operational-period input { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); padding: 7px 8px; font: inherit; font-size: 12px; }
 .operational-metric-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.operational-metric-cards.owner-operational-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .operational-metric-cards > button, .operational-metric-cards > div { text-align: left; background: var(--panel); border: 1px solid var(--line2); border-radius: 13px; padding: 14px 16px; color: var(--ink); }
 .operational-metric-cards > button.active { border-color: var(--accent-line); box-shadow: 0 0 0 2px var(--accent-bg); }
 .operational-metric-cards span { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; }
 .operational-metric-cards strong { display: block; font-size: 30px; line-height: 1; margin: 9px 0 4px; }
 .operational-metric-cards small { color: var(--faint); font-size: 11px; }
 .operational-details { margin-bottom: 24px; }
+.owner-supporting-dashboard { padding-top: 0; }
 .operational-list-row, .operational-trend-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .9fr); align-items: center; gap: 12px; padding: 13px 18px; border: 0; border-bottom: 1px solid var(--line2); background: transparent; text-align: left; color: var(--ink); }
 .operational-list-row small, .operational-trend-row small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 .operational-person-link { display: block; border: 0; background: transparent; color: var(--ink); padding: 0; font-size: 13.5px; font-weight: 600; text-align: left; }
@@ -553,13 +555,14 @@ button { cursor: pointer; }
 .today-routine-occurrence-head { display: flex; align-items: center; gap: 10px; padding: 10px 18px 10px 28px; }
 .today-routine-occurrence-toggle { min-width: 0; flex: 1; border: 0; background: transparent; color: var(--ink); display: flex; align-items: center; gap: 11px; padding: 0; text-align: left; }
 .today-routine-occurrence-toggle:hover .today-routine-copy strong { color: var(--accent-ink); }
-.today-routine-open { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; color: var(--accent-ink); font: inherit; font-size: 11.5px; font-weight: 600; padding: 7px 9px; white-space: nowrap; }
-.today-routine-open:hover { background: var(--accent-bg); border-color: var(--accent-line); }
 .today-routine-checklist { border-top: 1px solid var(--line2); display: grid; gap: 0; padding: 4px 18px 10px 61px; }
-.today-routine-checklist span { align-items: center; color: var(--muted); display: flex; font-size: 12px; gap: 8px; padding: 7px 0; }
-.today-routine-checklist span.done { color: var(--accent-ink); text-decoration: line-through; }
-.today-routine-checklist svg { color: var(--faint); font-size: 14px; }
-.today-routine-checklist .done svg { color: var(--accent-ink); }
+.today-routine-checklist label { align-items: center; color: var(--muted); cursor: pointer; display: flex; font-size: 12px; gap: 10px; min-height: 34px; padding: 6px 0; }
+.today-routine-checklist label:hover { color: var(--ink); }
+.today-routine-checklist label.done span { color: var(--accent-ink); text-decoration: line-through; }
+.today-routine-checklist input { accent-color: var(--accent-ink); cursor: pointer; height: 16px; margin: 0; width: 16px; }
+.today-routine-checklist input:disabled { cursor: wait; opacity: .65; }
+.today-routine-finish { justify-self: start; border: 1px solid var(--accent-line); background: var(--accent-bg); border-radius: 8px; color: var(--accent-ink); font: inherit; font-size: 11.5px; font-weight: 650; margin-top: 7px; padding: 7px 10px; }
+.today-routine-finish:hover { background: var(--accent-soft); }
 .square {
   width: 34px;
   height: 34px;
@@ -1527,58 +1530,6 @@ button { cursor: pointer; }
   margin: 12px 0 14px;
   max-width: 620px;
   color: var(--muted);
-}
-
-.activation-plan-panel {
-  margin-bottom: 18px;
-}
-
-.activation-plan-list {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.activation-plan-list button {
-  min-width: 0;
-  min-height: 120px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel2);
-  color: var(--ink);
-  padding: 12px;
-  text-align: left;
-  transition: border-color .18s ease, background .18s ease, transform .18s ease;
-}
-
-.activation-plan-list button:hover {
-  border-color: var(--accent-line);
-  background: var(--accent-bg);
-  transform: translateY(-1px);
-}
-
-.activation-plan-list span, .activation-plan-list strong, .activation-plan-list small {
-  display: block;
-}
-
-.activation-plan-list span {
-  color: var(--faint);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: .07em;
-}
-
-.activation-plan-list strong {
-  margin-top: 16px;
-  font-size: 13px;
-  line-height: 1.25;
-}
-
-.activation-plan-list small {
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.35;
 }
 
 .onboarding-conversation {
@@ -2586,6 +2537,8 @@ button { cursor: pointer; }
 
 @media (max-width: 1050px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .operational-metric-cards,
+  .operational-metric-cards.owner-operational-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-grid, .two-col, .split-page { grid-template-columns: 1fr; }
   .detail-panel header.process-detail-head {
     grid-template-columns: 1fr;
@@ -2605,7 +2558,6 @@ button { cursor: pointer; }
       "actions";
   }
   .training-actions { justify-content: flex-start; margin-top: 10px; flex-wrap: wrap; }
-  .activation-plan-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
@@ -2639,6 +2591,8 @@ button { cursor: pointer; }
 
 @media (max-width: 640px) {
   .screen { width: 100%; }
+  .operational-metric-cards,
+  .operational-metric-cards.owner-operational-metrics { grid-template-columns: 1fr; }
   .app-main { padding: 18px 12px 76px; }
   .topbar {
     gap: 10px;
@@ -2698,7 +2652,6 @@ button { cursor: pointer; }
   .today-routine-occurrence-head { align-items: flex-start; padding: 11px 14px 11px 20px; }
   .today-routine-occurrence-toggle { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 8px 10px; }
   .today-routine-occurrence-toggle .today-routine-progress { grid-column: 2; font-size: 11.5px; }
-  .today-routine-open { font-size: 11px; padding: 6px 7px; }
   .today-routine-checklist { padding-left: 52px; padding-right: 14px; }
   .attention-row {
     display: grid;
@@ -2721,8 +2674,6 @@ button { cursor: pointer; }
   .onboarding-followup button { justify-self: stretch; justify-content: center; }
   .onboarding-response-bar { grid-template-columns: auto minmax(0, 1fr); }
   .onboarding-dictate-button { grid-column: 1 / -1; justify-content: center; }
-  .activation-plan-list { grid-template-columns: 1fr; }
-  .activation-plan-list button { min-height: auto; }
   .ready-stats { grid-template-columns: 1fr 1fr; }
   .ready-actions { align-items: stretch; }
   .review-drawer-layer { justify-content: stretch; }

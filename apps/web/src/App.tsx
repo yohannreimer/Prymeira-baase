@@ -1526,16 +1526,6 @@ function homeFor(role: Role): Screen {
   return "hoje";
 }
 
-function screenForActivationAction(action: string): Screen {
-  if (action === "open_company_map") return "mapa";
-  if (action === "review_processes") return "processos";
-  if (action === "activate_routine") return "rotinas";
-  if (action === "publish_training") return "treinamentos";
-  if (action === "invite_team") return "equipe";
-  if (action === "review_today") return "hoje";
-  return "painel-dono";
-}
-
 function Icon({ name, fill = false, bold = false }: { name: string; fill?: boolean; bold?: boolean }) {
   const weight = fill ? "ph-fill" : bold ? "ph-bold" : name.includes("ph-light") ? "" : "ph-light";
   return <i aria-hidden="true" className={[weight, name].filter(Boolean).join(" ")} />;
@@ -1560,31 +1550,6 @@ function EmptyState({ icon = "ph-tray", title, text }: { icon?: string; title: s
       <strong>{title}</strong>
       <span>{text}</span>
     </div>
-  );
-}
-
-function ActivationPlanPanel({
-  activationPlan,
-  go
-}: {
-  activationPlan: OnboardingSession["activationPlan"];
-  go: (screen: Screen) => void;
-}) {
-  if (!activationPlan.length) return null;
-
-  return (
-    <section className="screen panel padded activation-plan-panel">
-      <PanelHeader title="Plano de 7 dias" aside="Ativação" />
-      <div className="activation-plan-list">
-        {activationPlan.map((step) => (
-          <button type="button" key={`${step.day}-${step.action}`} onClick={() => go(screenForActivationAction(step.action))}>
-            <span className="mono">Dia {step.day}</span>
-            <strong>{step.title}</strong>
-            <small>{step.objective}</small>
-          </button>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -2049,11 +2014,11 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     setCrudModal({ kind: "task", mode: "edit", task: apiTask });
   }
 
-  function handleUpdateExecutionChecklist(task: TodayTaskRow, checklistItems: NonNullable<ApiTask["checklistItems"]>) {
+  async function handleUpdateExecutionChecklist(task: TodayTaskRow, checklistItems: NonNullable<ApiTask["checklistItems"]>) {
     const apiId = task.apiId;
     if (!apiId) return;
 
-    void runAction(async () => {
+    await runAction(async () => {
       const updatedTask = await updateTaskChecklist(role, apiId, checklistItems);
       setApiBundle((current) => {
         if (!current) return current;
@@ -2069,7 +2034,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         status: updatedTask.status,
         done: isTaskDone(updatedTask)
       } : current);
-    });
+    }, () => showNotice("Não foi possível atualizar o checklist. Tente novamente."));
   }
 
   function handleDeleteExecutionTask(task: TodayTaskRow) {
@@ -3383,23 +3348,22 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                   <button className="accent-solid" type="button" onClick={resumeOnboardingFromDashboard}>Retomar onboarding</button>
                 </section>
               ) : null}
-              {onboardingSession?.status === "completed" ? (
-                <ActivationPlanPanel activationPlan={onboardingSession.activationPlan} go={go} />
-              ) : null}
               <OperationalOverviewPanel
                 overview={operationalOverview}
                 status={operationalOverviewStatus}
                 preset={operationalPeriodPreset}
                 period={operationalPeriod}
-              onSelectPreset={selectOperationalPeriod}
-              onApplyCustomPeriod={applyCustomOperationalPeriod}
-              onOpenPerson={openOperationalPerson}
-              onOpenTask={openOperationalTask}
-              onOpenAnnouncement={openOperationalAnnouncement}
+                identity={identity}
+                dashboard={apiBundle?.dashboard ?? null}
+                onCreateWithAi={() => go("criar")}
+                onSelectPreset={selectOperationalPeriod}
+                onApplyCustomPeriod={applyCustomOperationalPeriod}
+                onOpenPerson={openOperationalPerson}
+                onOpenTask={openOperationalTask}
+                onOpenAnnouncement={openOperationalAnnouncement}
               />
               <OwnerDashboard
                 go={go}
-                identity={identity}
                 dashboard={apiBundle?.dashboard ?? null}
                 proactiveSuggestions={apiBundle?.proactiveSuggestions ?? []}
                 isLiveWorkspace={liveWorkspaceMode}
@@ -3461,6 +3425,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               canCreateTask={canManageOperationalTasks}
               createTask={() => setCrudModal({ kind: "task", mode: "create" })}
               toggleTask={toggleTask}
+              onChecklistChange={handleUpdateExecutionChecklist}
               go={go}
             />
           )}
@@ -3888,7 +3853,10 @@ function OperationalOverviewPanel({
   onApplyCustomPeriod,
   onOpenPerson,
   onOpenTask,
-  onOpenAnnouncement
+  onOpenAnnouncement,
+  identity,
+  dashboard,
+  onCreateWithAi
 }: {
   overview: ApiOperationalOverview | null;
   status: "idle" | "loading" | "error";
@@ -3899,9 +3867,16 @@ function OperationalOverviewPanel({
   onOpenPerson: (profileId: string) => void;
   onOpenTask: (taskId: string) => void;
   onOpenAnnouncement: (announcementId: string) => void;
+  identity?: Identity;
+  dashboard?: ApiDashboard | null;
+  onCreateWithAi?: () => void;
 }) {
   const [listKind, setListKind] = useState<OperationalListKind>("lateTasks");
-  const metrics = overview?.metrics ?? { lateTasks: 0, awaitingApprovals: 0, pendingRequiredAnnouncements: 0 };
+  const metrics = overview?.metrics ?? {
+    lateTasks: dashboard?.metrics.lateTasks ?? 0,
+    awaitingApprovals: dashboard?.metrics.awaitingApproval ?? 0,
+    pendingRequiredAnnouncements: 0
+  };
   const definitions: Array<{ kind: OperationalListKind; label: string; value: number; icon: string }> = [
     { kind: "lateTasks", label: "Tarefas atrasadas", value: metrics.lateTasks, icon: "ph-clock-countdown" },
     { kind: "awaitingApprovals", label: "Aguardando aprovação", value: metrics.awaitingApprovals, icon: "ph-seal-check" },
@@ -3914,12 +3889,20 @@ function OperationalOverviewPanel({
     <section className="screen operational-overview" aria-label="Acompanhamento operacional">
       <div className="page-head compact">
         <div>
-          <h1 className="serif">Acompanhamento operacional</h1>
-          <p>Identifique pendências, abra os detalhes e acompanhe cada pessoa no período selecionado.</p>
+          <h1 className="serif">{identity ? `Bom dia, ${firstName(identity.name)}.` : "Acompanhamento operacional"}</h1>
+          <p>{identity ? "Acompanhe a execução, abra pendências e navegue até cada pessoa." : "Identifique pendências, abra os detalhes e acompanhe cada pessoa no período selecionado."}</p>
         </div>
+        {onCreateWithAi ? <button className="accent-btn" type="button" onClick={onCreateWithAi}><Icon name="ph-sparkle" />Criar com IA</button> : null}
       </div>
       <OperationalPeriodControls preset={preset} period={period} onSelectPreset={onSelectPreset} onApplyCustomPeriod={onApplyCustomPeriod} />
-      <div className="operational-metric-cards">
+      <div className={`operational-metric-cards ${identity ? "owner-operational-metrics" : ""}`}>
+        {identity ? (
+          <div>
+            <span>Execução hoje<Icon name="ph-chart-line-up" /></span>
+            <strong className="serif num">{dashboard?.metrics.executionRate ?? 0}%</strong>
+            <small>{dashboard?.metrics.todayCompleted ?? 0} de {dashboard?.metrics.todayTotal ?? 0} tarefas</small>
+          </div>
+        ) : null}
         {definitions.map((definition) => (
           <button key={definition.kind} type="button" className={listKind === definition.kind ? "active" : ""} onClick={() => setListKind(definition.kind)} aria-pressed={listKind === definition.kind}>
             <span>{definition.label}<Icon name={definition.icon} /></span>
@@ -4015,7 +3998,6 @@ function formatHours(value: number | null) {
 
 function OwnerDashboard({
   go,
-  identity,
   dashboard,
   proactiveSuggestions,
   isLiveWorkspace,
@@ -4025,7 +4007,6 @@ function OwnerDashboard({
   createChecklistSuggestion
 }: {
   go: (screen: Screen) => void;
-  identity: Identity;
   dashboard: ApiDashboard | null;
   proactiveSuggestions: ApiProactiveSuggestion[];
   isLiveWorkspace: boolean;
@@ -4044,39 +4025,6 @@ function OwnerDashboard({
     pendingTrainingAssignments: 0,
     incompleteProcesses: 0
   } : null);
-  const stats = effectiveMetrics ? [
-    {
-      label: "Execução hoje",
-      value: `${effectiveMetrics.executionRate}%`,
-      hint: `${effectiveMetrics.todayCompleted} de ${effectiveMetrics.todayTotal} tarefas`,
-      icon: "ph-chart-line-up"
-    },
-    {
-      label: "Atrasos",
-      value: String(effectiveMetrics.lateTasks),
-      hint: effectiveMetrics.lateTasks === 1 ? "1 tarefa atrasada" : `${effectiveMetrics.lateTasks} tarefas atrasadas`,
-      icon: "ph-clock-countdown",
-      color: "var(--danger-ink)"
-    },
-    {
-      label: "Aguardando aprovação",
-      value: String(effectiveMetrics.awaitingApproval),
-      hint: "evidências de tarefas",
-      icon: "ph-seal-check",
-      color: "var(--warn-ink)"
-    },
-    {
-      label: "Treinos pendentes",
-      value: String(effectiveMetrics.pendingTrainingAssignments),
-      hint: `${effectiveMetrics.incompleteProcesses} processo(s) incompleto(s)`,
-      icon: "ph-graduation-cap"
-    }
-  ] : [
-    { label: "Execução hoje", value: "72%", hint: "36 de 50 tarefas", icon: "ph-chart-line-up" },
-    { label: "Atrasos", value: "4", hint: "2 críticos", icon: "ph-clock-countdown", color: "var(--danger-ink)" },
-    { label: "Aguardando aprovação", value: "3", hint: "evidências de tarefas", icon: "ph-seal-check", color: "var(--warn-ink)" },
-    { label: "Treinos pendentes", value: "7", hint: "em 5 pessoas", icon: "ph-graduation-cap" }
-  ];
   const fallbackAttention = [
     { title: "Fechamento de campanha — Loja Vitta", sub: "Rotina crítica sem aprovação há 2 dias", tag: "Crítico", icon: "ph-warning", tone: "danger", go: "rotinas" },
     { title: "3 evidências aguardando sua aprovação", sub: "Criação · enviado por Bruno e Carla", tag: "Aprovar", icon: "ph-seal-check", tone: "warn", go: "rotinas" },
@@ -4153,23 +4101,7 @@ function OwnerDashboard({
       ["Conciliação financeira", "Financeiro · Felipe", "Pendente", "var(--warn-ink)"]
     ] as const);
   return (
-    <div className="screen">
-      <div className="page-head">
-        <div>
-          <h1 className="serif">Bom dia, {firstName(identity.name)}.</h1>
-          <p>Terça, 7 de julho · aqui está o que precisa da sua atenção hoje.</p>
-        </div>
-        <button className="accent-btn" type="button" onClick={() => go("criar")}><Icon name="ph-sparkle" />Criar com IA</button>
-      </div>
-      <div className="stats-grid">
-        {stats.map((stat) => (
-          <div className="stat-card lift" key={stat.label}>
-            <div><span>{stat.label}</span><Icon name={stat.icon} /></div>
-            <strong className="serif num" style={{ color: stat.color }}>{stat.value}</strong>
-            <small>{stat.hint}</small>
-          </div>
-        ))}
-      </div>
+    <div className="screen owner-supporting-dashboard">
       <div className="owner-grid">
         <div className="stack">
           <section className="panel flush">
@@ -4201,7 +4133,7 @@ function OwnerDashboard({
         </div>
         <div className="stack">
           <section className="panel padded">
-            <h2>Execução de hoje</h2>
+            <h2>Execução por área hoje</h2>
             <div className="metric-line">
               <strong className="serif">{effectiveMetrics ? `${effectiveMetrics.executionRate}%` : "72%"}</strong>
               <span>{effectiveMetrics ? `${effectiveMetrics.todayCompleted} de ${effectiveMetrics.todayTotal} tarefas` : "36 de 50 tarefas"}</span>
@@ -4384,6 +4316,7 @@ function TodayPage({
   canCreateTask,
   createTask,
   toggleTask,
+  onChecklistChange,
   go
 }: {
   identity: Identity;
@@ -4397,9 +4330,11 @@ function TodayPage({
   canCreateTask: boolean;
   createTask: () => void;
   toggleTask: (task: TodayTaskRow) => void;
+  onChecklistChange: (task: TodayTaskRow, checklistItems: NonNullable<ApiTask["checklistItems"]>) => Promise<void>;
   go: (screen: Screen) => void;
 }) {
   const [expandedOccurrenceIds, setExpandedOccurrenceIds] = useState<Set<string>>(() => new Set());
+  const [updatingChecklistIds, setUpdatingChecklistIds] = useState<Set<string>>(() => new Set());
   const announcementRows = announcements.length ? announcements : [];
   const trainingRows = trainingAssignments.length ? trainingAssignments : [];
   const summary = dashboard?.employeeToday;
@@ -4435,6 +4370,21 @@ function TodayPage({
       else next.add(taskId);
       return next;
     });
+  }
+
+  async function toggleOccurrenceChecklistItem(task: TodayTaskRow, itemIndex: number) {
+    if (!task.checklistItems?.length || updatingChecklistIds.has(task.id)) return;
+    const nextItems = task.checklistItems.map((item, index) => index === itemIndex ? { ...item, done: !item.done } : item);
+    setUpdatingChecklistIds((current) => new Set(current).add(task.id));
+    try {
+      await onChecklistChange(task, nextItems);
+    } finally {
+      setUpdatingChecklistIds((current) => {
+        const next = new Set(current);
+        next.delete(task.id);
+        return next;
+      });
+    }
   }
 
   return (
@@ -4486,13 +4436,23 @@ function TodayPage({
                                 <span className="today-routine-copy"><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
                                 {checklistTotal ? <span className="today-routine-progress">{checklistDone}/{checklistTotal} concluídos</span> : null}
                               </button>
-                              <button className="today-routine-open" type="button" onClick={() => toggleTask(task)}>Abrir checklist</button>
                             </div>
                             {expanded && checklistTotal ? (
                               <div className="today-routine-checklist" aria-label={`Checklist de ${task.label}`}>
                                 {task.checklistItems!.map((item, index) => (
-                                  <span className={item.done ? "done" : ""} key={`${task.id}-${item.title}-${index}`}><Icon name={item.done ? "ph-check" : "ph-circle"} />{item.title}</span>
+                                  <label className={item.done ? "done" : ""} key={`${task.id}-${item.title}-${index}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={item.done}
+                                      disabled={task.done || updatingChecklistIds.has(task.id)}
+                                      onChange={() => void toggleOccurrenceChecklistItem(task, index)}
+                                    />
+                                    <span>{item.title}</span>
+                                  </label>
                                 ))}
+                                {!task.done && checklistDone === checklistTotal ? (
+                                  <button className="today-routine-finish" type="button" onClick={() => toggleTask(task)}>Finalizar execução</button>
+                                ) : null}
                               </div>
                             ) : null}
                           </article>

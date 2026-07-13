@@ -2,9 +2,37 @@ import { describe, expect, it } from "vitest";
 import { buildApp } from "./app";
 import type { BaaseRuntimeConfig } from "./config/runtime";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
+import { createInMemoryOnboardingRepository } from "./modules/onboarding/in-memory-onboarding.repository";
+import type { CreateOnboardingSessionInput } from "./modules/onboarding/onboarding.types";
 
 const inMemoryObjectStorage = { provider: "memory" as const, s3: null };
 const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
+
+function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput> = {}): CreateOnboardingSessionInput {
+  return {
+    workspaceId: "hub_workspace",
+    ownerProfileId: "person_1",
+    status: "completed",
+    currentStep: "completed",
+    companyName: "Software Cade Cam",
+    segment: null,
+    customSegment: null,
+    normalizedSegment: null,
+    teamSizeRange: null,
+    goals: [],
+    mainAnswers: [],
+    attachments: [],
+    diagnosis: null,
+    followupQuestions: [],
+    followupAnswers: [],
+    generatedSuggestion: null,
+    reviewDecisions: [],
+    activationPlan: [],
+    createdSetupSummary: null,
+    aiRunIds: [],
+    ...overrides
+  };
+}
 
 describe("Baase API app", () => {
   it("responds to health checks", async () => {
@@ -111,8 +139,11 @@ describe("Baase API app", () => {
       ok: true,
       warnings: []
     };
+    const onboardingRepository = createInMemoryOnboardingRepository();
+    await onboardingRepository.createSession(onboardingSessionInput());
     const app = buildApp({
       runtimeConfig,
+      onboardingRepository,
       accountAccessFetch: async (input, init) => {
         accountRequests.push({
           url: String(input),
@@ -163,7 +194,7 @@ describe("Baase API app", () => {
     expect(response.json()).toEqual({
       workspace: {
         id: "hub_workspace",
-        name: "Estúdio Aurora"
+        name: "Software Cade Cam"
       },
       profile: {
         id: "person_1",
@@ -487,8 +518,8 @@ describe("Baase API app", () => {
     const app = buildApp({ seedDemoData: true });
     const headers = {
       "x-baase-workspace-id": "workspace_a",
-      "x-baase-profile-id": "profile_employee",
-      "x-baase-role": "employee"
+      "x-baase-profile-id": "profile_owner",
+      "x-baase-role": "owner"
     };
 
     const todayResponse = await app.inject({ method: "GET", url: "/today?date=2026-07-07", headers });

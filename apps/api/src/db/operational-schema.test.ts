@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureOperationalSchema,
+  ensureOperationalSchemaThrough,
   type OperationalSchemaClient,
   type OperationalSchemaPool
 } from "./operational-schema";
@@ -56,7 +57,30 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("migrates legacy people to the safe access scope for their role", async () => {
+    await ensureOperationalSchemaThrough(db, 7);
+    await db.query("insert into areas (id,workspace_id,name) values ('area_ops','workspace_a','Operações')");
+    await db.query(
+      `insert into people (id,workspace_id,name,role,status,created_by_profile_id,area_id,access_scope)
+       values
+        ('owner_legacy','workspace_a','Dono','owner','active','seed',null,'assigned_only'),
+        ('manager_legacy','workspace_a','Gestor','manager','active','seed','area_ops','workspace'),
+        ('employee_legacy','workspace_a','Funcionário','employee','active','seed','area_ops','workspace')`
+    );
+
+    await ensureOperationalSchema(db);
+
+    const scopes = await db.query<{ id: string; access_scope: string }>(
+      "select id,access_scope from people where workspace_id='workspace_a' order by id"
+    );
+    expect(scopes.rows).toEqual([
+      { id: "employee_legacy", access_scope: "assigned_only" },
+      { id: "manager_legacy", access_scope: "area" },
+      { id: "owner_legacy", access_scope: "workspace" }
+    ]);
   });
 
   it("adds metadata columns for uploaded task evidence", async () => {

@@ -261,7 +261,7 @@ describe("Postgres repositories", () => {
       secondApp.inject({ method: "GET", url: "/invites", headers: ownerHeaders }),
       secondApp.inject({ method: "GET", url: "/processes", headers: ownerHeaders }),
       secondApp.inject({ method: "GET", url: "/routines", headers: ownerHeaders }),
-      secondApp.inject({ method: "GET", url: "/today?date=2026-07-07", headers: employeeHeaders }),
+      secondApp.inject({ method: "GET", url: "/today?date=2026-07-07", headers: ownerHeaders }),
       secondApp.inject({ method: "GET", url: "/trainings", headers: ownerHeaders }),
       secondApp.inject({ method: "GET", url: "/ai/runs", headers: ownerHeaders })
     ]);

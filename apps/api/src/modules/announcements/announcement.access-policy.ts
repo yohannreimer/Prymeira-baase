@@ -37,12 +37,13 @@ export async function canReadAnnouncementAudience(
   member: OperationalMembership,
   audience: AnnouncementAudience
 ) {
-  if (audience.type === "all") return member.role === "owner" || member.accessScope === "workspace";
+  if (audience.type === "all") return true;
   if (audience.type === "person") return audience.profileId === member.personId;
+  if (audience.type === "role") return audience.roleTemplateId === member.person.roleTemplateId;
 
   const resolved = await resolveAnnouncementAudience(companyRepository, workspaceId, audience);
   if (!canReadAreaResource(member, resolved.areaId)) return false;
-  return audience.type === "area" || member.person.roleTemplateId === audience.roleTemplateId;
+  return true;
 }
 
 export async function canManageAnnouncementAudience(

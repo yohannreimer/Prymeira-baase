@@ -523,6 +523,28 @@ const migrations: Migration[] = [{
     ALTER TABLE task_evidence ADD COLUMN IF NOT EXISTS content_type TEXT;
     ALTER TABLE task_evidence ADD COLUMN IF NOT EXISTS size_bytes BIGINT;
   `
+}, {
+  version: 8,
+  name: "role_safe_access_scopes",
+  sql: `
+    UPDATE people
+      SET access_scope = 'workspace'
+      WHERE role = 'owner' AND access_scope <> 'workspace';
+
+    UPDATE people
+      SET access_scope = 'area'
+      WHERE role = 'manager' AND access_scope <> 'area';
+
+    UPDATE people
+      SET access_scope = 'assigned_only'
+      WHERE role = 'employee' AND access_scope <> 'assigned_only';
+
+    INSERT INTO person_area_access (workspace_id, person_id, area_id)
+      SELECT workspace_id, id, area_id
+      FROM people
+      WHERE role = 'manager' AND area_id IS NOT NULL AND archived_at IS NULL
+      ON CONFLICT DO NOTHING;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

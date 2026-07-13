@@ -202,7 +202,7 @@ describe("routine routes", () => {
     expect(petersonToday.json().tasks[0]).toMatchObject({ assigneeProfileId: petersonId });
     expect(andreToday.json().tasks).toHaveLength(1);
     expect(andreToday.json().tasks[0]).toMatchObject({ assigneeProfileId: andreId });
-    expect(technicalSupportToday.json().tasks).toHaveLength(2);
+    expect(technicalSupportToday.json().tasks).toEqual([]);
     expect(ownerToday.json().tasks).toHaveLength(2);
     expect(ownerToday.json().tasks.map((task: { assigneeProfileId: string | null }) => task.assigneeProfileId))
       .toEqual([petersonId, andreId]);
@@ -1136,7 +1136,7 @@ describe("routine routes", () => {
     });
 
     expect(todayResponse.statusCode).toBe(200);
-    expect(todayResponse.json().tasks).toHaveLength(2);
+    expect(todayResponse.json().tasks).toHaveLength(1);
     expect(todayResponse.json().tasks).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: "Organizar orquestrador",

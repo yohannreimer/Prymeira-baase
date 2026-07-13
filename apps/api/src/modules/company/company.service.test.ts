@@ -104,4 +104,23 @@ describe("company service", () => {
       clerkUserId: "user_ana", createdByProfileId: "person_owner"
     })).rejects.toThrow("TEAM_MEMBER_CLERK_ID_CONFLICT");
   });
+
+  it("enforces the safe access scope for each operational role", async () => {
+    const service = createCompanyService(createInMemoryCompanyRepository());
+    const area = await service.createArea("workspace_a", { name: "Operações" });
+
+    const owner = await service.createTeamMember("workspace_a", {
+      name: "Dono", role: "owner", areaId: null, accessScope: "assigned_only", createdByProfileId: "seed"
+    });
+    const manager = await service.createTeamMember("workspace_a", {
+      name: "Gestor", role: "manager", areaId: area.id, accessScope: "workspace", createdByProfileId: owner.id
+    });
+    const employee = await service.createTeamMember("workspace_a", {
+      name: "Funcionário", role: "employee", areaId: area.id, accessScope: "workspace", createdByProfileId: owner.id
+    });
+
+    expect(owner.accessScope).toBe("workspace");
+    expect(manager.accessScope).toBe("area");
+    expect(employee.accessScope).toBe("assigned_only");
+  });
 });

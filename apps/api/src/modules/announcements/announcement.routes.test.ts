@@ -177,7 +177,13 @@ describe("announcement routes", () => {
 
     const today = await app.inject({ method: "GET", url: "/today?date=2026-07-12", headers: headersFor("user_assigned") });
     expect(today.statusCode).toBe(200);
-    expect(today.json().announcements.map((announcement: { title: string }) => announcement.title)).toEqual(["Para a pessoa"]);
+    expect(today.json().announcements.map((announcement: { title: string }) => announcement.title)).toEqual([
+      "Para todos",
+      "Para a área",
+      "Para o cargo",
+      "Para a pessoa",
+      "Rascunho por cargo"
+    ]);
 
     const managerList = await app.inject({ method: "GET", url: "/announcements", headers: headersFor("user_manager") });
     expect(managerList.statusCode).toBe(200);

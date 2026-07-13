@@ -1044,7 +1044,7 @@ describe("Baase React app shell", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/me", expect.anything()));
   });
 
-  it("shows onboarding completion summary and dashboard activation plan after going to panel", async () => {
+  it("keeps the completed onboarding plan out of the unified owner dashboard", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url === "/api/onboarding/session") {
@@ -1078,9 +1078,10 @@ describe("Baase React app shell", () => {
 
     render(<App />);
 
-    expect(await screen.findByText(/Plano de 7 dias/)).toBeInTheDocument();
-    expect(screen.getByText("Revisar mapa")).toBeInTheDocument();
-    expect(screen.getByText("Confirmar áreas.")).toBeInTheDocument();
+    expect(await screen.findAllByRole("heading", { name: "Bom dia, Marina." })).toHaveLength(1);
+    expect(screen.queryByText(/Plano de 7 dias/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Revisar mapa")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Acompanhamento operacional" })).not.toBeInTheDocument();
   });
 
   it("renders proactive AI suggestions from the workspace API", async () => {
@@ -1693,26 +1694,33 @@ describe("Baase React app shell", () => {
   });
 
   it("shows each individual routine execution with its own checklist instead of aggregating people", async () => {
+    const occurrenceTasks = ["person_yohann", "person_peterson", "person_andre"].map((assigneeProfileId) => ({
+      id: `task_${assigneeProfileId}`,
+      title: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
+      origin: "routine",
+      routineId: "routine_orquestrador",
+      routineTitleSnapshot: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
+      assigneeProfileId,
+      areaId: "area_technical",
+      status: "pending",
+      dueDate: "2026-07-07",
+      dueHint: "Primeira atividade da manhã",
+      evidencePolicy: "optional",
+      checklistItems: [
+        { title: "Acessar o orquestrador", done: false },
+        { title: "Revisar registros do dia anterior", done: false },
+        { title: "Planejar o dia atual", done: false }
+      ]
+    }));
     mockLoadedWorkspace({
       "/api/today?date=2026-07-07": {
-        tasks: ["person_yohann", "person_peterson", "person_andre"].map((assigneeProfileId) => ({
-          id: `task_${assigneeProfileId}`,
-          title: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
-          origin: "routine",
-          routineId: "routine_orquestrador",
-          routineTitleSnapshot: "Revisão do Dia Anterior e Planejamento Diário no Orquestrador",
-          assigneeProfileId,
-          areaId: "area_technical",
-          status: "pending",
-          dueDate: "2026-07-07",
-          dueHint: "Primeira atividade da manhã",
-          evidencePolicy: "optional",
-          checklistItems: [
-            { title: "Acessar o orquestrador", done: false },
-            { title: "Revisar registros do dia anterior", done: false },
-            { title: "Planejar o dia atual", done: false }
-          ]
-        }))
+        tasks: occurrenceTasks
+      },
+      "/api/tasks/task_person_yohann/checklist": {
+        task: {
+          ...occurrenceTasks[0],
+          checklistItems: occurrenceTasks[0]!.checklistItems.map((item, index) => index === 0 ? { ...item, done: true } : item)
+        }
       },
       "/api/areas": { areas: [{ id: "area_technical", name: "Técnico, Implantação e Entregáveis" }] },
       "/api/people": { people: [
@@ -1732,9 +1740,14 @@ describe("Baase React app shell", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /Expandir checklist de Revisão do Dia Anterior/ })[0]!);
     const checklist = await screen.findByLabelText("Checklist de Revisão do Dia Anterior e Planejamento Diário no Orquestrador");
-    expect(within(checklist).getByText("Acessar o orquestrador")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Abrir checklist" })).not.toBeInTheDocument();
+    fireEvent.click(within(checklist).getByRole("checkbox", { name: "Acessar o orquestrador" }));
     expect(within(checklist).getByText("Revisar registros do dia anterior")).toBeInTheDocument();
     expect(within(checklist).getByText("Planejar o dia atual")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith("/api/tasks/task_person_yohann/checklist", expect.objectContaining({ method: "PATCH" }));
+      expect(screen.getByText("1/3 concluídos")).toBeInTheDocument();
+    });
   });
 
   it("lets the employee attach evidence and send a task for approval", async () => {

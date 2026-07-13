@@ -428,7 +428,7 @@ describe("company routes", () => {
       role: "employee",
       areaId: areaResponse.json().area.id,
       roleTemplateId: roleResponse.json().role_template.id,
-      accessScope: "area",
+      accessScope: "assigned_only",
       status: "pending"
     });
   });

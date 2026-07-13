@@ -227,5 +227,6 @@ export function normalizeAreaAccessIds(areaId: string | null, areaAccessIds: str
 
 export function normalizeAccessScope(role: TeamMember["role"], scope: TeamMember["accessScope"] | null | undefined) {
   if (role === "owner") return "workspace" as const;
-  return scope ?? "workspace";
+  if (role === "manager") return "area" as const;
+  return "assigned_only" as const;
 }

@@ -3,7 +3,7 @@ import { canAdministerHubSeats, canExecuteTask, canManageAreaResource, canReadAr
 import type { OperationalMembership } from "./company.types";
 
 const member = (overrides: Partial<OperationalMembership>): OperationalMembership => ({
-  person: {} as OperationalMembership["person"], personId: "person_ana", role: "manager",
+  person: { areaId: "area_ops" } as OperationalMembership["person"], personId: "person_ana", role: "manager",
   accessScope: "area", areaAccessIds: ["area_ops"], ...overrides
 });
 
@@ -17,19 +17,33 @@ describe("Baase access policy", () => {
   });
 
   it("keeps assigned-only employees on their own task", () => {
-    const employee = member({ role: "employee", accessScope: "assigned_only", areaAccessIds: [] });
-    expect(canReadAreaResource(employee, "area_ops")).toBe(false);
+    const employee = member({ role: "employee", accessScope: "assigned_only", areaAccessIds: ["area_ops"] });
+    expect(canReadAreaResource(employee, "area_ops")).toBe(true);
+    expect(canReadAreaResource(employee, "area_finance")).toBe(false);
     expect(canReadTask(employee, { assigneeProfileId: "person_ana", areaId: "area_ops" })).toBe(true);
     expect(canExecuteTask(employee, { assigneeProfileId: "person_ana", areaId: "area_ops" })).toBe(true);
     expect(canExecuteTask(employee, { assigneeProfileId: "person_other", areaId: "area_ops" })).toBe(false);
   });
 
-  it("allows area members to read individual tasks without allowing execution", () => {
+  it("keeps employees from reading another person's individual task in the same area", () => {
     const employee = member({ role: "employee", personId: "person_support", accessScope: "area", areaAccessIds: ["area_ops"] });
     const individualTask = { assigneeProfileId: "person_ana", areaId: "area_ops" };
 
-    expect(canReadTask(employee, individualTask)).toBe(true);
+    expect(canReadTask(employee, individualTask)).toBe(false);
     expect(canExecuteTask(employee, individualTask)).toBe(false);
+  });
+
+  it("never lets an employee read another person's assigned task, even with a legacy workspace scope", () => {
+    const employee = member({
+      role: "employee",
+      personId: "person_finance",
+      person: { areaId: "area_finance" } as OperationalMembership["person"],
+      accessScope: "workspace",
+      areaAccessIds: ["area_finance"]
+    });
+
+    expect(canReadTask(employee, { assigneeProfileId: "person_technical", areaId: "area_technical" })).toBe(false);
+    expect(canReadTask(employee, { assigneeProfileId: "person_other_finance", areaId: "area_finance" })).toBe(false);
   });
 
   it("does not treat unscoped tasks as globally readable or executable", () => {
