@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { StudioStructureKind } from "./studio.types";
 
 const editorJsonSchema = z.record(z.string(), z.unknown());
-const titleSchema = z.string().min(1).max(240);
+const titleSchema = z.string().trim().min(1).max(240);
 const structureTextSchema = z.string().min(1);
 
 export const studioCaptureModeSchema = z.enum(["text", "audio", "file", "image", "link", "mixed"]);
@@ -21,19 +21,27 @@ export const patchStudioDocumentSchema = z.object({
   body_text: z.string().max(500_000).optional(),
   capture_mode: studioCaptureModeSchema.optional(),
   inbox_state: z.enum(["pending_review", "reviewed"]).optional(),
-  is_focused: z.boolean().optional(),
-  status: z.enum(["active", "archived"]).optional()
-}).strict();
+  is_focused: z.boolean().optional()
+}).strict().refine((input) => (
+  input.title !== undefined
+  || input.body_json !== undefined
+  || input.body_text !== undefined
+  || input.capture_mode !== undefined
+  || input.inbox_state !== undefined
+  || input.is_focused !== undefined
+), {
+  message: "At least one mutable document field is required."
+});
 
 export const studioCollectionSchema = z.object({
-  name: z.string().min(1).max(120)
+  name: z.string().trim().min(1).max(120)
 }).strict();
 
 export const createStudioCollectionSchema = studioCollectionSchema;
 
 export const studioAssetSchema = z.object({
   kind: z.enum(["audio", "image", "file", "link_snapshot"]),
-  display_name: z.string().min(1).max(240),
+  display_name: z.string().trim().min(1).max(240),
   object_key: z.string().min(1),
   source_url: z.string().url().max(2_000).nullable().optional(),
   mime_type: z.string().min(1),
@@ -87,6 +95,8 @@ const structurePropertiesSchemas = {
   ritual: ritualPropertiesSchema
 } satisfies Record<StudioStructureKind, z.ZodType>;
 
-export function studioStructurePropertiesSchema(kind: StudioStructureKind) {
+export function studioStructurePropertiesSchema<Kind extends StudioStructureKind>(
+  kind: Kind
+): (typeof structurePropertiesSchemas)[Kind] {
   return structurePropertiesSchemas[kind];
 }
