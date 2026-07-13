@@ -238,7 +238,17 @@ export function createTrainingService(repository: TrainingRepository) {
 
     async submitQuizAttempt(workspaceId: string, trainingId: string, profileId: string, input: SubmitQuizAttemptInput) {
       const training = await readTrainingOrThrow(repository, workspaceId, trainingId);
-      if (training.quizQuestions.length === 0) throw new Error("TRAINING_HAS_NO_QUIZ");
+      if (training.quizQuestions.length === 0) {
+        return repository.createQuizAttempt({
+          workspaceId,
+          trainingId,
+          profileId,
+          score: 100,
+          passed: true,
+          answers: [],
+          completedAt: new Date().toISOString()
+        });
+      }
 
       const answerByQuestionId = new Map(input.answers.map((answer) => [answer.questionId, answer.optionId]));
       const correctAnswers = training.quizQuestions.filter((question) => {

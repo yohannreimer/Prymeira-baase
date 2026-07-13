@@ -1,4 +1,5 @@
 import { ClerkProvider, SignIn, useAuth } from "@clerk/clerk-react";
+import { ptBR } from "@clerk/localizations";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { configureBaaseApiAuth } from "./api";
 import { readBaaseAuthConfig, type BaaseWebAuthConfig } from "./auth-config";
@@ -24,7 +25,7 @@ export function BaaseAuthRoot({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ClerkProvider publishableKey={authConfig.clerkPublishableKey}>
+    <ClerkProvider localization={ptBR} publishableKey={authConfig.clerkPublishableKey}>
       <BaaseAccessGate config={authConfig}>{children}</BaaseAccessGate>
     </ClerkProvider>
   );

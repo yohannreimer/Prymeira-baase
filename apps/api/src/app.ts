@@ -229,7 +229,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     aiRepository,
     aiProvider
   }));
-  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository));
+  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository, routineRepository));
   app.register((routes) => registerProcessMaterialRoutes(routes, processRepository, objectStorage));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     companyRepository,
@@ -237,7 +237,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     trainingRepository,
     announcementRepository
   }));
-  app.register((routes) => registerTrainingRoutes(routes, trainingRepository));
+  app.register((routes) => registerTrainingRoutes(routes, trainingRepository, companyRepository));
   app.register((routes) => registerAnnouncementRoutes(routes, announcementRepository, companyRepository));
   app.register((routes) => registerTemplateRoutes(routes, {
     processRepository,

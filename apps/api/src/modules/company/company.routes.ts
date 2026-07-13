@@ -3,11 +3,12 @@ import { z } from "zod";
 import { canEditCompanyBase } from "@prymeira/baase-shared";
 import type { BaaseAuthMode } from "../../config/runtime";
 import { ApiError, forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
+import { canManageAreaResource, canReadAreaResource, visibleAreaIds } from "./access-policy";
 import { createAccountHubTeamClient } from "./account-hub-team.client";
 import { createCompanyService } from "./company.service";
 import { createAreaLifecycleService } from "./area-lifecycle.service";
-import type { AreaLifecycleRepository, CompanyRepository } from "./company.types";
+import type { AreaLifecycleRepository, CompanyRepository, OperationalMembership } from "./company.types";
 
 const createAreaSchema = z.object({
   name: z.string().min(1).max(80),
@@ -104,6 +105,46 @@ function companyMutationError(error: unknown) {
   return error;
 }
 
+function scopeForbidden() {
+  return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área ou pessoa.");
+}
+
+function requireOwner(membership: OperationalMembership) {
+  if (membership.role !== "owner") throw scopeForbidden();
+}
+
+async function requireManagedArea(repository: CompanyRepository, workspaceId: string, areaId: string, membership: OperationalMembership) {
+  const area = await repository.findAreaById(workspaceId, areaId);
+  if (!area) throw companyMutationError(new Error("AREA_NOT_FOUND"));
+  if (!canManageAreaResource(membership, area.id)) throw scopeForbidden();
+  return area;
+}
+
+async function assertManagedPersonInput(
+  repository: CompanyRepository,
+  workspaceId: string,
+  membership: OperationalMembership,
+  input: {
+    role: "owner" | "manager" | "employee";
+    area_id?: string | null;
+    area_ids?: string[];
+    role_template_id?: string | null;
+    access_scope?: "workspace" | "area" | "assigned_only";
+  }
+) {
+  if (membership.role === "owner") return;
+  if (membership.role !== "manager" || input.role !== "employee" || input.access_scope === "workspace") throw scopeForbidden();
+
+  const areaIds = [...new Set([...(input.area_ids ?? []), ...(input.area_id ? [input.area_id] : [])])];
+  if (areaIds.some((areaId) => !canManageAreaResource(membership, areaId))) throw scopeForbidden();
+
+  if (input.role_template_id) {
+    const roleTemplate = (await repository.listRoleTemplates(workspaceId)).find((item) => item.id === input.role_template_id);
+    if (!roleTemplate) throw companyMutationError(new Error("ROLE_TEMPLATE_NOT_FOUND"));
+    if (!canManageAreaResource(membership, roleTemplate.areaId)) throw scopeForbidden();
+  }
+}
+
 export async function registerCompanyRoutes(
   app: FastifyInstance,
   repository: CompanyRepository,
@@ -119,13 +160,16 @@ export async function registerCompanyRoutes(
 
   app.get("/areas", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const areas = await service.listAreas(context.workspaceId);
-    return { areas };
+    const allowedIds = visibleAreaIds(membership);
+    return { areas: allowedIds === null ? areas : areas.filter((area) => allowedIds.includes(area.id)) };
   });
 
   app.post("/areas", async (request, reply) => {
     const context = readRequestContext(request);
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    requireOwner(requireOperationalMembership(request));
 
     const body = createAreaSchema.parse(request.body);
     const area = await service.createArea(context.workspaceId, body);
@@ -138,6 +182,7 @@ export async function registerCompanyRoutes(
 
     const params = idParamsSchema.parse(request.params);
     const body = createAreaSchema.parse(request.body);
+    await requireManagedArea(repository, context.workspaceId, params.id, requireOperationalMembership(request));
 
     try {
       const area = await service.updateArea(context.workspaceId, params.id, body);
@@ -150,6 +195,7 @@ export async function registerCompanyRoutes(
   app.delete("/areas/:id", async (request) => {
     const context = readRequestContext(request);
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    requireOwner(requireOperationalMembership(request));
 
     const params = idParamsSchema.parse(request.params);
 
@@ -165,6 +211,7 @@ export async function registerCompanyRoutes(
     const context = readRequestContext(request);
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
     const params = idParamsSchema.parse(request.params);
+    await requireManagedArea(repository, context.workspaceId, params.id, requireOperationalMembership(request));
     try {
       return { impact: await areaLifecycle.getImpact(context.workspaceId, params.id) };
     } catch (error) {
@@ -175,6 +222,7 @@ export async function registerCompanyRoutes(
   app.post("/areas/:id/archive", async (request) => {
     const context = readRequestContext(request);
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    requireOwner(requireOperationalMembership(request));
     const params = idParamsSchema.parse(request.params);
     const body = archiveAreaSchema.parse(request.body ?? {});
     const resolution = body.strategy === "reassign"
@@ -189,8 +237,9 @@ export async function registerCompanyRoutes(
 
   app.get("/roles", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const roleTemplates = await service.listRoleTemplates(context.workspaceId);
-    return { role_templates: roleTemplates };
+    return { role_templates: roleTemplates.filter((role) => canReadAreaResource(membership, role.areaId)) };
   });
 
   app.post("/roles", async (request, reply) => {
@@ -198,6 +247,7 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const body = createRoleTemplateSchema.parse(request.body);
+    await requireManagedArea(repository, context.workspaceId, body.area_id, requireOperationalMembership(request));
     const roleTemplate = await service.createRoleTemplate(context.workspaceId, {
       areaId: body.area_id,
       name: body.name,
@@ -212,6 +262,10 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const params = idParamsSchema.parse(request.params);
+    const membership = requireOperationalMembership(request);
+    const roleTemplate = (await repository.listRoleTemplates(context.workspaceId)).find((item) => item.id === params.id);
+    if (!roleTemplate) throw companyMutationError(new Error("ROLE_TEMPLATE_NOT_FOUND"));
+    if (!canManageAreaResource(membership, roleTemplate.areaId)) throw scopeForbidden();
 
     try {
       await service.deleteRoleTemplate(context.workspaceId, params.id);
@@ -223,7 +277,12 @@ export async function registerCompanyRoutes(
 
   app.get("/people", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const people = await service.listTeamMembers(context.workspaceId);
+    if (membership.role === "employee") return { people: people.filter((person) => person.id === membership.personId) };
+    if (membership.role === "manager" && membership.accessScope !== "workspace") {
+      return { people: people.filter((person) => person.id === membership.personId || (person.areaId !== null && canReadAreaResource(membership, person.areaId))) };
+    }
     return { people };
   });
 
@@ -232,6 +291,7 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const body = createPersonSchema.parse(request.body);
+    await assertManagedPersonInput(repository, context.workspaceId, requireOperationalMembership(request), body);
     const person = await service.createTeamMember(context.workspaceId, {
       name: body.name,
       email: body.email,
@@ -252,6 +312,13 @@ export async function registerCompanyRoutes(
 
     const params = idParamsSchema.parse(request.params);
     const body = updatePersonSchema.parse(request.body);
+    const membership = requireOperationalMembership(request);
+    const existing = await repository.findTeamMember(context.workspaceId, params.id);
+    if (!existing) throw companyMutationError(new Error("TEAM_MEMBER_NOT_FOUND"));
+    if (membership.role !== "owner") {
+      if (existing.role === "owner" || existing.id === membership.personId || !canManageAreaResource(membership, existing.areaId)) throw scopeForbidden();
+      await assertManagedPersonInput(repository, context.workspaceId, membership, body);
+    }
 
     try {
       const person = await service.updateTeamMember(context.workspaceId, params.id, {
@@ -276,6 +343,12 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const params = idParamsSchema.parse(request.params);
+    const membership = requireOperationalMembership(request);
+    const existing = await repository.findTeamMember(context.workspaceId, params.id);
+    if (!existing) throw companyMutationError(new Error("TEAM_MEMBER_NOT_FOUND"));
+    if (membership.role !== "owner" && (existing.role === "owner" || existing.id === membership.personId || !canManageAreaResource(membership, existing.areaId))) {
+      throw scopeForbidden();
+    }
 
     try {
       await service.deleteTeamMember(context.workspaceId, params.id);
@@ -287,7 +360,12 @@ export async function registerCompanyRoutes(
 
   app.get("/invites", async (request) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
+    if (membership.role === "employee") throw forbiddenError();
     const invites = await service.listTeamInvites(context.workspaceId);
+    if (membership.role === "manager" && membership.accessScope !== "workspace") {
+      return { invites: invites.filter((invite) => invite.areaId !== null && canReadAreaResource(membership, invite.areaId)) };
+    }
     return { invites };
   });
 
@@ -304,6 +382,7 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const body = createInviteSchema.parse(request.body);
+    await assertManagedPersonInput(repository, context.workspaceId, requireOperationalMembership(request), body);
     if (authMode === "account") {
       if (context.role !== "owner") throw forbiddenError();
       if (!context.externalIdentity || !accountHubTeam) {
@@ -350,6 +429,10 @@ export async function registerCompanyRoutes(
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
     const params = idParamsSchema.parse(request.params);
+    const membership = requireOperationalMembership(request);
+    const invite = (await repository.listTeamInvites(context.workspaceId)).find((item) => item.id === params.id);
+    if (!invite) throw companyMutationError(new Error("INVITE_NOT_FOUND"));
+    if (membership.role !== "owner" && (invite.role !== "employee" || !canManageAreaResource(membership, invite.areaId))) throw scopeForbidden();
 
     try {
       await service.deleteTeamInvite(context.workspaceId, params.id);

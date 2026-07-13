@@ -44,6 +44,7 @@ export type DashboardSummary = {
   role: BaaseRole;
   metrics: DashboardMetricSummary;
   areaMetrics: DashboardAreaMetric[];
+  peopleMetrics: Array<{ profileId: string; name: string; total: number; completed: number; completionRate: number }>;
   attentionItems: DashboardAttentionItem[];
   employeeToday: EmployeeTodaySummary;
 };

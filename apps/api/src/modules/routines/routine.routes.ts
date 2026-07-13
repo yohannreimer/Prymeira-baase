@@ -404,7 +404,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       assertCanExecuteTask(membership, existingTask);
       const task = await service.updateTaskChecklist(context.workspaceId, params.id, context.profileId, {
         checklistItems: body.checklist_items
-      }, { allowAssigneeOverride: membership.role === "owner" });
+      });
       return { task: await presentTask(task, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
@@ -421,7 +421,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       assertCanExecuteTask(membership, task);
       const submittedTask = await service.submitTask(context.workspaceId, params.id, context.profileId, {
         comment: body.comment
-      }, { allowAssigneeOverride: membership.role === "owner" });
+      });
       return { task: await presentTask(submittedTask, options.objectStorage) };
     } catch (error) {
       throw taskMutationError(error);
@@ -468,7 +468,7 @@ export async function registerRoutineRoutes(app: FastifyInstance, repository: Ro
       stored = true;
       const evidence = await service.attachTaskEvidence(context.workspaceId, params.id, context.profileId, {
         attachment: { objectKey, fileName, contentType, sizeBytes: buffer.length }
-      }, { allowAssigneeOverride: membership.role === "owner" });
+      });
       persisted = true;
       await deleteEvidenceObject(options.objectStorage, task.evidence?.attachment?.objectKey, objectKey);
       const presented = await presentTask(evidence, options.objectStorage);

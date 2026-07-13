@@ -4,10 +4,11 @@ import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import { requireOperationalMembership } from "../../http/auth-context";
-import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
+import { canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
 import { createProcessService } from "./process.service";
 import type { ProcessRepository } from "./process.types";
 import type { CompanyRepository } from "../company/company.types";
+import type { RoutineRepository } from "../routines/routine.types";
 
 const createProcessSchema = z.object({
   title: z.string().min(1).max(120),
@@ -73,7 +74,8 @@ function processMutationError(error: unknown) {
 export async function registerProcessRoutes(
   app: FastifyInstance,
   repository: ProcessRepository,
-  companyRepository: CompanyRepository
+  companyRepository: CompanyRepository,
+  routineRepository: RoutineRepository
 ) {
   const service = createProcessService(repository, { companyRepository });
 
@@ -81,7 +83,17 @@ export async function registerProcessRoutes(
     const context = readRequestContext(request);
     const membership = requireOperationalMembership(request);
     const processes = await service.listProcesses(context.workspaceId);
-    return { processes: processes.filter((process) => canReadAreaResource(membership, process.areaId)) };
+    const referencedProcessIds = membership.role === "employee" && membership.accessScope === "assigned_only"
+      ? new Set((await routineRepository.listTaskOccurrences(context.workspaceId))
+        .filter((task) => canReadTask(membership, { assigneeProfileId: task.assigneeProfileId, areaId: task.areaId }))
+        .map((task) => task.processId)
+        .filter((id): id is string => Boolean(id)))
+      : null;
+    return { processes: processes.filter((process) => {
+      if (membership.role === "employee" && process.status !== "published") return false;
+      if (referencedProcessIds) return referencedProcessIds.has(process.id);
+      return canReadAreaResource(membership, process.areaId);
+    }) };
   });
 
   app.post("/processes", async (request, reply) => {
@@ -111,6 +123,9 @@ export async function registerProcessRoutes(
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createProcessVersionSchema.parse(request.body);
+    const existingProcess = await requireManagedProcess(repository, context.workspaceId, params.id, requireOperationalMembership(request));
+    const targetAreaId = body.area_id === undefined ? existingProcess.areaId : body.area_id;
+    if (!canManageAreaResource(requireOperationalMembership(request), targetAreaId ?? null)) throw scopeForbidden();
     try {
       const process = await service.createProcessVersion(context.workspaceId, params.id, context.profileId, {
         body: body.body,
@@ -133,6 +148,9 @@ export async function registerProcessRoutes(
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = editProcessSchema.parse(request.body);
+    const existingProcess = await requireManagedProcess(repository, context.workspaceId, params.id, requireOperationalMembership(request));
+    const targetAreaId = body.area_id === undefined ? existingProcess.areaId : body.area_id;
+    if (!canManageAreaResource(requireOperationalMembership(request), targetAreaId ?? null)) throw scopeForbidden();
     const owner = body.owner === undefined ? undefined : body.owner === null ? null : body.owner.type === "person"
       ? { type: "person" as const, personId: body.owner.person_id }
       : { type: "role" as const, roleTemplateId: body.owner.role_template_id };
@@ -158,6 +176,7 @@ export async function registerProcessRoutes(
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedProcess(repository, context.workspaceId, params.id, requireOperationalMembership(request));
     const process = await service.publishProcess(context.workspaceId, params.id);
     return { process };
   });
@@ -167,6 +186,7 @@ export async function registerProcessRoutes(
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedProcess(repository, context.workspaceId, params.id, requireOperationalMembership(request));
     const process = await service.unpublishProcess(context.workspaceId, params.id);
     return { process };
   });
@@ -176,6 +196,7 @@ export async function registerProcessRoutes(
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedProcess(repository, context.workspaceId, params.id, requireOperationalMembership(request));
 
     try {
       await service.deleteProcess(context.workspaceId, params.id);
@@ -184,6 +205,18 @@ export async function registerProcessRoutes(
       throw processMutationError(error);
     }
   });
+}
+
+async function requireManagedProcess(
+  repository: ProcessRepository,
+  workspaceId: string,
+  processId: string,
+  membership: ReturnType<typeof requireOperationalMembership>
+) {
+  const process = await repository.findProcess(workspaceId, processId);
+  if (!process) throw new ApiError(404, "PROCESS_NOT_FOUND", "Processo não encontrado.");
+  if (!canManageAreaResource(membership, process.areaId)) throw scopeForbidden();
+  return process;
 }
 
 function scopeForbidden() {

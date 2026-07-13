@@ -14,6 +14,7 @@ describe("Baase access policy", () => {
     expect(canReadAreaResource(manager, "area_finance")).toBe(false);
     expect(canManageAreaResource(manager, "area_ops")).toBe(true);
     expect(canManageAreaResource(manager, "area_finance")).toBe(false);
+    expect(canManageAreaResource(manager, null)).toBe(false);
   });
 
   it("keeps assigned-only employees on their own task", () => {
@@ -51,6 +52,14 @@ describe("Baase access policy", () => {
 
     expect(canReadTask(workspaceEmployee, { assigneeProfileId: null, areaId: null })).toBe(false);
     expect(canExecuteTask(workspaceEmployee, { assigneeProfileId: null, areaId: null })).toBe(false);
+  });
+
+  it("lets an owner inspect every execution without impersonating another assignee", () => {
+    const owner = member({ role: "owner", personId: "person_owner", accessScope: "workspace", areaAccessIds: [] });
+
+    expect(canReadTask(owner, { assigneeProfileId: "person_ana", areaId: "area_ops" })).toBe(true);
+    expect(canExecuteTask(owner, { assigneeProfileId: "person_ana", areaId: "area_ops" })).toBe(false);
+    expect(canExecuteTask(owner, { assigneeProfileId: "person_owner", areaId: "area_ops" })).toBe(true);
   });
 
   it("keeps Hub seat administration exclusive to workspace owners", () => {

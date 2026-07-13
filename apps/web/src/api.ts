@@ -603,6 +603,7 @@ export type ApiDashboard = {
   role: BaaseApiRole;
   metrics: ApiDashboardMetricSummary;
   areaMetrics: ApiDashboardAreaMetric[];
+  peopleMetrics?: Array<{ profileId: string; name: string; total: number; completed: number; completionRate: number }>;
   attentionItems: ApiDashboardAttentionItem[];
   employeeToday?: {
     total: number;
@@ -901,7 +902,9 @@ export async function loadBaaseWorkspace(
       ? Promise.resolve<{ tasks: ApiTask[] }>({ tasks: [] })
       : optionalBootstrapValue((signal) => readJson<{ tasks: ApiTask[] }>(fetcher, "/api/approvals", { headers, signal }), { tasks: [] }),
     optionalBootstrapValue((signal) => readJson<{ trainings: ApiTraining[] }>(fetcher, "/api/trainings", { headers, signal }), { trainings: [] }),
-    optionalBootstrapValue((signal) => readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers, signal }), { invites: [] }),
+    role === "func"
+      ? Promise.resolve<{ invites: ApiInvite[] }>({ invites: [] })
+      : optionalBootstrapValue((signal) => readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers, signal }), { invites: [] }),
     role === "func"
       ? Promise.resolve<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>({ templates: [], filters: { segments: [], areas: [], kinds: [] } })
       : optionalBootstrapValue((signal) => readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers, signal }), { templates: [], filters: { segments: [], areas: [], kinds: [] } }),

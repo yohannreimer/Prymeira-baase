@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryTrainingRepository } from "./in-memory-training.repository";
 
 const managerHeaders = {
@@ -298,5 +299,68 @@ describe("training routes", () => {
       score: 100,
       passed: true
     });
+  });
+
+  it("hides drafts and trainings for another person from employees", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const otherArea = await companyRepository.createArea({ workspaceId: "workspace_a", name: "Outra área", description: null });
+    const app = buildApp({ companyRepository, trainingRepository: createInMemoryTrainingRepository() });
+    const create = async (title: string, audience: { type: "all" } | { type: "area"; area_id: string }) => app.inject({
+      method: "POST",
+      url: "/trainings",
+      headers: managerHeaders,
+      payload: {
+        title,
+        audience,
+        materials: [{ kind: "lesson", title: "Aula", body: "Conteúdo." }],
+        quiz_questions: []
+      }
+    });
+
+    const ownDraft = await create("Rascunho para todos", { type: "all" });
+    const another = await create("Treino de outra área", { type: "area", area_id: otherArea.id });
+    await app.inject({ method: "POST", url: `/trainings/${another.json().training.id}/publish`, headers: managerHeaders });
+
+    const list = await app.inject({ method: "GET", url: "/trainings", headers: employeeHeaders });
+    const attemptDraft = await app.inject({
+      method: "POST",
+      url: `/trainings/${ownDraft.json().training.id}/attempts`,
+      headers: employeeHeaders,
+      payload: { answers: [] }
+    });
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json().trainings).toEqual([]);
+    expect(attemptDraft.statusCode).toBe(404);
+    expect(attemptDraft.json().error.code).toBe("TRAINING_NOT_FOUND");
+  });
+
+  it("allows an employee to complete a published training without a quiz", async () => {
+    const app = buildApp({ trainingRepository: createInMemoryTrainingRepository() });
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/trainings",
+      headers: managerHeaders,
+      payload: {
+        title: "Leitura obrigatória",
+        audience: { type: "all" },
+        materials: [{ kind: "lesson", title: "Política", body: "Leia e confirme." }],
+        quiz_questions: []
+      }
+    });
+    const training = createResponse.json().training;
+    await app.inject({ method: "POST", url: `/trainings/${training.id}/publish`, headers: managerHeaders });
+
+    const list = await app.inject({ method: "GET", url: "/trainings", headers: employeeHeaders });
+    const attempt = await app.inject({
+      method: "POST",
+      url: `/trainings/${training.id}/attempts`,
+      headers: employeeHeaders,
+      payload: { answers: [] }
+    });
+
+    expect(list.json().trainings).toEqual([expect.objectContaining({ id: training.id })]);
+    expect(attempt.statusCode).toBe(201);
+    expect(attempt.json().attempt).toMatchObject({ score: 100, passed: true, profileId: "profile_employee" });
   });
 });

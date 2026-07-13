@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.3",
+    "@clerk/localizations": "^3.21.4",
     "@prymeira/baase-shared": "workspace:*",
     "@vitejs/plugin-react": "^5.1.2",
     "lucide-react": "^0.562.0",

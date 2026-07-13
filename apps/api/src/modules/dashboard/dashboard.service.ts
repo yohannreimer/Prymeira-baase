@@ -71,9 +71,20 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const todayCompleted = todayTasks.filter(isExecutedTask).length;
       const lateTasks = visibleTasks.filter((task) => isLateTask(task, input.date));
       const awaitingApproval = visibleTasks.filter((task) => task.status === "awaiting_approval");
+      const visiblePeople = people.filter((person) => {
+        if (input.membership.role === "owner") return true;
+        if (person.id === input.membership.personId) return true;
+        return person.areaId !== null && canReadAreaResource(input.membership, person.areaId);
+      });
       const pendingTrainingAssignments = countPendingTrainingAssignments({
-        assignments,
-        people,
+        assignments: assignments.filter((assignment) => {
+          const audience = assignment.audience;
+          if (audience.type === "all") return true;
+          if (audience.type === "area") return canReadAreaResource(input.membership, audience.areaId);
+          if (audience.type === "person") return visiblePeople.some((person) => person.id === audience.profileId);
+          return visiblePeople.some((person) => person.roleTemplateId === audience.roleTemplateId);
+        }),
+        people: visiblePeople,
         publishedTrainingIds: new Set(trainings.filter((training) => training.status === "published").map((training) => training.id)),
         passingAttemptKeys: new Set(attempts.filter((attempt) => attempt.passed).map((attempt) => `${attempt.trainingId}:${attempt.profileId}`))
       });
@@ -81,6 +92,11 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const employeeTasks = todayTasks.filter((task) => task.assigneeProfileId === input.profileId || !task.assigneeProfileId);
       const employeeCompleted = employeeTasks.filter(isExecutedTask).length;
       const areaMetrics = buildAreaMetrics(todayTasks, routineById, new Map(areas.map((area) => [area.id, area.name])), input.date);
+      const peopleMetrics = visiblePeople.map((person) => {
+        const personTasks = todayTasks.filter((task) => task.assigneeProfileId === person.id);
+        const completed = personTasks.filter(isExecutedTask).length;
+        return { profileId: person.id, name: person.name, total: personTasks.length, completed, completionRate: percentage(completed, personTasks.length) };
+      });
       const metrics = {
         todayTotal: todayTasks.length,
         todayCompleted,
@@ -96,6 +112,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
         role: input.role,
         metrics,
         areaMetrics,
+        peopleMetrics,
         attentionItems: buildAttentionItems({
           lateTasks,
           awaitingApproval,
@@ -134,7 +151,7 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       const trendTasks = [...new Map([...periodTasks, ...completedTasksInPeriod, ...decisionsInPeriod].map((task) => [task.id, task])).values()];
       const today = operationalToday(now());
       const lateTasks = periodTasks
-        .filter((task) => task.dueDate < today && task.status !== "completed")
+        .filter((task) => isLateTask(task, today))
         .map((task) => operationalTaskItem(task, peopleById, routineById, areaNames, today));
       const openTasks = periodTasks
         .filter(isOpenTask)
@@ -242,7 +259,7 @@ function operationalTaskItem(
     dueDate: task.dueDate,
     submittedAt: task.submittedAt,
     reviewedAt: task.reviewedAt,
-    ...(task.dueDate < today && task.status !== "completed" ? { daysLate: daysBetween(task.dueDate, today) } : {})
+    ...(isLateTask(task, today) ? { daysLate: daysBetween(task.dueDate, today) } : {})
   };
 }
 
@@ -401,7 +418,7 @@ function countPendingTrainingAssignments(input: {
 
 function profileIdsForAudience(assignment: TrainingAssignment, people: TeamMember[]) {
   const audience = assignment.audience;
-  if (audience.type === "person") return [audience.profileId];
+  if (audience.type === "person") return people.some((person) => person.id === audience.profileId) ? [audience.profileId] : [];
   if (audience.type === "all") return people.map((person) => person.id);
   if (audience.type === "area") {
     return people.filter((person) => person.areaId === audience.areaId).map((person) => person.id);

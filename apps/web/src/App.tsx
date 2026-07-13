@@ -151,7 +151,7 @@ type TodayTaskRow = {
   routineTitle?: string | null;
   label: string;
   meta: string;
-  prio: string;
+  prio?: string;
   evid: boolean;
   done: boolean;
   status?: string;
@@ -179,6 +179,16 @@ type TrainingFormInput = {
   audience: ApiTrainingAudience | null;
   dueDate: string | null;
   materials: ApiTrainingMaterial[];
+  quizQuestions: ApiQuizQuestionInput[];
+  publish: boolean;
+};
+
+type AnnouncementFormInput = {
+  title: string;
+  body: string;
+  type: ApiAnnouncement["type"];
+  requirement: ApiAnnouncement["requirement"];
+  audience: NonNullable<ApiAnnouncement["audience"]>;
   quizQuestions: ApiQuizQuestionInput[];
   publish: boolean;
 };
@@ -396,18 +406,65 @@ const baaseTemplates: BaaseTemplate[] = [
   }
 ];
 
-const operationalDate = "2026-07-07";
+function currentOperationalDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function operationalDayLabel(date: string) {
+  const formatted = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "America/Sao_Paulo"
+  }).format(new Date(`${date}T12:00:00-03:00`));
+  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+}
 
 type OperationalPeriodPreset = "7d" | "30d" | "month" | "custom";
 type OperationalPeriod = { from: string; to: string };
 
-function periodForPreset(preset: Exclude<OperationalPeriodPreset, "custom">, to = operationalDate): OperationalPeriod {
+function periodForPreset(preset: Exclude<OperationalPeriodPreset, "custom">, to = currentOperationalDate()): OperationalPeriod {
   const end = new Date(`${to}T12:00:00Z`);
   if (preset === "month") {
     return { from: `${to.slice(0, 8)}01`, to };
   }
   end.setUTCDate(end.getUTCDate() - (preset === "7d" ? 6 : 29));
   return { from: end.toISOString().slice(0, 10), to };
+}
+
+function initialOperationalNavigation() {
+  const fallback = periodForPreset("7d");
+  if (typeof window === "undefined") return { period: fallback, preset: "7d" as OperationalPeriodPreset, personId: null as string | null };
+  const params = new URLSearchParams(window.location.search);
+  const from = params.get("from");
+  const to = params.get("to");
+  const isDate = (value: string | null): value is string => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+  const hasValidPeriod = isDate(from) && isDate(to) && from <= to;
+  return {
+    period: hasValidPeriod ? { from, to } : fallback,
+    preset: hasValidPeriod ? "custom" as const : "7d" as const,
+    personId: params.get("person")
+  };
+}
+
+function updateOperationalUrl(input: { screen?: Screen; period?: OperationalPeriod; personId?: string | null }) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (input.period) {
+    url.searchParams.set("from", input.period.from);
+    url.searchParams.set("to", input.period.to);
+  }
+  if (input.personId) url.searchParams.set("person", input.personId);
+  else if (input.personId === null) url.searchParams.delete("person");
+  if (input.screen) url.hash = input.screen;
+  window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function isOperationalOverview(value: unknown): value is ApiOperationalOverview {
@@ -1554,6 +1611,8 @@ function EmptyState({ icon = "ph-tray", title, text }: { icon?: string; title: s
 }
 
 export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
+  const operationalDate = useMemo(() => currentOperationalDate(), []);
+  const initialOperationalState = useMemo(() => initialOperationalNavigation(), []);
   const accountMode = readBaaseAuthConfig(import.meta.env).mode === "account";
   const [role, setRoleState] = useState<Role>(initialRole);
   const [screen, setScreen] = useState<Screen>(homeFor(initialRole));
@@ -1562,11 +1621,11 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const [checks, setChecks] = useState<Record<string, boolean>>({ c1: true, c2: true, c3: false, c4: false, c5: false });
   const [apiBundle, setApiBundle] = useState<BaaseWorkspaceBundle | null>(null);
   const [apiStatus, setApiStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [operationalPeriodPreset, setOperationalPeriodPreset] = useState<OperationalPeriodPreset>("7d");
-  const [operationalPeriod, setOperationalPeriod] = useState<OperationalPeriod>(() => periodForPreset("7d"));
+  const [operationalPeriodPreset, setOperationalPeriodPreset] = useState<OperationalPeriodPreset>(initialOperationalState.preset);
+  const [operationalPeriod, setOperationalPeriod] = useState<OperationalPeriod>(initialOperationalState.period);
   const [operationalOverview, setOperationalOverview] = useState<ApiOperationalOverview | null>(null);
   const [operationalOverviewStatus, setOperationalOverviewStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [operationalPersonId, setOperationalPersonId] = useState<string | null>(null);
+  const [operationalPersonId, setOperationalPersonId] = useState<string | null>(initialOperationalState.personId);
   const [personOperationalOverview, setPersonOperationalOverview] = useState<ApiOperationalOverview | null>(null);
   const [personOperationalOverviewStatus, setPersonOperationalOverviewStatus] = useState<"idle" | "loading" | "error">("idle");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
@@ -1677,8 +1736,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
 
   const liveWorkspaceMode = apiEnabled;
   const identity = identityFromSession(role, apiBundle?.session ?? null, liveWorkspaceMode);
-  const workspaceName = apiBundle?.session.workspace.name?.trim()
-    || onboardingSession?.companyName?.trim()
+  const workspaceName = onboardingSession?.companyName?.trim()
+    || apiBundle?.session.workspace.name?.trim()
     || (liveWorkspaceMode ? "Sua empresa" : "Estúdio Norte");
   const workspaceSubtitle = onboardingSession?.normalizedSegment ?? onboardingSession?.customSegment ?? onboardingSession?.segment ?? "Base operacional";
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
@@ -1711,6 +1770,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     return visibleAnnouncements.filter((announcement) => announcement.receipt?.status === "pending");
   }, [visibleAnnouncements]);
   const canManageOperationalTasks = role !== "func";
+  const canManageWorkspace = role === "dono" || (role === "gestor" && apiBundle?.session.profile.access_scope === "workspace");
+  const canAdministerCompany = role === "dono";
   const nav = useMemo(() => {
     if (!liveWorkspaceMode) return baseNav;
 
@@ -1824,10 +1885,30 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }
 
   function go(nextScreen: Screen) {
-    if (nextScreen === "pessoa-operacional" && role === "func") return;
+    const isRoleNavigation = navByRole[role].some((item) => item.key === nextScreen);
+    const isOperationalPerson = nextScreen === "pessoa-operacional" && role !== "func";
+    const isOwnerWorkflow = role === "dono" && (nextScreen === "onboarding" || nextScreen === "revisao");
+    if (!isRoleNavigation && !isOperationalPerson && !isOwnerWorkflow) {
+      showNotice("Esta área não está disponível para o seu perfil.");
+      return;
+    }
     setScreen(nextScreen);
+    updateOperationalUrl({ screen: nextScreen, personId: nextScreen === "pessoa-operacional" ? operationalPersonId : null });
     setMenuOpen(false);
   }
+
+  useEffect(() => {
+    function restoreScreenFromUrl() {
+      const candidate = window.location.hash.slice(1) as Screen;
+      if (!candidate) return;
+      const allowed = navByRole[role].some((item) => item.key === candidate)
+        || (candidate === "pessoa-operacional" && role !== "func");
+      if (allowed) setScreen(candidate);
+    }
+    restoreScreenFromUrl();
+    window.addEventListener("popstate", restoreScreenFromUrl);
+    return () => window.removeEventListener("popstate", restoreScreenFromUrl);
+  }, [role]);
 
   function readOverviewForPeriod(nextPeriod: OperationalPeriod) {
     if (!apiEnabled || role === "func") return;
@@ -1857,6 +1938,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     const nextPeriod = periodForPreset(preset, operationalPeriod.to);
     setOperationalPeriodPreset(preset);
     setOperationalPeriod(nextPeriod);
+    updateOperationalUrl({ period: nextPeriod });
     readOverviewForPeriod(nextPeriod);
     if (operationalPersonId) readPersonOverviewForPeriod(operationalPersonId, nextPeriod);
   }
@@ -1865,6 +1947,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     if (!nextPeriod.from || !nextPeriod.to || nextPeriod.from > nextPeriod.to) return;
     setOperationalPeriodPreset("custom");
     setOperationalPeriod(nextPeriod);
+    updateOperationalUrl({ period: nextPeriod });
     readOverviewForPeriod(nextPeriod);
     if (operationalPersonId) readPersonOverviewForPeriod(operationalPersonId, nextPeriod);
   }
@@ -1873,7 +1956,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     if (role === "func") return;
     setOperationalPersonId(profileId);
     setPersonOperationalOverview(null);
-    go("pessoa-operacional");
+    setScreen("pessoa-operacional");
+    updateOperationalUrl({ screen: "pessoa-operacional", period: operationalPeriod, personId: profileId });
+    setMenuOpen(false);
     readPersonOverviewForPeriod(profileId, operationalPeriod);
   }
 
@@ -1899,7 +1984,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     const loadedTasks = apiBundle?.tasks;
     if (loadedTasks?.length) {
       const taskAreaNames = areaNameMap(companyAreas);
-      return loadedTasks.map((task, index): TodayTaskRow => {
+      return loadedTasks.map((task): TodayTaskRow => {
         const areaName = task.areaId
           ? areaLabel(task.areaId, taskAreaNames, task.areaNameSnapshot)
           : null;
@@ -1915,7 +2000,6 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           routineTitle: task.routineTitleSnapshot ?? apiBundle?.routines.find((routine) => routine.id === task.routineId)?.title ?? null,
           label: task.title,
           meta,
-          prio: index === 0 ? "Alta" : "Média",
           evid: taskNeedsEvidence(task),
           done: submittedApiTasks[task.id] ?? isTaskDone(task),
           status: task.status,
@@ -2126,7 +2210,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       setApiStatus("ready");
     } catch (error) {
       if (!apiBundle) setApiStatus("error");
-      onError?.(error);
+      if (onError) onError(error);
+      else setNotice(error instanceof Error && error.message ? error.message : "Não foi possível concluir esta ação. Tente novamente.");
     } finally {
       setActionBusy(false);
     }
@@ -2912,14 +2997,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     });
   }
 
-  function handleSaveAnnouncement(input: {
-    title: string;
-    body: string;
-    type: ApiAnnouncement["type"];
-    requirement: ApiAnnouncement["requirement"];
-    audience: NonNullable<ApiAnnouncement["audience"]>;
-    publish: boolean;
-  }) {
+  function handleSaveAnnouncement(input: AnnouncementFormInput) {
     void runAction(async () => {
       const draft = await createAnnouncementDraft(role, {
         title: input.title,
@@ -2930,26 +3008,16 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         areaId: input.audience.type === "area" ? input.audience.areaId : null,
         roleTemplateId: input.audience.type === "role" ? input.audience.roleTemplateId : null,
         profileId: input.audience.type === "person" ? input.audience.profileId : null,
-        quizQuestions: input.requirement === "quiz_confirmation"
-          ? [{
-            prompt: "Qual é o comportamento esperado?",
-            options: [
-              { id: "a", label: "Seguir o comunicado no Baase" },
-              { id: "b", label: "Ignorar e continuar como antes" }
-            ],
-            correctOptionId: "a"
-          }]
-          : []
+        quizQuestions: input.requirement === "quiz_confirmation" ? input.quizQuestions : []
       });
       appendOperationalContent({ announcement: input.publish ? await publishAnnouncement(role, draft.id) : draft });
       setCrudModal(null);
     });
   }
 
-  function handleConfirmAnnouncement(announcement: ApiAnnouncement) {
+  function handleConfirmAnnouncement(announcement: ApiAnnouncement, answers: Array<{ questionId: string; optionId: string }> = []) {
     void runAction(async () => {
-      const question = announcement.quizQuestions?.[0];
-      const receipt = await confirmAnnouncement(role, announcement.id, question ? [{ questionId: question.id ?? "", optionId: question.correctOptionId }] : []);
+      const receipt = await confirmAnnouncement(role, announcement.id, answers);
       const updatedAnnouncement = {
         ...announcement,
         receipt
@@ -3300,6 +3368,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     <div className="app">
       <div className={`menu-overlay ${menuOpen ? "show" : ""}`} onClick={() => setMenuOpen(false)} />
       <Sidebar nav={nav} screen={screen} go={go} menuOpen={menuOpen} workspaceName={workspaceName} workspaceSubtitle={workspaceSubtitle} />
+      {role === "func" ? <EmployeeBottomNav nav={nav} screen={screen} go={go} /> : null}
       <div className="app-body">
         <header className="topbar">
           <button className="menu-btn icon-btn" type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Abrir menu">
@@ -3332,8 +3401,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
             </div>
           </div>
         </header>
-        {notice ? <div className="app-notice" role="status"><Icon name="ph-check-circle" />{notice}</div> : null}
-        {topPanel === "search" ? <SearchPanel go={go} onClose={() => setTopPanel(null)} /> : null}
+        {notice ? <div className="app-notice" role="status"><Icon name="ph-info" />{notice}</div> : null}
+        {topPanel === "search" ? <SearchPanel go={go} nav={nav} onClose={() => setTopPanel(null)} /> : null}
         {topPanel === "notifications" ? <NotificationsPanel go={go} onClose={() => setTopPanel(null)} notifications={notificationItems} /> : null}
         <main className="app-main">
           <span className="sr-only" aria-live="polite">API Baase: {apiStatus}</span>
@@ -3412,6 +3481,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "hoje" && (
             <TodayPage
+              operationalDate={operationalDate}
               identity={identity}
               taskRows={taskRows}
               trainingAssignments={pendingTrainingAssignments}
@@ -3427,6 +3497,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "mapa" && (
             <CompanyMap
+              canCreateArea={canAdministerCompany}
+              canArchiveArea={canAdministerCompany}
               areaRows={visibleAreas}
               workspaceName={workspaceName}
               workspaceSubtitle={workspaceSubtitle}
@@ -3454,11 +3526,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               deleteInvite={handleDeleteInvite}
               people={companyPeople}
               areas={companyAreas}
+              canEditPerson={(person) => canAdministerCompany || (role === "gestor" && person.role === "employee" && person.id !== apiBundle?.session.profile.id)}
               editPerson={(person) => setCrudModal({ kind: "person", mode: "edit", person })}
             />
           )}
           {screen === "processos" && (
             <ProcessesPage
+              canManage={canManageOperationalTasks}
+              canManageWorkspace={canManageWorkspace}
               go={go}
               processes={visibleProcesses}
               areas={companyAreas}
@@ -3474,6 +3549,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "rotinas" && (
             <RoutinesPage
+              canManage={canManageOperationalTasks}
+              canManageWorkspace={canManageWorkspace}
               go={go}
               showNotice={showNotice}
               routines={visibleRoutines}
@@ -3494,6 +3571,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "treinamentos" && (
             <TrainingPage
+              canManage={canManageOperationalTasks}
+              canManageWorkspace={canManageWorkspace}
               trainings={visibleTrainings}
               isLiveWorkspace={liveWorkspaceMode}
               createTraining={() => setCrudModal({ kind: "training", mode: "create" })}
@@ -3510,6 +3589,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "comunicados" && (
             <AnnouncementsPage
+              canManage={canManageOperationalTasks}
+              canManageWorkspace={canManageWorkspace}
               announcements={visibleAnnouncements}
               isLiveWorkspace={liveWorkspaceMode}
               areas={companyAreas}
@@ -3589,6 +3670,8 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         {crudModal ? (
           <CrudModalView
             modal={crudModal}
+            canAssignManagementRoles={canAdministerCompany}
+            canManageWorkspace={canManageWorkspace}
             actionBusy={actionBusy}
             onClose={() => setCrudModal(null)}
             onSaveArea={handleSaveArea}
@@ -3699,13 +3782,10 @@ function Sidebar({
   );
 }
 
-function SearchPanel({ go, onClose }: { go: (screen: Screen) => void; onClose: () => void }) {
-  const results: Array<{ label: string; screen: Screen; meta: string; icon: string }> = [
-    { label: "Processos / SOPs", screen: "processos", meta: "Manual vivo da empresa", icon: "ph-file-text" },
-    { label: "Rotinas", screen: "rotinas", meta: "Checklists e execução recorrente", icon: "ph-arrows-clockwise" },
-    { label: "Equipe", screen: "equipe", meta: "Pessoas, cargos e convites", icon: "ph-users-three" },
-    { label: "Criar com IA", screen: "criar", meta: "Gerar processo, rotina ou treinamento", icon: "ph-sparkle" }
-  ];
+function SearchPanel({ go, nav, onClose }: { go: (screen: Screen) => void; nav: NavItem[]; onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase("pt-BR");
+  const results = nav.filter((item) => !normalizedQuery || item.label.toLocaleLowerCase("pt-BR").includes(normalizedQuery));
 
   function openResult(screen: Screen) {
     go(screen);
@@ -3715,17 +3795,27 @@ function SearchPanel({ go, onClose }: { go: (screen: Screen) => void; onClose: (
   return (
     <div className="floating-panel search-pop" role="dialog" aria-label="Buscar no Baase">
       <header><strong>Buscar no Baase</strong><button className="icon-btn" type="button" aria-label="Fechar busca" onClick={onClose}><Icon name="ph-x" /></button></header>
-      <label className="search-input"><Icon name="ph-magnifying-glass" /><input aria-label="Termo de busca" placeholder="Processos, rotinas, pessoas..." /></label>
+      <label className="search-input"><Icon name="ph-magnifying-glass" /><input aria-label="Termo de busca" onChange={(event) => setQuery(event.target.value)} placeholder="Buscar uma área do Baase..." value={query} /></label>
       <div className="quick-results">
         {results.map((result) => (
-          <button type="button" key={result.screen} onClick={() => openResult(result.screen)}>
+          <button type="button" key={result.key} onClick={() => openResult(result.key)}>
             <span><Icon name={result.icon} /></span>
-            <div><strong>Ir para {result.label}</strong><small>{result.meta}</small></div>
+            <div><strong>Ir para {result.label}</strong><small>Disponível no seu perfil</small></div>
           </button>
         ))}
+        {!results.length ? <div className="search-empty">Nenhuma área encontrada.</div> : null}
       </div>
     </div>
   );
+}
+
+function EmployeeBottomNav({ nav, screen, go }: { nav: NavItem[]; screen: Screen; go: (screen: Screen) => void }) {
+  return <nav className="employee-bottom-nav" aria-label="Navegação rápida">
+    {nav.map((item) => <button className={screen === item.key ? "active" : ""} key={item.key} onClick={() => go(item.key)} type="button">
+      <Icon name={item.icon} />
+      <span>{item.key === "processos" ? "Como fazer" : item.label}</span>
+    </button>)}
+  </nav>;
 }
 
 function NotificationsPanel({ go, onClose, notifications }: { go: (screen: Screen) => void; onClose: () => void; notifications: NotificationItem[] }) {
@@ -4085,7 +4175,7 @@ function OwnerDashboard({
   const suggestions = proactiveSuggestions.length ? proactiveSuggestions : isLiveWorkspace ? [] : fallbackSuggestions;
   const areaNameById = new Map(areas.map((area) => [area.id, area.name]));
   const criticalRoutines = isLiveWorkspace
-    ? routines.slice(0, 3).map((routine) => [
+    ? routines.filter((routine) => routine.status === "active").slice(0, 3).map((routine) => [
       routine.title,
       routine.areaId ? areaNameById.get(routine.areaId) ?? "Área definida" : "Empresa inteira",
       statusLabel(routine.status),
@@ -4142,14 +4232,14 @@ function OwnerDashboard({
             )) : <EmptyState icon="ph-chart-line-up" title="Sem áreas com execução hoje" text="Quando tarefas forem geradas para as rotinas, o progresso por área aparece aqui." />}
           </section>
           <section className="panel padded">
-            <PanelHeader title="Rotinas críticas" link="Ver todas" onLinkClick={() => go("rotinas")} />
+            <PanelHeader title="Rotinas ativas" link="Ver todas" onLinkClick={() => go("rotinas")} />
             {criticalRoutines.length ? criticalRoutines.map(([name, owner, status, color]) => (
               <div className="critical-row" key={name}>
                 <span style={{ background: color }} />
                 <div><strong>{name}</strong><small>{owner}</small></div>
                 <b style={{ color }}>{status}</b>
               </div>
-            )) : <EmptyState icon="ph-arrows-clockwise" title="Nenhuma rotina crítica" text="Crie ou ative uma rotina para começar a acompanhar a operação." />}
+            )) : <EmptyState icon="ph-arrows-clockwise" title="Nenhuma rotina ativa" text="Crie ou ative uma rotina para começar a acompanhar a operação." />}
           </section>
         </div>
       </div>
@@ -4188,7 +4278,7 @@ function ManagerDashboard({
     ["Tarefas da área hoje", String(effectiveMetrics.todayTotal), `${effectiveMetrics.todayCompleted} concluídas`, "ph-list-checks"],
     ["Atrasos da equipe", String(effectiveMetrics.lateTasks), effectiveMetrics.lateTasks === 1 ? "1 tarefa" : `${effectiveMetrics.lateTasks} tarefas`, "ph-clock-countdown"],
     ["Aprovações pendentes", String(effectiveMetrics.awaitingApproval), "aguardando você", "ph-seal-check"],
-    ["Treinos pendentes", String(effectiveMetrics.pendingTrainingAssignments), `${effectiveMetrics.incompleteProcesses} processo(s) incompleto(s)`, "ph-graduation-cap"]
+    ["Treinos pendentes", String(effectiveMetrics.pendingTrainingAssignments), "atribuições ainda não concluídas", "ph-graduation-cap"]
   ] as const : [
     ["Tarefas da área hoje", "18", "11 concluídas", "ph-list-checks"],
     ["Atrasos da equipe", "2", "Bruno e Carla", "ph-clock-countdown"],
@@ -4227,13 +4317,15 @@ function ManagerDashboard({
         <section className="panel flush">
           <PanelHeader title="Sua equipe hoje" />
           {isLiveWorkspace ? (
-            peopleRows.length ? peopleRows.map((person) => (
+            peopleRows.length ? peopleRows.map((person) => {
+              const metric = dashboard?.peopleMetrics?.find((item) => item.profileId === person.id);
+              return (
               <div className="person-row" key={person.id ?? person.n}>
                 <span className="avatar muted">{person.ini}</span>
                 <div><strong>{person.n}</strong><small>{person.r}</small></div>
-                <div className="row-right"><b>0%</b><small>0/0 tarefas</small></div>
+                <div className="row-right"><b>{metric?.completionRate ?? 0}%</b><small>{metric?.completed ?? 0}/{metric?.total ?? 0} tarefas</small></div>
               </div>
-            )) : <EmptyState icon="ph-users-three" title="Nenhuma pessoa nesta visão" text="Convide ou cadastre funcionários para acompanhar a execução da área." />
+            );}) : <EmptyState icon="ph-users-three" title="Nenhuma pessoa nesta visão" text="Convide ou cadastre funcionários para acompanhar a execução da área." />
           ) : demoTeamRows.map((person) => (
             <div className="person-row" key={person[1]}>
               <span className="avatar muted">{person[0]}</span>
@@ -4265,9 +4357,9 @@ function ManagerDashboard({
               );
             }) : <EmptyState icon="ph-seal-check" title="Nada para aprovar" text="As evidências enviadas pela equipe aparecem aqui." />}
           </section>
-          <section className="panel flush">
+          {!isLiveWorkspace ? <section className="panel flush">
             <PanelHeader title="Dúvidas da área" />
-            {isLiveWorkspace ? <EmptyState icon="ph-chat-circle-dots" title="Sem dúvidas registradas" text="Quando um processo gerar perguntas, elas entram neste painel." /> : [
+            {[
               "A etapa 3 vale para clientes com aprovação por WhatsApp?",
               "Preciso registrar evidência mesmo em ajuste pequeno?"
             ].map((q, index) => (
@@ -4276,7 +4368,7 @@ function ManagerDashboard({
                 <small>{index === 0 ? "Carla Dias" : "Bruno Costa"} · {index === 0 ? "Processo · Aprovação de peças" : "Rotina · Abertura do dia"}</small>
               </div>
             ))}
-          </section>
+          </section> : null}
         </div>
       </div>
     </div>
@@ -4295,12 +4387,13 @@ function TodayTaskButton({ task, toggleTask, nested = false }: { task: TodayTask
       {task.evid ? <Pill><Icon name="ph-camera" /> evidência</Pill> : null}
       {task.status === "awaiting_approval" ? <Pill tone="warn">Enviado para aprovação</Pill> : null}
       {task.status === "needs_adjustment" ? <Pill tone="danger">Devolvido</Pill> : null}
-      <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill>
+      {task.prio ? <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill> : null}
     </button>
   );
 }
 
 function TodayPage({
+  operationalDate,
   identity,
   taskRows,
   trainingAssignments,
@@ -4313,6 +4406,7 @@ function TodayPage({
   onChecklistChange,
   go
 }: {
+  operationalDate: string;
   identity: Identity;
   taskRows: TodayTaskRow[];
   trainingAssignments: ApiTrainingAssignment[];
@@ -4396,7 +4490,7 @@ function TodayPage({
             <span className="today-routine-caret"><Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} /></span>
             <span className="today-routine-copy"><strong className={task.done ? "done-text" : ""}>{task.label}</strong><small>{task.meta}</small></span>
             <span className="today-routine-progress">{checklistDone}/{checklistTotal} concluídos</span>
-            {kind === "manual" ? <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill> : null}
+            {kind === "manual" && task.prio ? <Pill tone={task.prio === "Alta" ? "danger" : task.prio === "Média" ? "warn" : "neutral"}>{task.prio}</Pill> : null}
           </button>
           {kind === "manual" && canCreateTask ? (
             <button
@@ -4438,7 +4532,7 @@ function TodayPage({
         <div className="page-head compact">
           <div>
             <h1 className="serif">Seu dia, {firstName(identity.name)}.</h1>
-            <p>Terça, 7 de julho · foque no que é seu. O resto o Baase organiza.</p>
+            <p>{operationalDayLabel(operationalDate)} · foque no que é seu. O resto o Baase organiza.</p>
           </div>
         </div>
         <section className="panel padded progress-card">
@@ -4539,6 +4633,8 @@ function AreaArchiveDialog({
 }
 
 function CompanyMap({
+  canCreateArea,
+  canArchiveArea,
   areaRows,
   workspaceName,
   workspaceSubtitle,
@@ -4549,6 +4645,8 @@ function CompanyMap({
   deleteArea,
   deleteRoleTemplate
 }: {
+  canCreateArea: boolean;
+  canArchiveArea: boolean;
   areaRows: AreaDisplayRow[];
   workspaceName: string;
   workspaceSubtitle: string;
@@ -4567,7 +4665,7 @@ function CompanyMap({
       <div className="page-head">
         <div><h1 className="serif">Mapa da Empresa</h1><p>Áreas, cargos e pessoas criados para a operação. As rotinas se atribuem a qualquer nível.</p></div>
         <div className="button-row">
-          <button className="secondary-btn" type="button" onClick={openAreaForm}><Icon name="ph-plus" />Nova área</button>
+          {canCreateArea ? <button className="secondary-btn" type="button" onClick={openAreaForm}><Icon name="ph-plus" />Nova área</button> : null}
           <button className="secondary-btn" type="button" onClick={openRoleForm}><Icon name="ph-identification-card" />Novo cargo</button>
           <button className="accent-btn" type="button" onClick={openPersonForm}><Icon name="ph-user-plus" />Nova pessoa</button>
         </div>
@@ -4627,7 +4725,7 @@ function CompanyMap({
             {selectedArea.id ? (
               <>
                 <button className="secondary-btn" type="button" onClick={() => editArea(selectedArea)}><Icon name="ph-pencil-simple" />Renomear área</button>
-                <button className="secondary-btn danger-btn" type="button" onClick={() => deleteArea(selectedArea)}><Icon name="ph-trash" />Excluir área</button>
+                {canArchiveArea ? <button className="secondary-btn danger-btn" type="button" onClick={() => deleteArea(selectedArea)}><Icon name="ph-trash" />Excluir área</button> : null}
               </>
             ) : null}
             <button className="secondary-btn" type="button" onClick={openRoleForm}><Icon name="ph-identification-card" />Adicionar cargo</button>
@@ -4683,6 +4781,7 @@ function TeamPage({
   deleteInvite,
   people,
   areas,
+  canEditPerson,
   editPerson
 }: {
   openInvite: () => void;
@@ -4692,6 +4791,7 @@ function TeamPage({
   deleteInvite: (invite: ApiInvite) => void;
   people: ApiPerson[];
   areas: ApiArea[];
+  canEditPerson: (person: ApiPerson) => boolean;
   editPerson: (person: ApiPerson) => void;
 }) {
   const pendingInvites = invites.filter((invite) => invite.status === "pending");
@@ -4719,13 +4819,14 @@ function TeamPage({
         <div className="team-head"><span>Pessoa</span><span>Área / cargo</span><span>Papel</span><span /></div>
         {peopleRows.length ? peopleRows.map((person) => {
           const apiPerson = person.id ? people.find((item) => item.id === person.id) : null;
+          const editable = Boolean(apiPerson && canEditPerson(apiPerson));
 
           return (
-            <button className="team-row" type="button" key={person.id ?? person.n} aria-label={apiPerson ? `Editar ${person.n}` : person.n} disabled={!apiPerson} onClick={() => apiPerson && editPerson(apiPerson)}>
+            <button className="team-row" type="button" key={person.id ?? person.n} aria-label={editable ? `Editar ${person.n}` : person.n} disabled={!editable} onClick={() => editable && apiPerson && editPerson(apiPerson)}>
               <div><span className="avatar">{person.ini}</span><div><strong>{person.n}</strong><small>{person.r}</small></div></div>
               <span>{person.area}</span>
               <Pill tone={person.role === "gestor" ? "info" : person.role === "dono" ? "neutral" : "neutral"}>{person.role === "dono" ? "Dono" : person.role === "gestor" ? "Gestor" : "Funcionário"}</Pill>
-              <Icon name="ph-pencil-simple" />
+              {editable ? <Icon name="ph-pencil-simple" /> : <span />}
             </button>
           );
         }) : <EmptyState icon="ph-users-three" title="Equipe ainda vazia" text="Convide funcionários ou cadastre pessoas para montar a operação real." />}
@@ -4735,6 +4836,8 @@ function TeamPage({
 }
 
 function ProcessesPage({
+  canManage,
+  canManageWorkspace,
   go,
   processes,
   areas,
@@ -4747,6 +4850,8 @@ function ProcessesPage({
   communicateProcess,
   actionBusy
 }: {
+  canManage: boolean;
+  canManageWorkspace: boolean;
   go: (screen: Screen) => void;
   processes: ApiProcess[];
   areas: ApiArea[];
@@ -4803,6 +4908,7 @@ function ProcessesPage({
   const selectedVersion = versions.find((version) => version.version === selectedVersionNumber) ?? versions[0] ?? null;
   const selectedVersionLabel = selectedVersion?.version ?? selectedProcess?.currentVersion?.version ?? 1;
   const selectedVersionBody = selectedVersion?.body ?? selectedProcess?.currentVersion?.body;
+  const canManageSelectedProcess = canManage && Boolean(selectedProcess && (selectedProcess.areaId || canManageWorkspace));
   const parsedProcessBody = parseProcessBody(selectedVersionBody);
   const areaNames = areaNameMap(areas);
   const items = records.map((process, index) => [
@@ -4819,7 +4925,7 @@ function ProcessesPage({
 
   return (
     <div className="screen split-page">
-      <SideList title="Processos" icon="ph-plus" items={items} onCreate={createProcess} onSelect={setSelectedIndex} />
+      <SideList title="Processos" icon={canManage ? "ph-plus" : undefined} items={items} onCreate={canManage ? createProcess : undefined} onSelect={setSelectedIndex} />
       <section className="panel detail-panel">
         {selectedProcess ? (
           <>
@@ -4833,7 +4939,9 @@ function ProcessesPage({
                 <p>{selectedProcess.summary ?? parsedProcessBody.objective ?? "Processo criado para revisão. Edite as etapas antes de publicar para a equipe."}</p>
               </div>
               <div className="button-row process-actions">
+                {canManageSelectedProcess ? <>
                 <button className="secondary-btn" type="button" onClick={() => selectedApiProcess && editProcess(selectedApiProcess)} disabled={!selectedApiProcess}><Icon name="ph-pencil-simple" />Editar</button>
+                </> : null}
                 <button className="secondary-btn" type="button" onClick={() => downloadProcessPdf({
                   title: cleanProcessTitle(selectedProcess.title),
                   summary: selectedProcess.summary ?? parsedProcessBody.objective ?? "SOP operacional",
@@ -4842,13 +4950,15 @@ function ProcessesPage({
                   version: `v${selectedVersionLabel}`,
                   parsed: parsedProcessBody
                 })}><Icon name="ph-download-simple" />Baixar PDF</button>
-                {selectedProcess.status === "published" ? (
+                {canManageSelectedProcess && (selectedProcess.status === "published" ? (
                   <button className="secondary-btn" type="button" disabled={actionBusy || !selectedApiProcess} onClick={() => selectedApiProcess && unpublishProcess(selectedApiProcess)}><Icon name="ph-eye-slash" />Despublicar</button>
                 ) : (
                   <button className="accent-btn" type="button" disabled={actionBusy || !selectedApiProcess} onClick={() => selectedApiProcess && publishProcess(selectedApiProcess)}><Icon name="ph-check-circle" />Publicar SOP</button>
-                )}
-                <button className="secondary-btn danger-btn" type="button" disabled={actionBusy || !selectedApiProcess} onClick={() => selectedApiProcess && deleteProcess(selectedApiProcess)}><Icon name="ph-trash" />Excluir</button>
-                <button className="accent-solid" type="button" disabled={actionBusy || !selectedProcess} onClick={() => communicateProcess(selectedProcess)}><Icon name="ph-megaphone" />Comunicar mudança</button>
+                ))}
+                {canManageSelectedProcess ? <>
+                  <button className="secondary-btn danger-btn" type="button" disabled={actionBusy || !selectedApiProcess} onClick={() => selectedApiProcess && deleteProcess(selectedApiProcess)}><Icon name="ph-trash" />Excluir</button>
+                  <button className="accent-solid" type="button" disabled={actionBusy || !selectedProcess} onClick={() => communicateProcess(selectedProcess)}><Icon name="ph-megaphone" />Comunicar mudança</button>
+                </> : null}
               </div>
             </header>
             <div className="inline-meta">
@@ -4941,6 +5051,8 @@ function routineScheduleLabel(routine: ApiRoutine) {
 }
 
 function RoutinesPage({
+  canManage,
+  canManageWorkspace,
   go,
   showNotice,
   routines,
@@ -4958,6 +5070,8 @@ function RoutinesPage({
   areas,
   people
 }: {
+  canManage: boolean;
+  canManageWorkspace: boolean;
   go: (screen: Screen) => void;
   showNotice: (message: string) => void;
   routines: ApiRoutine[];
@@ -5010,6 +5124,7 @@ function RoutinesPage({
   const routinePct = routineCheckRows.length ? `${Math.round((routineDone / routineCheckRows.length) * 100)}%` : isLiveWorkspace ? "0%" : checkPct;
   const routineAreaNames = areaNameMap(areas);
   const selectedAreaName = selectedRoutine?.areaId ? areaLabel(selectedRoutine.areaId, routineAreaNames) : "Empresa inteira";
+  const canManageSelectedRoutine = canManage && Boolean(selectedRoutine && (selectedRoutine.areaId || canManageWorkspace));
   const routineAssigneeIds = selectedRoutine?.assigneeProfileIds?.length
     ? selectedRoutine.assigneeProfileIds
     : [...new Set(selectedTaskTemplates.map((task) => task.assigneeProfileId).filter((id): id is string => Boolean(id)))];
@@ -5028,7 +5143,7 @@ function RoutinesPage({
 
   return (
     <div className="screen split-page">
-      <SideList title="Rotinas" icon="ph-plus" items={items} onCreate={createRoutine} onSelect={setSelectedIndex} />
+      <SideList title="Rotinas" icon={canManage ? "ph-plus" : undefined} items={items} onCreate={canManage ? createRoutine : undefined} onSelect={setSelectedIndex} />
       <section className="panel detail-panel routine-detail">
         {selectedRoutine ? (
           <>
@@ -5039,7 +5154,7 @@ function RoutinesPage({
                 <p className="detail-meta">Responsáveis: {responsibleText}{dueText ? ` · Limite: ${dueText}` : ""}</p>
                 <div className="routine-progress"><PercentBar value={routinePct} /><strong>{routineDone}/{routineCheckRows.length}</strong></div>
               </div>
-              {selectedApiRoutine ? (
+              {selectedApiRoutine && canManageSelectedRoutine ? (
                 <div className="button-row">
                   <button className="secondary-btn" type="button" onClick={() => editRoutine(selectedApiRoutine)}><Icon name="ph-pencil-simple" />Editar</button>
                   {selectedApiRoutine.status !== "archived" ? (
@@ -5051,12 +5166,12 @@ function RoutinesPage({
             </header>
             <div className="check-list">
               {routineCheckRows.length ? routineCheckRows.map((check) => (
-                <button key={check.id} className="check-row rowh" type="button" onClick={() => setChecks((current) => ({ ...current, [check.id]: !current[check.id] }))}>
-                  <span className={`check ${check.done ? "done" : ""}`}>{check.done ? <Icon name="ph-check" bold /> : null}</span>
-                  <span className={check.done ? "done-text" : ""}>{check.label}</span>
+                <div key={check.id} className="check-row rowh">
+                  <span className="check" aria-hidden="true" />
+                  <span>{check.label}</span>
                   {check.dueHint ? <small>Limite: {check.dueHint}</small> : null}
                   {check.evidencePolicy && check.evidencePolicy !== "optional" ? <small>{evidencePolicyLabel(check.evidencePolicy)}</small> : null}
-                </button>
+                </div>
               )) : <EmptyState icon="ph-list-checks" title="Checklist ainda vazio" text="Edite a rotina para adicionar tarefas, evidência, responsável e aprovação." />}
             </div>
             <footer className="detail-footer">
@@ -5071,6 +5186,8 @@ function RoutinesPage({
 }
 
 function TrainingPage({
+  canManage,
+  canManageWorkspace,
   trainings,
   isLiveWorkspace,
   createTraining,
@@ -5084,6 +5201,8 @@ function TrainingPage({
   roleTemplates,
   people
 }: {
+  canManage: boolean;
+  canManageWorkspace: boolean;
   trainings: ApiTraining[];
   isLiveWorkspace: boolean;
   createTraining: () => void;
@@ -5109,6 +5228,7 @@ function TrainingPage({
   const safeIndex = Math.min(selectedIndex, Math.max(records.length - 1, 0));
   const selectedTraining = records[safeIndex] ?? null;
   const selectedApiTraining = selectedTraining && trainings.some((training) => training.id === selectedTraining.id) ? selectedTraining : null;
+  const canManageSelectedTraining = canManage && Boolean(selectedTraining && (selectedTraining.audience?.type !== "all" || canManageWorkspace));
   const sourceProcess = selectedTraining?.source?.type === "process" && selectedTraining.source.processId
     ? processes.find((process) => process.id === selectedTraining.source?.processId) ?? null
     : null;
@@ -5139,7 +5259,7 @@ function TrainingPage({
 
   return (
     <div className="screen split-page">
-      <SideList title="Treinamentos" icon="ph-plus" items={items} onCreate={createTraining} onSelect={setSelectedIndex} />
+      <SideList title="Treinamentos" icon={canManage ? "ph-plus" : undefined} items={items} onCreate={canManage ? createTraining : undefined} onSelect={setSelectedIndex} />
       <section className="panel detail-panel training-detail">
         {selectedTraining ? (
           <>
@@ -5152,7 +5272,7 @@ function TrainingPage({
                 <h1 className="serif">{selectedTraining.title}</h1>
                 <p>{selectedTraining.description ?? "Treinamento criado para revisão. Adicione aula, material e quiz antes de publicar."}</p>
               </div>
-              {selectedApiTraining ? (
+              {selectedApiTraining && canManageSelectedTraining ? (
                 <div className="button-row training-actions">
                   <button className="secondary-btn" type="button" onClick={() => editTraining(selectedApiTraining)}><Icon name="ph-pencil-simple" />Editar</button>
                   {selectedApiTraining.status === "published" ? (
@@ -5254,7 +5374,16 @@ function TrainingPage({
                     <span>{answeredCount}/{questions.length} respondida(s)</span>
                   </div>
                 </>
-              ) : <EmptyState icon="ph-question" title="Quiz ainda não criado" text="Edite o treinamento para adicionar perguntas de validação." />}
+              ) : canManage
+                ? <EmptyState icon="ph-question" title="Quiz ainda não criado" text="Sem quiz, a pessoa pode concluir o treinamento depois de ler o conteúdo." />
+                : <div className="training-complete-without-quiz">
+                    <p>Depois de revisar todo o conteúdo, confirme a conclusão deste treinamento.</p>
+                    <button className="accent-solid" disabled={actionBusy || quizSubmitted} type="button" onClick={() => {
+                      if (!selectedApiTraining) return;
+                      setQuizSubmitted(true);
+                      submitQuiz(selectedApiTraining, []);
+                    }}>Concluir treinamento</button>
+                  </div>}
             </section>
           </>
         ) : <EmptyState icon="ph-graduation-cap" title="Nenhum treinamento criado" text="Crie aulas curtas, PDFs e quizzes para alinhar a equipe." />}
@@ -5264,6 +5393,8 @@ function TrainingPage({
 }
 
 function AnnouncementsPage({
+  canManage,
+  canManageWorkspace,
   announcements,
   isLiveWorkspace,
   areas,
@@ -5279,6 +5410,8 @@ function AnnouncementsPage({
   selectedAnnouncementId,
   onSelectAnnouncement
 }: {
+  canManage: boolean;
+  canManageWorkspace: boolean;
   announcements: ApiAnnouncement[];
   isLiveWorkspace: boolean;
   areas: ApiArea[];
@@ -5286,7 +5419,7 @@ function AnnouncementsPage({
   people: ApiPerson[];
   currentProfile: { id: string | null; name: string };
   createAnnouncement: () => void;
-  confirmAnnouncement: (announcement: ApiAnnouncement) => void;
+  confirmAnnouncement: (announcement: ApiAnnouncement, answers?: Array<{ questionId: string; optionId: string }>) => void;
   deleteAnnouncement: (announcement: ApiAnnouncement) => void;
   actionBusy: boolean;
   comRead: boolean;
@@ -5295,6 +5428,7 @@ function AnnouncementsPage({
   onSelectAnnouncement: () => void;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
   const fallbackAnnouncements = [
     {
       id: "demo_announcement",
@@ -5313,12 +5447,19 @@ function AnnouncementsPage({
   const safeIndex = selectedAnnouncementIndex >= 0 ? selectedAnnouncementIndex : Math.min(selectedIndex, Math.max(rows.length - 1, 0));
   const selectedAnnouncement = rows[safeIndex] ?? null;
   const selectedApiAnnouncement = selectedAnnouncement && announcements.some((announcement) => announcement.id === selectedAnnouncement.id) ? selectedAnnouncement : null;
+  const canManageSelectedAnnouncement = canManage && Boolean(selectedAnnouncement && (selectedAnnouncement.audience?.type !== "all" || canManageWorkspace));
   const isConfirmed = selectedAnnouncement?.receipt?.status === "confirmed" || selectedAnnouncement?.receipt?.status === "quiz_completed";
   const selectedAuthor = selectedAnnouncement ? announcementAuthor(selectedAnnouncement, people, currentProfile) : null;
+  const announcementQuestions = selectedAnnouncement?.quizQuestions ?? [];
+  const allAnnouncementQuestionsAnswered = announcementQuestions.every((question, index) => Boolean(quizAnswers[question.id ?? `question_${index}`]));
+
+  useEffect(() => {
+    setQuizAnswers({});
+  }, [selectedAnnouncement?.id]);
 
   return (
     <div className="screen split-page">
-      <SideList title="Comunicados" icon="ph-plus" onCreate={createAnnouncement} items={rows.map((announcement, index) => [
+      <SideList title="Comunicados" icon={canManage ? "ph-plus" : undefined} onCreate={canManage ? createAnnouncement : undefined} items={rows.map((announcement, index) => [
         announcement.title,
         announcementTypeLabel(announcement.type),
         announcement.receipt?.status === "pending" ? "Pendente" : announcement.status === "published" ? "Lido" : statusLabel(announcement.status),
@@ -5336,7 +5477,7 @@ function AnnouncementsPage({
                 <h1 className="serif">{selectedAnnouncement.title}</h1>
                 <div className="author-line"><span className="avatar">{selectedAuthor?.initials}</span><span>{selectedAuthor?.name} · para <b>{audienceLabel(selectedAnnouncement, areas, roleTemplates, people)}</b></span></div>
               </div>
-              {selectedApiAnnouncement ? (
+              {selectedApiAnnouncement && canManageSelectedAnnouncement ? (
                 <div className="button-row">
                   <button className="secondary-btn danger-btn" type="button" disabled={actionBusy} onClick={() => deleteAnnouncement(selectedApiAnnouncement)}><Icon name="ph-trash" />Excluir</button>
                 </div>
@@ -5352,7 +5493,37 @@ function AnnouncementsPage({
               ) : (
                 <>
                   <div><strong>Confirme que leu e entendeu</strong><span>Uma pergunta rápida garante que a mudança ficou clara.</span></div>
-                  <button className="accent-solid" type="button" onClick={() => selectedAnnouncement.id.startsWith("demo_") ? setComRead(true) : confirmAnnouncement(selectedAnnouncement)}><Icon name="ph-check" />Li e confirmo</button>
+                  {selectedAnnouncement.requirement === "quiz_confirmation" ? (
+                    <div className="announcement-quiz">
+                      {announcementQuestions.map((question, questionIndex) => {
+                        const questionKey = question.id ?? `question_${questionIndex}`;
+                        return <fieldset key={questionKey}>
+                          <legend>{question.prompt}</legend>
+                          {question.options.map((option) => <label key={option.id}>
+                            <input
+                              checked={quizAnswers[questionKey] === option.id}
+                              name={questionKey}
+                              onChange={() => setQuizAnswers((current) => ({ ...current, [questionKey]: option.id }))}
+                              type="radio"
+                              value={option.id}
+                            />
+                            <span>{option.label}</span>
+                          </label>)}
+                        </fieldset>;
+                      })}
+                    </div>
+                  ) : null}
+                  <button
+                    className="accent-solid"
+                    disabled={actionBusy || (selectedAnnouncement.requirement === "quiz_confirmation" && (!announcementQuestions.length || !allAnnouncementQuestionsAnswered))}
+                    type="button"
+                    onClick={() => selectedAnnouncement.id.startsWith("demo_")
+                      ? setComRead(true)
+                      : confirmAnnouncement(selectedAnnouncement, announcementQuestions.map((question, index) => ({
+                        questionId: question.id ?? `question_${index}`,
+                        optionId: quizAnswers[question.id ?? `question_${index}`] ?? ""
+                      })))}
+                  ><Icon name="ph-check" />{selectedAnnouncement.requirement === "quiz_confirmation" ? "Enviar respostas" : "Li e confirmo"}</button>
                 </>
               )}
             </footer>
@@ -5969,6 +6140,8 @@ function ReturnTaskModal({
 
 function CrudModalView({
   modal,
+  canAssignManagementRoles,
+  canManageWorkspace,
   actionBusy,
   onClose,
   onSaveTask,
@@ -5989,6 +6162,8 @@ function CrudModalView({
   currentProfileName
 }: {
   modal: CrudModal;
+  canAssignManagementRoles: boolean;
+  canManageWorkspace: boolean;
   actionBusy: boolean;
   onClose: () => void;
   onSaveTask: (input: TaskFormInput) => void;
@@ -6002,7 +6177,7 @@ function CrudModalView({
   }) => void;
   onSaveRoutine: (input: RoutineFormInput) => void;
   onSaveTraining: (input: TrainingFormInput) => void;
-  onSaveAnnouncement: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; audience: NonNullable<ApiAnnouncement["audience"]>; publish: boolean }) => void;
+  onSaveAnnouncement: (input: AnnouncementFormInput) => void;
   onCreateInvite: (input: { name: string; email: string; role: "owner" | "manager" | "employee"; areaId: string; areaAccessIds: string[]; roleTemplateId: string; accessScope: "workspace" | "area" | "assigned_only" }) => void;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
@@ -6015,7 +6190,7 @@ function CrudModalView({
     <div className="modal-layer" role="presentation">
       <div className="modal-card" role="dialog" aria-modal="true">
         {modal.kind === "task" ? (
-          <TaskForm modal={modal} areas={areas} people={people} currentProfileId={currentProfileId} currentProfileName={currentProfileName} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveTask} />
+          <TaskForm modal={modal} canTargetWorkspace={canManageWorkspace} areas={areas} people={people} currentProfileId={currentProfileId} currentProfileName={currentProfileName} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveTask} />
         ) : null}
         {modal.kind === "area" ? (
           <AreaForm modal={modal} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveArea} />
@@ -6024,22 +6199,22 @@ function CrudModalView({
           <RoleTemplateForm areas={areas} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveRoleTemplate} />
         ) : null}
         {modal.kind === "person" ? (
-          <PersonForm modal={modal} areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onSavePerson} onDelete={onDeletePerson} />
+          <PersonForm modal={modal} canAssignManagementRoles={canAssignManagementRoles} areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onSavePerson} onDelete={onDeletePerson} />
         ) : null}
         {modal.kind === "process" ? (
-          <ProcessForm modal={modal} areas={areas} roleTemplates={roleTemplates} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
+          <ProcessForm modal={modal} canTargetWorkspace={canManageWorkspace} areas={areas} roleTemplates={roleTemplates} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveProcess} />
         ) : null}
         {modal.kind === "routine" ? (
-          <RoutineForm modal={modal} areas={areas} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveRoutine} />
+          <RoutineForm modal={modal} canTargetWorkspace={canManageWorkspace} areas={areas} people={people} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveRoutine} />
         ) : null}
         {modal.kind === "training" ? (
-          <TrainingForm modal={modal} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveTraining} areas={areas} roleTemplates={roleTemplates} people={people} processes={processes} />
+          <TrainingForm modal={modal} canTargetWorkspace={canManageWorkspace} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveTraining} areas={areas} roleTemplates={roleTemplates} people={people} processes={processes} />
         ) : null}
         {modal.kind === "announcement" ? (
-          <AnnouncementForm actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveAnnouncement} areas={areas} roleTemplates={roleTemplates} people={people} />
+          <AnnouncementForm canTargetWorkspace={canManageWorkspace} actionBusy={actionBusy} onClose={onClose} onSubmit={onSaveAnnouncement} areas={areas} roleTemplates={roleTemplates} people={people} />
         ) : null}
         {modal.kind === "invite" ? (
-          <InviteForm areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onCreateInvite} />
+          <InviteForm canAssignManagementRoles={canAssignManagementRoles} canTargetWorkspace={canManageWorkspace} areas={areas} roleTemplates={roleTemplates} actionBusy={actionBusy} onClose={onClose} onSubmit={onCreateInvite} />
         ) : null}
       </div>
     </div>
@@ -6048,6 +6223,7 @@ function CrudModalView({
 
 function TaskForm({
   modal,
+  canTargetWorkspace,
   areas,
   people,
   currentProfileId,
@@ -6057,6 +6233,7 @@ function TaskForm({
   onSubmit
 }: {
   modal: Extract<CrudModal, { kind: "task" }>;
+  canTargetWorkspace: boolean;
   areas: ApiArea[];
   people: ApiPerson[];
   currentProfileId: string | null;
@@ -6073,7 +6250,7 @@ function TaskForm({
   const [title, setTitle] = useState(task?.title ?? "");
   const [areaId, setAreaId] = useState(task?.areaId ?? areas[0]?.id ?? "");
   const [assigneeProfileId, setAssigneeProfileId] = useState(task?.assigneeProfileId ?? selectablePeople[0]?.id ?? currentProfileId ?? "");
-  const [dueDate, setDueDate] = useState(task?.dueDate ?? operationalDate);
+  const [dueDate, setDueDate] = useState(task?.dueDate ?? currentOperationalDate());
   const [dueHint, setDueHint] = useState(task?.dueHint ?? "Até 17:00");
   const [evidencePolicy, setEvidencePolicy] = useState<ApiRoutineTaskTemplate["evidencePolicy"]>(evidencePolicyFrom(task?.evidencePolicy));
   const [approvalMode, setApprovalMode] = useState<ApiRoutineTaskTemplate["approvalMode"]>(approvalModeFrom(task?.approvalMode));
@@ -6121,7 +6298,7 @@ function TaskForm({
       <ModalHeader title={task ? "Editar tarefa" : "Nova tarefa"} icon="ph-list-checks" onClose={onClose} />
       <div className="routine-core">
         <label>Título da tarefa<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ex.: Confirmar agenda do cliente" /></label>
-        <label>Área<select value={areaId} onChange={(event) => updateArea(event.target.value)}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
+        <label>Área<select value={areaId} onChange={(event) => updateArea(event.target.value)}>{canTargetWorkspace ? <option value="">Empresa inteira</option> : null}{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
       </div>
       <div className="routine-schedule">
         <label>Responsável<select value={assigneeProfileId} onChange={(event) => setAssigneeProfileId(event.target.value)}><option value="">Sem responsável fixo</option>{responsibleOptions.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label>
@@ -6220,7 +6397,8 @@ function AccessReachFields({
   areas,
   areaAccessIds,
   onToggleArea,
-  owner
+  owner,
+  allowWorkspace = true
 }: {
   reach: AccessReach;
   onReachChange: (reach: AccessReach) => void;
@@ -6229,6 +6407,7 @@ function AccessReachFields({
   areaAccessIds: string[];
   onToggleArea: (areaId: string) => void;
   owner?: boolean;
+  allowWorkspace?: boolean;
 }) {
   const selectedAreaIds = [...new Set([primaryAreaId, ...areaAccessIds].filter(Boolean))];
   const effectiveReach = owner ? "workspace" : reach;
@@ -6240,7 +6419,7 @@ function AccessReachFields({
           <option value="assigned_only">Somente tarefas atribuídas</option>
           <option value="primary_area">Área principal</option>
           <option value="specific_areas">Áreas específicas</option>
-          <option value="workspace">Empresa inteira</option>
+          {allowWorkspace ? <option value="workspace">Empresa inteira</option> : null}
         </select>
       </label>
       <p className="form-summary">{owner ? "Donos têm acesso à empresa inteira." : accessReachSummary(effectiveReach, primaryAreaId, areas)}</p>
@@ -6268,6 +6447,7 @@ function AccessReachFields({
 
 function PersonForm({
   modal,
+  canAssignManagementRoles,
   areas,
   roleTemplates,
   actionBusy,
@@ -6276,6 +6456,7 @@ function PersonForm({
   onDelete
 }: {
   modal: Extract<CrudModal, { kind: "person" }>;
+  canAssignManagementRoles: boolean;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
   actionBusy: boolean;
@@ -6317,8 +6498,8 @@ function PersonForm({
       <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <div className="form-grid">
-        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as ApiPerson["role"]; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
-        <label>Área principal<select value={areaId} onChange={(event) => { const nextAreaId = event.target.value; setAreaId(nextAreaId); setAreaAccessIds((current) => nextAreaId && !current.includes(nextAreaId) ? [...current, nextAreaId] : current); setRoleTemplateId(""); }}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
+        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as ApiPerson["role"]; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option>{canAssignManagementRoles ? <><option value="manager">Gestor</option><option value="owner">Dono</option></> : null}</select></label>
+        <label>Área principal<select value={areaId} onChange={(event) => { const nextAreaId = event.target.value; setAreaId(nextAreaId); setAreaAccessIds((current) => nextAreaId && !current.includes(nextAreaId) ? [...current, nextAreaId] : current); setRoleTemplateId(""); }}>{canAssignManagementRoles ? <option value="">Empresa inteira</option> : null}{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
       </div>
       <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Sem cargo definido</option>{availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label>
       <AccessReachFields
@@ -6329,6 +6510,7 @@ function PersonForm({
         areaAccessIds={areaAccessIds}
         onToggleArea={(selectedAreaId) => setAreaAccessIds((current) => current.includes(selectedAreaId) ? current.filter((id) => id !== selectedAreaId) : [...current, selectedAreaId])}
         owner={role === "owner"}
+        allowWorkspace={canAssignManagementRoles}
       />
       <footer>
         {person ? <button className="secondary-btn danger-btn" type="button" disabled={actionBusy} onClick={() => onDelete(person)}><Icon name="ph-trash" />Excluir pessoa</button> : null}
@@ -6340,6 +6522,7 @@ function PersonForm({
 }
 
 function AnnouncementForm({
+  canTargetWorkspace,
   actionBusy,
   onClose,
   onSubmit,
@@ -6347,9 +6530,10 @@ function AnnouncementForm({
   roleTemplates,
   people
 }: {
+  canTargetWorkspace: boolean;
   actionBusy: boolean;
   onClose: () => void;
-  onSubmit: (input: { title: string; body: string; type: ApiAnnouncement["type"]; requirement: ApiAnnouncement["requirement"]; audience: NonNullable<ApiAnnouncement["audience"]>; publish: boolean }) => void;
+  onSubmit: (input: AnnouncementFormInput) => void;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
   people: ApiPerson[];
@@ -6358,10 +6542,19 @@ function AnnouncementForm({
   const [body, setBody] = useState("Descreva a mudança operacional para a equipe.");
   const [type, setType] = useState<ApiAnnouncement["type"]>("simple");
   const [requirement, setRequirement] = useState<ApiAnnouncement["requirement"]>("read_confirmation");
-  const [audienceType, setAudienceType] = useState<NonNullable<ApiAnnouncement["audience"]>["type"]>("all");
+  const [audienceType, setAudienceType] = useState<NonNullable<ApiAnnouncement["audience"]>["type"]>(canTargetWorkspace ? "all" : "area");
   const [areaId, setAreaId] = useState(areas[0]?.id ?? "");
   const [roleTemplateId, setRoleTemplateId] = useState(roleTemplates[0]?.id ?? "");
   const [profileId, setProfileId] = useState(people[0]?.id ?? "");
+  const [quizQuestion, setQuizQuestion] = useState<ApiQuizQuestionInput>({
+    prompt: "Qual é o comportamento esperado a partir deste comunicado?",
+    options: [
+      { id: "a", label: "Seguir a orientação comunicada no Baase" },
+      { id: "b", label: "Continuar como antes" }
+    ],
+    correctOptionId: "a",
+    explanation: "A orientação publicada no Baase passa a ser a referência operacional."
+  });
   const audience = audienceType === "area" && areaId
     ? { type: "area" as const, areaId }
     : audienceType === "role" && roleTemplateId
@@ -6382,16 +6575,26 @@ function AnnouncementForm({
       <section className="responsible-picker training-audience-picker" aria-label="Público do comunicado">
         <div className="field-row"><strong>Público</strong><span className="muted-inline">Escolha quem deve receber este comunicado</span></div>
         <div className="training-audience-grid">
-          <label>Público<select value={audienceType} onChange={(event) => setAudienceType(event.target.value as NonNullable<ApiAnnouncement["audience"]>["type"])}><option value="all">Empresa inteira</option><option value="area">Área</option><option value="role">Cargo</option><option value="person">Pessoa</option></select></label>
+          <label>Público<select value={audienceType} onChange={(event) => setAudienceType(event.target.value as NonNullable<ApiAnnouncement["audience"]>["type"])}>{canTargetWorkspace ? <option value="all">Empresa inteira</option> : null}<option value="area">Área</option><option value="role">Cargo</option><option value="person">Pessoa</option></select></label>
           {audienceType === "area" ? <label>Área<select value={areaId} onChange={(event) => setAreaId(event.target.value)}><option value="">Selecionar área</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label> : null}
           {audienceType === "role" ? <label>Cargo<select value={roleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Selecionar cargo</option>{roleTemplates.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label> : null}
           {audienceType === "person" ? <label>Pessoa<select value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Selecionar pessoa</option>{people.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label> : null}
         </div>
       </section>
+      {requirement === "quiz_confirmation" ? <fieldset className="training-builder-block">
+        <legend>Pergunta de confirmação</legend>
+        <input aria-label="Pergunta do comunicado" value={quizQuestion.prompt} onChange={(event) => setQuizQuestion((current) => ({ ...current, prompt: event.target.value }))} />
+        {quizQuestion.options.map((option) => <label className="quiz-option-edit" key={option.id}>
+          <input type="radio" checked={quizQuestion.correctOptionId === option.id} onChange={() => setQuizQuestion((current) => ({ ...current, correctOptionId: option.id }))} />
+          <span>{option.id.toUpperCase()}</span>
+          <input aria-label={`Alternativa ${option.id.toUpperCase()} do comunicado`} value={option.label} onChange={(event) => setQuizQuestion((current) => ({ ...current, options: current.options.map((item) => item.id === option.id ? { ...item, label: event.target.value } : item) }))} />
+        </label>)}
+        <input aria-label="Explicação da resposta" value={quizQuestion.explanation ?? ""} onChange={(event) => setQuizQuestion((current) => ({ ...current, explanation: event.target.value }))} placeholder="Explique por que esta é a resposta correta" />
+      </fieldset> : null}
       <footer>
         <button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button>
-        <button className="secondary-btn" type="button" disabled={actionBusy || !audience} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, publish: false })}>Salvar rascunho</button>
-        <button className="accent-solid" type="button" disabled={actionBusy || !audience} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, publish: true })}>Salvar e publicar</button>
+        <button className="secondary-btn" type="button" disabled={actionBusy || !audience || (requirement === "quiz_confirmation" && (!quizQuestion.prompt.trim() || quizQuestion.options.some((option) => !option.label.trim())))} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, quizQuestions: requirement === "quiz_confirmation" ? [quizQuestion] : [], publish: false })}>Salvar rascunho</button>
+        <button className="accent-solid" type="button" disabled={actionBusy || !audience || (requirement === "quiz_confirmation" && (!quizQuestion.prompt.trim() || quizQuestion.options.some((option) => !option.label.trim())))} onClick={() => audience && onSubmit({ title, body, type, requirement, audience, quizQuestions: requirement === "quiz_confirmation" ? [quizQuestion] : [], publish: true })}>Salvar e publicar</button>
       </footer>
     </form>
   );
@@ -6399,6 +6602,7 @@ function AnnouncementForm({
 
 function ProcessForm({
   modal,
+  canTargetWorkspace,
   areas,
   roleTemplates,
   people,
@@ -6407,6 +6611,7 @@ function ProcessForm({
   onSubmit
 }: {
   modal: Extract<CrudModal, { kind: "process" }>;
+  canTargetWorkspace: boolean;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
   people: ApiPerson[];
@@ -6442,7 +6647,7 @@ function ProcessForm({
       <label>Nome do processo<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>Resumo<input value={summary} onChange={(event) => setSummary(event.target.value)} /></label>
       <div className="form-row two-cols">
-        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setOwnerId(""); }}><option value="">Sem área</option>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
+        <label>Área<select value={areaId} onChange={(event) => { setAreaId(event.target.value); setOwnerId(""); }}>{canTargetWorkspace ? <option value="">Sem área</option> : null}{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
         <label>Responsável<select value={ownerMode} onChange={(event) => { setOwnerMode(event.target.value as "none" | "person" | "role"); setOwnerId(""); }}><option value="none">Sem responsável</option><option value="person">Pessoa</option><option value="role">Cargo</option></select></label>
       </div>
       {ownerMode !== "none" ? <label>{ownerMode === "person" ? "Pessoa responsável" : "Cargo responsável"}<select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">Selecionar</option>{ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label> : null}
@@ -6476,6 +6681,7 @@ function splitLegacyRoutineDue(title: string) {
 
 function RoutineForm({
   modal,
+  canTargetWorkspace,
   areas,
   people,
   actionBusy,
@@ -6483,6 +6689,7 @@ function RoutineForm({
   onSubmit
 }: {
   modal: Extract<CrudModal, { kind: "routine" }>;
+  canTargetWorkspace: boolean;
   areas: ApiArea[];
   people: ApiPerson[];
   actionBusy: boolean;
@@ -6568,7 +6775,7 @@ function RoutineForm({
       <ModalHeader title={modal.mode === "edit" ? "Editar rotina" : "Nova rotina"} icon="ph-arrows-clockwise" onClose={onClose} />
       <div className="routine-core">
         <label>Nome da rotina<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-        <label>Área<select value={areaId} onChange={(event) => setAreaId(event.target.value)}><option value="">Empresa inteira</option>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
+        <label>Área<select value={areaId} onChange={(event) => setAreaId(event.target.value)}>{canTargetWorkspace ? <option value="">Empresa inteira</option> : null}{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label>
       </div>
       <div className="routine-schedule">
         <section className="routine-segment" aria-label="Recorrência">
@@ -6625,6 +6832,7 @@ function RoutineForm({
 
 function TrainingForm({
   modal,
+  canTargetWorkspace,
   actionBusy,
   onClose,
   onSubmit,
@@ -6634,6 +6842,7 @@ function TrainingForm({
   processes
 }: {
   modal: Extract<CrudModal, { kind: "training" }>;
+  canTargetWorkspace: boolean;
   actionBusy: boolean;
   onClose: () => void;
   onSubmit: (input: TrainingFormInput) => void;
@@ -6644,7 +6853,7 @@ function TrainingForm({
 }) {
   const training = modal.mode === "edit" ? modal.training : null;
   const initialSourceType = training?.source?.type ?? "manual";
-  const initialAudience = training?.audience ?? { type: "all" as const };
+  const initialAudience = training?.audience ?? (canTargetWorkspace ? { type: "all" as const } : { type: "area" as const, areaId: areas[0]?.id ?? "" });
   const [title, setTitle] = useState(training?.title ?? "");
   const [description, setDescription] = useState(training?.description ?? "");
   const [sourceType, setSourceType] = useState<ApiTrainingSource["type"]>(initialSourceType);
@@ -6812,7 +7021,7 @@ function TrainingForm({
           <span className="muted-inline">Define quem recebe pendência ao publicar</span>
         </div>
         <div className="training-audience-grid">
-          <label>Público<select value={audienceType} onChange={(event) => setAudienceType(event.target.value as ApiTrainingAudience["type"])}><option value="all">Empresa inteira</option><option value="area">Área</option><option value="role">Cargo</option><option value="person">Pessoa</option></select></label>
+          <label>Público<select value={audienceType} onChange={(event) => setAudienceType(event.target.value as ApiTrainingAudience["type"])}>{canTargetWorkspace ? <option value="all">Empresa inteira</option> : null}<option value="area">Área</option><option value="role">Cargo</option><option value="person">Pessoa</option></select></label>
           {audienceType === "area" ? <label>Área<select value={areaId} onChange={(event) => setAreaId(event.target.value)}>{areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>)}</select></label> : null}
           {audienceType === "role" ? <label>Cargo<select value={roleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}>{roleTemplates.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label> : null}
           {audienceType === "person" ? <label>Pessoa<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{people.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label> : null}
@@ -6874,12 +7083,16 @@ function TrainingForm({
 }
 
 function InviteForm({
+  canAssignManagementRoles,
+  canTargetWorkspace,
   areas,
   roleTemplates,
   actionBusy,
   onClose,
   onSubmit
 }: {
+  canAssignManagementRoles: boolean;
+  canTargetWorkspace: boolean;
   areas: ApiArea[];
   roleTemplates: ApiRoleTemplate[];
   actionBusy: boolean;
@@ -6905,7 +7118,7 @@ function InviteForm({
       <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <div className="form-grid">
-        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as "owner" | "manager" | "employee"; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option><option value="manager">Gestor</option><option value="owner">Dono</option></select></label>
+        <label>Papel<select value={role} onChange={(event) => { const nextRole = event.target.value as "owner" | "manager" | "employee"; setRole(nextRole); if (nextRole === "owner") setAccessReach("workspace"); }}><option value="employee">Funcionário</option>{canAssignManagementRoles ? <><option value="manager">Gestor</option><option value="owner">Dono</option></> : null}</select></label>
         <label>Área principal<select value={areaId} onChange={(event) => { const nextAreaId = event.target.value; setAreaId(nextAreaId); setAreaAccessIds((current) => nextAreaId && !current.includes(nextAreaId) ? [...current, nextAreaId] : current); setRoleTemplateId(""); }}>{areas.length ? areas.map((area) => <option value={area.id} key={area.id}>{area.name}</option>) : <option value="">Crie uma área primeiro</option>}</select></label>
       </div>
       <label>Cargo<select value={selectedRoleTemplateId} onChange={(event) => setRoleTemplateId(event.target.value)}><option value="">Sem cargo definido</option>{availableRoles.map((roleTemplate) => <option value={roleTemplate.id} key={roleTemplate.id}>{roleTemplate.name}</option>)}</select></label>
@@ -6917,6 +7130,7 @@ function InviteForm({
         areaAccessIds={areaAccessIds}
         onToggleArea={(selectedAreaId) => setAreaAccessIds((current) => current.includes(selectedAreaId) ? current.filter((id) => id !== selectedAreaId) : [...current, selectedAreaId])}
         owner={role === "owner"}
+        allowWorkspace={canTargetWorkspace}
       />
       <footer><button className="secondary-btn" type="button" onClick={onClose}>Cancelar</button><button className="accent-solid" type="button" disabled={actionBusy || !name.trim() || !email.trim() || (!areaId && accessReach !== "workspace" && accessReach !== "assigned_only") || (accessReach === "specific_areas" && !access.areaAccessIds.length)} onClick={() => onSubmit({ name, email, role, areaId, areaAccessIds: access.areaAccessIds, roleTemplateId: selectedRoleTemplateId, accessScope: access.accessScope })}>Enviar convite</button></footer>
     </form>

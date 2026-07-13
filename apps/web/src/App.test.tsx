@@ -96,7 +96,13 @@ function onboardingSessionFixture(status: string, overrides: Record<string, unkn
 }
 
 function responseData(dataByUrl: Record<string, unknown>, url: string) {
-  return dataByUrl[url] ?? (url === "/api/onboarding/session" ? {
+  const legacyDatedUrl = url
+    .replace(/date=\d{4}-\d{2}-\d{2}/, "date=2026-07-07")
+    .replace(/to=\d{4}-\d{2}-\d{2}/, "to=2026-07-07");
+  const operationalOverviewFallback = url.includes("operational-overview?")
+    ? Object.entries(dataByUrl).find(([candidate]) => candidate.split("?")[0] === url.split("?")[0])?.[1]
+    : undefined;
+  return dataByUrl[url] ?? dataByUrl[legacyDatedUrl] ?? operationalOverviewFallback ?? (url === "/api/onboarding/session" ? {
     session: onboardingSessionFixture("completed")
   } : {});
 }
@@ -134,12 +140,13 @@ function mockLoadedWorkspace(
     if (url === "/api/onboarding/session" && init?.method === "POST") {
       return new Response(JSON.stringify({ session: onboardingSessionOnCreate }), { status: 201 });
     }
-    return new Response(JSON.stringify({ ...defaults, ...dataByUrl }[url] ?? {}), { status: 200 });
+    return new Response(JSON.stringify(responseData({ ...defaults, ...dataByUrl }, url)), { status: 200 });
   });
 }
 
 describe("Baase React app shell", () => {
   afterEach(() => {
+    window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -1230,7 +1237,7 @@ describe("Baase React app shell", () => {
     fireEvent.change(screen.getByLabelText("Data inicial do período"), { target: { value: "2026-06-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/operational-overview?from=2026-06-01&to=2026-07-07",
+      "/api/operational-overview?from=2026-06-01&to=2026-07-13",
       expect.objectContaining({ headers: expect.anything() })
     ));
 
@@ -1238,7 +1245,7 @@ describe("Baase React app shell", () => {
     expect(await screen.findByRole("heading", { name: "Bruno Costa" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tarefas abertas" })).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-07",
+      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-13",
       expect.objectContaining({ headers: expect.anything() })
     ));
 
@@ -1590,6 +1597,60 @@ describe("Baase React app shell", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/announcements/announcement_1/confirm", expect.objectContaining({ method: "POST" }));
       expect(screen.getByText("Leitura confirmada")).toBeInTheDocument();
+    });
+  });
+
+  it("requires the employee to answer an announcement quiz instead of answering it automatically", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/announcements/announcement_quiz/confirm" && init?.method === "POST") {
+        return new Response(JSON.stringify({ receipt: { id: "receipt_quiz", status: "quiz_completed", quizScore: 0, passed: false } }), { status: 200 });
+      }
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": {
+          workspace: { id: "workspace_a", name: "Norte Ops" },
+          profile: { id: "profile_employee", role: "employee", display_name: "Bianca Ramos", initials: "BR", area_name: "CS" },
+          home_route: "/hoje"
+        },
+        "/api/today?date=2026-07-07": {
+          tasks: [],
+          training_assignments: [],
+          announcements: [{
+            id: "announcement_quiz",
+            title: "Novo procedimento obrigatório",
+            body: "Responda depois da leitura.",
+            type: "process_change",
+            status: "published",
+            requirement: "quiz_confirmation",
+            quizQuestions: [{
+              id: "question_1",
+              prompt: "O que fazer a partir de agora?",
+              options: [{ id: "a", label: "Seguir o novo procedimento" }, { id: "b", label: "Continuar como antes" }],
+              correctOptionId: "a"
+            }],
+            receipt: { status: "pending" }
+          }]
+        },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] }
+      };
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
+    });
+
+    render(<App initialRole="func" />);
+    await screen.findByText("Bianca Ramos");
+    fireEvent.click(screen.getByRole("link", { name: /Comunicados/ }));
+
+    const submit = await screen.findByRole("button", { name: "Enviar respostas" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(screen.getByRole("radio", { name: "Continuar como antes" }));
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      const request = fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/announcements/announcement_quiz/confirm" && init?.method === "POST");
+      expect(JSON.parse(String(request?.[1]?.body))).toEqual({ answers: [{ question_id: "question_1", option_id: "b" }] });
     });
   });
 
@@ -3500,5 +3561,29 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("link", { name: /Mapa da Empresa/ }));
     expect(await screen.findByText("Implantação Técnica")).toBeInTheDocument();
     expect(screen.queryByText("Estúdio Norte")).not.toBeInTheDocument();
+  });
+
+  it("hides workspace-wide company actions from area managers", () => {
+    render(<App initialRole="gestor" apiEnabled={false} />);
+
+    expect(screen.queryByRole("link", { name: /Mapa da Empresa/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: /Equipe da área/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Convidar/ }));
+
+    expect(within(screen.getByLabelText("Papel")).queryByRole("option", { name: "Gestor" })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Papel")).queryByRole("option", { name: "Dono" })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Alcance de acesso")).queryByRole("option", { name: "Empresa inteira" })).not.toBeInTheDocument();
+  });
+
+  it("lets an owner define the question and answers for a mandatory announcement quiz", () => {
+    render(<App apiEnabled={false} />);
+
+    fireEvent.click(screen.getByRole("link", { name: /Comunicados/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Criar comunicados" }));
+    fireEvent.change(screen.getByLabelText("Confirmação"), { target: { value: "quiz_confirmation" } });
+
+    expect(screen.getByLabelText("Pergunta do comunicado")).toHaveValue("Qual é o comportamento esperado a partir deste comunicado?");
+    expect(screen.getByLabelText("Alternativa A do comunicado")).toHaveValue("Seguir a orientação comunicada no Baase");
+    expect(screen.getByLabelText("Alternativa B do comunicado")).toHaveValue("Continuar como antes");
   });
 });

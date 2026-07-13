@@ -6,6 +6,7 @@ import { readRequestContext, requireOperationalMembership } from "../../http/aut
 import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createTrainingService } from "./training.service";
 import type { TrainingRepository } from "./training.types";
+import type { CompanyRepository } from "../company/company.types";
 
 const materialSchema = z.object({
   kind: z.enum(["lesson", "pdf", "link"]),
@@ -65,14 +66,18 @@ const assignmentsQuerySchema = z.object({
   date: z.string().min(10).max(10).optional()
 });
 
-export async function registerTrainingRoutes(app: FastifyInstance, repository: TrainingRepository) {
+export async function registerTrainingRoutes(app: FastifyInstance, repository: TrainingRepository, companyRepository: CompanyRepository) {
   const service = createTrainingService(repository);
 
   app.get("/trainings", async (request) => {
     const context = readRequestContext(request);
     const membership = requireOperationalMembership(request);
     const trainings = await service.listTrainings(context.workspaceId);
-    return { trainings: trainings.filter((training) => canReadAudience(membership, training.audience)) };
+    const visible = await filterAsync(trainings, async (training) => {
+      if (membership.role === "employee" && training.status !== "published") return false;
+      return canReadAudience(membership, training.audience, companyRepository, context.workspaceId);
+    });
+    return { trainings: visible };
   });
 
   app.post("/trainings", async (request, reply) => {
@@ -80,7 +85,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const body = createTrainingSchema.parse(request.body);
-    if (!canManageAudience(requireOperationalMembership(request), body.audience)) throw scopeForbidden();
+    await assertCanManageAudience(requireOperationalMembership(request), body.audience, companyRepository, context.workspaceId);
     const training = await service.createTraining(context.workspaceId, context.profileId, {
       title: body.title,
       description: body.description,
@@ -105,7 +110,8 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createTrainingSchema.parse(request.body);
-    if (!canManageAudience(requireOperationalMembership(request), body.audience)) throw scopeForbidden();
+    await requireManagedTraining(repository, companyRepository, context.workspaceId, params.id, requireOperationalMembership(request));
+    await assertCanManageAudience(requireOperationalMembership(request), body.audience, companyRepository, context.workspaceId);
     const training = await service.updateTraining(context.workspaceId, params.id, {
       title: body.title,
       description: body.description,
@@ -129,6 +135,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedTraining(repository, companyRepository, context.workspaceId, params.id, requireOperationalMembership(request));
     await service.deleteTraining(context.workspaceId, params.id);
     return reply.status(204).send();
   });
@@ -138,6 +145,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedTraining(repository, companyRepository, context.workspaceId, params.id, requireOperationalMembership(request));
     const training = await service.publishTraining(context.workspaceId, params.id);
     return { training };
   });
@@ -147,6 +155,7 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedTraining(repository, companyRepository, context.workspaceId, params.id, requireOperationalMembership(request));
     const training = await service.unpublishTraining(context.workspaceId, params.id);
     return { training };
   });
@@ -156,8 +165,9 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
     if (!canManageKnowledge(context.role)) throw forbiddenError();
 
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await requireManagedTraining(repository, companyRepository, context.workspaceId, params.id, requireOperationalMembership(request));
     const body = assignmentSchema.parse(request.body);
-    if (!canManageAudience(requireOperationalMembership(request), body)) throw scopeForbidden();
+    await assertCanManageAudience(requireOperationalMembership(request), body, companyRepository, context.workspaceId);
     const assignment = await service.assignTraining(context.workspaceId, context.profileId, params.id, {
       audience: readTrainingAudience(body),
       dueDate: body.due_date
@@ -179,8 +189,12 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
 
   app.post("/trainings/:id/attempts", async (request, reply) => {
     const context = readRequestContext(request);
+    const membership = requireOperationalMembership(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = quizAttemptSchema.parse(request.body);
+    const training = await repository.findTraining(context.workspaceId, params.id);
+    if (!training || training.status !== "published") throw new ApiError(404, "TRAINING_NOT_FOUND", "Treinamento não encontrado.");
+    if (!await canReadAudience(membership, training.audience, companyRepository, context.workspaceId)) throw scopeForbidden();
     const attempt = await service.submitQuizAttempt(context.workspaceId, params.id, context.profileId, {
       answers: body.answers.map((answer) => ({
         questionId: answer.question_id,
@@ -192,16 +206,72 @@ export async function registerTrainingRoutes(app: FastifyInstance, repository: T
   });
 }
 
-function canReadAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { type: string; areaId?: string } | null) {
-  return !audience || audience.type !== "area" || canReadAreaResource(member, audience.areaId ?? null);
+async function canReadAudience(
+  member: ReturnType<typeof requireOperationalMembership>,
+  audience: { type: string; areaId?: string; roleTemplateId?: string; profileId?: string } | null,
+  companyRepository: CompanyRepository,
+  workspaceId: string
+) {
+  if (!audience || audience.type === "all" || member.role === "owner") return true;
+  if (audience.type === "area") return canReadAreaResource(member, audience.areaId ?? null);
+  if (member.role === "employee") {
+    if (audience.type === "role") return audience.roleTemplateId === member.person.roleTemplateId;
+    return audience.profileId === member.personId;
+  }
+  if (audience.type === "role") {
+    const role = (await companyRepository.listRoleTemplates(workspaceId)).find((item) => item.id === audience.roleTemplateId);
+    return Boolean(role && canReadAreaResource(member, role.areaId));
+  }
+  const person = await companyRepository.findTeamMember(workspaceId, audience.profileId ?? "");
+  return Boolean(person && canReadAreaResource(member, person.areaId));
 }
 
-function canManageAudience(member: ReturnType<typeof requireOperationalMembership>, audience: { type?: string; area_id?: string | null } | null | undefined) {
-  return !audience || audience.type !== "area" || canManageAreaResource(member, audience.area_id ?? null);
+async function assertCanManageAudience(
+  member: ReturnType<typeof requireOperationalMembership>,
+  audience: { type?: string; audience_type?: string; area_id?: string | null; areaId?: string; profile_id?: string | null; profileId?: string; role_template_id?: string | null; roleTemplateId?: string } | null | undefined,
+  companyRepository: CompanyRepository,
+  workspaceId: string
+) {
+  if (member.role === "owner") return;
+  const audienceType = audience?.audience_type ?? audience?.type;
+  if (!audience || audienceType === "all") {
+    if (member.role !== "manager" || member.accessScope !== "workspace") throw scopeForbidden();
+    return;
+  }
+  if (audienceType === "area") {
+    if (!canManageAreaResource(member, audience.area_id ?? audience.areaId ?? null)) throw scopeForbidden();
+    return;
+  }
+  if (audienceType === "person") {
+    const person = await companyRepository.findTeamMember(workspaceId, audience.profile_id ?? audience.profileId ?? "");
+    if (!person || !canManageAreaResource(member, person.areaId)) throw scopeForbidden();
+    return;
+  }
+  const roleId = audience.role_template_id ?? audience.roleTemplateId ?? "";
+  const role = (await companyRepository.listRoleTemplates(workspaceId)).find((item) => item.id === roleId);
+  if (!role || !canManageAreaResource(member, role.areaId)) throw scopeForbidden();
+}
+
+async function requireManagedTraining(
+  repository: TrainingRepository,
+  companyRepository: CompanyRepository,
+  workspaceId: string,
+  trainingId: string,
+  membership: ReturnType<typeof requireOperationalMembership>
+) {
+  const training = await repository.findTraining(workspaceId, trainingId);
+  if (!training) throw new ApiError(404, "TRAINING_NOT_FOUND", "Treinamento não encontrado.");
+  await assertCanManageAudience(membership, training.audience, companyRepository, workspaceId);
+  return training;
 }
 
 function scopeForbidden() {
   return new ApiError(403, "BAASE_SCOPE_FORBIDDEN", "Você não tem acesso a esta área.");
+}
+
+async function filterAsync<T>(items: T[], predicate: (item: T) => Promise<boolean>) {
+  const matches = await Promise.all(items.map(predicate));
+  return items.filter((_item, index) => matches[index]);
 }
 
 function readTrainingSource(body: z.infer<typeof trainingSourceSchema> | null | undefined) {

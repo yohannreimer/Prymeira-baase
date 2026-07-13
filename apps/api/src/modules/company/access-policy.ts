@@ -17,14 +17,23 @@ export function canReadAreaResource(member: OperationalMembership, areaId: strin
 }
 
 export function canManageAreaResource(member: OperationalMembership, areaId: string | null) {
-  return member.role === "owner" || (member.role === "manager" && canReadAreaResource(member, areaId));
+  if (member.role === "owner") return true;
+  if (member.role !== "manager") return false;
+  if (member.accessScope === "workspace") return true;
+  return areaId !== null && canReadAreaResource(member, areaId);
 }
 
 export function canExecuteTask(member: OperationalMembership, task: TaskAccessInput) {
-  if (member.role === "owner") return true;
+  if (member.role === "owner") return task.assigneeProfileId === null || task.assigneeProfileId === member.personId;
   if (member.role === "employee") return task.assigneeProfileId === member.personId;
   if (task.assigneeProfileId) return task.assigneeProfileId === member.personId;
   return task.areaId != null && canReadAreaResource(member, task.areaId);
+}
+
+export function visibleAreaIds(member: OperationalMembership) {
+  if (member.role === "owner" || member.accessScope === "workspace") return null;
+  if (member.role === "employee") return member.person.areaId ? [member.person.areaId] : [];
+  return member.areaAccessIds;
 }
 
 export function canReadTask(member: OperationalMembership, task: TaskAccessInput) {

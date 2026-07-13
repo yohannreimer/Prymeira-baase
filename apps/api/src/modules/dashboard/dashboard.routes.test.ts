@@ -98,6 +98,9 @@ describe("dashboard routes", () => {
     expect(owner.json().lateTasks).toEqual(expect.arrayContaining([
       expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, daysLate: 2 })
     ]));
+    expect(owner.json().lateTasks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Aprovar checklist" })
+    ]));
     expect(owner.json().openTasks).toEqual(expect.arrayContaining([
       expect.objectContaining({ assigneeProfileId: fixture.people.tech.id, title: "Tarefa atrasada", status: "pending" })
     ]));
@@ -324,7 +327,7 @@ async function buildOperationalOverviewApp(options: { now?: () => Date } = {}) {
   const finance = people.get("profile_finance")!;
   const task = (input: Parameters<typeof routineRepository.createTaskOccurrence>[0]) => routineRepository.createTaskOccurrence(input);
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Tarefa atrasada", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "direct", evidencePolicy: "optional", status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null, submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
-  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Aprovar checklist", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "awaiting_approval", dueDate: "2026-07-20", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-18T09:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
+  await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Aprovar checklist", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "awaiting_approval", dueDate: "2026-07-09", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-08T09:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "No prazo", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "approval_required", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-21", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-20T10:00:00.000Z", reviewedByProfileId: people.get("profile_manager")!.id, reviewedAt: "2026-07-21T10:00:00.000Z", reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Fora do prazo", areaId: techArea.id, processId: null, assigneeProfileId: tech.id, approvalMode: "direct", evidencePolicy: "optional", status: "completed", dueDate: "2026-07-21", evidence: null, submittedByProfileId: tech.id, submittedAt: "2026-07-22T10:00:00.000Z", reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
   await task({ workspaceId, origin: "manual", routineId: null, taskTemplateId: null, title: "Financeiro externo", areaId: financeArea.id, processId: null, assigneeProfileId: finance.id, approvalMode: "direct", evidencePolicy: "optional", status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null, submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null });
