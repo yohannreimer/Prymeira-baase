@@ -576,6 +576,87 @@ function repositoryContract(
         expect(active).toHaveLength(12);
       });
     });
+
+    it("persists owner-scoped assets and atomically claims only pending or retry-due work", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const asset = await repository.createAsset({
+          ...scope,
+          documentId: document.id,
+          kind: "file",
+          displayName: "notes.txt",
+          objectKey: "private/notes.txt",
+          sourceUrl: null,
+          finalUrl: null,
+          fetchedAt: null,
+          mimeType: "text/plain",
+          sizeBytes: 5,
+          extractionStatus: "pending",
+          extractedText: null,
+          extractionMetadata: {},
+          lastErrorCode: null,
+          attemptCount: 0,
+          nextAttemptAt: null
+        });
+
+        expect(await repository.findAsset(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" }, asset.id
+        )).toBeNull();
+        const claims = await Promise.all([
+          repository.claimNextAsset("2026-07-13T12:00:00.000Z"),
+          repository.claimNextAsset("2026-07-13T12:00:00.000Z")
+        ]);
+        expect(claims.filter(Boolean)).toHaveLength(1);
+        expect(claims.find(Boolean)).toMatchObject({
+          id: asset.id,
+          extractionStatus: "processing",
+          attemptCount: 1
+        });
+
+        const failed = await repository.updateAssetExtraction({
+          ...claims.find(Boolean)!,
+          extractionStatus: "failed",
+          lastErrorCode: "TRANSIENT",
+          nextAttemptAt: "2026-07-13T12:01:00.000Z"
+        });
+        expect(failed.extractionStatus).toBe("failed");
+        expect(await repository.claimNextAsset("2026-07-13T12:00:59.999Z")).toBeNull();
+        expect(await repository.claimNextAsset("2026-07-13T12:01:00.000Z")).toMatchObject({
+          id: asset.id,
+          extractionStatus: "processing",
+          attemptCount: 2
+        });
+
+        expect(await repository.deleteAsset(scope, asset.id)).toBe(true);
+        expect(await repository.deleteAsset(scope, asset.id)).toBe(false);
+      });
+    });
+
+    it("rejects assets whose document is outside the full owner scope", async () => {
+      await withRepository(async (repository) => {
+        const privateDocument = await repository.createDocument(documentInput({ ownerProfileId: "owner_b" }));
+        await expect(repository.createAsset({
+          workspaceId: "workspace_a",
+          ownerProfileId: "owner_a",
+          documentId: privateDocument.id,
+          kind: "file",
+          displayName: "private.txt",
+          objectKey: "private/key",
+          sourceUrl: null,
+          finalUrl: null,
+          fetchedAt: null,
+          mimeType: "text/plain",
+          sizeBytes: 1,
+          extractionStatus: "pending",
+          extractedText: null,
+          extractionMetadata: {},
+          lastErrorCode: null,
+          attemptCount: 0,
+          nextAttemptAt: null
+        })).rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
+      });
+    });
   });
 }
 

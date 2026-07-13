@@ -121,6 +121,27 @@ describe("operational schema", () => {
     expect(migrationSql).toContain("search_tokens");
   });
 
+  it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_assets' and column_name in (
+         'extraction_status','extracted_text','extraction_metadata','last_error_code',
+         'attempt_count','next_attempt_at','final_url','fetched_at'
+       ) order by column_name`
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual([
+      "attempt_count",
+      "extracted_text",
+      "extraction_metadata",
+      "extraction_status",
+      "fetched_at",
+      "final_url",
+      "last_error_code",
+      "next_attempt_at"
+    ]);
+  });
+
   it("rejects Studio assets that reference a document in another owner scope", async () => {
     await ensureOperationalSchema(db);
     const columns = await db.query<{ column_name: string }>(

@@ -10,6 +10,7 @@ import { registerAiRoutes } from "./modules/ai/ai.routes";
 import { createInMemoryAiRepository } from "./modules/ai/in-memory-ai.repository";
 import type { AiProvider, AiRepository } from "./modules/ai/ai.types";
 import { createDefaultAiProvider } from "./modules/ai/providers/default-ai.provider";
+import { createAiHarness } from "./modules/ai/ai-harness";
 import { registerAnnouncementRoutes } from "./modules/announcements/announcement.routes";
 import { createInMemoryAnnouncementRepository } from "./modules/announcements/in-memory-announcement.repository";
 import type { AnnouncementRepository } from "./modules/announcements/announcement.types";
@@ -37,8 +38,14 @@ import { registerTemplateRoutes } from "./modules/templates/template.routes";
 import { registerSessionRoutes } from "./modules/session/session.routes";
 import { createInMemoryStudioRepository } from "./modules/studio/in-memory-studio.repository";
 import { registerStudioRoutes } from "./modules/studio/studio.routes";
+import {
+  registerStudioAssetRoutes,
+  type StudioLinkFetcher,
+  type StudioLinkResolver
+} from "./modules/studio/studio-assets.routes";
 import { createStudioService } from "./modules/studio/studio.service";
 import type { StudioRepository } from "./modules/studio/studio.types";
+import { createStudioAssetProcessor } from "./modules/studio/studio-asset-processor";
 import {
   createLocalDemoProcesses,
   createLocalDemoRoutines,
@@ -58,6 +65,8 @@ export type BuildAppOptions = {
   aiRepository?: AiRepository;
   aiProvider?: AiProvider;
   studioRepository?: StudioRepository;
+  studioLinkResolver?: StudioLinkResolver;
+  studioLinkFetcher?: StudioLinkFetcher;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -95,6 +104,16 @@ export function buildApp(options: BuildAppOptions = {}) {
   const aiProvider = options.aiProvider ?? createDefaultAiProvider();
   const studioRepository = options.studioRepository ?? createInMemoryStudioRepository();
   const studioService = createStudioService(studioRepository, {
+    now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const studioAssetProcessor = createStudioAssetProcessor({
+    repository: studioRepository,
+    objectStorage,
+    transcriptionHarness: createAiHarness({
+      repository: aiRepository,
+      provider: aiProvider,
+      now: options.now ? () => options.now!().getTime() : undefined
+    }),
     now: options.now ? () => options.now!().toISOString() : undefined
   });
   const runtimeConfig = options.runtimeConfig ?? readRuntimeConfig({
@@ -260,6 +279,13 @@ export function buildApp(options: BuildAppOptions = {}) {
     trainingRepository
   }));
   app.register((routes) => registerStudioRoutes(routes, studioService));
+  app.register((routes) => registerStudioAssetRoutes(routes, {
+    repository: studioRepository,
+    objectStorage,
+    resolver: options.studioLinkResolver,
+    fetcher: options.studioLinkFetcher,
+    now: options.now
+  }));
 
-  return app;
+  return Object.assign(app, { studioAssetProcessor });
 }

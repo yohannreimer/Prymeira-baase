@@ -3,6 +3,8 @@ export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
+export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
+export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 
 export type CreateStudioDocument = {
   title: string | null;
@@ -94,6 +96,27 @@ export type StudioCollectionMembership = StudioOwnerScope & {
   createdAt: string;
 };
 
+export type StudioAsset = StudioOwnerScope & {
+  id: string;
+  documentId: string;
+  kind: StudioAssetKind;
+  displayName: string;
+  objectKey: string | null;
+  sourceUrl: string | null;
+  finalUrl: string | null;
+  fetchedAt: string | null;
+  mimeType: string | null;
+  sizeBytes: number;
+  extractionStatus: StudioAssetExtractionStatus;
+  extractedText: string | null;
+  extractionMetadata: Record<string, unknown>;
+  lastErrorCode: string | null;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StudioSearchCollection = Pick<StudioCollection, "id" | "name">;
 
 export type StudioSearchDocument = Pick<
@@ -152,4 +175,9 @@ export type StudioRepository = {
   addCollectionMembership(input: StudioOwnerScope & { collectionId: string; documentId: string }): Promise<StudioCollectionMembership>;
   removeCollectionMembership(scope: StudioOwnerScope, collectionId: string, documentId: string): Promise<boolean>;
   listDocumentCollections(scope: StudioOwnerScope, documentId: string): Promise<StudioCollection[]>;
+  findAsset(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
+  createAsset(input: Omit<StudioAsset, "id" | "createdAt" | "updatedAt">): Promise<StudioAsset>;
+  deleteAsset(scope: StudioOwnerScope, assetId: string): Promise<boolean>;
+  claimNextAsset(now: string): Promise<StudioAsset | null>;
+  updateAssetExtraction(input: StudioAsset): Promise<StudioAsset>;
 };

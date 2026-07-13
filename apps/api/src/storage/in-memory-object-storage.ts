@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { Readable } from "node:stream";
 import type { ObjectStorage, PutObjectInput } from "./object-storage";
 
 export type InMemoryObjectStorage = ObjectStorage & {
@@ -8,7 +9,7 @@ export type InMemoryObjectStorage = ObjectStorage & {
 };
 
 export function createInMemoryObjectStorage(): InMemoryObjectStorage {
-  const objects = new Map<string, { body: Buffer; contentType: string }>();
+  const objects = new Map<string, { body: Buffer; contentType: string; sizeBytes: number }>();
   let nextPutError: Error | null = null;
   let nextDeleteError: Error | null = null;
 
@@ -21,7 +22,17 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
       }
       const chunks: Buffer[] = [];
       for await (const chunk of input.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      objects.set(input.key, { body: Buffer.concat(chunks), contentType: input.contentType });
+      const body = Buffer.concat(chunks);
+      objects.set(input.key, { body, contentType: input.contentType, sizeBytes: body.length });
+    },
+    async get(key) {
+      const object = objects.get(key);
+      if (!object) throw new Error("OBJECT_NOT_FOUND");
+      return {
+        body: Readable.from(Buffer.from(object.body)),
+        contentType: object.contentType,
+        sizeBytes: object.sizeBytes
+      };
     },
     async createDownloadUrl(key, expiresInSeconds) {
       if (!objects.has(key)) throw new Error("OBJECT_NOT_FOUND");

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   StudioCollection,
   StudioCollectionMembership,
+  StudioAsset,
   StudioDocument,
   StudioDocumentVersion,
   StudioRepository
@@ -31,6 +32,10 @@ function cloneCollection(collection: StudioCollection): StudioCollection {
 
 function cloneMembership(membership: StudioCollectionMembership): StudioCollectionMembership {
   return structuredClone(membership);
+}
+
+function cloneAsset(asset: StudioAsset): StudioAsset {
+  return structuredClone(asset);
 }
 
 function normalizeTimestamp(value: unknown) {
@@ -92,6 +97,7 @@ export function createInMemoryStudioRepository(
   const versions: StudioDocumentVersion[] = [];
   const collections: StudioCollection[] = [];
   const memberships: StudioCollectionMembership[] = [];
+  const assets: StudioAsset[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -410,6 +416,83 @@ export function createInMemoryStudioRepository(
         .filter((collection) => collectionIds.has(collection.id))
         .sort(compareCollections)
         .map(cloneCollection);
+    },
+
+    async findAsset(scope, assetId) {
+      const asset = assets.find((item) =>
+        item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.id === assetId
+      );
+      return asset ? cloneAsset(asset) : null;
+    },
+
+    async createAsset(input) {
+      const documentExists = documents.some((document) =>
+        document.workspaceId === input.workspaceId
+        && document.ownerProfileId === input.ownerProfileId
+        && document.id === input.documentId
+      );
+      if (!documentExists) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const timestamp = now();
+      const asset: StudioAsset = {
+        ...structuredClone(input),
+        id: `studio_asset_${randomUUID()}`,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      assets.push(asset);
+      return cloneAsset(asset);
+    },
+
+    async deleteAsset(scope, assetId) {
+      const index = assets.findIndex((asset) =>
+        asset.workspaceId === scope.workspaceId
+        && asset.ownerProfileId === scope.ownerProfileId
+        && asset.id === assetId
+      );
+      if (index === -1) return false;
+      assets.splice(index, 1);
+      return true;
+    },
+
+    async claimNextAsset(at) {
+      const timestamp = normalizeTimestamp(at);
+      const asset = assets
+        .filter((item) => item.extractionStatus === "pending" || (
+          item.extractionStatus === "failed"
+          && item.nextAttemptAt !== null
+          && item.nextAttemptAt <= timestamp
+        ))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+      if (!asset) return null;
+      asset.extractionStatus = "processing";
+      asset.attemptCount += 1;
+      asset.nextAttemptAt = null;
+      asset.updatedAt = nextTimestamp(now, asset.updatedAt);
+      return cloneAsset(asset);
+    },
+
+    async updateAssetExtraction(input) {
+      const index = assets.findIndex((asset) =>
+        asset.workspaceId === input.workspaceId
+        && asset.ownerProfileId === input.ownerProfileId
+        && asset.id === input.id
+      );
+      if (index === -1) throw new Error("STUDIO_ASSET_NOT_FOUND");
+      const persisted = assets[index]!;
+      const updated: StudioAsset = {
+        ...persisted,
+        extractionStatus: input.extractionStatus,
+        extractedText: input.extractedText,
+        extractionMetadata: structuredClone(input.extractionMetadata),
+        lastErrorCode: input.lastErrorCode,
+        attemptCount: input.attemptCount,
+        nextAttemptAt: input.nextAttemptAt,
+        updatedAt: nextTimestamp(now, persisted.updatedAt)
+      };
+      assets[index] = updated;
+      return cloneAsset(updated);
     }
   };
 }

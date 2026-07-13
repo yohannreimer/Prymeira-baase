@@ -3,6 +3,8 @@ import {
   createStudioDocumentSchema,
   patchStudioDocumentSchema,
   studioAssetSchema,
+  studioAssetParamsSchema,
+  studioLinkCaptureSchema,
   studioCollectionDocumentParamsSchema,
   studioCollectionSchema,
   studioDocumentListQuerySchema,
@@ -76,6 +78,18 @@ describe("Studio schemas", () => {
 
   it("rejects unknown keys", () => {
     expect(() => createStudioDocumentSchema.parse({ ...textCapture, owner_profile_id: "other-owner" })).toThrow();
+  });
+
+  it("strictly validates link captures and asset ids without accepting caller scope", () => {
+    expect(studioLinkCaptureSchema.parse({ url: "https://example.com/idea" }))
+      .toEqual({ url: "https://example.com/idea" });
+    expect(() => studioLinkCaptureSchema.parse({ url: "ftp://example.com/idea" })).toThrow();
+    expect(() => studioLinkCaptureSchema.parse({
+      url: "https://example.com/idea",
+      owner_profile_id: "owner_b"
+    })).toThrow();
+    expect(studioAssetParamsSchema.parse({ assetId: "asset_1" })).toEqual({ assetId: "asset_1" });
+    expect(() => studioAssetParamsSchema.parse({ assetId: "asset_1", workspaceId: "workspace_b" })).toThrow();
   });
 
   it("strictly validates Studio route params and queries", () => {

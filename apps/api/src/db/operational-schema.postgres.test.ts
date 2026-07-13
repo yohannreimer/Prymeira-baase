@@ -120,8 +120,33 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "studio_documents_owner_search_idx",
         "studio_documents_owner_search_prefix_idx",
         "studio_assets_document_idx",
+        "studio_assets_processing_idx",
         "studio_collection_items_collection_idx"
       ]));
+    });
+  });
+
+  it("creates Studio asset extraction and safe link snapshot columns", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      const columns = await pool.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_schema=current_schema() and table_name='studio_assets'
+           and column_name in (
+             'extraction_status','extracted_text','extraction_metadata','last_error_code',
+             'attempt_count','next_attempt_at','final_url','fetched_at'
+           ) order by column_name`
+      );
+      expect(columns.rows.map((row) => row.column_name)).toEqual([
+        "attempt_count",
+        "extracted_text",
+        "extraction_metadata",
+        "extraction_status",
+        "fetched_at",
+        "final_url",
+        "last_error_code",
+        "next_attempt_at"
+      ]);
     });
   });
 

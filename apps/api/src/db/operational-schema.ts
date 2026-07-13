@@ -598,13 +598,26 @@ const migrations: Migration[] = [{
       document_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN ('audio','image','file','link_snapshot')),
       display_name TEXT NOT NULL,
-      object_key TEXT NOT NULL,
+      object_key TEXT,
       source_url TEXT,
-      mime_type TEXT NOT NULL,
+      final_url TEXT,
+      fetched_at TIMESTAMPTZ,
+      mime_type TEXT,
       size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+      extraction_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (extraction_status IN ('pending','processing','ready','failed')),
+      extracted_text TEXT,
+      extraction_metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+      last_error_code TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (workspace_id, owner_profile_id, id),
+      CHECK (
+        (kind = 'link_snapshot' AND object_key IS NULL AND source_url IS NOT NULL)
+        OR (kind <> 'link_snapshot' AND object_key IS NOT NULL AND mime_type IS NOT NULL)
+      ),
       FOREIGN KEY (workspace_id, owner_profile_id, document_id)
         REFERENCES studio_documents(workspace_id, owner_profile_id, id) ON DELETE CASCADE
     );
@@ -649,6 +662,9 @@ const migrations: Migration[] = [{
       ON studio_documents USING GIN (search_prefix_tokens) WHERE status = 'active';
     CREATE INDEX studio_assets_document_idx
       ON studio_assets (workspace_id, owner_profile_id, document_id, created_at);
+    CREATE INDEX studio_assets_processing_idx
+      ON studio_assets (extraction_status, next_attempt_at, created_at)
+      WHERE extraction_status IN ('pending','failed');
     CREATE INDEX studio_collection_items_collection_idx
       ON studio_collection_items (workspace_id, owner_profile_id, collection_id, created_at);
     CREATE INDEX studio_collection_items_document_idx

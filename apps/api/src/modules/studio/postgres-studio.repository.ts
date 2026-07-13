@@ -1,5 +1,8 @@
 import type {
   StudioCaptureMode,
+  StudioAsset,
+  StudioAssetExtractionStatus,
+  StudioAssetKind,
   StudioCollection,
   StudioCollectionMembership,
   StudioDocument,
@@ -70,6 +73,29 @@ type StudioCollectionMembershipRow = {
   created_at: string | Date;
 };
 
+type StudioAssetRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  document_id: string;
+  kind: StudioAssetKind;
+  display_name: string;
+  object_key: string | null;
+  source_url: string | null;
+  final_url: string | null;
+  fetched_at: string | Date | null;
+  mime_type: string | null;
+  size_bytes: string | number;
+  extraction_status: StudioAssetExtractionStatus;
+  extracted_text: string | null;
+  extraction_metadata: Record<string, unknown>;
+  last_error_code: string | null;
+  attempt_count: number;
+  next_attempt_at: string | Date | null;
+  created_at: string | Date;
+  updated_at: string | Date;
+};
+
 type DocumentCursor = {
   updatedAt: string;
   id: string;
@@ -134,6 +160,31 @@ function membershipFromRow(row: StudioCollectionMembershipRow): StudioCollection
     collectionId: row.collection_id,
     documentId: row.document_id,
     createdAt: iso(row.created_at)
+  };
+}
+
+function assetFromRow(row: StudioAssetRow): StudioAsset {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id,
+    kind: row.kind,
+    displayName: row.display_name,
+    objectKey: row.object_key,
+    sourceUrl: row.source_url,
+    finalUrl: row.final_url,
+    fetchedAt: row.fetched_at ? iso(row.fetched_at) : null,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes),
+    extractionStatus: row.extraction_status,
+    extractedText: row.extracted_text,
+    extractionMetadata: structuredClone(row.extraction_metadata),
+    lastErrorCode: row.last_error_code,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
   };
 }
 
@@ -586,6 +637,97 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, documentId]
       );
       return result.rows.map(collectionFromRow);
+    },
+
+    async findAsset(scope, assetId) {
+      const result = await db.query<StudioAssetRow>(
+        `SELECT * FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, assetId]
+      );
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async createAsset(input) {
+      try {
+        const result = await db.query<StudioAssetRow>(
+          `INSERT INTO studio_assets
+             (id,workspace_id,owner_profile_id,document_id,kind,display_name,
+              object_key,source_url,final_url,fetched_at,mime_type,size_bytes,
+              extraction_status,extracted_text,extraction_metadata,last_error_code,
+              attempt_count,next_attempt_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+           RETURNING *`,
+          [
+            generatedId("studio_asset"), input.workspaceId, input.ownerProfileId,
+            input.documentId, input.kind, input.displayName, input.objectKey,
+            input.sourceUrl, input.finalUrl, input.fetchedAt, input.mimeType,
+            input.sizeBytes, input.extractionStatus, input.extractedText,
+            JSON.stringify(input.extractionMetadata), input.lastErrorCode,
+            input.attemptCount, input.nextAttemptAt
+          ]
+        );
+        return assetFromRow(result.rows[0]!);
+      } catch (error) {
+        const candidate = error as { code?: string; constraint?: string };
+        if (candidate?.code === "23503" && candidate.constraint?.includes("document")) {
+          throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        }
+        throw error;
+      }
+    },
+
+    async deleteAsset(scope, assetId) {
+      const result = await db.query<{ id: string }>(
+        `DELETE FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+         RETURNING id`,
+        [scope.workspaceId, scope.ownerProfileId, assetId]
+      );
+      return Boolean(result.rows[0]);
+    },
+
+    async claimNextAsset(now) {
+      const result = await db.query<StudioAssetRow>(
+        `WITH candidate AS (
+           SELECT workspace_id,owner_profile_id,id
+           FROM studio_assets
+           WHERE extraction_status='pending'
+              OR (extraction_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+           ORDER BY created_at ASC,id ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1
+         )
+         UPDATE studio_assets asset SET
+           extraction_status='processing',
+           attempt_count=asset.attempt_count+1,
+           next_attempt_at=NULL,
+           updated_at=NOW()
+         FROM candidate
+         WHERE asset.workspace_id=candidate.workspace_id
+           AND asset.owner_profile_id=candidate.owner_profile_id
+           AND asset.id=candidate.id
+         RETURNING asset.*`,
+        [now]
+      );
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async updateAssetExtraction(input) {
+      const result = await db.query<StudioAssetRow>(
+        `UPDATE studio_assets SET
+           extraction_status=$4,extracted_text=$5,extraction_metadata=$6::jsonb,
+           last_error_code=$7,attempt_count=$8,next_attempt_at=$9,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+         RETURNING *`,
+        [
+          input.workspaceId, input.ownerProfileId, input.id, input.extractionStatus,
+          input.extractedText, JSON.stringify(input.extractionMetadata), input.lastErrorCode,
+          input.attemptCount, input.nextAttemptAt
+        ]
+      );
+      if (!result.rows[0]) throw new Error("STUDIO_ASSET_NOT_FOUND");
+      return assetFromRow(result.rows[0]);
     }
   };
 }

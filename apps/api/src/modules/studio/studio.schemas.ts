@@ -79,6 +79,17 @@ export const studioAssetSchema = z.object({
 
 export const createStudioAssetSchema = studioAssetSchema;
 
+export const studioAssetParamsSchema = z.object({
+  assetId: routeIdSchema
+}).strict();
+
+export const studioLinkCaptureSchema = z.object({
+  url: z.url().max(2_000).refine((value) => {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  }, "Only HTTP and HTTPS links are supported.")
+}).strict();
+
 const metricSchema = z.object({
   label: structureTextSchema,
   current: z.number(),
