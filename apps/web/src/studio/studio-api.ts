@@ -520,6 +520,7 @@ export async function listStudioStructures(
   query: {
     kind?: StudioStructureKind;
     lifecycle_status?: StudioStructureLifecycleStatus;
+    document_id?: string;
     cursor?: string;
     limit?: number;
   } = {},
@@ -529,6 +530,7 @@ export async function listStudioStructures(
   const params = new URLSearchParams();
   if (query.kind) params.set("kind", query.kind);
   if (query.lifecycle_status) params.set("lifecycle_status", query.lifecycle_status);
+  if (query.document_id) params.set("document_id", query.document_id);
   if (query.cursor) params.set("cursor", query.cursor);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   const suffix = params.size ? `?${params.toString()}` : "";

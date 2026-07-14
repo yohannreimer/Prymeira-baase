@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
+import { STUDIO_STRUCTURE_CONTRACT } from "@prymeira/baase-shared";
 import type { StudioGoalMetric, StudioStructure } from "./studio.types";
+
+const GOAL_FIELDS = STUDIO_STRUCTURE_CONTRACT.goal.properties;
+const METRIC_FIELDS = STUDIO_STRUCTURE_CONTRACT.goal.metric;
+const metricNumberFormat = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 20 });
 
 export type GoalDetailsValue = {
   horizon_at: string | null;
@@ -41,16 +46,16 @@ function validOptionalNumber(value: string) {
 function formatMetric(metric: StudioGoalMetric) {
   const unit = metric.unit ? ` ${metric.unit}` : "";
   return metric.current === undefined
-    ? `Alvo: ${metric.target}${unit}`
-    : `${metric.current} de ${metric.target}${unit}`;
+    ? `Alvo: ${metricNumberFormat.format(metric.target)}${unit}`
+    : `${metricNumberFormat.format(metric.current)} de ${metricNumberFormat.format(metric.target)}${unit}`;
 }
 
 export default function GoalDetails({ documentTitle, structure = null, busy = false, error, onSave }: GoalDetailsProps) {
   const properties = structure?.propertiesJson ?? {};
-  const [desiredOutcome, setDesiredOutcome] = useState(() => textProperty(properties, "desired_outcome"));
-  const [reason, setReason] = useState(() => textProperty(properties, "reason"));
-  const [state, setState] = useState(() => textProperty(properties, "state"));
-  const [evidence, setEvidence] = useState(() => textListProperty(properties, "progress_evidence").join("\n"));
+  const [desiredOutcome, setDesiredOutcome] = useState(() => textProperty(properties, GOAL_FIELDS.desiredOutcome.key));
+  const [reason, setReason] = useState(() => textProperty(properties, GOAL_FIELDS.reason.key));
+  const [state, setState] = useState(() => textProperty(properties, GOAL_FIELDS.state.key));
+  const [evidence, setEvidence] = useState(() => textListProperty(properties, GOAL_FIELDS.progressEvidence.key).join("\n"));
   const [hasMetric, setHasMetric] = useState(() => structure?.metricJson !== null && structure?.metricJson !== undefined);
   const [metricLabel, setMetricLabel] = useState(() => structure?.metricJson?.label ?? "");
   const [metricTarget, setMetricTarget] = useState(() => numberField(structure?.metricJson?.target));
@@ -62,10 +67,10 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
 
   useEffect(() => {
     const next = structure?.propertiesJson ?? {};
-    setDesiredOutcome(textProperty(next, "desired_outcome"));
-    setReason(textProperty(next, "reason"));
-    setState(textProperty(next, "state"));
-    setEvidence(textListProperty(next, "progress_evidence").join("\n"));
+    setDesiredOutcome(textProperty(next, GOAL_FIELDS.desiredOutcome.key));
+    setReason(textProperty(next, GOAL_FIELDS.reason.key));
+    setState(textProperty(next, GOAL_FIELDS.state.key));
+    setEvidence(textListProperty(next, GOAL_FIELDS.progressEvidence.key).join("\n"));
     setHasMetric(Boolean(structure?.metricJson));
     setMetricLabel(structure?.metricJson?.label ?? "");
     setMetricTarget(numberField(structure?.metricJson?.target));
@@ -89,12 +94,12 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
   function save() {
     if (!canSave) return;
     const nextProperties = { ...properties };
-    nextProperties.desired_outcome = desiredOutcome.trim();
-    if (reason.trim()) nextProperties.reason = reason.trim(); else delete nextProperties.reason;
-    if (state) nextProperties.state = state; else delete nextProperties.state;
+    nextProperties[GOAL_FIELDS.desiredOutcome.key] = desiredOutcome.trim();
+    if (reason.trim()) nextProperties[GOAL_FIELDS.reason.key] = reason.trim(); else delete nextProperties[GOAL_FIELDS.reason.key];
+    if (state) nextProperties[GOAL_FIELDS.state.key] = state; else delete nextProperties[GOAL_FIELDS.state.key];
     const progressEvidence = evidence.split("\n").map((item) => item.trim()).filter(Boolean);
-    if (progressEvidence.length) nextProperties.progress_evidence = progressEvidence;
-    else delete nextProperties.progress_evidence;
+    if (progressEvidence.length) nextProperties[GOAL_FIELDS.progressEvidence.key] = progressEvidence;
+    else delete nextProperties[GOAL_FIELDS.progressEvidence.key];
     const metric: StudioGoalMetric | null = hasMetric ? {
       label: metricLabel.trim(),
       target: Number(metricTarget),
@@ -115,10 +120,10 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
       {structure ? (
         <div className="studio-structure-summary" aria-label="Acompanhamento da meta">
           {structure.metricJson ? <strong>{formatMetric(structure.metricJson)}</strong> : null}
-          {!structure.metricJson && textListProperty(properties, "progress_evidence").length
-            ? <span>Última evidência: {textListProperty(properties, "progress_evidence").at(-1)}</span>
+          {!structure.metricJson && textListProperty(properties, GOAL_FIELDS.progressEvidence.key).length
+            ? <span>Última evidência: {textListProperty(properties, GOAL_FIELDS.progressEvidence.key).at(-1)}</span>
             : null}
-          {!structure.metricJson && !textListProperty(properties, "progress_evidence").length
+          {!structure.metricJson && !textListProperty(properties, GOAL_FIELDS.progressEvidence.key).length
             ? <span>Sem indicador. O avanço pode ser registrado por evidências.</span>
             : null}
         </div>
@@ -126,8 +131,8 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
 
       {!titleReady ? <p className="studio-structure-form__guidance" role="status">Dê um título ao documento para reconhecer esta meta depois.</p> : null}
       <label>
-        <span>Resultado desejado</span>
-        <textarea aria-label="Resultado desejado" value={desiredOutcome} onChange={(event) => setDesiredOutcome(event.currentTarget.value)} rows={3} required />
+        <span>{GOAL_FIELDS.desiredOutcome.label}</span>
+        <textarea aria-label={GOAL_FIELDS.desiredOutcome.label} value={desiredOutcome} onChange={(event) => setDesiredOutcome(event.currentTarget.value)} rows={3} required />
       </label>
 
       <div className="studio-structure-form__optional-actions" aria-label="Campos opcionais da meta">
@@ -139,11 +144,11 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
         <fieldset className="studio-structure-fieldset">
           <legend>Indicador</legend>
           <div className="studio-structure-form__field-grid">
-            <label><span>Nome do indicador</span><input aria-label="Nome do indicador" value={metricLabel} onChange={(event) => setMetricLabel(event.currentTarget.value)} required /></label>
-            <label><span>Alvo</span><input aria-label="Alvo" type="number" step="any" value={metricTarget} onChange={(event) => setMetricTarget(event.currentTarget.value)} required /></label>
-            <label><span>Valor atual</span><input aria-label="Valor atual" type="number" step="any" value={metricCurrent} onChange={(event) => setMetricCurrent(event.currentTarget.value)} /></label>
-            <label><span>Valor inicial</span><input aria-label="Valor inicial" type="number" step="any" value={metricBaseline} onChange={(event) => setMetricBaseline(event.currentTarget.value)} /></label>
-            <label><span>Unidade</span><input aria-label="Unidade" value={metricUnit} onChange={(event) => setMetricUnit(event.currentTarget.value)} placeholder="clientes, R$, pontos" /></label>
+            <label><span>{METRIC_FIELDS.label.label}</span><input aria-label={METRIC_FIELDS.label.label} value={metricLabel} onChange={(event) => setMetricLabel(event.currentTarget.value)} required /></label>
+            <label><span>{METRIC_FIELDS.target.label}</span><input aria-label={METRIC_FIELDS.target.label} type="number" step="any" value={metricTarget} onChange={(event) => setMetricTarget(event.currentTarget.value)} required /></label>
+            <label><span>{METRIC_FIELDS.current.label}</span><input aria-label={METRIC_FIELDS.current.label} type="number" step="any" value={metricCurrent} onChange={(event) => setMetricCurrent(event.currentTarget.value)} /></label>
+            <label><span>{METRIC_FIELDS.baseline.label}</span><input aria-label={METRIC_FIELDS.baseline.label} type="number" step="any" value={metricBaseline} onChange={(event) => setMetricBaseline(event.currentTarget.value)} /></label>
+            <label><span>{METRIC_FIELDS.unit.label}</span><input aria-label={METRIC_FIELDS.unit.label} value={metricUnit} onChange={(event) => setMetricUnit(event.currentTarget.value)} placeholder="clientes, R$, pontos" /></label>
           </div>
           <button className="studio-structure-form__remove" type="button" onClick={() => setHasMetric(false)}>Remover indicador</button>
         </fieldset>
@@ -159,9 +164,9 @@ export default function GoalDetails({ documentTitle, structure = null, busy = fa
       {structure ? (
         <details className="studio-structure-form__more">
           <summary>Contexto e evidências</summary>
-          <label><span>Por que isso importa?</span><textarea value={reason} onChange={(event) => setReason(event.currentTarget.value)} rows={2} /></label>
-          <label><span>Estado</span><select value={state} onChange={(event) => setState(event.currentTarget.value)}><option value="">Sem estado</option><option value="in_focus">Em foco</option><option value="waiting">Em espera</option><option value="achieved">Alcançada</option></select></label>
-          <label><span>Evidências de avanço, uma por linha</span><textarea value={evidence} onChange={(event) => setEvidence(event.currentTarget.value)} rows={4} /></label>
+          <label><span>{GOAL_FIELDS.reason.label}</span><textarea value={reason} onChange={(event) => setReason(event.currentTarget.value)} rows={2} /></label>
+          <label><span>{GOAL_FIELDS.state.label}</span><select value={state} onChange={(event) => setState(event.currentTarget.value)}><option value="">Sem estado</option><option value="in_focus">Em foco</option><option value="waiting">Em espera</option><option value="achieved">Alcançada</option></select></label>
+          <label><span>{GOAL_FIELDS.progressEvidence.label}</span><textarea value={evidence} onChange={(event) => setEvidence(event.currentTarget.value)} rows={4} /></label>
         </details>
       ) : null}
 

@@ -424,6 +424,7 @@ export function createInMemoryStudioRepository(
       const appliedCursor: { createdAt: string; id: string } | null = cursor;
       const matches = structures.filter((structure) => structure.workspaceId === scope.workspaceId
         && structure.ownerProfileId === scope.ownerProfileId)
+        .filter((structure) => !input.documentId || structure.documentId === input.documentId)
         .filter((structure) => !input.kind || structure.kind === input.kind)
         .filter((structure) => !input.lifecycleStatus || structure.lifecycleStatus === input.lifecycleStatus)
         .filter((structure) => !appliedCursor || structure.createdAt < appliedCursor.createdAt

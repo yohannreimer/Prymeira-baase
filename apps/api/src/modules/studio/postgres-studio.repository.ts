@@ -892,6 +892,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
     async listStructures(scope, input) {
       const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
       const conditions = ["workspace_id=$1", "owner_profile_id=$2"];
+      if (input.documentId) { params.push(input.documentId); conditions.push(`document_id=$${params.length}`); }
       if (input.kind) { params.push(input.kind); conditions.push(`kind=$${params.length}`); }
       if (input.lifecycleStatus) { params.push(input.lifecycleStatus); conditions.push(`lifecycle_status=$${params.length}`); }
       if (input.cursor) {

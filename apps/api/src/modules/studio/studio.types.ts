@@ -1,7 +1,9 @@
+import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira/baase-shared";
+
 export type StudioOwnerScope = { workspaceId: string; ownerProfileId: string };
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
 export type StudioDocumentStatus = "active" | "archived";
-export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
+export type StudioStructureKind = SharedStudioStructureKind;
 export type StudioStructureLifecycleStatus = "active" | "archived";
 export type StudioGoalMetric = {
   label: string;
@@ -257,6 +259,7 @@ export type UpdateStudioStructure = {
 export type StudioStructureQuery = {
   kind?: StudioStructureKind;
   lifecycleStatus?: StudioStructureLifecycleStatus;
+  documentId?: string;
   cursor?: string;
   limit: number;
 };

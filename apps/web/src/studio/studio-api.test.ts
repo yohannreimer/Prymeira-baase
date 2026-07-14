@@ -284,7 +284,7 @@ describe("Studio API client", () => {
       } }, init.method === "POST" ? 201 : 200);
     });
 
-    await expect(listStudioStructures({ kind: "goal", lifecycle_status: "active", cursor: "cursor 1", limit: 25 }, fetcher, controller.signal))
+    await expect(listStudioStructures({ kind: "goal", lifecycle_status: "active", document_id: "document / 1", cursor: "cursor 1", limit: 25 }, fetcher, controller.signal))
       .resolves.toMatchObject({ items: [{ documentId: "document_1", propertiesJson: { desired_outcome: "Crescer com margem" } }], nextCursor: "cursor_2" });
     await createStudioStructure("document / 1", {
       kind: "goal", horizon_at: null, metric_json: null,
@@ -296,7 +296,7 @@ describe("Studio API client", () => {
     }, controller.signal, fetcher);
 
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
-      "/api/studio/structures?kind=goal&lifecycle_status=active&cursor=cursor+1&limit=25",
+      "/api/studio/structures?kind=goal&lifecycle_status=active&document_id=document+%2F+1&cursor=cursor+1&limit=25",
       "/api/studio/documents/document%20%2F%201/structures",
       "/api/studio/structures/structure%20%2F%201"
     ]);

@@ -1,8 +1,10 @@
+import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira/baase-shared";
+
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
-export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
+export type StudioStructureKind = SharedStudioStructureKind;
 export type StudioStructureLifecycleStatus = "active" | "archived";
 
 export type StudioGoalMetric = {

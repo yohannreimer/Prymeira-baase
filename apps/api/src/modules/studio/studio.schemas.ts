@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { STUDIO_STRUCTURE_CONTRACT, STUDIO_STRUCTURE_KIND_ORDER } from "@prymeira/baase-shared";
 import type { StudioStructureKind } from "./studio.types";
 
 const editorJsonSchema = z.record(z.string(), z.unknown());
@@ -139,37 +140,42 @@ export const studioRitualCadenceSchema = z.object({
   }
 });
 
+const goalFields = STUDIO_STRUCTURE_CONTRACT.goal.properties;
+const decisionFields = STUDIO_STRUCTURE_CONTRACT.decision.properties;
+const planFields = STUDIO_STRUCTURE_CONTRACT.plan.properties;
+const ritualFields = STUDIO_STRUCTURE_CONTRACT.ritual.properties;
+
 const goalPropertiesSchema = z.object({
-  desired_outcome: structureTextSchema.optional(),
-  reason: structureTextSchema.optional(),
-  state: z.enum(["in_focus", "waiting", "achieved"]).optional(),
-  progress_evidence: structureTextListSchema.optional()
+  [goalFields.desiredOutcome.key]: structureTextSchema.optional(),
+  [goalFields.reason.key]: structureTextSchema.optional(),
+  [goalFields.state.key]: z.enum(["in_focus", "waiting", "achieved"]).optional(),
+  [goalFields.progressEvidence.key]: structureTextListSchema.optional()
 }).strict();
 
 const decisionPropertiesSchema = z.object({
-  decision: structureTextSchema.optional(),
-  context: structureTextSchema.optional(),
-  alternatives: structureTextListSchema.optional(),
-  reason: structureTextSchema.optional(),
-  hypothesis_or_risk: structureTextSchema.optional(),
-  learnings: structureTextSchema.optional(),
-  decision_date: dateOnlySchema.optional(),
-  review_date: dateOnlySchema.optional()
+  [decisionFields.decision.key]: structureTextSchema.optional(),
+  [decisionFields.context.key]: structureTextSchema.optional(),
+  [decisionFields.alternatives.key]: structureTextListSchema.optional(),
+  [decisionFields.reason.key]: structureTextSchema.optional(),
+  [decisionFields.hypothesisOrRisk.key]: structureTextSchema.optional(),
+  [decisionFields.learnings.key]: structureTextSchema.optional(),
+  [decisionFields.decisionDate.key]: dateOnlySchema.optional(),
+  [decisionFields.reviewDate.key]: dateOnlySchema.optional()
 }).strict();
 
 const planPropertiesSchema = z.object({
-  direction: structureTextSchema.optional(),
-  hypotheses: structureTextListSchema.optional(),
-  fronts: structureTextListSchema.optional(),
-  milestones: structureTextListSchema.optional()
+  [planFields.direction.key]: structureTextSchema.optional(),
+  [planFields.hypotheses.key]: structureTextListSchema.optional(),
+  [planFields.fronts.key]: structureTextListSchema.optional(),
+  [planFields.milestones.key]: structureTextListSchema.optional()
 }).strict();
 
 const ritualPropertiesSchema = z.object({
-  intention: structureTextSchema.optional(),
-  guide_questions: structureTextListSchema.optional(),
-  allowed_internal_sources: structureTextListSchema.optional(),
-  allow_external_research: z.boolean().optional(),
-  summary_format: structureTextSchema.optional()
+  [ritualFields.intention.key]: structureTextSchema.optional(),
+  [ritualFields.guideQuestions.key]: structureTextListSchema.optional(),
+  [ritualFields.allowedInternalSources.key]: structureTextListSchema.optional(),
+  [ritualFields.allowExternalResearch.key]: z.boolean().optional(),
+  [ritualFields.summaryFormat.key]: structureTextSchema.optional()
 }).strict();
 
 const structurePropertiesSchemas = {
@@ -218,8 +224,9 @@ export const patchStudioStructureSchema = z.object({
 
 export const studioStructureParamsSchema = z.object({ structureId: routeIdSchema }).strict();
 export const studioStructureListQuerySchema = z.object({
-  kind: z.enum(["goal", "decision", "plan", "ritual"]).optional(),
+  kind: z.enum(STUDIO_STRUCTURE_KIND_ORDER).optional(),
   lifecycle_status: z.enum(["active", "archived"]).optional(),
+  document_id: routeIdSchema.optional(),
   cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
   limit: routeLimitSchema.default(50)
 }).strict();

@@ -206,7 +206,8 @@ export async function registerStudioRoutes(
     const query = studioStructureListQuerySchema.parse(request.query);
     readNoBody(request);
     const page = await runStudioOperation(() => service.listStructures(scope, {
-      kind: query.kind, lifecycleStatus: query.lifecycle_status, cursor: query.cursor, limit: query.limit
+      kind: query.kind, lifecycleStatus: query.lifecycle_status, documentId: query.document_id,
+      cursor: query.cursor, limit: query.limit
     }));
     return { structures: page.items, nextCursor: page.nextCursor };
   });

@@ -1115,6 +1115,12 @@ function repositoryContract(
         const recreated = await repository.createStructure(input);
         expect((await repository.listStructures(scope, { kind: "goal", lifecycleStatus: "active", limit: 1 })).items)
           .toEqual([recreated]);
+        expect((await repository.listStructures(scope, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([recreated]);
+        expect((await repository.listStructures({ ...scope, ownerProfileId: "owner_b" }, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([]);
 
         const ritual = await repository.createStructure({
           ...scope, documentId: document.id, kind: "ritual", lifecycleStatus: "active",

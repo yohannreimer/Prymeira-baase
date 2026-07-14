@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
+import { STUDIO_STRUCTURE_CONTRACT } from "@prymeira/baase-shared";
 import type { StudioStructure } from "./studio.types";
+
+const DECISION_FIELDS = STUDIO_STRUCTURE_CONTRACT.decision.properties;
 
 export type DecisionDetailsValue = {
   horizon_at: string | null;
@@ -19,28 +22,28 @@ function text(properties: Record<string, unknown>, key: string) {
 
 export default function DecisionDetails({ structure = null, busy = false, error, onSave }: DecisionDetailsProps) {
   const properties = structure?.propertiesJson ?? {};
-  const [decision, setDecision] = useState(() => text(properties, "decision"));
-  const [context, setContext] = useState(() => text(properties, "context"));
-  const [decisionDate, setDecisionDate] = useState(() => text(properties, "decision_date"));
-  const [reviewDate, setReviewDate] = useState(() => text(properties, "review_date"));
-  const [learnings, setLearnings] = useState(() => text(properties, "learnings"));
+  const [decision, setDecision] = useState(() => text(properties, DECISION_FIELDS.decision.key));
+  const [context, setContext] = useState(() => text(properties, DECISION_FIELDS.context.key));
+  const [decisionDate, setDecisionDate] = useState(() => text(properties, DECISION_FIELDS.decisionDate.key));
+  const [reviewDate, setReviewDate] = useState(() => text(properties, DECISION_FIELDS.reviewDate.key));
+  const [learnings, setLearnings] = useState(() => text(properties, DECISION_FIELDS.learnings.key));
 
   useEffect(() => {
     const next = structure?.propertiesJson ?? {};
-    setDecision(text(next, "decision"));
-    setContext(text(next, "context"));
-    setDecisionDate(text(next, "decision_date"));
-    setReviewDate(text(next, "review_date"));
-    setLearnings(text(next, "learnings"));
+    setDecision(text(next, DECISION_FIELDS.decision.key));
+    setContext(text(next, DECISION_FIELDS.context.key));
+    setDecisionDate(text(next, DECISION_FIELDS.decisionDate.key));
+    setReviewDate(text(next, DECISION_FIELDS.reviewDate.key));
+    setLearnings(text(next, DECISION_FIELDS.learnings.key));
   }, [structure]);
 
   function save() {
     if (!decision.trim() || busy) return;
-    const nextProperties = { ...properties, decision: decision.trim() };
-    setOptional(nextProperties, "context", context);
-    setOptional(nextProperties, "decision_date", decisionDate);
-    setOptional(nextProperties, "review_date", reviewDate);
-    setOptional(nextProperties, "learnings", learnings);
+    const nextProperties = { ...properties, [DECISION_FIELDS.decision.key]: decision.trim() };
+    setOptional(nextProperties, DECISION_FIELDS.context.key, context);
+    setOptional(nextProperties, DECISION_FIELDS.decisionDate.key, decisionDate);
+    setOptional(nextProperties, DECISION_FIELDS.reviewDate.key, reviewDate);
+    setOptional(nextProperties, DECISION_FIELDS.learnings.key, learnings);
     void onSave({
       properties_json: nextProperties,
       horizon_at: reviewDate ? new Date(`${reviewDate}T00:00:00.000Z`).toISOString() : null
@@ -49,13 +52,13 @@ export default function DecisionDetails({ structure = null, busy = false, error,
 
   return (
     <form className="studio-structure-form" aria-label="Detalhes da decisão" onSubmit={(event) => { event.preventDefault(); save(); }}>
-      <label><span>Decisão tomada</span><textarea aria-label="Decisão tomada" value={decision} onChange={(event) => setDecision(event.currentTarget.value)} rows={3} required /></label>
-      <label><span>Contexto original</span><textarea aria-label="Contexto original" value={context} onChange={(event) => setContext(event.currentTarget.value)} rows={4} /></label>
+      <label><span>{DECISION_FIELDS.decision.label}</span><textarea aria-label={DECISION_FIELDS.decision.label} value={decision} onChange={(event) => setDecision(event.currentTarget.value)} rows={3} required /></label>
+      <label><span>{DECISION_FIELDS.context.label}</span><textarea aria-label={DECISION_FIELDS.context.label} value={context} onChange={(event) => setContext(event.currentTarget.value)} rows={4} /></label>
       <div className="studio-structure-form__field-grid">
-        <label><span>Data da decisão</span><input aria-label="Data da decisão" type="date" value={decisionDate} onChange={(event) => setDecisionDate(event.currentTarget.value)} /></label>
-        <label><span>Revisar em</span><input aria-label="Revisar em" type="date" value={reviewDate} onChange={(event) => setReviewDate(event.currentTarget.value)} /></label>
+        <label><span>{DECISION_FIELDS.decisionDate.label}</span><input aria-label={DECISION_FIELDS.decisionDate.label} type="date" value={decisionDate} onChange={(event) => setDecisionDate(event.currentTarget.value)} /></label>
+        <label><span>{DECISION_FIELDS.reviewDate.label}</span><input aria-label={DECISION_FIELDS.reviewDate.label} type="date" value={reviewDate} onChange={(event) => setReviewDate(event.currentTarget.value)} /></label>
       </div>
-      <label><span>Efeitos e aprendizados</span><textarea aria-label="Efeitos e aprendizados" value={learnings} onChange={(event) => setLearnings(event.currentTarget.value)} rows={3} placeholder="Pode ficar em branco e ser preenchido quando houver algo novo." /></label>
+      <label><span>{DECISION_FIELDS.learnings.label}</span><textarea aria-label={DECISION_FIELDS.learnings.label} value={learnings} onChange={(event) => setLearnings(event.currentTarget.value)} rows={3} placeholder="Pode ficar em branco e ser preenchido quando houver algo novo." /></label>
       {error ? <p className="studio-structure-form__error" role="alert">{error}</p> : null}
       <footer><button className="primary" type="submit" disabled={!decision.trim() || busy}>{busy ? "Salvando…" : structure ? "Salvar decisão" : "Criar decisão"}</button></footer>
     </form>

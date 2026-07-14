@@ -75,7 +75,7 @@ describe("StudioStructures", () => {
       ...baseStructure,
       kind: "goal" as const,
       horizonAt: "2026-12-31T00:00:00.000Z",
-      metricJson: { label: "Receita", target: 200, baseline: 100, current: 125, unit: "mil" },
+      metricJson: { label: "Clientes", target: 2000, baseline: 1000, current: 1250, unit: "clientes" },
       propertiesJson: {
         desired_outcome: "Crescer com margem",
         state: "in_focus",
@@ -96,7 +96,7 @@ describe("StudioStructures", () => {
     const trigger = await screen.findByRole("button", { name: /meta.*margem sustentável/i });
     await user.click(trigger);
     const panel = screen.getByRole("region", { name: "Detalhes estratégicos" });
-    expect(within(panel).getByText(/125 de 200 mil/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/1\.250 de 2\.000 clientes/i)).toBeInTheDocument();
     expect(within(panel).queryByText(/%/)).not.toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "Remover indicador" }));
     await user.click(within(panel).getByRole("button", { name: "Remover horizonte" }));
@@ -195,6 +195,102 @@ describe("StudioStructures", () => {
 
     expect(screen.queryByRole("region", { name: "Detalhes estratégicos" })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("recovers from the real stale code by reloading the document-scoped structure after reopening", async () => {
+    const user = userEvent.setup();
+    let getCount = 0;
+    const goal = {
+      ...baseStructure,
+      kind: "goal" as const,
+      horizonAt: null,
+      metricJson: null,
+      propertiesJson: { desired_outcome: "Versão inicial" }
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) {
+        getCount += 1;
+        return response({ structures: [{
+          ...goal,
+          revision: getCount,
+          propertiesJson: { desired_outcome: getCount === 1 ? "Versão inicial" : "Versão da outra aba" }
+        }], nextCursor: null });
+      }
+      if (url.endsWith("/api/studio/structures/structure_1") && init?.method === "PATCH") {
+        return response({ error: { code: "STUDIO_STRUCTURE_CHANGED", message: "A estrutura mudou." } }, 409);
+      }
+      return response({}, 404);
+    });
+    render(<StudioStructures documentId="document_1" documentTitle="Meta compartilhada" />);
+    const trigger = await screen.findByRole("button", { name: /meta.*meta compartilhada/i });
+    await user.click(trigger);
+    const result = screen.getByRole("textbox", { name: "Resultado desejado" });
+    await user.clear(result);
+    await user.type(result, "Minha edição");
+    await user.click(screen.getByRole("button", { name: "Salvar meta" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mudou em outra aba/i);
+    await user.click(screen.getByRole("button", { name: "Fechar detalhes estratégicos" }));
+    await user.click(trigger);
+
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Resultado desejado" })).toHaveValue("Versão da outra aba"));
+    expect(getCount).toBe(2);
+    expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes("/api/studio/structures") && !init?.method)).toHaveLength(2);
+  });
+
+  it("recognizes the real active-duplicate code", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (!init?.method) return response({ structures: [], nextCursor: null });
+      if (String(input).endsWith("/documents/document_1/structures")) {
+        return response({ error: { code: "STUDIO_STRUCTURE_ACTIVE_DUPLICATE", message: "Já existe." } }, 409);
+      }
+      return response({}, 404);
+    });
+    render(<StudioStructures documentId="document_1" documentTitle="Escolha" />);
+    await user.click(await screen.findByRole("button", { name: /estruturar este pensamento/i }));
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Manter o foco");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/já possui uma estrutura deste tipo/i);
+  });
+
+  it("uses one document-scoped request even when the owner has ten thousand other structures", async () => {
+    const otherStructures = Array.from({ length: 10_000 }, (_, index) => ({
+      ...baseStructure,
+      id: `structure_${index}`,
+      documentId: `other_document_${index}`,
+      kind: "goal" as const,
+      horizonAt: null,
+      metricJson: null,
+      propertiesJson: { desired_outcome: `Meta ${index}` }
+    }));
+    const target = {
+      ...baseStructure,
+      id: "target_structure",
+      documentId: "document / 10.000",
+      kind: "plan" as const,
+      horizonAt: null,
+      metricJson: null,
+      propertiesJson: { direction: "Foco" }
+    };
+    const serverStore = [...otherStructures, target];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input), "https://baase.local");
+      const documentId = url.searchParams.get("document_id");
+      return response({
+        structures: serverStore.filter((structure) => structure.documentId === documentId).slice(0, 4),
+        nextCursor: null
+      });
+    });
+    render(<StudioStructures documentId="document / 10.000" documentTitle="Pensamento isolado" />);
+
+    await screen.findByRole("button", { name: /plano.*pensamento isolado/i });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(serverStore).toHaveLength(10_001);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe("/api/studio/structures?lifecycle_status=active&document_id=document+%2F+10.000&limit=4");
   });
 });
 

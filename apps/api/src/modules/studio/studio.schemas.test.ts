@@ -9,6 +9,7 @@ import {
   studioCollectionSchema,
   studioDocumentListQuerySchema,
   studioSearchQuerySchema,
+  studioStructureListQuerySchema,
   studioStructurePropertiesSchema
 } from "./studio.schemas";
 
@@ -100,10 +101,13 @@ describe("Studio schemas", () => {
       .toEqual({ query: "expansão", limit: 20 });
     expect(studioCollectionDocumentParamsSchema.parse({ collectionId: "collection_1", documentId: "document_1" }))
       .toEqual({ collectionId: "collection_1", documentId: "document_1" });
+    expect(studioStructureListQuerySchema.parse({ document_id: "document_1", lifecycle_status: "active", limit: "4" }))
+      .toEqual({ document_id: "document_1", lifecycle_status: "active", limit: 4 });
     expect(() => studioDocumentListQuerySchema.parse({ limit: "0" })).toThrow();
     expect(() => studioDocumentListQuerySchema.parse({ status: "deleted" })).toThrow();
     expect(() => studioDocumentListQuerySchema.parse({ owner_profile_id: "owner_b" })).toThrow();
     expect(() => studioSearchQuerySchema.parse({ query: "busca", actor_profile_id: "owner_b" })).toThrow();
+    expect(() => studioStructureListQuerySchema.parse({ document_id: "document_1", owner_profile_id: "owner_b" })).toThrow();
     expect(() => studioCollectionDocumentParamsSchema.parse({
       collectionId: "collection_1",
       documentId: "document_1",

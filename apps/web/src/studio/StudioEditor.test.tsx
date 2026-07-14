@@ -19,8 +19,9 @@ describe("StudioEditor", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows a persistent save status beside the editable title", () => {
+  it("shows a persistent save status beside the editable title", async () => {
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+    await waitForStructureBadge();
 
     expect(screen.getByRole("textbox", { name: "Título do documento" })).toHaveValue("Plano anual");
     expect(screen.getByRole("status", { name: "Estado do salvamento" })).toHaveTextContent("Salvo");
@@ -85,13 +86,14 @@ describe("StudioEditor", () => {
       .toBe("Plano anual preservado");
   });
 
-  it("describes blocked local storage truthfully without claiming device persistence", () => {
+  it("describes blocked local storage truthfully without claiming device persistence", async () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,
       get() { throw new DOMException("blocked", "SecurityError"); }
     });
 
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+    await waitForStructureBadge();
 
     expect(screen.getByRole("status", { name: "Estado do salvamento" })).toHaveTextContent("Salvo");
     expect(screen.getByRole("alert", { name: "Armazenamento local indisponível" }))
@@ -178,6 +180,7 @@ describe("StudioEditor", () => {
       bodyText: "Primeiro\nlinha\nSegundo\nMarcador A\nMarcador B\nOrdem A\nOrdem B"
     };
     const first = render(<StudioEditor document={richDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+    await waitForStructureBadge();
 
     await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " revisado");
     const stored = JSON.parse(window.localStorage.getItem(`baase:studio:draft:${richDocument.id}`)!);
@@ -185,6 +188,7 @@ describe("StudioEditor", () => {
     first.unmount();
 
     render(<StudioEditor document={richDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+    await waitForStructureBadge();
 
     expect(screen.getByRole("textbox", { name: "Título do documento" })).toHaveValue("Plano anual revisado");
     expect(screen.queryByRole("alert", { name: "Rascunho local inválido" })).not.toBeInTheDocument();
@@ -655,6 +659,10 @@ describe("StudioEditor", () => {
     expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
   });
 });
+
+async function waitForStructureBadge() {
+  await waitFor(() => expect(screen.getByRole("button", { name: "Estruturar este pensamento" })).toHaveTextContent("Dar forma"));
+}
 
 const rawDocument = {
   id: "document_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", capture_key: null,

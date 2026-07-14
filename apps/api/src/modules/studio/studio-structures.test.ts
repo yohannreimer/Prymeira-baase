@@ -188,6 +188,16 @@ describe("Studio strategic structures", () => {
 
     const listed = await app.inject({ method: "GET", url: "/studio/structures?kind=plan&lifecycle_status=active&limit=1", headers: owner });
     expect(listed.json().structures).toHaveLength(1);
+    const documentScoped = await app.inject({
+      method: "GET",
+      url: `/studio/structures?document_id=${encodeURIComponent(document.id)}&lifecycle_status=active&limit=4`,
+      headers: owner
+    });
+    expect(documentScoped.json().structures).toEqual([expect.objectContaining({ id: structure.id, documentId: document.id })]);
+    const foreignDocument = await app.inject({
+      method: "GET", url: "/studio/structures?document_id=owner_b_document&limit=4", headers: owner
+    });
+    expect(foreignDocument.json().structures).toEqual([]);
     const archived = await app.inject({ method: "DELETE", url: `/studio/structures/${structure.id}`, headers: owner });
     const archivedAgain = await app.inject({ method: "DELETE", url: `/studio/structures/${structure.id}`, headers: owner });
     expect(archived.statusCode).toBe(200);
