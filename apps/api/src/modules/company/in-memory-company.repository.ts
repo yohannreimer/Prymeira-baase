@@ -18,7 +18,7 @@ export function createInMemoryCompanyRepository(
       return areas
         .filter((area) => area.workspaceId === workspaceId)
         .filter((area) => !area.archivedAt)
-        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
         .slice(0, filters.limit);
     },
 

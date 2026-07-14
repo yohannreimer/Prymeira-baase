@@ -90,6 +90,84 @@ function createOnboardingSetupSuggestion(): OnboardingSetupSuggestion {
 }
 
 describe("Postgres repositories", () => {
+  it("filters and limits JSONB operational context queries before hydrating rows", async () => {
+    const pool = createMemoryPool();
+    await ensurePostgresSchema(pool);
+    const workspaceId = "workspace_context_bounds";
+    const insert = async (kind: string, id: string, data: Record<string, unknown>, order: number) => {
+      const timestamp = `2026-07-01T00:00:${String(order).padStart(2, "0")}.000Z`;
+      await pool.query(
+        "INSERT INTO baase_records (kind,workspace_id,id,data,created_at,updated_at) VALUES ($1,$2,$3,$4::jsonb,$5,$5)",
+        [kind, workspaceId, id, JSON.stringify({ id, workspaceId, createdAt: timestamp, updatedAt: timestamp, ...data }), timestamp]
+      );
+    };
+    await insert("area", "area_late", { name: "Primeira por ordenação", description: null, sortOrder: 1 }, 9);
+    await insert("area", "area_early", { name: "Segunda", description: null, sortOrder: 2 }, 1);
+    for (let index = 0; index < 5; index += 1) {
+      await insert("team_member", `person_noise_${index}`, {
+        name: `Ruído ${index}`, email: null, role: "employee", areaId: null, areaAccessIds: [],
+        roleTemplateId: null, accessScope: "assigned_only", clerkUserId: null, customerId: null,
+        status: "active", createdByProfileId: "seed"
+      }, index);
+      await insert("process", `process_noise_${index}`, {
+        areaId: null, title: `Ruído ${index}`, summary: null, status: "published", ownerProfileId: `person_noise_${index}`,
+        owner: { type: "person", personId: `person_noise_${index}` }, materials: [], currentVersion: {}, versions: [],
+        createdByProfileId: "seed", publishedAt: null, archivedAt: null
+      }, index);
+      await insert("task_occurrence", `task_noise_${index}`, {
+        routineId: null, taskTemplateId: null, title: `Ruído ${index}`, processId: null,
+        assigneeProfileId: `person_noise_${index}`, approvalMode: "direct", evidencePolicy: "optional",
+        status: "pending", dueDate: "2026-06-01", evidence: null, submittedByProfileId: null,
+        submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null
+      }, index);
+    }
+    await insert("team_member", "person_target", {
+      name: "Pessoa alvo", email: null, role: "employee", areaId: null, areaAccessIds: [],
+      roleTemplateId: null, accessScope: "assigned_only", clerkUserId: null, customerId: null,
+      status: "active", createdByProfileId: "seed"
+    }, 8);
+    await insert("process", "process_target", {
+      areaId: null, title: "Processo alvo", summary: null, status: "published", ownerProfileId: null,
+      owner: { type: "person", personId: "person_target" }, materials: [], currentVersion: {}, versions: [],
+      createdByProfileId: "seed", publishedAt: null, archivedAt: null
+    }, 8);
+    await insert("routine", "routine_first", { areaId: null, title: "Rotina 1", status: "active", createdByProfileId: "seed", taskTemplates: [] }, 6);
+    await insert("routine", "routine_second", { areaId: null, title: "Rotina 2", status: "active", createdByProfileId: "seed", taskTemplates: [] }, 7);
+    await insert("task_occurrence", "task_target", {
+      routineId: null, taskTemplateId: null, title: "Tarefa alvo", processId: "process_target",
+      assigneeProfileId: "person_target", approvalMode: "direct", evidencePolicy: "optional",
+      status: "pending", dueDate: "2026-07-10", evidence: null, submittedByProfileId: null,
+      submittedAt: null, reviewedByProfileId: null, reviewedAt: null, reviewComment: null
+    }, 8);
+    await insert("task_occurrence", "task_completed_on_local_july_31", {
+      routineId: null, taskTemplateId: null, title: "Conclusão no período local", processId: null,
+      assigneeProfileId: "person_completed", approvalMode: "direct", evidencePolicy: "optional",
+      status: "completed", dueDate: "2026-06-10", evidence: null, submittedByProfileId: "person_completed",
+      submittedAt: "2026-08-01T01:30:00.000Z", reviewedByProfileId: "owner", reviewedAt: "2026-08-01T02:30:00.000Z",
+      reviewComment: null
+    }, 9);
+
+    const bundle = createPostgresRepositoryBundle(pool);
+    await expect(bundle.companyRepository.listAreas(workspaceId, { limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: "area_late", sortOrder: 1 })
+    ]);
+    await expect(bundle.companyRepository.listTeamMembers(workspaceId, { ids: ["person_target"], limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: "person_target" })
+    ]);
+    await expect(bundle.processRepository.listProcesses(workspaceId, { ownerProfileIds: ["person_target"], limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: "process_target" })
+    ]);
+    await expect(bundle.routineRepository.listRoutines(workspaceId, { limit: 1 })).resolves.toEqual([
+      expect.objectContaining({ id: "routine_first" })
+    ]);
+    await expect(bundle.routineRepository.listTaskOccurrences(workspaceId, {
+      assigneeProfileIds: ["person_target"], operationalFrom: "2026-07-01", operationalTo: "2026-07-31", limit: 1
+    })).resolves.toEqual([expect.objectContaining({ id: "task_target" })]);
+    await expect(bundle.routineRepository.listTaskOccurrences(workspaceId, {
+      assigneeProfileIds: ["person_completed"], operationalFrom: "2026-07-31", operationalTo: "2026-07-31", limit: 1
+    })).resolves.toEqual([expect.objectContaining({ id: "task_completed_on_local_july_31" })]);
+  });
+
   it("creates new records after deletions without reusing sparse ids", async () => {
     const pool = createMemoryPool();
     await ensurePostgresSchema(pool);

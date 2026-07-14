@@ -52,6 +52,28 @@ function now() {
   return new Date().toISOString();
 }
 
+function addDate(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function operationalTimestamp(value: string) {
+  const [year, month, day] = value.split("-").map(Number) as [number, number, number];
+  const target = Date.UTC(year, month - 1, day);
+  let candidate = target;
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+    }).formatToParts(new Date(candidate));
+    const read = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    const represented = Date.UTC(read("year"), read("month") - 1, read("day"), read("hour"), read("minute"), read("second"));
+    candidate += target - represented;
+  }
+  return new Date(candidate).toISOString();
+}
+
 function nextTimestamp(previousTimestamp: string) {
   const timestamp = now();
   if (new Date(timestamp).getTime() > new Date(previousTimestamp).getTime()) return timestamp;
@@ -96,6 +118,72 @@ class JsonbRecordStore {
     if (limit) { params.push(limit); sql += ` LIMIT $${params.length}`; }
     const result = await this.db.query<RecordRow<T>>(sql, params);
     return result.rows.map((row) => row.data);
+  }
+
+  async listAreas(workspaceId: string, limit?: number) {
+    const params: unknown[] = [workspaceId];
+    let sql = `SELECT data FROM ${tableName} WHERE kind='area' AND workspace_id=$1 AND data ->> 'archivedAt' IS NULL ORDER BY (data ->> 'sortOrder')::int,id`;
+    if (limit) { params.push(limit); sql += ` LIMIT $${params.length}`; }
+    return (await this.db.query<RecordRow<Area>>(sql, params)).rows.map((row) => row.data);
+  }
+
+  async listTeamMembers(workspaceId: string, filters: { ids?: string[]; limit?: number }) {
+    const params: unknown[] = [workspaceId];
+    let sql = `SELECT data FROM ${tableName} WHERE kind='team_member' AND workspace_id=$1 AND COALESCE(data ->> 'status','active')<>'archived'`;
+    if (filters.ids?.length) { params.push(filters.ids); sql += ` AND id=ANY($${params.length}::text[])`; }
+    sql += " ORDER BY created_at,id";
+    if (filters.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+    return (await this.db.query<RecordRow<TeamMember>>(sql, params)).rows.map((row) => row.data);
+  }
+
+  async listProcesses(workspaceId: string, filters: { ids?: string[]; ownerProfileIds?: string[]; limit?: number }) {
+    const params: unknown[] = [workspaceId];
+    let sql = `SELECT data FROM ${tableName} WHERE kind='process' AND workspace_id=$1`;
+    const selectors: string[] = [];
+    if (filters.ids?.length) { params.push(filters.ids); selectors.push(`id=ANY($${params.length}::text[])`); }
+    if (filters.ownerProfileIds?.length) {
+      params.push(filters.ownerProfileIds);
+      selectors.push(`(data ->> 'ownerProfileId'=ANY($${params.length}::text[]) OR data -> 'owner' ->> 'personId'=ANY($${params.length}::text[]))`);
+    }
+    if (selectors.length) sql += ` AND (${selectors.join(" OR ")})`;
+    sql += " ORDER BY created_at,id";
+    if (filters.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+    return (await this.db.query<RecordRow<CompanyProcess>>(sql, params)).rows.map((row) => row.data);
+  }
+
+  listRoutines(workspaceId: string, limit?: number) {
+    return this.list<CompanyRoutine>("routine", workspaceId, limit);
+  }
+
+  async listTaskOccurrences(
+    workspaceId: string,
+    filters: Parameters<RoutineRepository["listTaskOccurrences"]>[1] = {}
+  ) {
+    const params: unknown[] = [workspaceId];
+    let sql = `SELECT data FROM ${tableName} WHERE kind='task_occurrence' AND workspace_id=$1`;
+    if (filters?.dueDate) { params.push(filters.dueDate); sql += ` AND data ->> 'dueDate'=$${params.length}`; }
+    if (filters?.assigneeProfileIds?.length) {
+      params.push(filters.assigneeProfileIds);
+      sql += ` AND data ->> 'assigneeProfileId'=ANY($${params.length}::text[])`;
+    }
+    if (filters?.operationalFrom && filters.operationalTo) {
+      params.push(
+        filters.operationalFrom,
+        filters.operationalTo,
+        operationalTimestamp(filters.operationalFrom),
+        operationalTimestamp(addDate(filters.operationalTo, 1))
+      );
+      const fromDate = `$${params.length - 3}`;
+      const toDate = `$${params.length - 2}`;
+      const fromTimestamp = `$${params.length - 1}`;
+      const toTimestamp = `$${params.length}`;
+      const completion = "COALESCE(data ->> 'reviewedAt',data ->> 'submittedAt',data ->> 'updatedAt')";
+      const reviewed = "data ->> 'reviewedAt'";
+      sql += ` AND (data ->> 'dueDate' BETWEEN ${fromDate} AND ${toDate} OR (data ->> 'status'='completed' AND ${completion}>=${fromTimestamp} AND ${completion}<${toTimestamp}) OR (${reviewed}>=${fromTimestamp} AND ${reviewed}<${toTimestamp}))`;
+    }
+    sql += " ORDER BY created_at,id";
+    if (filters?.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+    return (await this.db.query<RecordRow<TaskOccurrence>>(sql, params)).rows.map((row) => row.data);
   }
 
   async find<T>(kind: string, workspaceId: string, id: string) {
@@ -448,9 +536,8 @@ function createPostgresAiRepository(store: JsonbRecordStore): AiRepository {
 
 function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerator: () => string): CompanyRepository {
   return {
-    async listAreas(workspaceId) {
-      const areas = await store.list<Area>("area", workspaceId);
-      return areas.filter((area) => !area.archivedAt).sort((a, b) => a.sortOrder - b.sortOrder);
+    async listAreas(workspaceId, filters = {}) {
+      return store.listAreas(workspaceId, filters.limit);
     },
 
     async findAreaById(workspaceId, areaId) {
@@ -513,10 +600,8 @@ function createJsonbCompanyRepository(store: JsonbRecordStore, inviteCodeGenerat
       });
     },
 
-    listTeamMembers(workspaceId) {
-      return store.list<TeamMember>("team_member", workspaceId).then((people) => people
-        .map(normalizeJsonbTeamMember)
-        .filter((person) => person.status !== "archived"));
+    listTeamMembers(workspaceId, filters = {}) {
+      return store.listTeamMembers(workspaceId, filters).then((people) => people.map(normalizeJsonbTeamMember));
     },
 
     findTeamMember(workspaceId, personId) {
@@ -806,8 +891,8 @@ function isInviteCodeConflict(error: unknown) {
 
 function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepository {
   return {
-    async listProcesses(workspaceId) {
-      return (await store.list<CompanyProcess>("process", workspaceId)).map(normalizeJsonbProcess);
+    async listProcesses(workspaceId, filters = {}) {
+      return (await store.listProcesses(workspaceId, filters)).map(normalizeJsonbProcess);
     },
 
     async findProcess(workspaceId, processId) {
@@ -930,8 +1015,8 @@ function normalizeJsonbProcess(process: CompanyProcess): CompanyProcess {
 
 function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepository {
   return {
-    listRoutines(workspaceId) {
-      return store.list<CompanyRoutine>("routine", workspaceId);
+    listRoutines(workspaceId, filters = {}) {
+      return store.listRoutines(workspaceId, filters.limit);
     },
 
     findRoutine(workspaceId, routineId) {
@@ -986,12 +1071,8 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       });
     },
 
-    async listTaskOccurrences(workspaceId, filters = {}) {
-      const tasks = await store.list<TaskOccurrence>("task_occurrence", workspaceId);
-      return tasks.filter((task) => {
-        if (filters.dueDate && task.dueDate !== filters.dueDate) return false;
-        return true;
-      });
+    listTaskOccurrences(workspaceId, filters = {}) {
+      return store.listTaskOccurrences(workspaceId, filters);
     },
 
     findTaskOccurrence(workspaceId, taskId) {
