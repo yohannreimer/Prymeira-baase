@@ -240,6 +240,9 @@ describe("operational schema", () => {
 
     expect(schema).toContain('version: 21');
     expect(schema).toContain('name: "studio_library_cursor_indexes"');
+    expect(schema).toContain(`CREATE INDEX studio_documents_owner_library_cursor_idx
+      ON studio_documents
+        (workspace_id,owner_profile_id,${cursorExpression} DESC,id DESC);`);
     expect(schema).toContain(`studio_documents_active_library_cursor_idx`);
     expect(schema).toContain(`studio_documents_active_inbox_cursor_idx`);
     expect(schema).toContain(`studio_documents_archived_library_cursor_idx`);

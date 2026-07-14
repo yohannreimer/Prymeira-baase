@@ -321,6 +321,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         `select indexname,indexdef from pg_indexes
          where schemaname=current_schema()
            and indexname in (
+             'studio_documents_owner_library_cursor_idx',
              'studio_documents_active_library_cursor_idx',
              'studio_documents_active_inbox_cursor_idx',
              'studio_documents_archived_library_cursor_idx'
@@ -329,7 +330,8 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       expect(cursorIndexes.rows.map((row) => row.indexname)).toEqual([
         "studio_documents_active_inbox_cursor_idx",
         "studio_documents_active_library_cursor_idx",
-        "studio_documents_archived_library_cursor_idx"
+        "studio_documents_archived_library_cursor_idx",
+        "studio_documents_owner_library_cursor_idx"
       ]);
       expect(cursorIndexes.rows.every((row) => row.indexdef.includes("date_bin(")
         && row.indexdef.includes("updated_at")
@@ -339,6 +341,42 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
          where oid='date_bin(interval,timestamp with time zone,timestamp with time zone)'::regprocedure`
       );
       expect(volatility.rows).toEqual([{ provolatile: "i" }]);
+
+      const cursorExpression = "date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz)";
+      const plans = [
+        {
+          index: "studio_documents_owner_library_cursor_idx",
+          where: "workspace_id='workspace_a' and owner_profile_id='owner_a'"
+        },
+        {
+          index: "studio_documents_active_library_cursor_idx",
+          where: "workspace_id='workspace_a' and owner_profile_id='owner_a' and status='active'"
+        },
+        {
+          index: "studio_documents_active_inbox_cursor_idx",
+          where: "workspace_id='workspace_a' and owner_profile_id='owner_a' and status='active' and inbox_state='pending_review'"
+        },
+        {
+          index: "studio_documents_archived_library_cursor_idx",
+          where: "workspace_id='workspace_a' and owner_profile_id='owner_a' and status='archived'"
+        }
+      ];
+      const planner = await pool.connect();
+      try {
+        await planner.query("begin");
+        await planner.query("set local enable_seqscan=off");
+        for (const expected of plans) {
+          const explain = await planner.query(
+            `explain (format json) select id from studio_documents
+             where ${expected.where}
+             order by ${cursorExpression} desc,id desc limit 30`
+          );
+          expect(JSON.stringify(explain.rows)).toContain(expected.index);
+        }
+      } finally {
+        await planner.query("rollback");
+        planner.release();
+      }
       const insert = (id: string, objectKey: string) => pool.query(
         `insert into studio_assets
           (id,workspace_id,owner_profile_id,document_id,idempotency_key,kind,display_name,

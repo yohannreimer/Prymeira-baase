@@ -88,7 +88,7 @@ export default function StudioCollections({
       <form className="studio-collections__create" onSubmit={(event) => { event.preventDefault(); void create(); }}>
         <label htmlFor="studio-new-collection">Nova coleção</label>
         <input id="studio-new-collection" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Estratégia 2027" />
-        <button type="submit" disabled={!name.trim() || busyAction !== null}>{busyAction === "create" ? "Criando…" : "Criar"}</button>
+        <button type="submit" disabled={store.loading || !name.trim() || busyAction !== null}>{busyAction === "create" ? "Criando…" : "Criar"}</button>
       </form>
       {store.loading ? <p className="studio-library-opening" role="status">Carregando coleções…</p> : collections.length ? (
         <div className="studio-collections__layout">

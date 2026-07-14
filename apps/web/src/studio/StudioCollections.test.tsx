@@ -66,6 +66,20 @@ describe("StudioCollections", () => {
     expect(screen.getByText("Coleção excluída. Os documentos continuam preservados.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Estratégia" })).toHaveAttribute("aria-pressed", "true");
   });
+
+  it("does not allow create while the initial collection snapshot is loading", async () => {
+    render(<StudioCollections store={{
+      collections: [],
+      loading: true,
+      loadError: false,
+      create: vi.fn(),
+      rename: vi.fn(),
+      remove: vi.fn()
+    }} onOpenDocument={vi.fn()} />);
+
+    await userEvent.setup().type(screen.getByLabelText("Nova coleção"), "Direção");
+    expect(screen.getByRole("button", { name: "Criar" })).toBeDisabled();
+  });
 });
 
 function CollectionsHarness() {

@@ -23,6 +23,29 @@ export type StudioCollectionsStore = {
   remove(collection: StudioCollection): Promise<boolean>;
 };
 
+type CollectionMutation = {
+  token: number;
+  status: "pending" | "successful";
+} & ({
+  type: "create";
+  collection?: StudioCollection;
+} | {
+  type: "rename";
+  collectionId: string;
+  original: StudioCollection;
+  name: string;
+  collection?: StudioCollection;
+} | {
+  type: "delete";
+  collectionId: string;
+  original: StudioCollection;
+});
+
+type CollectionMutationInput =
+  | { type: "create" }
+  | { type: "rename"; collectionId: string; original: StudioCollection; name: string }
+  | { type: "delete"; collectionId: string; original: StudioCollection };
+
 const defaultDependencies: StudioCollectionsDependencies = {
   listCollections: (signal) => listStudioCollections(fetch, signal),
   createCollection: (name, signal) => createStudioCollection(name, signal),
@@ -30,35 +53,65 @@ const defaultDependencies: StudioCollectionsDependencies = {
   deleteCollection: (collectionId, signal) => deleteStudioCollection(collectionId, signal)
 };
 
-let optimisticSequence = 0;
-
 export function useStudioCollections(
   dependencies: StudioCollectionsDependencies = defaultDependencies
 ): StudioCollectionsStore {
   const [collections, setCollections] = useState<StudioCollection[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const collectionsRef = useRef<StudioCollection[]>([]);
-  const generation = useRef(0);
+  const snapshot = useRef<StudioCollection[] | null>(null);
+  const preloadBaseline = useRef<StudioCollection[]>([]);
+  const mutations = useRef<CollectionMutation[]>([]);
+  const mutationSequence = useRef(0);
   const controllers = useRef(new Set<AbortController>());
   const dependenciesRef = useRef(dependencies);
 
-  function replace(next: StudioCollection[]) {
-    collectionsRef.current = next;
-    setCollections(next);
+  function publish() {
+    setCollections(applyCollectionMutations(snapshot.current ?? preloadBaseline.current, mutations.current));
+  }
+
+  function rememberBeforeLoad(collection: StudioCollection) {
+    if (snapshot.current || preloadBaseline.current.some((item) => item.id === collection.id)) return;
+    preloadBaseline.current = [...preloadBaseline.current, collection];
+  }
+
+  function begin(mutation: CollectionMutationInput) {
+    const token = ++mutationSequence.current;
+    mutations.current = [...mutations.current, { ...mutation, token, status: "pending" } as CollectionMutation];
+    publish();
+    return token;
+  }
+
+  function succeed(token: number, collection?: StudioCollection) {
+    mutations.current = mutations.current.map((mutation) => mutation.token === token
+      ? { ...mutation, status: "successful", ...(collection ? { collection } : {}) } as CollectionMutation
+      : mutation);
+    if (snapshot.current) {
+      const completed = mutations.current.find((mutation) => mutation.token === token);
+      if (completed) snapshot.current = applyCollectionMutation(snapshot.current, completed);
+      mutations.current = mutations.current.filter((mutation) => mutation.token !== token);
+    }
+    publish();
+  }
+
+  function fail(token: number) {
+    mutations.current = mutations.current.filter((mutation) => mutation.token !== token);
+    publish();
   }
 
   useEffect(() => {
-    const requestGeneration = ++generation.current;
     const controller = trackController(controllers.current);
     setLoading(true);
     setLoadError(false);
     void dependenciesRef.current.listCollections(controller.signal).then((items) => {
-      if (controller.signal.aborted || generation.current !== requestGeneration) return;
-      replace(items);
+      if (controller.signal.aborted) return;
+      const completed = mutations.current.filter((mutation) => mutation.status === "successful");
+      snapshot.current = applyCollectionMutations(items, completed);
+      mutations.current = mutations.current.filter((mutation) => mutation.status === "pending");
+      publish();
       setLoading(false);
     }).catch(() => {
-      if (controller.signal.aborted || generation.current !== requestGeneration) return;
+      if (controller.signal.aborted) return;
       setLoadError(true);
       setLoading(false);
     }).finally(() => controllers.current.delete(controller));
@@ -66,33 +119,20 @@ export function useStudioCollections(
   }, []);
 
   useEffect(() => () => {
-    generation.current += 1;
     controllers.current.forEach((controller) => controller.abort());
     controllers.current.clear();
   }, []);
 
   async function create(name: string) {
-    generation.current += 1;
-    setLoading(false);
-    const now = new Date().toISOString();
-    const temporaryId = `optimistic_collection_${++optimisticSequence}`;
-    const optimistic: StudioCollection = {
-      id: temporaryId,
-      workspaceId: "",
-      ownerProfileId: "",
-      name,
-      createdAt: now,
-      updatedAt: now
-    };
-    replace([...collectionsRef.current, optimistic]);
+    const token = begin({ type: "create" });
     const controller = trackController(controllers.current);
     try {
       const created = await dependenciesRef.current.createCollection(name, controller.signal);
       if (controller.signal.aborted) return null;
-      replace(collectionsRef.current.map((item) => item.id === temporaryId ? created : item));
+      succeed(token, created);
       return created;
     } catch {
-      if (!controller.signal.aborted) replace(collectionsRef.current.filter((item) => item.id !== temporaryId));
+      if (!controller.signal.aborted) fail(token);
       return null;
     } finally {
       controllers.current.delete(controller);
@@ -100,20 +140,16 @@ export function useStudioCollections(
   }
 
   async function rename(collection: StudioCollection, name: string) {
-    generation.current += 1;
-    replace(collectionsRef.current.map((item) => item.id === collection.id
-      ? { ...item, name, updatedAt: new Date().toISOString() }
-      : item));
+    rememberBeforeLoad(collection);
+    const token = begin({ type: "rename", collectionId: collection.id, original: collection, name });
     const controller = trackController(controllers.current);
     try {
       const updated = await dependenciesRef.current.renameCollection(collection.id, name, controller.signal);
       if (controller.signal.aborted) return null;
-      replace(collectionsRef.current.map((item) => item.id === collection.id ? updated : item));
+      succeed(token, updated);
       return updated;
     } catch {
-      if (!controller.signal.aborted) {
-        replace(collectionsRef.current.map((item) => item.id === collection.id ? collection : item));
-      }
+      if (!controller.signal.aborted) fail(token);
       return null;
     } finally {
       controllers.current.delete(controller);
@@ -121,19 +157,16 @@ export function useStudioCollections(
   }
 
   async function remove(collection: StudioCollection) {
-    generation.current += 1;
-    const index = collectionsRef.current.findIndex((item) => item.id === collection.id);
-    replace(collectionsRef.current.filter((item) => item.id !== collection.id));
+    rememberBeforeLoad(collection);
+    const token = begin({ type: "delete", collectionId: collection.id, original: collection });
     const controller = trackController(controllers.current);
     try {
       await dependenciesRef.current.deleteCollection(collection.id, controller.signal);
-      return !controller.signal.aborted;
+      if (controller.signal.aborted) return false;
+      succeed(token);
+      return true;
     } catch {
-      if (!controller.signal.aborted && !collectionsRef.current.some((item) => item.id === collection.id)) {
-        const restored = [...collectionsRef.current];
-        restored.splice(Math.max(0, index), 0, collection);
-        replace(restored);
-      }
+      if (!controller.signal.aborted) fail(token);
       return false;
     } finally {
       controllers.current.delete(controller);
@@ -141,6 +174,31 @@ export function useStudioCollections(
   }
 
   return { collections, loading, loadError, create, rename, remove };
+}
+
+function applyCollectionMutations(base: StudioCollection[], mutations: CollectionMutation[]) {
+  return mutations.reduce(applyCollectionMutation, base);
+}
+
+function applyCollectionMutation(collections: StudioCollection[], mutation: CollectionMutation) {
+  if (mutation.type === "create") {
+    if (mutation.status !== "successful" || !mutation.collection) return collections;
+    return replaceOrAppend(collections, mutation.collection);
+  }
+  if (mutation.type === "delete") {
+    return collections.filter((item) => item.id !== mutation.collectionId);
+  }
+
+  const updated = mutation.status === "successful" && mutation.collection
+    ? mutation.collection
+    : { ...mutation.original, name: mutation.name, updatedAt: new Date().toISOString() };
+  return replaceOrAppend(collections, updated);
+}
+
+function replaceOrAppend(collections: StudioCollection[], collection: StudioCollection) {
+  return collections.some((item) => item.id === collection.id)
+    ? collections.map((item) => item.id === collection.id ? collection : item)
+    : [...collections, collection];
 }
 
 function trackController(controllers: Set<AbortController>) {

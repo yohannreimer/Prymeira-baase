@@ -895,6 +895,9 @@ const migrations: Migration[] = [{
   version: 21,
   name: "studio_library_cursor_indexes",
   sql: `
+    CREATE INDEX studio_documents_owner_library_cursor_idx
+      ON studio_documents
+        (workspace_id,owner_profile_id,date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC);
     CREATE INDEX studio_documents_active_library_cursor_idx
       ON studio_documents
         (workspace_id,owner_profile_id,date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC)
