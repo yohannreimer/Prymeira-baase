@@ -340,23 +340,33 @@ describe("AI harness", () => {
   it("finalizes an aborted or never-consumed stream without waiting for the first pull", async () => {
     const abortedRepository = createInMemoryAiRepository();
     const controller = new AbortController();
+    const observedSignals: AbortSignal[] = [];
+    const fallbackProvider = createMockAiProvider();
+    const signalProvider = createProvider({
+      streamText(request) {
+        observedSignals.push(request.signal!);
+        return fallbackProvider.streamText(request);
+      }
+    });
+    controller.abort(new Error("pre-aborted"));
     const abortedHarness = createAiHarness({
       repository: abortedRepository,
-      provider: createMockAiProvider(),
+      provider: signalProvider,
       streamStartTimeoutMs: 1_000
     });
     const aborted = await abortedHarness.runTextStream({ ...streamRunRequest(), signal: controller.signal });
-    controller.abort();
     await vi.waitFor(async () => {
       await expect(abortedRepository.findRun(
         "workspace_a", aborted.run.id, "profile_owner"
       )).resolves.toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
     });
+    expect(observedSignals[0]?.aborted).toBe(true);
+    expect(observedSignals[0]).not.toBe(controller.signal);
 
     const idleRepository = createInMemoryAiRepository();
     const idleHarness = createAiHarness({
       repository: idleRepository,
-      provider: createMockAiProvider(),
+      provider: signalProvider,
       streamStartTimeoutMs: 5
     });
     const idle = await idleHarness.runTextStream(streamRunRequest());
@@ -365,17 +375,28 @@ describe("AI harness", () => {
         "workspace_a", idle.run.id, "profile_owner"
       )).resolves.toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
     });
+    expect(observedSignals[1]?.aborted).toBe(true);
   });
 
   it("bounds an idle provider pull and closes it without leaving the run active", async () => {
     const repository = createInMemoryAiRepository();
     let returned = 0;
+    let pendingNext = 0;
+    let providerSignal: AbortSignal | undefined;
     const provider = createProvider({
-      streamText() {
+      streamText(request) {
+        providerSignal = request.signal;
         return {
           [Symbol.asyncIterator]() {
             return {
-              next: () => new Promise<IteratorResult<AiTextStreamEvent>>(() => undefined),
+              next: () => new Promise<IteratorResult<AiTextStreamEvent>>((_resolve, reject) => {
+                pendingNext += 1;
+                const abort = () => {
+                  pendingNext -= 1;
+                  reject(request.signal?.reason);
+                };
+                request.signal?.addEventListener("abort", abort, { once: true });
+              }),
               async return() {
                 returned += 1;
                 return { done: true, value: undefined };
@@ -399,6 +420,111 @@ describe("AI harness", () => {
       validationErrors: ["AI_STREAM_FAILED"]
     });
     expect(returned).toBe(1);
+    expect(providerSignal?.aborted).toBe(true);
+    expect(pendingNext).toBe(0);
+  });
+
+  it("aborts the provider and awaits terminal audit on consumer return", async () => {
+    const repository = createInMemoryAiRepository();
+    let providerSignal: AbortSignal | undefined;
+    let pendingNext = 0;
+    let returned = 0;
+    const provider = createProvider({
+      streamText(request) {
+        providerSignal = request.signal;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<AiTextStreamEvent>>((_resolve, reject) => {
+                pendingNext += 1;
+                request.signal?.addEventListener("abort", () => {
+                  pendingNext -= 1;
+                  reject(request.signal?.reason);
+                }, { once: true });
+              }),
+              async return() {
+                returned += 1;
+                return { done: true, value: undefined };
+              }
+            };
+          }
+        };
+      }
+    });
+    const harness = createAiHarness({ repository, provider });
+    const result = await harness.runTextStream(streamRunRequest());
+    const iterator = result.events[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    const pendingSettled = pending.then((value) => value, (error) => error);
+    const returnedResult = iterator.return!();
+
+    await expect(returnedResult).resolves.toEqual({ done: true, value: undefined });
+    await expect(pendingSettled).resolves.toBeDefined();
+    expect(providerSignal?.aborted).toBe(true);
+    expect(pendingNext).toBe(0);
+    expect(returned).toBe(1);
+    await expect(repository.findRun("workspace_a", result.run.id, "profile_owner")).resolves.toMatchObject({
+      status: "failed"
+    });
+  });
+
+  it("does not expose success, failure, or cancellation before terminal audit persistence", async () => {
+    const runScenario = async (kind: "success" | "failure" | "cancel") => {
+      const repository = createInMemoryAiRepository();
+      const gate = deferred<void>();
+      let updateStarted = false;
+      let updates = 0;
+      const provider = kind === "failure"
+        ? createProvider({ async *streamText() { throw new Error("PROVIDER_FAILED"); } })
+        : createMockAiProvider({ streamEvents: [{ type: "done", text: "Final" }] });
+      const harness = createAiHarness({
+        repository: {
+          ...repository,
+          async updateRun(run) {
+            updates += 1;
+            updateStarted = true;
+            await gate.promise;
+            return repository.updateRun(run);
+          }
+        },
+        provider
+      });
+      const result = await harness.runTextStream(streamRunRequest());
+      const iterator = result.events[Symbol.asyncIterator]();
+      const terminal = kind === "cancel" ? iterator.return!() : iterator.next();
+      await vi.waitFor(() => expect(updateStarted).toBe(true));
+      let settled = false;
+      void terminal.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      gate.resolve();
+      if (kind === "failure") await expect(terminal).rejects.toThrow("PROVIDER_FAILED");
+      else await expect(terminal).resolves.toBeDefined();
+      expect(updates).toBe(1);
+    };
+
+    await runScenario("success");
+    await runScenario("failure");
+    await runScenario("cancel");
+  });
+
+  it("surfaces terminal audit persistence failure once without an unhandled retry", async () => {
+    const repository = createInMemoryAiRepository();
+    let updates = 0;
+    const harness = createAiHarness({
+      repository: {
+        ...repository,
+        async updateRun() {
+          updates += 1;
+          throw new Error("DATABASE_UNAVAILABLE");
+        }
+      },
+      provider: createMockAiProvider({ streamEvents: [{ type: "done", text: "Final" }] })
+    });
+    const result = await harness.runTextStream(streamRunRequest());
+
+    await expect(collect(result.events)).rejects.toThrow("AI_STREAM_AUDIT_PERSIST_FAILED");
+    expect(updates).toBe(1);
   });
 
   it("allows one consumer, rejects concurrent pulls, and never yields after done", async () => {
@@ -501,6 +627,22 @@ describe("AI harness", () => {
       url: "https://example.com/fonte",
       publishedAt: "não-é-data"
     })).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+    for (const publishedAt of [
+      "2026-02-30",
+      "2026-04-31",
+      "2025-02-29",
+      "2026-01-01T24:00:00Z",
+      "2026-01-01T23:60:00Z",
+      "2026-01-01T23:59:60Z",
+      "2026-01-01T12:00:00+14:30"
+    ]) {
+      await expect(runCitation({
+        type: "citation",
+        title: "Fonte",
+        url: "https://example.com/fonte",
+        publishedAt
+      })).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+    }
     await expect(runCitation({
       type: "citation",
       title: "  Fonte pública  ",
@@ -512,6 +654,12 @@ describe("AI harness", () => {
       url: "https://example.com/fonte",
       publishedAt: "2026-06-01"
     }]);
+    await expect(runCitation({
+      type: "citation",
+      title: "Fonte bissexta",
+      url: "https://example.com/bissexto",
+      publishedAt: "2024-02-29T23:59:59.123Z"
+    })).resolves.toHaveLength(1);
   });
 
   it("handles cyclic private input and truncates non-private Unicode summaries safely", async () => {
@@ -543,6 +691,31 @@ describe("AI harness", () => {
     const unicodeRun = await unicodeRepository.findRun("workspace_a", unicodeResult.run.id);
     expect(Array.from(unicodeRun?.outputSummary ?? "")).toHaveLength(160);
     expect(unicodeRun?.outputSummary).not.toContain("�");
+
+    const family = "👨‍👩‍👧‍👦";
+    const graphemeRepository = createInMemoryAiRepository();
+    const graphemeHarness = createAiHarness({
+      repository: graphemeRepository,
+      provider: createMockAiProvider({
+        streamEvents: [
+          { type: "delta", text: "a".repeat(154) },
+          { type: "delta", text: "👨‍" },
+          { type: "delta", text: "👩‍👧‍👦" },
+          { type: "delta", text: "👍" },
+          { type: "delta", text: "🏽" },
+          { type: "delta", text: "e" },
+          { type: "delta", text: "\u0301" },
+          { type: "delta", text: "x".repeat(10) }
+        ]
+      })
+    });
+    const graphemeResult = await graphemeHarness.runTextStream({
+      ...streamRunRequest(), source: "create_with_ai", taskKind: "process_draft"
+    });
+    await collect(graphemeResult.events);
+    await expect(graphemeRepository.findRun("workspace_a", graphemeResult.run.id)).resolves.toMatchObject({
+      outputSummary: `${"a".repeat(154)}${family}👍🏽é...`
+    });
   });
 
   it("returns one finite, consistently-sized embedding per input", async () => {
@@ -600,4 +773,14 @@ async function collect(events: AsyncIterable<AiTextStreamEvent>) {
 function createProvider(overrides: Partial<AiProvider>): AiProvider {
   const fallback = createMockAiProvider();
   return { ...fallback, ...overrides };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

@@ -217,6 +217,28 @@ describe("OpenAI provider", () => {
     expect(calls[1]).toMatchObject({ tools: [{ type: "web_search" }] });
   });
 
+  it("passes the stream abort signal to the OpenAI Responses request", async () => {
+    const requestSignals: Array<AbortSignal | undefined> = [];
+    const provider = createOpenAiProvider({
+      client: {
+        responses: {
+          create: async (_payload: unknown, requestOptions?: { signal?: AbortSignal }) => {
+            requestSignals.push(requestOptions?.signal);
+            return asyncEvents([{ type: "response.output_text.done", text: "Pronto" }]);
+          }
+        },
+        embeddings: { create: async () => ({ data: [] }) }
+      }
+    });
+    const controller = new AbortController();
+
+    await expect(collect(provider.streamText({
+      ...textRequest(false),
+      signal: controller.signal
+    }))).resolves.toEqual([{ type: "done", text: "Pronto" }]);
+    expect(requestSignals).toEqual([controller.signal]);
+  });
+
   it("orders embeddings by provider index", async () => {
     const calls: unknown[] = [];
     const provider = createOpenAiProvider({

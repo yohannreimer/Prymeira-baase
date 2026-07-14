@@ -111,6 +111,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         costEstimateCents: null,
         latencyMs: null
       });
+      const providerAbort = createComposedAbortController(request.signal);
       let providerEvents: AsyncIterable<AiTextStreamEvent>;
       try {
         providerEvents = options.provider.streamText({
@@ -122,9 +123,11 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           reasoningEffort: request.reasoningEffort,
           input: request.input,
           allowExternalResearch: request.allowExternalResearch,
-          signal: request.signal
+          signal: providerAbort.signal
         });
       } catch (error) {
+        providerAbort.abort(error);
+        providerAbort.cleanup();
         await options.repository.updateRun({
           ...run,
           status: "failed",
@@ -148,6 +151,8 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           startTimeoutMs: options.streamStartTimeoutMs ?? 30_000,
           idleTimeoutMs: options.streamIdleTimeoutMs ?? 120_000,
           citationResolver: options.citationResolver,
+          abortProvider: providerAbort.abort,
+          cleanupProviderSignal: providerAbort.cleanup,
           complete: (outputSummary) => options.repository.updateRun({
             ...run,
             status: "completed",
@@ -238,6 +243,8 @@ type AuditedTextStreamOptions = {
   startTimeoutMs: number;
   idleTimeoutMs: number;
   citationResolver?: StudioLinkResolver;
+  abortProvider(reason: unknown): void;
+  cleanupProviderSignal(): void;
   complete(outputSummary: string): Promise<unknown>;
   fail(message: string): Promise<unknown>;
 };
@@ -251,6 +258,7 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
   let closed = false;
   let closing: Promise<void> | null = null;
   let finalization: Promise<void> | null = null;
+  let terminalError: Error | null = null;
   let resolveTermination!: () => void;
   const termination = new Promise<void>((resolve) => { resolveTermination = resolve; });
 
@@ -258,6 +266,7 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
   const cleanup = () => {
     clearStartTimer();
     options.signal?.removeEventListener("abort", onAbort);
+    options.cleanupProviderSignal();
   };
 
   function getProviderIterator() {
@@ -295,28 +304,47 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
   }
 
   async function complete() {
-    if (finalization) return finalization;
-    finalized = true;
-    resolveTermination();
-    cleanup();
-    finalization = Promise.resolve(options.complete(
-      options.privateOutput ? PRIVATE_OUTPUT_SUMMARY : summary.read()
-    )).then(() => undefined);
-    return finalization;
+    if (!finalization) {
+      finalized = true;
+      cleanup();
+      finalization = persistTerminal(() => options.complete(
+        options.privateOutput ? PRIVATE_OUTPUT_SUMMARY : summary.read()
+      ));
+    }
+    await finalization;
+    if (terminalError) throw terminalError;
   }
 
   async function fail(message: string) {
-    if (finalization) return finalization;
-    finalized = true;
-    resolveTermination();
-    cleanup();
-    finalization = Promise.resolve(options.fail(message)).then(() => undefined);
-    return finalization;
+    if (!finalization) {
+      finalized = true;
+      cleanup();
+      finalization = persistTerminal(() => options.fail(message));
+    }
+    await finalization;
+    if (terminalError) throw terminalError;
+  }
+
+  async function persistTerminal(persist: () => Promise<unknown>) {
+    try {
+      await persist();
+    } catch (error) {
+      terminalError = createAuditPersistenceError(error);
+    } finally {
+      resolveTermination();
+    }
   }
 
   async function cancel(message: string) {
-    await fail(message);
+    options.abortProvider(new Error(message));
+    let auditError: unknown;
+    try {
+      await fail(message);
+    } catch (error) {
+      auditError = error;
+    }
     await closeProviderBounded().catch(() => undefined);
+    if (auditError) throw auditError;
   }
 
   function onAbort() {
@@ -330,7 +358,10 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
 
     async next() {
       if (nextInFlight) throw new Error("AI_STREAM_CONCURRENT_NEXT");
-      if (finalized) return { done: true, value: undefined };
+      if (finalized) {
+        await waitForTerminalAudit();
+        return { done: true, value: undefined };
+      }
       nextInFlight = true;
       clearStartTimer();
       if (options.signal?.aborted) {
@@ -350,6 +381,7 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
           termination.then(() => terminatedResult)
         ]);
         if ("terminated" in nextEvent) {
+          await waitForTerminalAudit();
           return { done: true, value: undefined };
         }
         if (finalized) {
@@ -377,9 +409,15 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
         }
         return { done: false, value: event };
       } catch (error) {
-        await fail(readErrorMessage(error, "AI_STREAM_FAILED"));
+        options.abortProvider(error);
+        let auditError: unknown;
+        try {
+          await fail(readErrorMessage(error, "AI_STREAM_FAILED"));
+        } catch (persistenceError) {
+          auditError = persistenceError;
+        }
         await closeProviderBounded().catch(() => undefined);
-        throw error;
+        throw auditError ?? error;
       } finally {
         nextInFlight = false;
       }
@@ -391,9 +429,15 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
     },
 
     async throw(error?: unknown) {
-      await fail(readErrorMessage(error, "AI_STREAM_CANCELLED"));
+      options.abortProvider(error ?? new Error("AI_STREAM_CANCELLED"));
+      let auditError: unknown;
+      try {
+        await fail(readErrorMessage(error, "AI_STREAM_CANCELLED"));
+      } catch (persistenceError) {
+        auditError = persistenceError;
+      }
       await closeProviderBounded().catch(() => undefined);
-      throw error;
+      throw auditError ?? error;
     }
   };
 
@@ -411,6 +455,11 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
       return iterator;
     }
   };
+
+  async function waitForTerminalAudit() {
+    await finalization;
+    if (terminalError) throw terminalError;
+  }
 }
 
 const terminatedResult = { terminated: true } as const;
@@ -423,25 +472,50 @@ function withUnrefTimeout<T>(promise: Promise<T>, timeoutMs: number, code: strin
   });
 }
 
+function createComposedAbortController(externalSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const mirrorExternalAbort = () => controller.abort(
+    externalSignal?.reason ?? new Error("AI_STREAM_CANCELLED")
+  );
+  externalSignal?.addEventListener("abort", mirrorExternalAbort, { once: true });
+  if (externalSignal?.aborted) mirrorExternalAbort();
+  return {
+    signal: controller.signal,
+    abort(reason: unknown) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    },
+    cleanup() {
+      externalSignal?.removeEventListener("abort", mirrorExternalAbort);
+    }
+  };
+}
+
+function createAuditPersistenceError(cause: unknown) {
+  const error = new Error("AI_STREAM_AUDIT_PERSIST_FAILED", { cause });
+  error.name = "AiStreamAuditPersistenceError";
+  return error;
+}
+
 function createBoundedSummary() {
   const maximumSourceLength = 160;
-  let value: string[] = [];
+  let value = "";
   let truncated = false;
 
   return {
     append(text: string) {
-      for (const character of text) {
-        if (value.length < maximumSourceLength) value.push(character);
-        else truncated = true;
-      }
+      if (truncated || !text) return;
+      const graphemes = splitGraphemes(value + text);
+      value = graphemes.slice(0, maximumSourceLength).join("");
+      truncated = graphemes.length > maximumSourceLength;
     },
     replace(text: string) {
-      const characters = Array.from(text);
-      value = characters.slice(0, maximumSourceLength);
-      truncated = characters.length > maximumSourceLength;
+      const graphemes = splitGraphemes(text);
+      value = graphemes.slice(0, maximumSourceLength).join("");
+      truncated = graphemes.length > maximumSourceLength;
     },
     read() {
-      return truncated ? `${value.slice(0, 157).join("")}...` : value.join("");
+      if (!truncated) return value;
+      return `${splitGraphemes(value).slice(0, 157).join("")}...`;
     }
   };
 }
@@ -500,8 +574,38 @@ function summarizeOutput(output: unknown, source: AiTextStreamRunRequest["source
 }
 
 function summarizeText(text: string) {
-  const characters = Array.from(text);
-  return characters.length > 160 ? `${characters.slice(0, 157).join("")}...` : text;
+  const graphemes = splitGraphemes(text);
+  return graphemes.length > 160 ? `${graphemes.slice(0, 157).join("")}...` : text;
+}
+
+const graphemeSegmenter = typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
+
+function splitGraphemes(value: string) {
+  if (graphemeSegmenter) return Array.from(graphemeSegmenter.segment(value), (part) => part.segment);
+  return splitGraphemesFallback(value);
+}
+
+function splitGraphemesFallback(value: string) {
+  const result: string[] = [];
+  let regionalIndicatorCount = 0;
+  for (const character of Array.from(value)) {
+    const previous = result.at(-1);
+    const isRegionalIndicator = /^\p{Regional_Indicator}$/u.test(character);
+    const joinsPrevious = Boolean(previous) && (
+      /^\p{Mark}$/u.test(character)
+      || /^[\uFE0E\uFE0F]$/u.test(character)
+      || /^\p{Emoji_Modifier}$/u.test(character)
+      || character === "\u200D"
+      || previous!.endsWith("\u200D")
+      || (isRegionalIndicator && regionalIndicatorCount % 2 === 1)
+    );
+    if (joinsPrevious) result[result.length - 1] = previous + character;
+    else result.push(character);
+    regionalIndicatorCount = isRegionalIndicator ? regionalIndicatorCount + 1 : 0;
+  }
+  return result;
 }
 
 function safeSerialize(value: unknown) {
