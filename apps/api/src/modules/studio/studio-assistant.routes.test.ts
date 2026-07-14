@@ -77,6 +77,12 @@ describe("Studio assistant routes", () => {
     const suggestion = parseSse(turn.body).find((event) => event.event === "suggestion")?.data;
     expect(suggestion).toBeTruthy();
     if (!suggestion) throw new Error("expected suggestion event");
+    expect(suggestion).not.toHaveProperty("workspaceId");
+    expect(suggestion).not.toHaveProperty("ownerProfileId");
+    expect(suggestion.payload_json).toMatchObject({
+      facts: [], inferences: [], gaps: [], citations: [],
+      proposal: { document_id: document.id, expected_revision: document.revision }
+    });
     const first = await app.inject({ method: "POST", url: `/studio/suggestions/${suggestion.id}/accept`, headers: ownerA });
     const repeated = await app.inject({ method: "POST", url: `/studio/suggestions/${suggestion.id}/accept`, headers: ownerA });
     expect(first.statusCode).toBe(200);

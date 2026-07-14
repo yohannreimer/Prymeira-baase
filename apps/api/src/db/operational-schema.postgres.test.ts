@@ -177,6 +177,11 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       await ensureOperationalSchema(pool);
       const repository = createPostgresStudioRepository(pool);
       const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+      await expect(pool.query(
+        `insert into studio_suggestions
+          (id,workspace_id,owner_profile_id,ai_run_id,kind,payload_json,status)
+         values ('text_without_document','workspace_a','owner_a','opaque','text','{}'::jsonb,'pending')`
+      )).rejects.toThrow();
       const document = await repository.createDocument({ ...scope, title: "Original", bodyJson: {},
         bodyText: "Original", captureMode: "text", inboxState: "pending_review", isFocused: false, status: "active" });
       const turn = await repository.startAssistantTurn({ ...scope, conversationId: null,
@@ -185,8 +190,10 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         aiRunId: "opaque-narrative", content: "Resposta", citations: [] });
       const pending = await repository.createAssistantSuggestion({ ...scope, documentId: document.id,
         conversationId: turn.conversation.id, aiRunId: "opaque-structured", kind: "text",
-        payloadJson: { document_id: document.id, expected_revision: document.revision,
-          title: "Aceito", body_json: {}, body_text: "Aceito" }, citations: [] });
+        payloadJson: { facts: [], inferences: [], gaps: [], citations: [], proposal: {
+          document_id: document.id, expected_revision: document.revision,
+          title: "Aceito", body_json: {}, body_text: "Aceito"
+        } }, citations: [] });
       const [left, right] = await Promise.all([
         repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId),
         repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId)

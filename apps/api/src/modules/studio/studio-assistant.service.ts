@@ -13,7 +13,9 @@ import type {
   StudioRepository,
   StudioSuggestion,
   StudioSuggestionDecision,
-  StudioTextSuggestionPayload
+  StudioStructuredCitation,
+  StudioTextSuggestionPayload,
+  StudioTextSuggestionProposal
 } from "./studio.types";
 import type { StudioContextBuilder } from "./studio-context-builder";
 
@@ -45,19 +47,40 @@ const textSuggestionEnvelopeSchema = z.object({
     body_json: z.record(z.string(), z.unknown()),
     body_text: z.string().max(500_000)
   }).strict()
-}).strict();
+}).strict().superRefine((value, context) => {
+  value.facts.forEach((fact, factIndex) => fact.citation_indexes.forEach((citationIndex, indexIndex) => {
+    if (citationIndex >= value.citations.length) context.addIssue({
+      code: "custom",
+      message: "fact citation index is out of range",
+      path: ["facts", factIndex, "citation_indexes", indexIndex]
+    });
+  }));
+});
 
 export type StudioSseEvent =
   | { event: "run"; data: { ai_run_id: string; conversation_id: string } }
   | { event: "delta"; data: { text: string } }
   | { event: "citation"; data: StudioCitationDto }
-  | { event: "suggestion"; data: StudioSuggestion }
+  | { event: "suggestion"; data: StudioSuggestionDto }
   | { event: "done"; data: { message_id: string } }
   | { event: "error"; data: { code: string; retryable: boolean } };
 
 export type StudioCitationDto = Pick<StudioCitation,
   "sourceType" | "sourceId" | "url" | "label" | "excerpt" | "observedAt" | "periodFrom" | "periodTo" | "metadata"
 >;
+
+export type StudioSuggestionDto = {
+  id: string;
+  document_id: string | null;
+  conversation_id: string | null;
+  ai_run_id: string;
+  kind: StudioSuggestion["kind"];
+  payload_json: StudioTextSuggestionPayload;
+  status: StudioSuggestion["status"];
+  accepted_version_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+};
 
 export type StudioAssistantTurnInput = {
   conversationId: string | null;
@@ -228,10 +251,12 @@ async function createTextSuggestion(options: StreamAssistantTurnOptions) {
     schemaName: "studio_text_suggestion"
   }), options.input.signal);
   assertNotAborted(options.input.signal);
-  const payload: StudioTextSuggestionPayload = result.output.proposal;
-  if (payload.document_id !== document.id || payload.expected_revision !== document.revision) {
+  const payload: StudioTextSuggestionPayload = result.output;
+  const proposal: StudioTextSuggestionProposal = payload.proposal;
+  if (proposal.document_id !== document.id || proposal.expected_revision !== document.revision) {
     throw new Error("AI_OUTPUT_VALIDATION_FAILED");
   }
+  assertGroundedStructuredCitations(payload.citations, document, options.context);
   const stored = await options.repository.createAssistantSuggestion({
     ...options.scope,
     documentId: document.id,
@@ -239,9 +264,9 @@ async function createTextSuggestion(options: StreamAssistantTurnOptions) {
     aiRunId: result.run.id,
     kind: "text",
     payloadJson: payload,
-    citations: deduplicateCitations((options.context?.citations ?? []).map(contextCitation))
+    citations: payload.citations.map((citation) => structuredCitation(options.scope, citation))
   });
-  return stored.suggestion;
+  return suggestionDto(stored.suggestion);
 }
 
 function normalizeTurnInput(input: StudioAssistantTurnInput): StudioAssistantTurnInput {
@@ -287,6 +312,50 @@ function externalCitation(scope: StudioOwnerScope, event: Extract<AiTextStreamEv
   return { ...scope, sourceType: "external_url", sourceId: null, url: event.url,
     label: event.title.slice(0, 160) || "Fonte externa", excerpt: "", observedAt: observedAt.toISOString(),
     periodFrom: null, periodTo: null, metadata: { publishedAt: event.publishedAt, contentTrust: "untrusted_data" } };
+}
+
+function structuredCitation(scope: StudioOwnerScope, citation: StudioStructuredCitation): CreateStudioCitation {
+  return {
+    ...scope,
+    sourceType: citation.source_type,
+    sourceId: citation.source_id,
+    url: citation.url,
+    label: citation.label,
+    excerpt: citation.excerpt,
+    observedAt: citation.observed_at,
+    periodFrom: citation.period_from,
+    periodTo: citation.period_to,
+    metadata: { structuredReview: true, contentTrust: "untrusted_data" }
+  };
+}
+
+function assertGroundedStructuredCitations(
+  citations: StudioStructuredCitation[],
+  document: StudioDocument,
+  context: StudioContextSnapshot | null
+) {
+  const allowed = new Set<string>([`studio_document:${document.id}`]);
+  for (const citation of context?.citations ?? []) allowed.add(`${citation.sourceType}:${citation.sourceId}`);
+  if (citations.some((citation) => !citation.source_id
+    || citation.source_type === "external_url"
+    || !allowed.has(`${citation.source_type}:${citation.source_id}`))) {
+    throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  }
+}
+
+function suggestionDto(suggestion: StudioSuggestion): StudioSuggestionDto {
+  return {
+    id: suggestion.id,
+    document_id: suggestion.documentId,
+    conversation_id: suggestion.conversationId,
+    ai_run_id: suggestion.aiRunId,
+    kind: suggestion.kind,
+    payload_json: structuredClone(suggestion.payloadJson),
+    status: suggestion.status,
+    accepted_version_id: suggestion.acceptedVersionId,
+    created_at: suggestion.createdAt,
+    decided_at: suggestion.decidedAt
+  };
 }
 
 function deduplicateCitations(inputs: CreateStudioCitation[]) {

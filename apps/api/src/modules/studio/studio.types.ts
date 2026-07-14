@@ -103,12 +103,31 @@ export type StudioSuggestion = StudioOwnerScope & {
   decidedAt: string | null;
 };
 
-export type StudioTextSuggestionPayload = {
+export type StudioStructuredCitation = {
+  source_type: StudioCitationSourceType;
+  source_id: string | null;
+  url: string | null;
+  label: string;
+  excerpt: string;
+  observed_at: string;
+  period_from: string | null;
+  period_to: string | null;
+};
+
+export type StudioTextSuggestionProposal = {
   document_id: string;
   expected_revision: number;
   title: string | null;
   body_json: Record<string, unknown>;
   body_text: string;
+};
+
+export type StudioTextSuggestionPayload = {
+  facts: Array<{ statement: string; citation_indexes: number[] }>;
+  inferences: Array<{ statement: string; basis: string; confidence: "low" | "medium" | "high" }>;
+  gaps: Array<{ question: string; reason: string }>;
+  citations: StudioStructuredCitation[];
+  proposal: StudioTextSuggestionProposal;
 };
 
 export type StudioCitation = StudioOwnerScope & {

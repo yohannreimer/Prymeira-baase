@@ -1294,7 +1294,7 @@ export function createInMemoryStudioRepository(
         && item.ownerProfileId === input.ownerProfileId && item.id === input.documentId)) {
         throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       }
-      if (input.payloadJson.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+      if (input.payloadJson.proposal.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
       input.citations.forEach((citation) => validateCitationScope(citation, input.workspaceId, input.ownerProfileId));
       const timestamp = now();
       const suggestion: StudioSuggestion = {
@@ -1334,7 +1334,7 @@ export function createInMemoryStudioRepository(
         return { suggestion: cloneSuggestion(suggestion), version: cloneVersion(version) };
       }
       if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
-      const payload = suggestion.payloadJson;
+      const payload = suggestion.payloadJson.proposal;
       const documentIndex = documents.findIndex((item) => item.workspaceId === scope.workspaceId
         && item.ownerProfileId === scope.ownerProfileId && item.id === payload.document_id);
       if (documentIndex < 0) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");

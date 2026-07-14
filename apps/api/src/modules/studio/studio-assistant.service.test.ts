@@ -16,7 +16,7 @@ describe("Studio assistant service", () => {
     const aiRepository = createInMemoryAiRepository({ now: monotonicClock() });
     const provider = providerFor({
       observed,
-      structured: suggestionOutput(document.id, document.revision),
+      structured: suggestionOutput(document.id, document.revision, true),
       externalCitation: true
     });
     const service = createStudioAssistantService({
@@ -51,12 +51,23 @@ describe("Studio assistant service", () => {
     expect(await aiRepository.listRuns(owner.workspaceId, owner.ownerProfileId)).toHaveLength(2);
 
     const suggestionEvent = events.find((event) => event.event === "suggestion") as Extract<StudioSseEvent, { event: "suggestion" }>;
+    expect(suggestionEvent.data.payload_json).toMatchObject({
+      facts: [{ statement: "A execução foi consultada.", citation_indexes: [0] }],
+      inferences: [{ confidence: "medium" }],
+      gaps: [{ question: "Qual é a prioridade?" }],
+      citations: [{ source_type: "operational_metric", source_id: "dashboard:period" }],
+      proposal: { document_id: document.id, expected_revision: document.revision }
+    });
+    expect(JSON.stringify(suggestionEvent.data)).not.toContain("workspace_a");
+    expect(JSON.stringify(suggestionEvent.data)).not.toContain("owner_a");
+    const replayed = await repository.findSuggestion(owner, suggestionEvent.data.id);
+    expect(replayed?.payloadJson).toEqual(suggestionEvent.data.payload_json);
     const [first, repeated] = await Promise.all([
       service.acceptSuggestion(owner, suggestionEvent.data.id),
       service.acceptSuggestion(owner, suggestionEvent.data.id)
     ]);
     expect(first.version?.id).toBe(repeated.version?.id);
-    expect(first.version).toMatchObject({ origin: "accepted_ai_suggestion", aiRunId: suggestionEvent.data.aiRunId });
+    expect(first.version).toMatchObject({ origin: "accepted_ai_suggestion", aiRunId: suggestionEvent.data.ai_run_id });
     expect(await repository.listIndexJobs(owner)).toHaveLength(2);
     expect((await repository.findDocument(owner, document.id))?.bodyText).toBe("Versão sugerida e revisável.");
     await expect(service.acceptSuggestion(
@@ -174,8 +185,15 @@ function providerFor(options: { observed?: AiTextStreamRequest[]; structured?: u
   };
 }
 
-function suggestionOutput(documentId: string, revision: number) {
-  return { facts: [], inferences: [], gaps: [], citations: [], proposal: {
+function suggestionOutput(documentId: string, revision: number, grounded = false) {
+  return {
+    facts: grounded ? [{ statement: "A execução foi consultada.", citation_indexes: [0] }] : [],
+    inferences: grounded ? [{ statement: "Há espaço para foco.", basis: "Execução consultada.", confidence: "medium" }] : [],
+    gaps: grounded ? [{ question: "Qual é a prioridade?", reason: "A fonte não define intenção." }] : [],
+    citations: grounded ? [{ source_type: "operational_metric", source_id: "dashboard:period", url: null,
+      label: "Painel operacional", excerpt: "Execução no período", observed_at: "2026-07-14T12:00:00.000Z",
+      period_from: "2026-07-01", period_to: "2026-07-14" }] : [],
+    proposal: {
     document_id: documentId, expected_revision: revision, title: "Pensamento revisado",
     body_json: { type: "doc" }, body_text: "Versão sugerida e revisável."
   } };

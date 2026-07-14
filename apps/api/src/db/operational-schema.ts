@@ -1030,9 +1030,10 @@ const migrations: Migration[] = [{
         REFERENCES studio_conversations(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
       FOREIGN KEY (workspace_id,owner_profile_id,document_id,accepted_version_id)
         REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id),
+      CHECK (kind<>'text' OR document_id IS NOT NULL),
       CHECK (
         (status='pending' AND decided_at IS NULL AND accepted_version_id IS NULL)
-        OR (status='accepted' AND decided_at IS NOT NULL AND accepted_version_id IS NOT NULL)
+        OR (status='accepted' AND document_id IS NOT NULL AND decided_at IS NOT NULL AND accepted_version_id IS NOT NULL)
         OR (status IN ('dismissed','expired') AND decided_at IS NOT NULL AND accepted_version_id IS NULL)
       )
     );

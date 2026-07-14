@@ -1764,7 +1764,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           );
           if (!document.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
         }
-        if (input.payloadJson.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+        if (input.payloadJson.proposal.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
         const result = await client.query<StudioSuggestionRow>(
           `INSERT INTO studio_suggestions
              (id,workspace_id,owner_profile_id,document_id,conversation_id,ai_run_id,kind,payload_json,status)
@@ -1807,7 +1807,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           return { suggestion, version: versionFromRow(version.rows[0]) };
         }
         if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
-        const payload = suggestion.payloadJson;
+        const payload = suggestion.payloadJson.proposal;
         if (!suggestion.documentId || payload.document_id !== suggestion.documentId) {
           throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
         }

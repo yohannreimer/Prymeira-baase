@@ -262,6 +262,11 @@ describe("operational schema", () => {
        values ('conversation_a','workspace_a','owner_a','document_a')`
     );
     await db.query(
+      `insert into studio_document_versions
+        (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id)
+       values ('version_a','workspace_a','owner_a','document_a',1,'{}','private','user','owner_a')`
+    );
+    await db.query(
       `insert into studio_messages
         (id,workspace_id,owner_profile_id,conversation_id,role,content,ai_run_id)
        values ('message_a','workspace_a','owner_a','conversation_a','assistant','resposta','opaque-run')`
@@ -271,6 +276,25 @@ describe("operational schema", () => {
         (id,workspace_id,owner_profile_id,message_id,source_type,source_id,url,label,excerpt,observed_at)
        values ('citation_invalid','workspace_a','owner_a','message_a','external_url','internal','https://example.com','Fonte','',now())`
     )).rejects.toThrow();
+    await expect(db.query(
+      `insert into studio_suggestions
+        (id,workspace_id,owner_profile_id,document_id,conversation_id,ai_run_id,kind,payload_json,status)
+       values ('suggestion_without_document','workspace_a','owner_a',null,'conversation_a','opaque','text','{}','pending')`
+    )).rejects.toThrow();
+    await expect(db.query(
+      `insert into studio_suggestions
+        (id,workspace_id,owner_profile_id,document_id,conversation_id,ai_run_id,kind,payload_json,
+         status,accepted_version_id,decided_at)
+       values ('suggestion_dismissed_with_version','workspace_a','owner_a','document_a','conversation_a',
+         'opaque','text','{}','dismissed','version_a',now())`
+    )).rejects.toThrow();
+    await expect(db.query(
+      `insert into studio_suggestions
+        (id,workspace_id,owner_profile_id,document_id,conversation_id,ai_run_id,kind,payload_json,
+         status,accepted_version_id,decided_at)
+       values ('suggestion_accepted','workspace_a','owner_a','document_a','conversation_a',
+         'opaque','text','{}','accepted','version_a',now())`
+    )).resolves.toBeDefined();
     await expect(db.query(
       `insert into studio_conversations (id,workspace_id,owner_profile_id,document_id)
        values ('conversation_cross','workspace_a','owner_b','document_a')`
@@ -306,8 +330,23 @@ describe("operational schema", () => {
       .toEqual(["user", "assistant"]);
     const pending = await repository.createAssistantSuggestion({ ...scope, documentId: document.id,
       conversationId: turn.conversation.id, aiRunId: "opaque-structured-run", kind: "text",
-      payloadJson: { document_id: document.id, expected_revision: document.revision,
-        title: "Aceito", body_json: { type: "doc" }, body_text: "Conteúdo aceito" }, citations: [] });
+      payloadJson: { facts: [{ statement: "Execução consultada", citation_indexes: [0] }], inferences: [], gaps: [],
+        citations: [{ source_type: "operational_metric", source_id: "dashboard:period", url: null,
+          label: "Painel", excerpt: "Execução", observed_at: "2026-07-14T12:00:00.000Z",
+          period_from: "2026-07-01", period_to: "2026-07-14" }], proposal: {
+        document_id: document.id, expected_revision: document.revision,
+        title: "Aceito", body_json: { type: "doc" }, body_text: "Conteúdo aceito"
+      } }, citations: [{ ...scope, sourceType: "operational_metric", sourceId: "dashboard:period", url: null,
+        label: "Painel", excerpt: "Execução", observedAt: "2026-07-14T12:00:00.000Z",
+        periodFrom: "2026-07-01", periodTo: "2026-07-14", metadata: { structuredReview: true } }] });
+    const citationTargets = await db.query<{ message_id: string | null; suggestion_id: string | null }>(
+      `select message_id,suggestion_id from studio_citations
+       where workspace_id='workspace_a' and owner_profile_id='owner_a' order by created_at,id`
+    );
+    expect(citationTargets.rows).toEqual(expect.arrayContaining([
+      { message_id: final.message.id, suggestion_id: null },
+      { message_id: null, suggestion_id: pending.suggestion.id }
+    ]));
     const accepted = await repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId);
     const repeated = await repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId);
     expect(repeated.version?.id).toBe(accepted.version?.id);
