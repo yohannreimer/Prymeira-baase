@@ -160,6 +160,61 @@ describe("Baase React app shell", () => {
     expect(screen.getByText("Precisa de você agora")).toBeInTheDocument();
   });
 
+  it("exposes Estúdio immediately after Hoje only to owners", () => {
+    const { unmount } = render(<App initialRole="dono" apiEnabled={false} />);
+    const ownerNavigation = screen.getByRole("navigation", { name: "Navegação interna" });
+    const ownerLinks = within(ownerNavigation).getAllByRole("link").map((link) => link.textContent?.trim());
+
+    expect(ownerLinks.indexOf("Estúdio")).toBe(ownerLinks.indexOf("Hoje") + 1);
+
+    unmount();
+    render(<App initialRole="gestor" apiEnabled={false} />);
+    expect(screen.queryByRole("link", { name: "Estúdio" })).not.toBeInTheDocument();
+
+    unmount();
+    render(<App initialRole="func" apiEnabled={false} />);
+    expect(screen.queryByRole("link", { name: "Estúdio" })).not.toBeInTheDocument();
+  });
+
+  it("guards direct Studio navigation and clears it when the preview role changes", async () => {
+    window.history.replaceState(null, "", "/#estudio");
+    const { unmount } = render(<App initialRole="gestor" apiEnabled={false} />);
+
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Painel da área · Criação" })).toBeInTheDocument();
+
+    unmount();
+    window.history.replaceState(null, "", "/");
+    render(<App initialRole="dono" apiEnabled={false} />);
+    fireEvent.click(screen.getByRole("link", { name: "Estúdio" }));
+    expect(screen.getByLabelText("Carregando Estúdio")).toBeInTheDocument();
+    expect(await screen.findByRole("main", { name: "Estúdio" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Estúdio" })).toHaveAttribute("aria-current", "page");
+
+    fireEvent.click(screen.getByRole("button", { name: "Gestor" }));
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Painel da área · Criação" })).toBeInTheDocument();
+  });
+
+  it("does not activate Studio while an authenticated manager role is settling", async () => {
+    vi.stubEnv("VITE_BAASE_AUTH_MODE", "account");
+    window.history.replaceState(null, "", "/#estudio");
+    mockLoadedWorkspace({
+      "/api/me": {
+        workspace: { id: "workspace_a", name: "Holand" },
+        profile: { id: "profile_manager", role: "manager", display_name: "Rafael Nunes", initials: "RN" },
+        home_route: "/painel-gestor"
+      }
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Painel da área · Criação" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Estúdio" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Carregando Estúdio")).not.toBeInTheDocument();
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+  });
+
   it("uses email-only invitations and a conditional area picker in account mode", async () => {
     vi.stubEnv("VITE_BAASE_AUTH_MODE", "account");
     mockLoadedWorkspace({

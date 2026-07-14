@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { defaultProcessSopBody, formatProcessSopBody } from "@prymeira/baase-shared";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import {
@@ -103,12 +103,15 @@ import { OnboardingShell, createEmptyOnboardingDraft, onboardingConversationQues
 import { readBaaseAuthConfig } from "./auth-config";
 import "./styles.css";
 
+const StudioPage = lazy(() => import("./studio/StudioPage"));
+
 type Role = "dono" | "gestor" | "func";
 type Screen =
   | "painel-dono"
   | "painel-gestor"
   | "pessoa-operacional"
   | "hoje"
+  | "estudio"
   | "mapa"
   | "equipe"
   | "processos"
@@ -244,6 +247,7 @@ const titles: Record<Screen, [string, string]> = {
   "painel-gestor": ["Painel da Área", "Criação"],
   "pessoa-operacional": ["Visão da Pessoa", "Acompanhamento operacional"],
   hoje: ["Hoje", "Sua execução do dia"],
+  estudio: ["Estúdio", "Espaço privado do dono"],
   mapa: ["Mapa da Empresa", "Estrutura organizacional"],
   equipe: ["Equipe", "Pessoas e convites"],
   processos: ["Processos / SOPs", "Manual vivo da empresa"],
@@ -260,6 +264,7 @@ const navByRole: Record<Role, NavItem[]> = {
   dono: [
     { key: "painel-dono", label: "Painel", icon: "ph-squares-four" },
     { key: "hoje", label: "Hoje", icon: "ph-sun" },
+    { key: "estudio", label: "Estúdio", icon: "ph-notebook" },
     { key: "mapa", label: "Mapa da Empresa", icon: "ph-tree-structure" },
     { key: "equipe", label: "Equipe", icon: "ph-users-three" },
     { key: "processos", label: "Processos", icon: "ph-file-text" },
@@ -1743,6 +1748,12 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
   const baseNav = navByRole[role];
+  const canAccessStudio = role === "dono"
+    && (!accountMode || apiBundle?.session.profile.role === "owner");
+  const roleNav = useMemo(
+    () => canAccessStudio ? baseNav : baseNav.filter((item) => item.key !== "estudio"),
+    [baseNav, canAccessStudio]
+  );
   const visibleProcesses = useMemo(() => {
     const loaded = apiBundle?.processes ?? [];
     return [...createdProcesses, ...loaded.filter((process) => !createdProcesses.some((created) => created.id === process.id))];
@@ -1773,9 +1784,9 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const canManageWorkspace = role === "dono" || (role === "gestor" && apiBundle?.session.profile.access_scope === "workspace");
   const canAdministerCompany = role === "dono";
   const nav = useMemo(() => {
-    if (!liveWorkspaceMode) return baseNav;
+    if (!liveWorkspaceMode) return roleNav;
 
-    return baseNav.map((item) => {
+    return roleNav.map((item) => {
       if (item.key === "treinamentos") {
         return pendingTrainingAssignments.length ? { ...item, badge: String(pendingTrainingAssignments.length) } : { ...item, badge: undefined };
       }
@@ -1784,7 +1795,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
       }
       return { ...item, badge: undefined };
     });
-  }, [baseNav, liveWorkspaceMode, pendingAnnouncements.length, pendingTrainingAssignments.length]);
+  }, [liveWorkspaceMode, pendingAnnouncements.length, pendingTrainingAssignments.length, roleNav]);
   const notificationItems = useMemo<NotificationItem[]>(() => {
     if (!liveWorkspaceMode) {
       return [
@@ -1885,6 +1896,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }
 
   function go(nextScreen: Screen) {
+    if (nextScreen === "estudio" && !canAccessStudio) {
+      showNotice("Esta área não está disponível para o seu perfil.");
+      return;
+    }
     const isRoleNavigation = navByRole[role].some((item) => item.key === nextScreen);
     const isOperationalPerson = nextScreen === "pessoa-operacional" && role !== "func";
     const isOwnerWorkflow = role === "dono" && (nextScreen === "onboarding" || nextScreen === "revisao");
@@ -1901,14 +1916,15 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
     function restoreScreenFromUrl() {
       const candidate = window.location.hash.slice(1) as Screen;
       if (!candidate) return;
-      const allowed = navByRole[role].some((item) => item.key === candidate)
-        || (candidate === "pessoa-operacional" && role !== "func");
+      const allowed = (candidate !== "estudio" || canAccessStudio)
+        && (navByRole[role].some((item) => item.key === candidate)
+          || (candidate === "pessoa-operacional" && role !== "func"));
       if (allowed) setScreen(candidate);
     }
     restoreScreenFromUrl();
     window.addEventListener("popstate", restoreScreenFromUrl);
     return () => window.removeEventListener("popstate", restoreScreenFromUrl);
-  }, [role]);
+  }, [canAccessStudio, role]);
 
   function readOverviewForPeriod(nextPeriod: OperationalPeriod) {
     if (!apiEnabled || role === "func") return;
@@ -3404,7 +3420,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
         {notice ? <div className="app-notice" role="status"><Icon name="ph-info" />{notice}</div> : null}
         {topPanel === "search" ? <SearchPanel go={go} nav={nav} onClose={() => setTopPanel(null)} /> : null}
         {topPanel === "notifications" ? <NotificationsPanel go={go} onClose={() => setTopPanel(null)} notifications={notificationItems} /> : null}
-        <main className="app-main">
+        <main className="app-main" aria-label={screen === "estudio" ? "Estúdio" : undefined}>
           <span className="sr-only" aria-live="polite">API Baase: {apiStatus}</span>
           {screen === "painel-dono" && (
             <>
@@ -3495,6 +3511,17 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
               go={go}
             />
           )}
+          {screen === "estudio" && canAccessStudio ? (
+            <Suspense fallback={(
+              <div className="studio-loading" role="status" aria-label="Carregando Estúdio" aria-busy="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            )}>
+              <StudioPage />
+            </Suspense>
+          ) : null}
           {screen === "mapa" && (
             <CompanyMap
               canCreateArea={canAdministerCompany}
@@ -3759,6 +3786,7 @@ function Sidebar({
             key={item.key}
             href={`#${item.key}`}
             className={`navitem ${screen === item.key ? "active" : ""}`}
+            aria-current={screen === item.key ? "page" : undefined}
             onClick={(event) => {
               event.preventDefault();
               go(item.key);

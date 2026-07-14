@@ -753,7 +753,7 @@ async function readJson<T>(fetcher: Fetcher, url: string, init?: RequestInit): P
   return (body ? JSON.parse(body) : {}) as T;
 }
 
-async function withConfiguredAuth(init: RequestInit = {}): Promise<RequestInit> {
+export async function withConfiguredAuth(init: RequestInit = {}): Promise<RequestInit> {
   if (!baaseTokenProvider) return init;
 
   const token = await baaseTokenProvider();
