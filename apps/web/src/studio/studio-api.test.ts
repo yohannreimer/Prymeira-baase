@@ -5,11 +5,14 @@ import {
   attachStudioFile,
   attachStudioLink,
   createStudioDocument,
+  getStudioAsset,
+  getStudioAssetDownload,
   getStudioDocument,
   getStudioHome,
   listStudioCollections,
   listStudioDocumentVersions,
   listStudioDocuments,
+  retryStudioAsset,
   searchStudioDocuments,
   studioRequest
 } from "./studio-api";
@@ -183,5 +186,56 @@ describe("Studio API client", () => {
     const linkInit = fetcher.mock.calls[2]![1];
     expect(new Headers(linkInit?.headers).get("content-type")).toBe("application/json");
     expect(JSON.parse(String(linkInit?.body))).toEqual({ url: "https://example.com/plano" });
+  });
+
+  it("reads processing state, requests retry, and obtains the authorized original", async () => {
+    const rawAsset = {
+      id: "asset_1",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      document_id: "document_1",
+      kind: "audio",
+      display_name: "reflexao.wav",
+      source_url: null,
+      final_url: null,
+      mime_type: "audio/wav",
+      size_bytes: 52,
+      extraction_status: "failed",
+      extracted_text: null,
+      last_error_code: "STUDIO_ASSET_PROCESSING_FAILED",
+      attempt_count: 1,
+      next_attempt_at: null,
+      created_at: "2026-07-13T12:00:00.000Z",
+      updated_at: "2026-07-13T12:01:00.000Z"
+    } as const;
+    const fetcher = vi.fn(async (input: string, _init?: RequestInit) => input.endsWith("/download")
+      ? jsonResponse({ url: "https://private.example/audio", expires_in_seconds: 600 })
+      : jsonResponse({ asset: input.endsWith("/retry")
+        ? { ...rawAsset, extraction_status: "pending", attempt_count: 0, last_error_code: null }
+        : rawAsset }));
+    const controller = new AbortController();
+
+    await expect(getStudioAsset("asset_1", controller.signal, fetcher)).resolves.toMatchObject({
+      extractionStatus: "failed",
+      attemptCount: 1,
+      nextAttemptAt: null
+    });
+    await expect(retryStudioAsset("asset_1", controller.signal, fetcher)).resolves.toMatchObject({
+      extractionStatus: "pending",
+      attemptCount: 0
+    });
+    await expect(getStudioAssetDownload("asset_1", controller.signal, fetcher)).resolves.toEqual({
+      url: "https://private.example/audio",
+      expiresInSeconds: 600
+    });
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/studio/assets/asset_1",
+      "/api/studio/assets/asset_1/retry",
+      "/api/studio/assets/asset_1/download"
+    ]);
+    expect(fetcher.mock.calls[1]?.[1]?.method).toBe("POST");
+    expect(fetcher.mock.calls[1]?.[1]?.body).toBe("{}");
+    expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
   });
 });

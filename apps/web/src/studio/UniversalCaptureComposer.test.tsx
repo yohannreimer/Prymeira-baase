@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { StudioDocument } from "./studio.types";
+import type { StudioAsset, StudioDocument } from "./studio.types";
 import UniversalCaptureComposer from "./UniversalCaptureComposer";
 
 const capturedDocument: StudioDocument = {
@@ -68,12 +68,13 @@ describe("UniversalCaptureComposer", () => {
     expect(screen.getByRole("textbox", { name: "Endereço do link" })).toHaveFocus();
   });
 
-  it("keeps an audio document available when later processing needs retry", async () => {
+  it("separates a failed audio upload from later transcription and retries the same document", async () => {
     const audioDocument = { ...capturedDocument, id: "audio_1", bodyText: "", captureMode: "audio" as const };
     const createDocument = vi.fn(async () => audioDocument);
-    const attachAsset = vi.fn(async () => {
-      throw new Error("transcription unavailable");
-    });
+    const pendingAsset = asset({ extractionStatus: "pending" });
+    const attachAsset = vi.fn()
+      .mockRejectedValueOnce(new Error("upload unavailable"))
+      .mockResolvedValueOnce(pendingAsset);
     const onCaptured = vi.fn();
     const file = new File(["audio"], "reflexao.webm", { type: "audio/webm" });
 
@@ -87,10 +88,19 @@ describe("UniversalCaptureComposer", () => {
 
     await userEvent.upload(screen.getByTestId("studio-audio-input"), file);
 
-    await waitFor(() => expect(onCaptured).toHaveBeenCalledWith(audioDocument, expect.objectContaining({
-      processing: "retry"
-    })));
-    expect(screen.getByRole("status")).toHaveTextContent("captura foi guardada");
+    await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(1));
+    expect(onCaptured).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("documento foi criado, mas o áudio não foi enviado");
+
+    await userEvent.click(screen.getByRole("button", { name: "Tentar enviar áudio novamente" }));
+
+    await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(2));
+    expect(createDocument).toHaveBeenCalledTimes(1);
+    expect(attachAsset.mock.calls[1]?.[0]).toBe(audioDocument.id);
+    expect(onCaptured).toHaveBeenCalledWith(audioDocument, expect.objectContaining({
+      asset: pendingAsset,
+      processing: "pending"
+    }));
   });
 
   it("cancels an in-flight capture when its surface closes", async () => {
@@ -110,3 +120,26 @@ describe("UniversalCaptureComposer", () => {
     expect(receivedSignal?.aborted).toBe(true);
   });
 });
+
+function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
+  return {
+    id: "asset_1",
+    workspaceId: "workspace_1",
+    ownerProfileId: "owner_1",
+    documentId: "audio_1",
+    kind: "audio",
+    displayName: "reflexao.webm",
+    sourceUrl: null,
+    finalUrl: null,
+    mimeType: "audio/webm",
+    sizeBytes: 5,
+    extractionStatus: "pending",
+    extractedText: null,
+    lastErrorCode: null,
+    attemptCount: 0,
+    nextAttemptAt: null,
+    createdAt: "2026-07-13T12:00:00.000Z",
+    updatedAt: "2026-07-13T12:00:00.000Z",
+    ...overrides
+  };
+}

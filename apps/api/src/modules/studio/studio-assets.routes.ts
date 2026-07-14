@@ -49,6 +49,25 @@ export type RegisterStudioAssetRoutesOptions = {
 export async function registerStudioAssetRoutes(app: FastifyInstance, options: RegisterStudioAssetRoutesOptions) {
   const uploadSemaphore = options.uploadSemaphore ?? createStudioUploadSemaphore(2);
 
+  app.get("/studio/assets/:assetId", async (request) => {
+    const scope = requireStudioScope(request);
+    const { assetId } = studioAssetParamsSchema.parse(request.params);
+    studioEmptyRouteSchema.parse(request.query);
+    if (request.body !== undefined) studioEmptyRouteSchema.parse(request.body);
+    return { asset: await requireAsset(options.repository, scope, assetId) };
+  });
+
+  app.post("/studio/assets/:assetId/retry", async (request, reply) => {
+    const scope = requireStudioScope(request);
+    const { assetId } = studioAssetParamsSchema.parse(request.params);
+    studioEmptyRouteSchema.parse(request.query);
+    if (request.body !== undefined) studioEmptyRouteSchema.parse(request.body);
+    const current = await requireAsset(options.repository, scope, assetId);
+    const asset = await options.repository.retryAssetProcessing(scope, assetId);
+    if (!asset) throw assetNotFound();
+    return reply.status(current.extractionStatus === "failed" ? 202 : 200).send({ asset });
+  });
+
   app.post("/studio/documents/:documentId/assets", async (request, reply) => {
     const scope = requireStudioScope(request);
     const { documentId } = studioDocumentParamsSchema.parse(request.params);

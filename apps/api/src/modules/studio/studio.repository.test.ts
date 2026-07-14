@@ -713,6 +713,38 @@ function repositoryContract(
       });
     });
 
+    it("requeues a failed preserved asset only inside its owner scope", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const asset = await repository.createAsset({
+          ...scope, documentId: document.id, kind: "audio", displayName: "reflexao.wav",
+          objectKey: "private/reflexao.wav", sourceUrl: null, finalUrl: null, fetchedAt: null,
+          mimeType: "audio/wav", sizeBytes: 52, extractionStatus: "pending", extractedText: null,
+          extractionMetadata: {}, lastErrorCode: null, attemptCount: 0, nextAttemptAt: null
+        });
+        const claimed = await repository.claimNextAsset("2026-07-13T12:00:00.000Z");
+        await repository.finishAssetProcessing({
+          scope, assetId: asset.id, claimToken: claimed!.claimToken!, extractionStatus: "failed",
+          extractedText: null, extractionMetadata: {}, lastErrorCode: "PROVIDER_DOWN", nextAttemptAt: null
+        });
+
+        expect(await repository.retryAssetProcessing(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" }, asset.id
+        )).toBeNull();
+        expect(await repository.retryAssetProcessing(scope, asset.id)).toMatchObject({
+          extractionStatus: "pending",
+          attemptCount: 0,
+          lastErrorCode: null,
+          nextAttemptAt: null
+        });
+        expect(await repository.retryAssetProcessing(scope, asset.id)).toMatchObject({
+          extractionStatus: "pending",
+          attemptCount: 0
+        });
+      });
+    });
+
     it("finalizes and reconciles durable owner-scoped upload intents idempotently", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };

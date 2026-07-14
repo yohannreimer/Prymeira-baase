@@ -85,6 +85,8 @@ export type StudioAsset = {
   extractionStatus: StudioAssetExtractionStatus;
   extractedText: string | null;
   lastErrorCode: string | null;
+  attemptCount: number;
+  nextAttemptAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -217,6 +219,10 @@ export type RawStudioAsset = {
   extractedText?: string | null;
   last_error_code?: string | null;
   lastErrorCode?: string | null;
+  attempt_count?: number;
+  attemptCount?: number;
+  next_attempt_at?: string | null;
+  nextAttemptAt?: string | null;
   created_at?: string;
   createdAt?: string;
   updated_at?: string;

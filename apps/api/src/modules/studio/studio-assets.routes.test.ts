@@ -13,6 +13,7 @@ import { buildApp } from "../../app";
 import { createInMemoryObjectStorage } from "../../storage/in-memory-object-storage";
 import { createS3ObjectStorage } from "../../storage/s3-object-storage";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
+import type { AiProvider } from "../ai/ai.types";
 import type { StudioRepository } from "./studio.types";
 import type { StudioLinkFetcher, StudioLinkResolver } from "./studio-assets.routes";
 import { createStudioUploadSemaphore } from "./studio-asset-upload";
@@ -32,6 +33,69 @@ function ownerScope() {
 }
 
 describe("Studio asset routes", () => {
+  it("exposes owner-scoped processing status and retries a preserved audio asset", async () => {
+    let transcriptionCalls = 0;
+    const aiProvider: AiProvider = {
+      async generateStructured() {
+        return {};
+      },
+      async transcribeAudio() {
+        transcriptionCalls += 1;
+        if (transcriptionCalls === 1) throw new Error("provider unavailable");
+        return { text: "Escolher uma direção com calma.", confidence: 0.91, durationSeconds: 4 };
+      }
+    };
+    const fixture = await createFixture({ aiProvider });
+    const uploaded = await upload(fixture.app, fixture.documentId, {
+      filename: "reflexao.wav",
+      mimeType: "audio/wav",
+      body: validWav()
+    });
+    const assetId = uploaded.json().asset.id as string;
+
+    const pending = await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}`, headers: ownerA });
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json().asset).toMatchObject({ extractionStatus: "pending", kind: "audio" });
+    expect((await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}`, headers: ownerB })).statusCode).toBe(404);
+    expect((await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}`, headers: employee })).statusCode).toBe(403);
+    expect((await fixture.app.inject({ method: "POST", url: `/studio/assets/${assetId}/retry`, headers: manager })).statusCode).toBe(403);
+    expect((await fixture.app.inject({
+      method: "POST",
+      url: `/studio/assets/${assetId}/retry?owner_profile_id=owner_b`,
+      headers: ownerA,
+      payload: {}
+    })).statusCode).toBe(400);
+
+    await expect(fixture.app.studioAssetProcessor.processNext()).rejects.toThrow("provider unavailable");
+    const failed = await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}`, headers: ownerA });
+    expect(failed.json().asset).toMatchObject({
+      extractionStatus: "failed",
+      attemptCount: 1,
+      lastErrorCode: "STUDIO_ASSET_PROCESSING_FAILED"
+    });
+    const download = await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}/download`, headers: ownerA });
+    expect(download.statusCode).toBe(200);
+
+    const retried = await fixture.app.inject({ method: "POST", url: `/studio/assets/${assetId}/retry`, headers: ownerA, payload: {} });
+    expect(retried.statusCode).toBe(202);
+    expect(retried.json().asset).toMatchObject({
+      extractionStatus: "pending",
+      attemptCount: 0,
+      lastErrorCode: null,
+      nextAttemptAt: null
+    });
+
+    await expect(fixture.app.studioAssetProcessor.processNext()).resolves.toMatchObject({ extractionStatus: "ready" });
+    const ready = await fixture.app.inject({ method: "GET", url: `/studio/assets/${assetId}`, headers: ownerA });
+    expect(ready.json().asset).toMatchObject({
+      extractionStatus: "ready",
+      extractedText: "Escolher uma direção com calma."
+    });
+    const idempotent = await fixture.app.inject({ method: "POST", url: `/studio/assets/${assetId}/retry`, headers: ownerA, payload: {} });
+    expect(idempotent.statusCode).toBe(200);
+    expect(idempotent.json().asset.extractionStatus).toBe("ready");
+  });
+
   it("uploads a private text asset and creates an exactly ten-minute download URL", async () => {
     const fixture = await createFixture();
     const uploaded = await upload(fixture.app, fixture.documentId, {
@@ -1064,6 +1128,7 @@ describe("Studio asset routes", () => {
 async function createFixture(link: {
   resolver?: StudioLinkResolver;
   fetcher?: StudioLinkFetcher;
+  aiProvider?: AiProvider;
 } = {}) {
   const repository = createInMemoryStudioRepository();
   const document = await repository.createDocument(documentInput());
@@ -1074,12 +1139,31 @@ async function createFixture(link: {
       objectStorage,
       studioLinkResolver: link.resolver,
       studioLinkFetcher: link.fetcher,
+      aiProvider: link.aiProvider,
       now: () => new Date("2026-07-13T12:00:00.000Z")
     }),
     repository,
     objectStorage,
     documentId: document.id
   };
+}
+
+function validWav() {
+  const dataBytes = 8;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write("RIFF", 0, "ascii");
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write("WAVEfmt ", 8, "ascii");
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(8_000, 24);
+  buffer.writeUInt32LE(16_000, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36, "ascii");
+  buffer.writeUInt32LE(dataBytes, 40);
+  return buffer;
 }
 
 function documentInput(): Parameters<StudioRepository["createDocument"]>[0] {

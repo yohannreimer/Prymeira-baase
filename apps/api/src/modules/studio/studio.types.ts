@@ -292,6 +292,7 @@ export type StudioRepository = {
   }): Promise<boolean>;
   claimNextAsset(now: string, leaseMs?: number): Promise<StudioAsset | null>;
   finishAssetProcessing(input: FinishStudioAssetProcessing): Promise<StudioAsset | null>;
+  retryAssetProcessing(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   tombstoneAssetForCleanup(scope: StudioOwnerScope, assetId: string): Promise<StudioAssetCleanupJob | null>;
   enqueueOrphanAssetCleanup(input: StudioOwnerScope & { objectKey: string }): Promise<StudioAssetCleanupJob>;
   listAssetCleanupJobs(scope: StudioOwnerScope): Promise<StudioAssetCleanupJob[]>;

@@ -735,6 +735,26 @@ export function createInMemoryStudioRepository(
       return cloneAsset(updated);
     },
 
+    async retryAssetProcessing(scope, assetId) {
+      const asset = assets.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.id === assetId
+        && item.lifecycleStatus === "active");
+      if (!asset) return null;
+      if (asset.extractionStatus === "failed") {
+        asset.extractionStatus = "pending";
+        asset.extractedText = null;
+        asset.extractionMetadata = {};
+        asset.lastErrorCode = null;
+        asset.attemptCount = 0;
+        asset.nextAttemptAt = null;
+        asset.claimToken = null;
+        asset.leaseExpiresAt = null;
+        asset.updatedAt = nextTimestamp(now, asset.updatedAt);
+      }
+      return cloneAsset(asset);
+    },
+
     async tombstoneAssetForCleanup(scope, assetId) {
       const asset = assets.find((item) =>
         item.workspaceId === scope.workspaceId

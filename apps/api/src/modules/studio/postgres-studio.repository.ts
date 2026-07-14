@@ -1104,6 +1104,29 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows[0] ? assetFromRow(result.rows[0]) : null;
     },
 
+    async retryAssetProcessing(scope, assetId) {
+      return withOperationalTransaction(db, async (client) => {
+        const current = await client.query<StudioAssetRow>(
+          `SELECT * FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             AND lifecycle_status='active' FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, assetId]
+        );
+        const asset = current.rows[0];
+        if (!asset) return null;
+        if (asset.extraction_status !== "failed") return assetFromRow(asset);
+        const retried = await client.query<StudioAssetRow>(
+          `UPDATE studio_assets SET extraction_status='pending',extracted_text=NULL,
+             extraction_metadata='{}'::jsonb,last_error_code=NULL,attempt_count=0,
+             next_attempt_at=NULL,claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, assetId]
+        );
+        return assetFromRow(retried.rows[0]!);
+      });
+    },
+
     async tombstoneAssetForCleanup(scope, assetId) {
       return withOperationalTransaction(db, async (client) => {
         const asset = await client.query<StudioAssetRow>(

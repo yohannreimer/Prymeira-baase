@@ -110,6 +110,8 @@ export function mapStudioAsset(raw: RawStudioAsset): StudioAsset {
     extractionStatus: required(raw.extraction_status, raw.extractionStatus, "extraction_status"),
     extractedText: raw.extracted_text !== undefined ? raw.extracted_text : raw.extractedText ?? null,
     lastErrorCode: raw.last_error_code !== undefined ? raw.last_error_code : raw.lastErrorCode ?? null,
+    attemptCount: raw.attempt_count ?? raw.attemptCount ?? 0,
+    nextAttemptAt: raw.next_attempt_at !== undefined ? raw.next_attempt_at : raw.nextAttemptAt ?? null,
     createdAt: required(raw.created_at, raw.createdAt, "created_at"),
     updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at")
   };
@@ -251,6 +253,48 @@ export async function attachStudioLink(
     fetcher
   );
   return mapStudioAsset(response.asset);
+}
+
+export async function getStudioAsset(
+  assetId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioAsset> {
+  const response = await studioRequest<RawStudioAssetResponse>(
+    `/assets/${encodeURIComponent(assetId)}`,
+    { signal },
+    fetcher
+  );
+  return mapStudioAsset(response.asset);
+}
+
+export async function retryStudioAsset(
+  assetId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioAsset> {
+  const response = await studioRequest<RawStudioAssetResponse>(
+    `/assets/${encodeURIComponent(assetId)}/retry`,
+    { method: "POST", body: JSON.stringify({}), signal },
+    fetcher
+  );
+  return mapStudioAsset(response.asset);
+}
+
+export async function getStudioAssetDownload(
+  assetId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<{ url: string; expiresInSeconds: number }> {
+  const response = await studioRequest<{ url: string; expires_in_seconds?: number; expiresInSeconds?: number }>(
+    `/assets/${encodeURIComponent(assetId)}/download`,
+    { signal },
+    fetcher
+  );
+  return {
+    url: response.url,
+    expiresInSeconds: response.expires_in_seconds ?? response.expiresInSeconds ?? 0
+  };
 }
 
 export async function getStudioDocument(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioDocument> {

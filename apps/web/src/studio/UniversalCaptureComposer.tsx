@@ -24,6 +24,20 @@ type UniversalCaptureComposerProps = {
   attachLink?: AttachLink;
 };
 
+type CaptureInput = {
+  mode: StudioCaptureMode;
+  bodyText: string;
+  title?: string | null;
+  file?: Blob;
+  filename?: string;
+  url?: string;
+};
+
+type RetryAttachment = {
+  document: StudioDocument | null;
+  input: CaptureInput;
+};
+
 function assetOutcome(asset: StudioAsset | undefined, mode: StudioCaptureMode): StudioCaptureOutcome {
   if (!asset) return { processing: "none" };
   if (asset.extractionStatus === "failed") {
@@ -73,6 +87,7 @@ export default function UniversalCaptureComposer({
   const [saving, setSaving] = useState(false);
   const [recording, setRecording] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [retryAttachment, setRetryAttachment] = useState<RetryAttachment | null>(null);
   const busyRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -99,21 +114,36 @@ export default function UniversalCaptureComposer({
     if (linkMode) linkInputRef.current?.focus();
   }, [linkMode]);
 
-  async function capture(input: {
-    mode: StudioCaptureMode;
-    bodyText: string;
-    title?: string | null;
-    file?: Blob;
-    filename?: string;
-    url?: string;
-  }) {
+  async function attachInput(document: StudioDocument, input: CaptureInput, signal: AbortSignal) {
+    if (input.file && input.filename) return attachAsset(document.id, input.file, input.filename, signal);
+    if (input.url) return attachLink(document.id, input.url, signal);
+    return undefined;
+  }
+
+  function clearComposer() {
+    setText("");
+    setLink("");
+    setLinkMode(false);
+    setRetryAttachment(null);
+  }
+
+  function uploadFailureMessage(input: CaptureInput, document: StudioDocument | null) {
+    if (!document) return "O material ainda não foi guardado. Tente enviar novamente.";
+    if (input.mode === "audio") return "O documento foi criado, mas o áudio não foi enviado.";
+    if (input.mode === "link") return "O documento foi criado, mas o link não foi adicionado.";
+    if (input.mode === "image") return "O documento foi criado, mas a imagem não foi enviada.";
+    return "O documento foi criado, mas o arquivo não foi enviado.";
+  }
+
+  async function capture(input: CaptureInput) {
     if (busyRef.current) return;
     busyRef.current = true;
     setSaving(true);
     setMessage("Guardando sua captura…");
     const controller = new AbortController();
     controllerRef.current = controller;
-    let document: StudioDocument | undefined;
+    let document: StudioDocument | null = null;
+    let completed: { document: StudioDocument; outcome: StudioCaptureOutcome } | null = null;
     try {
       const captureMode = input.mode !== "text" && input.bodyText ? "mixed" : input.mode;
       document = await create({
@@ -123,41 +153,80 @@ export default function UniversalCaptureComposer({
         capture_mode: captureMode
       }, controller.signal);
 
-      let asset: StudioAsset | undefined;
-      if (input.file && input.filename) {
-        asset = await attachAsset(document.id, input.file, input.filename, controller.signal);
-      } else if (input.url) {
-        asset = await attachLink(document.id, input.url, controller.signal);
-      }
+      const asset = await attachInput(document, input, controller.signal);
 
       const outcome = assetOutcome(asset, input.mode);
       if (mountedRef.current) {
-        setText("");
-        setLink("");
-        setLinkMode(false);
+        clearComposer();
         setMessage(outcome.message ?? (outcome.processing === "pending"
           ? "Captura guardada. O conteúdo continua sendo preparado."
           : "Captura guardada."));
       }
-      onCaptured(document, outcome);
-    } catch (error) {
+      completed = { document, outcome };
+    } catch {
       if (controller.signal.aborted) return;
-      if (document) {
-        const processingMessage = input.mode === "audio"
-          ? "A captura foi guardada como áudio, mas a transcrição precisa ser tentada novamente."
-          : "A captura foi guardada, mas o anexo precisa ser tentado novamente.";
-        if (mountedRef.current) setMessage(processingMessage);
-        onCaptured(document, { processing: "retry", message: processingMessage });
+      if (input.file || input.url) {
+        if (mountedRef.current) {
+          setRetryAttachment({ document, input });
+          setMessage(uploadFailureMessage(input, document));
+        }
       } else {
-        if (mountedRef.current) setMessage(error instanceof Error && error.message
-          ? "Não foi possível guardar agora. Seu conteúdo continua aqui para tentar novamente."
-          : "Não foi possível guardar agora.");
+        if (mountedRef.current) {
+          setMessage("Não foi possível guardar agora. Seu conteúdo continua aqui para tentar novamente.");
+        }
       }
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
       busyRef.current = false;
       if (mountedRef.current) setSaving(false);
     }
+    if (completed && mountedRef.current) onCaptured(completed.document, completed.outcome);
+  }
+
+  async function retryPendingAttachment() {
+    const pending = retryAttachment;
+    if (!pending || busyRef.current) return;
+    if (!pending.document) {
+      setRetryAttachment(null);
+      await capture(pending.input);
+      return;
+    }
+    busyRef.current = true;
+    setSaving(true);
+    setMessage("Enviando o material novamente…");
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    let completed: StudioCaptureOutcome | null = null;
+    try {
+      const asset = await attachInput(pending.document, pending.input, controller.signal);
+      completed = assetOutcome(asset, pending.input.mode);
+      if (mountedRef.current) {
+        clearComposer();
+        setMessage(completed.message ?? (completed.processing === "pending"
+          ? "Material enviado. O conteúdo continua sendo preparado."
+          : "Material enviado."));
+      }
+    } catch {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setMessage(uploadFailureMessage(pending.input, pending.document));
+      }
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
+      busyRef.current = false;
+      if (mountedRef.current) setSaving(false);
+    }
+    if (completed && mountedRef.current) onCaptured(pending.document, completed);
+  }
+
+  function continueWithoutAttachment() {
+    const pending = retryAttachment;
+    if (!pending?.document) return;
+    clearComposer();
+    setMessage("Documento aberto sem o material que não foi enviado.");
+    onCaptured(pending.document, {
+      processing: "none",
+      message: "O material não foi enviado."
+    });
   }
 
   function submitCapture(event: FormEvent<HTMLFormElement>) {
@@ -258,6 +327,7 @@ export default function UniversalCaptureComposer({
         id="studio-capture"
         value={text}
         onChange={(event) => setText(event.target.value)}
+        disabled={Boolean(retryAttachment)}
         placeholder="Escreva, grave ou adicione qualquer coisa…"
         rows={4}
       />
@@ -274,8 +344,9 @@ export default function UniversalCaptureComposer({
             placeholder="https://"
             value={link}
             onChange={(event) => setLink(event.target.value)}
+            disabled={Boolean(retryAttachment)}
           />
-          <button type="button" onClick={() => setLinkMode(false)}>Fechar</button>
+          <button type="button" onClick={() => setLinkMode(false)} disabled={Boolean(retryAttachment)}>Fechar</button>
         </div>
       ) : null}
 
@@ -286,21 +357,21 @@ export default function UniversalCaptureComposer({
             aria-label={recording ? "Parar gravação" : "Gravar áudio"}
             aria-pressed={recording}
             onClick={() => void toggleRecording()}
-            disabled={saving}
+            disabled={saving || Boolean(retryAttachment)}
           >
             <i aria-hidden="true" className={`ph-light ${recording ? "ph-stop-circle" : "ph-microphone"}`} />
           </button>
-          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || recording}>
+          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || recording || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-paperclip" />
           </button>
-          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || recording}>
+          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || recording || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-image" />
           </button>
-          <button type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || recording}>
+          <button type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || recording || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-link" />
           </button>
         </div>
-        <button className="studio-composer__submit" type="submit" disabled={saving || recording || (linkMode ? !link.trim() : !text.trim())}>
+        <button className="studio-composer__submit" type="submit" disabled={saving || recording || Boolean(retryAttachment) || (linkMode ? !link.trim() : !text.trim())}>
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>
@@ -310,6 +381,21 @@ export default function UniversalCaptureComposer({
       <input hidden tabIndex={-1} data-testid="studio-audio-input" ref={audioInputRef} type="file" accept="audio/*" onChange={(event) => captureSelectedFile(event, "audio")} />
 
       {message ? <p className="studio-composer__status" role="status" aria-live="polite">{message}</p> : null}
+      {retryAttachment ? (
+        <div className="studio-composer__retry">
+          <button type="button" onClick={() => void retryPendingAttachment()} disabled={saving}>
+            {saving ? "Enviando…" : retryAttachment.document
+              ? retryAttachment.input.mode === "audio" ? "Tentar enviar áudio novamente"
+                : retryAttachment.input.mode === "link" ? "Tentar adicionar link novamente"
+                  : retryAttachment.input.mode === "image" ? "Tentar enviar imagem novamente"
+                    : "Tentar enviar arquivo novamente"
+              : "Tentar guardar novamente"}
+          </button>
+          {retryAttachment.document ? (
+            <button type="button" onClick={continueWithoutAttachment} disabled={saving}>Seguir sem anexo</button>
+          ) : null}
+        </div>
+      ) : null}
     </form>
   );
 }

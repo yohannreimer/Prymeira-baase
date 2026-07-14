@@ -1,5 +1,6 @@
 import { useState } from "react";
 import StudioHome from "./StudioHome";
+import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import type { StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
@@ -74,11 +75,9 @@ export default function StudioPage() {
                   ? selectedDocument.title || "Captura sem título"
                   : active.title}</h2>
                 <p>{section === "document" && selectedDocument
-                  ? selectedCaptureOutcome?.processing === "retry"
-                    ? "Sua captura está guardada. O processamento pode ser tentado novamente sem perder o original."
-                    : selectedCaptureOutcome?.processing === "pending"
-                      ? "Sua captura está guardada e continua sendo preparada. Você pode seguir escrevendo."
-                      : "Sua captura está guardada. O caderno completo será aberto aqui."
+                  ? selectedCaptureOutcome?.asset
+                    ? "O documento e o material original estão guardados. O estado abaixo acompanha o processamento real."
+                    : "Sua captura está guardada. O caderno completo será aberto aqui."
                   : active.description}</p>
               </div>
               <div className="studio-empty">
@@ -87,6 +86,9 @@ export default function StudioPage() {
                   ? selectedDocument.bodyText || active.instruction
                   : active.instruction}</p>
               </div>
+              {section === "document" && selectedCaptureOutcome?.asset ? (
+                <StudioAssetProcessingStatus asset={selectedCaptureOutcome.asset} />
+              ) : null}
             </>
           )}
         </section>
