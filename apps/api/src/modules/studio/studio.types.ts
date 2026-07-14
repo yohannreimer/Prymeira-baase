@@ -3,6 +3,15 @@ export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
+export type StudioOperationalResourceType =
+  | "dashboard"
+  | "task"
+  | "routine"
+  | "process"
+  | "training"
+  | "announcement"
+  | "people";
+export type StudioContextFactKind = "direct" | "inferred";
 export type StudioRelationType = "related_to" | "supports" | "contradicts" | "originated" | "informs" | "supersedes";
 export type StudioIndexJobStatus = "pending" | "processing" | "failed" | "completed";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
@@ -12,6 +21,49 @@ export type StudioAssetCleanupStatus = "pending" | "processing" | "failed";
 export type StudioAssetUploadIntentStatus = "uploading" | "cleanup_pending" | "processing" | "failed";
 export type StudioAssetStorageSessionState = "creating" | "active" | "abort_pending";
 export const STUDIO_ASSET_MAX_ATTEMPTS = 5;
+
+export type StudioContextRequest = {
+  from: string | null;
+  to: string | null;
+  resourceTypes: StudioOperationalResourceType[];
+  personIds: string[];
+};
+
+export type StudioContextFact = {
+  key: string;
+  value: unknown;
+  citationIndex: number;
+  kind: StudioContextFactKind;
+  resourceType: StudioOperationalResourceType;
+};
+
+/**
+ * Owner-scoped citation draft. Task 16 persists these in the same transaction
+ * as the assistant message or suggestion that references them.
+ */
+export type StudioCitationInput = StudioOwnerScope & {
+  sourceType: "operational_resource" | "operational_metric";
+  sourceId: string;
+  url: null;
+  label: string;
+  excerpt: string;
+  observedAt: string;
+  periodFrom: string;
+  periodTo: string;
+  metadata: {
+    resourceType: StudioOperationalResourceType;
+    personIds: string[];
+    contentTrust: "untrusted_data";
+  };
+};
+
+export type StudioContextSnapshot = {
+  period: { from: string; to: string };
+  facts: StudioContextFact[];
+  citations: StudioCitationInput[];
+  serializedBytes: number;
+  truncated: boolean;
+};
 
 export type CreateStudioDocument = {
   title: string | null;
