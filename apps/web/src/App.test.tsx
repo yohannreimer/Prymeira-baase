@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+
+const appStyles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
 const onboardingSuggestionMetadata = {
   reason: "Sugerido a partir do onboarding.",
@@ -182,6 +187,7 @@ describe("Baase React app shell", () => {
 
     expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Painel da área · Criação" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#painel-gestor");
 
     unmount();
     window.history.replaceState(null, "", "/");
@@ -194,6 +200,45 @@ describe("Baase React app shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Gestor" }));
     expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Painel da área · Criação" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Estúdio" })).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("#painel-gestor");
+
+    fireEvent.click(screen.getByRole("button", { name: "Dono" }));
+    expect(screen.getByRole("heading", { name: "Bom dia, Marina." })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#painel-dono");
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+  });
+
+  it("syncs permitted and forbidden screens from hashchange and popstate", async () => {
+    render(<App initialRole="dono" apiEnabled={false} />);
+
+    window.history.replaceState(null, "", "/#estudio");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(await screen.findByRole("main", { name: "Estúdio" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Estúdio" })).toHaveAttribute("aria-current", "page");
+
+    window.history.replaceState(null, "", "/");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(screen.getByRole("link", { name: "Painel" })).toHaveAttribute("aria-current", "page");
+    expect(window.location.hash).toBe("#painel-dono");
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+
+    window.history.replaceState(null, "", "/#hoje");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(screen.getByRole("link", { name: "Hoje" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Gestor" }));
+    window.history.replaceState(null, "", "/#estudio");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(window.location.hash).toBe("#painel-gestor");
+    expect(screen.queryByLabelText("Carregando Estúdio")).not.toBeInTheDocument();
+    expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Studio loading skeleton in the eager stylesheet", () => {
+    expect(appStyles).toContain(".studio-loading");
+    expect(studioStyles).not.toContain(".studio-loading");
   });
 
   it("does not activate Studio while an authenticated manager role is settling", async () => {
@@ -213,6 +258,7 @@ describe("Baase React app shell", () => {
     expect(screen.queryByRole("link", { name: "Estúdio" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Carregando Estúdio")).not.toBeInTheDocument();
     expect(screen.queryByRole("main", { name: "Estúdio" })).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("#painel-gestor");
   });
 
   it("uses email-only invitations and a conditional area picker in account mode", async () => {

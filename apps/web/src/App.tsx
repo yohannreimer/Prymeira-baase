@@ -472,6 +472,14 @@ function updateOperationalUrl(input: { screen?: Screen; period?: OperationalPeri
   window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
+function replaceOperationalScreen(screen: Screen) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("person");
+  url.hash = screen;
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function isOperationalOverview(value: unknown): value is ApiOperationalOverview {
   return value !== null
     && typeof value === "object"
@@ -1588,6 +1596,12 @@ function homeFor(role: Role): Screen {
   return "hoje";
 }
 
+function uiRoleFromSession(session: BaaseSession): Role {
+  if (session.profile.role === "owner") return "dono";
+  if (session.profile.role === "manager") return "gestor";
+  return "func";
+}
+
 function Icon({ name, fill = false, bold = false }: { name: string; fill?: boolean; bold?: boolean }) {
   const weight = fill ? "ph-fill" : bold ? "ph-bold" : name.includes("ph-light") ? "" : "ph-light";
   return <i aria-hidden="true" className={[weight, name].filter(Boolean).join(" ")} />;
@@ -1726,11 +1740,13 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
 
   useEffect(() => {
     if (!accountMode || !apiBundle?.session) return;
-    const authenticatedRole = apiBundle.session.profile.role === "owner"
-      ? "dono" : apiBundle.session.profile.role === "manager" ? "gestor" : "func";
+    const authenticatedRole = uiRoleFromSession(apiBundle.session);
+    if (role === authenticatedRole) return;
+    const authenticatedHome = homeFor(authenticatedRole);
     setRoleState(authenticatedRole);
-    setScreen(homeFor(authenticatedRole));
-  }, [accountMode, apiBundle?.session]);
+    setScreen(authenticatedHome);
+    replaceOperationalScreen(authenticatedHome);
+  }, [accountMode, apiBundle?.session, role]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1748,8 +1764,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   const liveWorkspaceLoaded = liveWorkspaceMode && apiBundle !== null;
   const [headerTitle] = titles[screen];
   const baseNav = navByRole[role];
-  const canAccessStudio = role === "dono"
-    && (!accountMode || apiBundle?.session.profile.role === "owner");
+  const sessionRole = accountMode && apiBundle?.session ? uiRoleFromSession(apiBundle.session) : null;
+  const navigationRole = sessionRole ?? role;
+  const navigationReady = !accountMode || sessionRole !== null;
+  const canAccessStudio = navigationReady && role === "dono" && navigationRole === "dono";
   const roleNav = useMemo(
     () => canAccessStudio ? baseNav : baseNav.filter((item) => item.key !== "estudio"),
     [baseNav, canAccessStudio]
@@ -1889,8 +1907,10 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
 
   function setRole(nextRole: Role) {
     if (accountMode) return;
+    const nextHome = homeFor(nextRole);
     setRoleState(nextRole);
-    setScreen(homeFor(nextRole));
+    setScreen(nextHome);
+    replaceOperationalScreen(nextHome);
     setMenuOpen(false);
     setOperationalPersonId(null);
   }
@@ -1913,18 +1933,35 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   }
 
   useEffect(() => {
-    function restoreScreenFromUrl() {
+    function restoreScreenFromUrl(event?: Event) {
+      if (!navigationReady) return;
       const candidate = window.location.hash.slice(1) as Screen;
-      if (!candidate) return;
+      if (!candidate) {
+        if (!event) return;
+        const safeScreen = homeFor(navigationRole);
+        setScreen(safeScreen);
+        replaceOperationalScreen(safeScreen);
+        return;
+      }
       const allowed = (candidate !== "estudio" || canAccessStudio)
-        && (navByRole[role].some((item) => item.key === candidate)
-          || (candidate === "pessoa-operacional" && role !== "func"));
-      if (allowed) setScreen(candidate);
+        && (navByRole[navigationRole].some((item) => item.key === candidate)
+          || (candidate === "pessoa-operacional" && navigationRole !== "func"));
+      if (allowed) {
+        setScreen(candidate);
+        return;
+      }
+      const safeScreen = homeFor(navigationRole);
+      setScreen(safeScreen);
+      replaceOperationalScreen(safeScreen);
     }
     restoreScreenFromUrl();
     window.addEventListener("popstate", restoreScreenFromUrl);
-    return () => window.removeEventListener("popstate", restoreScreenFromUrl);
-  }, [canAccessStudio, role]);
+    window.addEventListener("hashchange", restoreScreenFromUrl);
+    return () => {
+      window.removeEventListener("popstate", restoreScreenFromUrl);
+      window.removeEventListener("hashchange", restoreScreenFromUrl);
+    };
+  }, [canAccessStudio, navigationReady, navigationRole]);
 
   function readOverviewForPeriod(nextPeriod: OperationalPeriod) {
     if (!apiEnabled || role === "func") return;

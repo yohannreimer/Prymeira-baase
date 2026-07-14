@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import StudioPage from "./StudioPage";
+
+const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
 describe("StudioPage", () => {
   it("owns its secondary navigation and section state", () => {
@@ -32,18 +37,38 @@ describe("StudioPage", () => {
     expect(screen.getByRole("heading", { name: "Documento" })).toBeInTheDocument();
   });
 
-  it("supports keyboard activation, visible focus hooks, and a responsive shell", () => {
+  it("supports native keyboard activation and ordered focus", async () => {
+    const user = userEvent.setup();
     render(<StudioPage />);
 
+    const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
+    const home = within(navigation).getByRole("button", { name: "Início" });
     const inbox = screen.getByRole("button", { name: "Caixa de entrada" });
-    expect(inbox).toHaveClass("studio-nav__item");
-    inbox.focus();
-    fireEvent.keyDown(inbox, { key: "Enter" });
-    fireEvent.click(inbox);
+    const all = within(navigation).getByRole("button", { name: "Tudo" });
 
+    await user.tab();
+    expect(home).toHaveFocus();
+    await user.tab();
     expect(inbox).toHaveFocus();
+    await user.keyboard("{Enter}");
+
     expect(inbox).toHaveAttribute("aria-current", "page");
-    expect(screen.getByTestId("studio-layout")).toHaveClass("studio-layout");
-    expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Caixa de entrada" })).toBeInTheDocument();
+
+    await user.tab();
+    expect(all).toHaveFocus();
+    await user.keyboard(" ");
+    expect(all).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Tudo" })).toBeInTheDocument();
+  });
+
+  it("keeps every section accessible in the responsive overflow navigation", () => {
+    render(<StudioPage />);
+
+    const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
+    expect(navigation).not.toHaveAttribute("aria-hidden");
+    expect(within(navigation).getAllByRole("button")).toHaveLength(9);
+    expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeVisible();
+    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*overflow-x: auto/);
   });
 });

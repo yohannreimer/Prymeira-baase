@@ -202,6 +202,30 @@ button { cursor: pointer; }
 .app-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .app-main { flex: 1; overflow: auto; padding: 30px 26px 70px; }
 
+/* Eager route fallback: must be available before the lazy Studio bundle resolves. */
+.studio-loading {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  min-height: 360px;
+  padding: clamp(24px, 5vw, 52px);
+}
+
+.studio-loading span {
+  background: var(--panel2);
+  border-radius: 6px;
+  display: block;
+  height: 12px;
+  max-width: 420px;
+}
+
+.studio-loading span:first-child {
+  height: 42px;
+  max-width: 240px;
+}
+
 .app-side {
   width: 250px;
   flex: none;
