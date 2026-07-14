@@ -1,6 +1,8 @@
 import { createBaaseHeaders, withConfiguredAuth } from "../api";
 import type {
   RawStudioCollection,
+  RawStudioAsset,
+  RawStudioAssetResponse,
   RawStudioCollectionsResponse,
   RawStudioDocument,
   RawStudioDocumentPageResponse,
@@ -13,6 +15,8 @@ import type {
   RawStudioSearchResult,
   RawStudioVersionsResponse,
   StudioCollection,
+  StudioAsset,
+  StudioCaptureMode,
   StudioDocument,
   StudioDocumentPage,
   StudioDocumentStatus,
@@ -69,7 +73,9 @@ export async function studioRequest<T>(
 ): Promise<T> {
   const headers = new Headers(createBaaseHeaders("dono"));
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-  if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  const multipartBody = typeof FormData !== "undefined" && init.body instanceof FormData;
+  if (multipartBody) headers.delete("content-type");
+  else if (!headers.has("content-type")) headers.set("content-type", "application/json");
 
   const response = await fetcher(`/api/studio${path}`, await withConfiguredAuth({
     ...init,
@@ -87,6 +93,26 @@ export async function studioRequest<T>(
   }
 
   return payload as T;
+}
+
+export function mapStudioAsset(raw: RawStudioAsset): StudioAsset {
+  return {
+    id: raw.id,
+    workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
+    ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
+    documentId: required(raw.document_id, raw.documentId, "document_id"),
+    kind: raw.kind,
+    displayName: required(raw.display_name, raw.displayName, "display_name"),
+    sourceUrl: raw.source_url !== undefined ? raw.source_url : raw.sourceUrl ?? null,
+    finalUrl: raw.final_url !== undefined ? raw.final_url : raw.finalUrl ?? null,
+    mimeType: raw.mime_type !== undefined ? raw.mime_type : raw.mimeType ?? null,
+    sizeBytes: required(raw.size_bytes, raw.sizeBytes, "size_bytes"),
+    extractionStatus: required(raw.extraction_status, raw.extractionStatus, "extraction_status"),
+    extractedText: raw.extracted_text !== undefined ? raw.extracted_text : raw.extractedText ?? null,
+    lastErrorCode: raw.last_error_code !== undefined ? raw.last_error_code : raw.lastErrorCode ?? null,
+    createdAt: required(raw.created_at, raw.createdAt, "created_at"),
+    updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at")
+  };
 }
 
 function required<T>(snakeValue: T | undefined, camelValue: T | undefined, field: string): T {
@@ -171,9 +197,60 @@ export function mapStudioHome(raw: RawStudioHome): StudioHome {
   };
 }
 
-export async function getStudioHome(fetcher: StudioFetcher = fetch): Promise<StudioHome> {
-  const response = await studioRequest<RawStudioHomeResponse>("/home", {}, fetcher);
+export async function getStudioHome(fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioHome> {
+  const response = await studioRequest<RawStudioHomeResponse>("/home", { signal }, fetcher);
   return mapStudioHome(response.home);
+}
+
+export type CreateStudioDocumentInput = {
+  title: string | null;
+  body_json: Record<string, unknown>;
+  body_text: string;
+  capture_mode: StudioCaptureMode;
+};
+
+export async function createStudioDocument(
+  input: CreateStudioDocumentInput,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>("/documents", {
+    method: "POST",
+    body: JSON.stringify(input),
+    signal
+  }, fetcher);
+  return mapStudioDocument(response.document);
+}
+
+export async function attachStudioFile(
+  documentId: string,
+  file: Blob,
+  filename: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioAsset> {
+  const form = new FormData();
+  form.append("file", file, filename);
+  const response = await studioRequest<RawStudioAssetResponse>(
+    `/documents/${encodeURIComponent(documentId)}/assets`,
+    { method: "POST", body: form, signal },
+    fetcher
+  );
+  return mapStudioAsset(response.asset);
+}
+
+export async function attachStudioLink(
+  documentId: string,
+  url: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioAsset> {
+  const response = await studioRequest<RawStudioAssetResponse>(
+    `/documents/${encodeURIComponent(documentId)}/assets`,
+    { method: "POST", body: JSON.stringify({ url }), signal },
+    fetcher
+  );
+  return mapStudioAsset(response.asset);
 }
 
 export async function getStudioDocument(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioDocument> {

@@ -1,5 +1,7 @@
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
 export type StudioDocumentStatus = "active" | "archived";
+export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
+export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 
 export type StudioDocument = {
   id: string;
@@ -67,6 +69,24 @@ export type StudioHome = {
 export type StudioDocumentPage = {
   items: StudioDocument[];
   nextCursor: string | null;
+};
+
+export type StudioAsset = {
+  id: string;
+  workspaceId: string;
+  ownerProfileId: string;
+  documentId: string;
+  kind: StudioAssetKind;
+  displayName: string;
+  sourceUrl: string | null;
+  finalUrl: string | null;
+  mimeType: string | null;
+  sizeBytes: number;
+  extractionStatus: StudioAssetExtractionStatus;
+  extractedText: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /** Wire contracts stay separate so API casing never leaks into the view model. */
@@ -171,3 +191,36 @@ export type RawStudioDocumentPageResponse = {
 export type RawStudioCollectionsResponse = { collections: RawStudioCollection[] };
 export type RawStudioSearchResponse = { results: RawStudioSearchResult[] };
 export type RawStudioVersionsResponse = { versions: RawStudioDocumentVersion[] };
+
+export type RawStudioAsset = {
+  id: string;
+  workspace_id?: string;
+  workspaceId?: string;
+  owner_profile_id?: string;
+  ownerProfileId?: string;
+  document_id?: string;
+  documentId?: string;
+  kind: StudioAssetKind;
+  display_name?: string;
+  displayName?: string;
+  source_url?: string | null;
+  sourceUrl?: string | null;
+  final_url?: string | null;
+  finalUrl?: string | null;
+  mime_type?: string | null;
+  mimeType?: string | null;
+  size_bytes?: number;
+  sizeBytes?: number;
+  extraction_status?: StudioAssetExtractionStatus;
+  extractionStatus?: StudioAssetExtractionStatus;
+  extracted_text?: string | null;
+  extractedText?: string | null;
+  last_error_code?: string | null;
+  lastErrorCode?: string | null;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+};
+
+export type RawStudioAssetResponse = { asset: RawStudioAsset };

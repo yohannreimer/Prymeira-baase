@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureBaaseApiAuth } from "../api";
 import {
   StudioApiError,
+  attachStudioFile,
+  attachStudioLink,
+  createStudioDocument,
   getStudioDocument,
   getStudioHome,
   listStudioCollections,
@@ -134,5 +137,51 @@ describe("Studio API client", () => {
   it("returns an empty object for successful empty and non-JSON responses", async () => {
     await expect(studioRequest("/home", {}, async () => new Response(null, { status: 204 }))).resolves.toEqual({});
     await expect(studioRequest("/home", {}, async () => new Response("ok", { status: 200, headers: { "content-type": "text/plain" } }))).resolves.toEqual({});
+  });
+
+  it("creates captures and sends private attachments without overriding multipart boundaries", async () => {
+    const rawAsset = {
+      id: "asset_1",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      document_id: "document_1",
+      kind: "file",
+      display_name: "plano.txt",
+      source_url: null,
+      final_url: null,
+      mime_type: "text/plain",
+      size_bytes: 5,
+      extraction_status: "pending",
+      extracted_text: null,
+      last_error_code: null,
+      created_at: "2026-07-13T12:00:00.000Z",
+      updated_at: "2026-07-13T12:00:00.000Z"
+    } as const;
+    const fetcher = vi.fn(async (input: string, _init?: RequestInit) => input.endsWith("/documents")
+      ? jsonResponse({ document: rawDocument }, 201)
+      : jsonResponse({ asset: input.endsWith("/assets") ? rawAsset : { ...rawAsset, kind: "link_snapshot" } }, 201));
+    const controller = new AbortController();
+
+    await createStudioDocument({
+      title: null,
+      body_json: { type: "doc" },
+      body_text: "Crescer com margem.",
+      capture_mode: "text"
+    }, controller.signal, fetcher);
+    await attachStudioFile("document_1", new Blob(["plano"], { type: "text/plain" }), "plano.txt", controller.signal, fetcher);
+    await attachStudioLink("document_1", "https://example.com/plano", controller.signal, fetcher);
+
+    const createInit = fetcher.mock.calls[0]![1];
+    expect(createInit?.signal).toBe(controller.signal);
+    expect(JSON.parse(String(createInit?.body))).toMatchObject({ capture_mode: "text" });
+
+    const uploadInit = fetcher.mock.calls[1]![1];
+    expect(uploadInit?.body).toBeInstanceOf(FormData);
+    expect(new Headers(uploadInit?.headers).has("content-type")).toBe(false);
+    expect(uploadInit?.signal).toBe(controller.signal);
+
+    const linkInit = fetcher.mock.calls[2]![1];
+    expect(new Headers(linkInit?.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(String(linkInit?.body))).toEqual({ url: "https://example.com/plano" });
   });
 });

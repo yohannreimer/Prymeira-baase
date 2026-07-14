@@ -2,12 +2,20 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioPage from "./StudioPage";
 
 const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
 describe("StudioPage", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("owns its secondary navigation and section state", () => {
     render(<StudioPage />);
 

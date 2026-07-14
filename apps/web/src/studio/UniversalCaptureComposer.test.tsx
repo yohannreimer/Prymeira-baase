@@ -1,0 +1,112 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import type { StudioDocument } from "./studio.types";
+import UniversalCaptureComposer from "./UniversalCaptureComposer";
+
+const capturedDocument: StudioDocument = {
+  id: "document_1",
+  workspaceId: "workspace_1",
+  ownerProfileId: "owner_1",
+  title: null,
+  bodyJson: { type: "doc" },
+  bodyText: "Uma ideia que precisa amadurecer",
+  revision: 1,
+  captureMode: "text",
+  inboxState: "pending_review",
+  isFocused: false,
+  status: "active",
+  createdAt: "2026-07-13T12:00:00.000Z",
+  updatedAt: "2026-07-13T12:00:00.000Z",
+  archivedAt: null
+};
+
+describe("UniversalCaptureComposer", () => {
+  it("creates a text capture once and opens the returned document", async () => {
+    const user = userEvent.setup();
+    const createDocument = vi.fn(async () => capturedDocument);
+    const onCaptured = vi.fn();
+    render(<UniversalCaptureComposer createDocument={createDocument} onCaptured={onCaptured} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Registre um pensamento" }), "Uma ideia que precisa amadurecer");
+    const submit = screen.getByRole("button", { name: "Guardar" });
+    await Promise.all([user.click(submit), user.click(submit)]);
+
+    await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+    expect(createDocument).toHaveBeenCalledWith(expect.objectContaining({
+      body_text: "Uma ideia que precisa amadurecer",
+      capture_mode: "text"
+    }), expect.any(AbortSignal));
+    expect(onCaptured).toHaveBeenCalledWith(capturedDocument, expect.objectContaining({ processing: "none" }));
+  });
+
+  it("offers native keyboard access to audio, file, image, and link capture", async () => {
+    const user = userEvent.setup();
+    render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+
+    const audio = screen.getByRole("button", { name: "Gravar áudio" });
+    const file = screen.getByRole("button", { name: "Adicionar arquivo" });
+    const image = screen.getByRole("button", { name: "Adicionar imagem" });
+    const link = screen.getByRole("button", { name: "Adicionar link" });
+
+    expect(audio).toHaveAttribute("type", "button");
+    expect(file).toHaveAttribute("type", "button");
+    expect(image).toHaveAttribute("type", "button");
+    expect(link).toHaveAttribute("type", "button");
+
+    await user.tab();
+    expect(screen.getByRole("textbox", { name: "Registre um pensamento" })).toHaveFocus();
+    await user.tab();
+    expect(audio).toHaveFocus();
+    await user.tab();
+    expect(file).toHaveFocus();
+    await user.tab();
+    expect(image).toHaveFocus();
+    await user.tab();
+    expect(link).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Endereço do link" })).toHaveFocus();
+  });
+
+  it("keeps an audio document available when later processing needs retry", async () => {
+    const audioDocument = { ...capturedDocument, id: "audio_1", bodyText: "", captureMode: "audio" as const };
+    const createDocument = vi.fn(async () => audioDocument);
+    const attachAsset = vi.fn(async () => {
+      throw new Error("transcription unavailable");
+    });
+    const onCaptured = vi.fn();
+    const file = new File(["audio"], "reflexao.webm", { type: "audio/webm" });
+
+    render(
+      <UniversalCaptureComposer
+        createDocument={createDocument}
+        attachAsset={attachAsset}
+        onCaptured={onCaptured}
+      />
+    );
+
+    await userEvent.upload(screen.getByTestId("studio-audio-input"), file);
+
+    await waitFor(() => expect(onCaptured).toHaveBeenCalledWith(audioDocument, expect.objectContaining({
+      processing: "retry"
+    })));
+    expect(screen.getByRole("status")).toHaveTextContent("captura foi guardada");
+  });
+
+  it("cancels an in-flight capture when its surface closes", async () => {
+    const user = userEvent.setup();
+    let receivedSignal: AbortSignal | undefined;
+    const createDocument = vi.fn((_input, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      return new Promise<StudioDocument>(() => undefined);
+    });
+    const view = render(<UniversalCaptureComposer createDocument={createDocument} onCaptured={vi.fn()} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Registre um pensamento" }), "Guardar antes de sair");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(receivedSignal?.aborted).toBe(false);
+
+    view.unmount();
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+});

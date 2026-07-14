@@ -1,4 +1,7 @@
 import { useState } from "react";
+import StudioHome from "./StudioHome";
+import type { StudioDocument } from "./studio.types";
+import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
 
 type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collection" | "document";
@@ -26,7 +29,15 @@ const studioNavigation: StudioNavItem[] = [
 
 export default function StudioPage() {
   const [section, setSection] = useState<StudioSection>("home");
+  const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
+  const [selectedCaptureOutcome, setSelectedCaptureOutcome] = useState<StudioCaptureOutcome | null>(null);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
+
+  function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
+    setSelectedDocument(document);
+    setSelectedCaptureOutcome(outcome ?? null);
+    setSection("document");
+  }
 
   return (
     <section className="studio-screen screen" aria-labelledby="studio-title">
@@ -55,15 +66,29 @@ export default function StudioPage() {
         </nav>
 
         <section className="studio-content" aria-label="Conteúdo da seção" aria-live="polite">
-          <div className="studio-content__heading">
-            <p className="mono">{active.label}</p>
-            <h2 className="serif">{active.title}</h2>
-            <p>{active.description}</p>
-          </div>
-          <div className="studio-empty">
-            <i aria-hidden="true" className={`ph-light ${active.icon}`} />
-            <p>{active.instruction}</p>
-          </div>
+          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : (
+            <>
+              <div className="studio-content__heading">
+                <p className="mono">{active.label}</p>
+                <h2 className="serif">{section === "document" && selectedDocument
+                  ? selectedDocument.title || "Captura sem título"
+                  : active.title}</h2>
+                <p>{section === "document" && selectedDocument
+                  ? selectedCaptureOutcome?.processing === "retry"
+                    ? "Sua captura está guardada. O processamento pode ser tentado novamente sem perder o original."
+                    : selectedCaptureOutcome?.processing === "pending"
+                      ? "Sua captura está guardada e continua sendo preparada. Você pode seguir escrevendo."
+                      : "Sua captura está guardada. O caderno completo será aberto aqui."
+                  : active.description}</p>
+              </div>
+              <div className="studio-empty">
+                <i aria-hidden="true" className={`ph-light ${active.icon}`} />
+                <p>{section === "document" && selectedDocument
+                  ? selectedDocument.bodyText || active.instruction
+                  : active.instruction}</p>
+              </div>
+            </>
+          )}
         </section>
       </div>
     </section>
