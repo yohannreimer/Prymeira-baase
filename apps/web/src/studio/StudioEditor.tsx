@@ -263,13 +263,13 @@ export default function StudioEditor({
         body_text: selectedVersion.bodyText
       });
       applyDocument(restored);
-      setVersionsOpen(false);
+      closeVersions();
     } catch (error) {
       if (error instanceof Error && "status" in error && error.status === 409) {
         const currentDraft = {
           title: titleRef.current.trim() || null,
-          bodyJson: editor?.getJSON() ?? autosave.document.bodyJson,
-          bodyText: editor?.getText() ?? autosave.document.bodyText
+          bodyJson: selectedVersion.bodyJson,
+          bodyText: selectedVersion.bodyText
         };
         setResolutionError(null);
         autosave.markConflict(currentDraft);

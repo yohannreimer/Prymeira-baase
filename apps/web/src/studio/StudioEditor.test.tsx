@@ -159,6 +159,8 @@ describe("StudioEditor", () => {
     await user.click(within(drawer).getByRole("button", { name: "Restaurar como nova versão" }));
 
     await waitFor(() => expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 })));
+    expect(screen.queryByRole("region", { name: "Histórico de versões" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ver histórico de versões" })).toHaveFocus());
     const patchCall = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
     expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({
       expected_revision: 4,
@@ -168,11 +170,14 @@ describe("StudioEditor", () => {
 
   it("turns a restore 409 into the same explicit conflict recovery flow", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
       if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
         return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
+      }
+      if (url.endsWith("/documents") && init?.method === "POST") {
+        return response({ document: { ...rawDocument, id: "document_restored_copy", revision: 1 } }, 201);
       }
       return response({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
     });
@@ -184,7 +189,18 @@ describe("StudioEditor", () => {
 
     const conflict = await screen.findByRole("alert", { name: "Conflito de versões" });
     expect(within(conflict).getByRole("button", { name: "Recarregar versão do servidor" })).toBeInTheDocument();
-    expect(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" })).toBeInTheDocument();
+    await user.click(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" }));
+
+    const copyCall = await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(JSON.parse(String(copyCall[1]?.body))).toMatchObject({
+      title: "Plano anual (cópia)",
+      body_json: rawVersion.body_json,
+      body_text: rawVersion.body_text
+    });
   });
 
   it("announces the versions drawer, manages focus, and closes with Escape", async () => {
@@ -234,6 +250,8 @@ describe("StudioEditor", () => {
     expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-height: 44px/);
     expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-width: 44px/);
     expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__toolbar button[\s\S]*min-height: 44px/);
+    expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
+    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
   });
 });
 

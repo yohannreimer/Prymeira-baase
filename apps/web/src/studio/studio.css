@@ -1119,6 +1119,10 @@
   .studio-versions__error button {
     min-height: 44px;
   }
+
+  .studio-editor__link-field input {
+    min-height: 44px;
+  }
 }
 
 @media (pointer: coarse) {
@@ -1136,6 +1140,10 @@
   .studio-versions__list button,
   .studio-versions__preview > button,
   .studio-versions__error button {
+    min-height: 44px;
+  }
+
+  .studio-editor__link-field input {
     min-height: 44px;
   }
 }
