@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureBaaseApiAuth } from "../api";
 import {
   StudioApiError,
+  addStudioDocumentToCollection,
+  archiveStudioDocument,
   attachStudioFile,
   attachStudioLink,
   createStudioDocument,
@@ -13,6 +15,8 @@ import {
   listStudioCollections,
   listStudioDocumentVersions,
   listStudioDocuments,
+  removeStudioDocumentFromCollection,
+  restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
   studioRequest,
@@ -233,6 +237,27 @@ describe("Studio API client", () => {
       body_json: { type: "doc", content: [] },
       body_text: "Nova direção"
     });
+  });
+
+  it("archives, restores, and changes collection membership with encoded owner-scoped routes", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async (input: string, _init?: RequestInit) => input.includes("/collections/")
+      ? jsonResponse({ membership: {}, removed: true })
+      : jsonResponse({ document: { ...rawDocument, status: input.endsWith("/archive") ? "archived" : "active" } }));
+
+    await archiveStudioDocument("document / 1", controller.signal, fetcher);
+    await restoreStudioDocument("document / 1", controller.signal, fetcher);
+    await addStudioDocumentToCollection("collection / 1", "document / 1", controller.signal, fetcher);
+    await removeStudioDocumentFromCollection("collection / 1", "document / 1", controller.signal, fetcher);
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/studio/documents/document%20%2F%201/archive",
+      "/api/studio/documents/document%20%2F%201/restore",
+      "/api/studio/collections/collection%20%2F%201/documents/document%20%2F%201",
+      "/api/studio/collections/collection%20%2F%201/documents/document%20%2F%201"
+    ]);
+    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "POST", "PUT", "DELETE"]);
+    expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
   });
 
   it("loads every persisted asset for a document", async () => {

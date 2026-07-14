@@ -1,7 +1,9 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
-import { getStudioDocumentAssets } from "./studio-api";
+import StudioLibrary from "./StudioLibrary";
+import StudioSearch from "./StudioSearch";
+import { getStudioDocument, getStudioDocumentAssets } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import type { StudioAsset, StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
@@ -49,6 +51,10 @@ export default function StudioPage() {
     error: false
   });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
+  const [libraryStatus, setLibraryStatus] = useState<"active" | "archived">("active");
+  const [openingSearchResult, setOpeningSearchResult] = useState(false);
+  const [searchOpenError, setSearchOpenError] = useState(false);
+  const searchOpenController = useRef<AbortController | null>(null);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
   useEffect(() => {
@@ -65,6 +71,25 @@ export default function StudioPage() {
     });
     setSection("document");
   }
+
+  async function openDocumentById(documentId: string) {
+    if (openingSearchResult) return;
+    searchOpenController.current?.abort();
+    const controller = new AbortController();
+    searchOpenController.current = controller;
+    setOpeningSearchResult(true);
+    setSearchOpenError(false);
+    try {
+      openDocument(await getStudioDocument(documentId, fetch, controller.signal));
+    } catch (error) {
+      if (!controller.signal.aborted) setSearchOpenError(true);
+    } finally {
+      if (!controller.signal.aborted) setOpeningSearchResult(false);
+      if (searchOpenController.current === controller) searchOpenController.current = null;
+    }
+  }
+
+  useEffect(() => () => searchOpenController.current?.abort(), []);
 
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
@@ -137,13 +162,31 @@ export default function StudioPage() {
                 onRetry={() => setAssetsReloadKey((key) => key + 1)}
               />
             </>
+          ) : section === "inbox" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <StudioLibrary query={{ status: "active", inboxOnly: true }} onOpenDocument={openDocument} />
+            </>
+          ) : section === "all" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
+              <div className="studio-library-switch" aria-label="Visão da biblioteca">
+                <button type="button" aria-pressed={libraryStatus === "active"} onClick={() => setLibraryStatus("active")}>Ativos</button>
+                <button type="button" aria-pressed={libraryStatus === "archived"} onClick={() => setLibraryStatus("archived")}>Arquivo</button>
+              </div>
+              {openingSearchResult ? <p className="studio-library-opening" role="status">Abrindo registro…</p> : null}
+              {searchOpenError ? <p className="studio-library-opening" role="alert">Não foi possível abrir este registro agora.</p> : null}
+              <StudioLibrary query={{ status: libraryStatus }} onOpenDocument={openDocument} />
+            </>
+          ) : section === "collection" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <StudioLibrary query={{ status: "active" }} onOpenDocument={openDocument} />
+            </>
           ) : (
             <>
-              <div className="studio-content__heading">
-                <p className="mono">{active.label}</p>
-                <h2 className="serif">{active.title}</h2>
-                <p>{active.description}</p>
-              </div>
+              <StudioSectionHeading item={active} />
               <div className="studio-empty">
                 <i aria-hidden="true" className={`ph-light ${active.icon}`} />
                 <p>{active.instruction}</p>
@@ -153,6 +196,16 @@ export default function StudioPage() {
         </section>
       </div>
     </section>
+  );
+}
+
+function StudioSectionHeading({ item }: { item: StudioNavItem }) {
+  return (
+    <div className="studio-content__heading">
+      <p className="mono">{item.label}</p>
+      <h2 className="serif">{item.title}</h2>
+      <p>{item.description}</p>
+    </div>
   );
 }
 

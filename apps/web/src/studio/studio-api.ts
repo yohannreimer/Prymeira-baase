@@ -357,29 +357,87 @@ export async function updateStudioDocument(
 
 export async function listStudioDocuments(
   query: { status?: StudioDocumentStatus; limit?: number; cursor?: string } = {},
-  fetcher: StudioFetcher = fetch
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
 ): Promise<StudioDocumentPage> {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const suffix = params.size ? `?${params.toString()}` : "";
-  const response = await studioRequest<RawStudioDocumentPageResponse>(`/documents${suffix}`, {}, fetcher);
+  const response = await studioRequest<RawStudioDocumentPageResponse>(`/documents${suffix}`, { signal }, fetcher);
   return {
     items: response.documents.map(mapStudioDocument),
     nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null
   };
 }
 
-export async function listStudioCollections(fetcher: StudioFetcher = fetch): Promise<StudioCollection[]> {
-  const response = await studioRequest<RawStudioCollectionsResponse>("/collections", {}, fetcher);
+export async function listStudioCollections(fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioCollection[]> {
+  const response = await studioRequest<RawStudioCollectionsResponse>("/collections", { signal }, fetcher);
   return response.collections.map(mapStudioCollection);
 }
 
-export async function searchStudioDocuments(query: string, limit = 20, fetcher: StudioFetcher = fetch): Promise<StudioSearchResult[]> {
+export async function searchStudioDocuments(
+  query: string,
+  limit = 20,
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioSearchResult[]> {
   const params = new URLSearchParams({ query, limit: String(limit) });
-  const response = await studioRequest<RawStudioSearchResponse>(`/search?${params.toString()}`, {}, fetcher);
+  const response = await studioRequest<RawStudioSearchResponse>(`/search?${params.toString()}`, { signal }, fetcher);
   return response.results.map(mapStudioSearchResult);
+}
+
+export async function archiveStudioDocument(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}/archive`,
+    { method: "POST", signal },
+    fetcher
+  );
+  return mapStudioDocument(response.document);
+}
+
+export async function restoreStudioDocument(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}/restore`,
+    { method: "POST", signal },
+    fetcher
+  );
+  return mapStudioDocument(response.document);
+}
+
+export async function addStudioDocumentToCollection(
+  collectionId: string,
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<void> {
+  await studioRequest(
+    `/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(documentId)}`,
+    { method: "PUT", signal },
+    fetcher
+  );
+}
+
+export async function removeStudioDocumentFromCollection(
+  collectionId: string,
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<void> {
+  await studioRequest(
+    `/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(documentId)}`,
+    { method: "DELETE", signal },
+    fetcher
+  );
 }
 
 export async function listStudioDocumentVersions(

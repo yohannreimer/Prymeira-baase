@@ -103,6 +103,31 @@ describe("StudioPage", () => {
     expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*overflow-x: auto/);
   });
 
+  it("connects inbox, search, and archive to one private library surface", async () => {
+    const user = userEvent.setup();
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) {
+        return jsonResponse({ home: { recent_documents: [], focused_documents: [], pending_review_count: 0, next_rituals: [] } });
+      }
+      if (url.includes("/api/studio/documents?")) return jsonResponse({ documents: [], nextCursor: null });
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    await user.click(screen.getByRole("button", { name: "Caixa de entrada" }));
+    expect(await screen.findByText("Toda captura já foi revisada.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    expect(screen.getByRole("searchbox", { name: "Buscar no Estúdio" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Arquivo" }));
+    expect(await screen.findByText("Seu arquivo está livre por enquanto.")).toBeInTheDocument();
+    expect(vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url))).toContain(
+      "/api/studio/documents?status=archived&limit=30"
+    );
+  });
+
   it("opens a recent document with persisted assets, transcript, original, and focused heading", async () => {
     const user = userEvent.setup();
     vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
