@@ -94,8 +94,8 @@ describe("Studio schemas", () => {
   });
 
   it("strictly validates Studio route params and queries", () => {
-    expect(studioDocumentListQuerySchema.parse({ limit: "25", status: "active" }))
-      .toEqual({ limit: 25, status: "active" });
+    expect(studioDocumentListQuerySchema.parse({ limit: "25", status: "active", inbox_state: "pending_review", collection_id: "collection_1" }))
+      .toEqual({ limit: 25, status: "active", inbox_state: "pending_review", collection_id: "collection_1" });
     expect(studioSearchQuerySchema.parse({ query: "  expansão  " }))
       .toEqual({ query: "expansão", limit: 20 });
     expect(studioCollectionDocumentParamsSchema.parse({ collectionId: "collection_1", documentId: "document_1" }))

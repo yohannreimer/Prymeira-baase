@@ -123,7 +123,7 @@ export default function StudioSearch({
                 <span className="studio-search-result__meta">
                   <time dateTime={result.updatedAt}>{formatDate(result.updatedAt)}</time>
                   <span aria-hidden="true">·</span>
-                  <span>{result.collections.length ? result.collections.map((collection) => collection.name).join(", ") : "Documento livre"}</span>
+                  <span>{searchContext(result)}</span>
                 </span>
               </button>
             </div>
@@ -145,4 +145,11 @@ function formatDate(value: string) {
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function searchContext(result: StudioSearchResult) {
+  const structureLabels = (result.structures ?? []).map((kind) => ({
+    goal: "Meta", decision: "Decisão", plan: "Plano", ritual: "Ritual"
+  })[kind]);
+  return [...result.collections.map((collection) => collection.name), ...structureLabels].join(", ") || "Documento livre";
 }

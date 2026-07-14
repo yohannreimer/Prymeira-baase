@@ -1935,7 +1935,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
   useEffect(() => {
     function restoreScreenFromUrl(event?: Event) {
       if (!navigationReady) return;
-      const candidate = window.location.hash.slice(1) as Screen;
+      const candidate = window.location.hash.slice(1).split("/")[0] as Screen;
       if (!candidate) {
         if (!event) return;
         const safeScreen = homeFor(navigationRole);

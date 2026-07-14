@@ -96,8 +96,14 @@ export async function registerStudioRoutes(app: FastifyInstance, service: Studio
     readNoRouteParams(request);
     const query = studioDocumentListQuerySchema.parse(request.query);
     readNoBody(request);
-    const page = await runStudioOperation(() => service.listDocuments(scope, query));
-    return { documents: page.items, nextCursor: page.nextCursor };
+    const page = await runStudioOperation(() => service.listDocuments(scope, {
+      cursor: query.cursor,
+      limit: query.limit,
+      status: query.status,
+      inboxState: query.inbox_state,
+      collectionId: query.collection_id
+    }));
+    return { documents: page.items, nextCursor: page.nextCursor, collectionsByDocumentId: page.collectionsByDocumentId };
   });
 
   app.post("/studio/documents", async (request, reply) => {

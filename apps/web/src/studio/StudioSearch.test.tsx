@@ -9,7 +9,8 @@ const result: StudioSearchResult = {
   title: "Plano anual",
   excerpt: "Crescer com margem e foco.",
   updatedAt: "2026-07-13T10:00:00.000Z",
-  collections: [{ id: "collection_1", name: "Estratégia" }]
+  collections: [{ id: "collection_1", name: "Estratégia" }],
+  structures: ["plan"]
 };
 
 describe("StudioSearch", () => {
@@ -46,6 +47,7 @@ describe("StudioSearch", () => {
 
     expect(await screen.findByText("Crescer com margem e foco.")).toBeInTheDocument();
     expect(screen.getByText(/Estratégia/)).toBeInTheDocument();
+    expect(screen.getByText("Estratégia, Plano")).toBeInTheDocument();
     expect(screen.getByText(/13 de jul/)).toBeInTheDocument();
     expect(JSON.stringify(onAnalytics.mock.calls)).not.toContain("Crescer com margem");
     expect(onAnalytics).toHaveBeenCalledWith(expect.objectContaining({ resultCount: 1, queryLength: 6 }));

@@ -213,13 +213,14 @@ export async function searchStudioDocuments(
   if (!query || !Number.isFinite(requestedLimit) || requestedLimit <= 0) return [];
   const limit = Math.min(Math.trunc(requestedLimit), MAX_SEARCH_RESULTS);
   const documents = await repository.searchDocuments(scope, { query: query.query, limit });
+  const collectionContext = await repository.listDocumentCollectionsBatch(scope, documents.map((document) => document.id));
 
-  return Promise.all(documents.map(async (document) => ({
+  return documents.map((document) => ({
     documentId: document.id,
     title: document.title,
     excerpt: excerpt(document.bodyText, query),
     updatedAt: document.updatedAt,
-    collections: (await repository.listDocumentCollections(scope, document.id))
-      .map((collection) => ({ id: collection.id, name: collection.name }))
-  })));
+    collections: (collectionContext[document.id] ?? []).map((collection) => ({ id: collection.id, name: collection.name })),
+    structures: []
+  }));
 }

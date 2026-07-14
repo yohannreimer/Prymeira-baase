@@ -160,14 +160,29 @@ export function createInMemoryStudioRepository(
         .filter((document) => document.workspaceId === scope.workspaceId)
         .filter((document) => document.ownerProfileId === scope.ownerProfileId)
         .filter((document) => !input.status || document.status === input.status)
+        .filter((document) => !input.inboxState || document.inboxState === input.inboxState)
+        .filter((document) => !input.collectionId || memberships.some((membership) =>
+          membership.workspaceId === scope.workspaceId
+          && membership.ownerProfileId === scope.ownerProfileId
+          && membership.collectionId === input.collectionId
+          && membership.documentId === document.id
+        ))
         .filter((document) => !cursor || isAfterCursor(document, cursor))
         .sort(compareDocuments);
       const page = matches.slice(0, input.limit);
+      const items = page.map(cloneDocument);
+      const collectionsByDocumentId = Object.fromEntries(items.map((document) => [document.id, collections
+        .filter((collection) => collection.workspaceId === scope.workspaceId && collection.ownerProfileId === scope.ownerProfileId)
+        .filter((collection) => memberships.some((membership) => membership.workspaceId === scope.workspaceId
+          && membership.ownerProfileId === scope.ownerProfileId && membership.documentId === document.id
+          && membership.collectionId === collection.id))
+        .sort(compareCollections).map(cloneCollection)]));
       return {
-        items: page.map(cloneDocument),
+        items,
         nextCursor: matches.length > page.length && page.length > 0
           ? encodeCursor(page[page.length - 1]!)
-          : null
+          : null,
+        collectionsByDocumentId
       };
     },
 
@@ -446,6 +461,18 @@ export function createInMemoryStudioRepository(
         .filter((collection) => collectionIds.has(collection.id))
         .sort(compareCollections)
         .map(cloneCollection);
+    },
+
+    async listDocumentCollectionsBatch(scope, documentIds) {
+      const allowed = new Set(documentIds);
+      const result: Record<string, StudioCollection[]> = Object.fromEntries(documentIds.map((id) => [id, []]));
+      for (const documentId of allowed) result[documentId] = collections
+        .filter((collection) => collection.workspaceId === scope.workspaceId && collection.ownerProfileId === scope.ownerProfileId)
+        .filter((collection) => memberships.some((membership) => membership.workspaceId === scope.workspaceId
+          && membership.ownerProfileId === scope.ownerProfileId && membership.documentId === documentId
+          && membership.collectionId === collection.id))
+        .sort(compareCollections).map(cloneCollection);
+      return result;
     },
 
     async listDocumentAssets(scope, documentId) {

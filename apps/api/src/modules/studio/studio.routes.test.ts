@@ -297,6 +297,7 @@ describe("Studio routes", () => {
     });
     expect(first.statusCode).toBe(200);
     expect(first.json().documents).toHaveLength(2);
+    expect(first.json().collectionsByDocumentId).toEqual(expect.any(Object));
     expect(first.json().nextCursor).toEqual(expect.any(String));
 
     const second = await app.inject({

@@ -12,13 +12,14 @@ import type { StudioCollection, StudioDocument, StudioDocumentPage, StudioDocume
 
 export type StudioLibraryQuery = {
   status: StudioDocumentStatus;
-  inboxOnly?: boolean;
+  inbox_state?: "pending_review" | "reviewed";
+  collection_id?: string;
 };
 
 type StudioLibraryProps = {
   query: StudioLibraryQuery;
   onOpenDocument(document: StudioDocument): void;
-  loadDocuments?: (query: { status: StudioDocumentStatus; limit: number; cursor?: string }, signal: AbortSignal) => Promise<StudioDocumentPage>;
+  loadDocuments?: (query: { status: StudioDocumentStatus; limit: number; cursor?: string; inbox_state?: "pending_review" | "reviewed"; collection_id?: string }, signal: AbortSignal) => Promise<StudioDocumentPage>;
   loadCollections?: (signal: AbortSignal) => Promise<StudioCollection[]>;
   updateDocument?: typeof defaultUpdateDocument;
   archiveDocument?: typeof archiveStudioDocument;
@@ -56,11 +57,13 @@ export default function StudioLibrary({
   const [activeIndex, setActiveIndex] = useState(0);
   const operationControllers = useRef(new Set<AbortController>());
   const membershipLocks = useRef(new Set<string>());
-  const membershipCooldowns = useRef(new Map<string, number>());
+  const membershipActual = useRef(new Map<string, boolean>());
+  const membershipDesired = useRef(new Map<string, boolean>());
   const titleRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const pendingFocusIndex = useRef<number | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
-  const queryKey = `${query.status}:${query.inboxOnly ? "inbox" : "all"}`;
+  const emptyRef = useRef<HTMLDivElement | null>(null);
+  const queryKey = `${query.status}:${query.inbox_state ?? "all"}:${query.collection_id ?? "all"}`;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -69,9 +72,10 @@ export default function StudioLibrary({
     setDocuments([]);
     setCursor(null);
     setActiveIndex(0);
-    void loadDocuments({ status: query.status, limit: PAGE_SIZE }, controller.signal).then((page) => {
+    void loadDocuments({ status: query.status, limit: PAGE_SIZE, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal).then((page) => {
       if (controller.signal.aborted) return;
       setDocuments(uniqueDocuments(page.items));
+      hydrateMemberships(page.collectionsByDocumentId, false);
       setCursor(page.nextCursor);
       setLoading(false);
     }).catch((error: unknown) => {
@@ -80,7 +84,7 @@ export default function StudioLibrary({
       setLoading(false);
     });
     return () => controller.abort();
-  }, [loadDocuments, query.status, queryKey]);
+  }, [loadDocuments, query.collection_id, query.inbox_state, query.status, queryKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -100,16 +104,13 @@ export default function StudioLibrary({
     membershipLocks.current.clear();
   }, [queryKey]);
 
-  const visibleDocuments = useMemo(() => query.inboxOnly
-    ? documents.filter((document) => document.inboxState === "pending_review")
-    : documents, [documents, query.inboxOnly]);
+  const visibleDocuments = useMemo(() => documents, [documents]);
 
   useEffect(() => {
     if (pendingFocusIndex.current === null) return;
     const index = Math.min(pendingFocusIndex.current, visibleDocuments.length - 1);
     pendingFocusIndex.current = null;
-    if (index < 0) return;
-    const frame = window.requestAnimationFrame(() => titleRefs.current[index]?.focus());
+    const frame = window.requestAnimationFrame(() => index < 0 ? emptyRef.current?.focus() : titleRefs.current[index]?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [visibleDocuments]);
 
@@ -122,9 +123,10 @@ export default function StudioLibrary({
     const controller = trackController(operationControllers.current);
     setLoadingMore(true);
     try {
-      const page = await loadDocuments({ status: query.status, limit: PAGE_SIZE, cursor }, controller.signal);
+      const page = await loadDocuments({ status: query.status, limit: PAGE_SIZE, cursor, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal);
       if (controller.signal.aborted) return;
       setDocuments((current) => uniqueDocuments([...current, ...page.items]));
+      hydrateMemberships(page.collectionsByDocumentId, true);
       setCursor(page.nextCursor);
     } catch (error) {
       if (!controller.signal.aborted && !isAbortError(error)) setLiveMessage("Não foi possível carregar mais registros.");
@@ -139,7 +141,7 @@ export default function StudioLibrary({
     try {
       await updateDocument(document.id, { expected_revision: document.revision, inbox_state: "reviewed" }, controller.signal);
       if (controller.signal.aborted) return;
-      setDocuments((current) => current.filter((item) => item.id !== document.id));
+      removeWithFocus(document);
       setLiveMessage(`${document.title || "Documento"} marcado como revisado.`);
     } catch (error) {
       if (!controller.signal.aborted && !isAbortError(error)) setLiveMessage("Não foi possível concluir a revisão agora.");
@@ -189,6 +191,13 @@ export default function StudioLibrary({
     return { document, index };
   }
 
+  function removeWithFocus(document: StudioDocument) {
+    const index = documents.findIndex((item) => item.id === document.id);
+    pendingFocusIndex.current = Math.max(0, index);
+    setDocuments((current) => current.filter((item) => item.id !== document.id));
+    setActiveIndex((current) => Math.max(0, Math.min(current, visibleDocuments.length - 2)));
+  }
+
   function restoreRollback({ document, index }: Rollback) {
     pendingFocusIndex.current = Math.max(0, index);
     setDocuments((current) => {
@@ -201,29 +210,61 @@ export default function StudioLibrary({
 
   async function toggleMembership(documentId: string, collectionId: string, checked: boolean) {
     const lockKey = `${documentId}:${collectionId}`;
-    const lastToggle = membershipCooldowns.current.get(lockKey) ?? 0;
-    if (membershipLocks.current.has(lockKey) || Date.now() - lastToggle < 400) return;
-    membershipCooldowns.current.set(lockKey, Date.now());
+    membershipDesired.current.set(lockKey, checked);
+    setMembershipValue(documentId, collectionId, checked);
+    if (membershipLocks.current.has(lockKey)) return;
     membershipLocks.current.add(lockKey);
-    const controller = trackController(operationControllers.current);
-    const previous = memberships[documentId] ?? [];
-    const next = checked
-      ? Array.from(new Set([...previous, collectionId]))
-      : previous.filter((id) => id !== collectionId);
-    setMemberships((current) => ({ ...current, [documentId]: next }));
-    try {
-      if (checked) await addMembership(collectionId, documentId, controller.signal);
-      else await removeMembership(collectionId, documentId, controller.signal);
-      if (!controller.signal.aborted) setLiveMessage(checked ? "Documento adicionado à coleção." : "Documento removido da coleção.");
-    } catch (error) {
-      if (!controller.signal.aborted && !isAbortError(error)) {
-        setMemberships((current) => ({ ...current, [documentId]: previous }));
-        setLiveMessage("Não foi possível atualizar a coleção. A seleção anterior foi restaurada.");
+    while (membershipActual.current.get(lockKey) !== membershipDesired.current.get(lockKey)) {
+      const target = membershipDesired.current.get(lockKey) ?? false;
+      const controller = trackController(operationControllers.current);
+      try {
+        if (target) await addMembership(collectionId, documentId, controller.signal);
+        else await removeMembership(collectionId, documentId, controller.signal);
+        if (controller.signal.aborted) break;
+        membershipActual.current.set(lockKey, target);
+        setLiveMessage(target ? "Documento adicionado à coleção." : "Documento removido da coleção.");
+      } catch (error) {
+        if (!controller.signal.aborted && !isAbortError(error)) {
+          const actual = membershipActual.current.get(lockKey) ?? false;
+          membershipDesired.current.set(lockKey, actual);
+          setMembershipValue(documentId, collectionId, actual);
+          setLiveMessage("Não foi possível atualizar a coleção. A seleção anterior foi restaurada.");
+        }
+        break;
+      } finally {
+        operationControllers.current.delete(controller);
       }
-    } finally {
-      membershipLocks.current.delete(lockKey);
-      operationControllers.current.delete(controller);
     }
+    membershipLocks.current.delete(lockKey);
+  }
+
+  function setMembershipValue(documentId: string, collectionId: string, checked: boolean) {
+    setMemberships((current) => {
+      const previous = current[documentId] ?? [];
+      const next = checked ? Array.from(new Set([...previous, collectionId])) : previous.filter((id) => id !== collectionId);
+      return { ...current, [documentId]: next };
+    });
+  }
+
+  function hydrateMemberships(context: Record<string, StudioCollection[]>, merge: boolean) {
+    if (!merge) {
+      membershipActual.current.clear();
+      membershipDesired.current.clear();
+    }
+    for (const [documentId, documentCollections] of Object.entries(context)) {
+      for (const collection of documentCollections) {
+        const key = `${documentId}:${collection.id}`;
+        membershipActual.current.set(key, true);
+        membershipDesired.current.set(key, true);
+      }
+    }
+    setMemberships((current) => {
+      const next = merge ? { ...current } : {};
+      for (const [documentId, documentCollections] of Object.entries(context)) {
+        next[documentId] = documentCollections.map((collection) => collection.id);
+      }
+      return next;
+    });
   }
 
   function moveFocus(current: number, direction: 1 | -1) {
@@ -234,14 +275,14 @@ export default function StudioLibrary({
   }
 
   return (
-    <section className="studio-library" aria-label={query.status === "archived" ? "Documentos arquivados" : query.inboxOnly ? "Caixa de entrada" : "Biblioteca do Estúdio"}>
+    <section className="studio-library" aria-label={query.status === "archived" ? "Documentos arquivados" : query.inbox_state ? "Entrada" : "Biblioteca do Estúdio"}>
       <p className="sr-only" role="status" aria-live="polite">{liveMessage}</p>
       {loading ? <LibrarySkeleton /> : null}
       {loadError ? <p className="studio-library__error" role="alert">Não foi possível abrir seus registros agora.</p> : null}
       {!loading && !loadError && visibleDocuments.length === 0 && !cursor ? (
-        <div className="studio-library__empty">
+        <div ref={emptyRef} tabIndex={-1} className="studio-library__empty">
           <i aria-hidden="true" className={`ph-light ${query.status === "archived" ? "ph-archive" : "ph-notebook"}`} />
-          <p>{query.status === "archived" ? "Seu arquivo está livre por enquanto." : query.inboxOnly ? "Toda captura já foi revisada." : "Seu próximo registro pode começar sem uma categoria."}</p>
+          <p>{query.status === "archived" ? "Seu arquivo está livre por enquanto." : query.inbox_state ? "Toda captura já foi revisada." : "Seu próximo registro pode começar sem uma categoria."}</p>
         </div>
       ) : null}
 
@@ -272,7 +313,7 @@ export default function StudioLibrary({
                 </div>
 
                 <div className="studio-library-row__actions">
-                  {query.inboxOnly ? <button type="button" onClick={() => void review(document)}>Marcar como revisado</button> : null}
+                  {query.inbox_state ? <button type="button" onClick={() => void review(document)}>Marcar como revisado</button> : null}
                   {query.status === "active" && collections.length ? (
                     <button type="button" aria-expanded={isOrganizing} onClick={() => setExpandedCollectionsId(isOrganizing ? null : document.id)}>Organizar em coleções</button>
                   ) : null}
@@ -317,7 +358,7 @@ function LibrarySkeleton() {
   return <div className="studio-library__skeleton" role="status" aria-label="Carregando registros"><span /><span /><span /></div>;
 }
 
-function defaultLoadDocuments(query: { status: StudioDocumentStatus; limit: number; cursor?: string }, signal: AbortSignal) {
+function defaultLoadDocuments(query: { status: StudioDocumentStatus; limit: number; cursor?: string; inbox_state?: "pending_review" | "reviewed"; collection_id?: string }, signal: AbortSignal) {
   return listStudioDocuments(query, fetch, signal);
 }
 

@@ -177,7 +177,8 @@ export function mapStudioSearchResult(raw: RawStudioSearchResult): StudioSearchR
     title: raw.title,
     excerpt: raw.excerpt,
     updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
-    collections: raw.collections.map((collection) => ({ id: collection.id, name: collection.name }))
+    collections: raw.collections.map((collection) => ({ id: collection.id, name: collection.name })),
+    structures: raw.structures ?? []
   };
 }
 
@@ -356,7 +357,7 @@ export async function updateStudioDocument(
 }
 
 export async function listStudioDocuments(
-  query: { status?: StudioDocumentStatus; limit?: number; cursor?: string } = {},
+  query: { status?: StudioDocumentStatus; limit?: number; cursor?: string; inbox_state?: "pending_review" | "reviewed"; collection_id?: string } = {},
   fetcher: StudioFetcher = fetch,
   signal?: AbortSignal
 ): Promise<StudioDocumentPage> {
@@ -364,17 +365,45 @@ export async function listStudioDocuments(
   if (query.status) params.set("status", query.status);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
+  if (query.inbox_state) params.set("inbox_state", query.inbox_state);
+  if (query.collection_id) params.set("collection_id", query.collection_id);
   const suffix = params.size ? `?${params.toString()}` : "";
   const response = await studioRequest<RawStudioDocumentPageResponse>(`/documents${suffix}`, { signal }, fetcher);
+  const rawCollections = response.collections_by_document_id ?? response.collectionsByDocumentId ?? {};
   return {
     items: response.documents.map(mapStudioDocument),
-    nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null
+    nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null,
+    collectionsByDocumentId: Object.fromEntries(Object.entries(rawCollections).map(([documentId, items]) => [
+      documentId,
+      items.map(mapStudioCollection)
+    ]))
   };
 }
 
 export async function listStudioCollections(fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioCollection[]> {
   const response = await studioRequest<RawStudioCollectionsResponse>("/collections", { signal }, fetcher);
   return response.collections.map(mapStudioCollection);
+}
+
+export async function createStudioCollection(name: string, signal?: AbortSignal, fetcher: StudioFetcher = fetch): Promise<StudioCollection> {
+  const response = await studioRequest<{ collection: RawStudioCollection }>("/collections", {
+    method: "POST", body: JSON.stringify({ name }), signal
+  }, fetcher);
+  return mapStudioCollection(response.collection);
+}
+
+export async function renameStudioCollection(collectionId: string, name: string, signal?: AbortSignal, fetcher: StudioFetcher = fetch): Promise<StudioCollection> {
+  const response = await studioRequest<{ collection: RawStudioCollection }>(`/collections/${encodeURIComponent(collectionId)}`, {
+    method: "PATCH", body: JSON.stringify({ name }), signal
+  }, fetcher);
+  return mapStudioCollection(response.collection);
+}
+
+export async function deleteStudioCollection(collectionId: string, signal?: AbortSignal, fetcher: StudioFetcher = fetch): Promise<StudioCollection> {
+  const response = await studioRequest<{ collection: RawStudioCollection }>(`/collections/${encodeURIComponent(collectionId)}`, {
+    method: "DELETE", signal
+  }, fetcher);
+  return mapStudioCollection(response.collection);
 }
 
 export async function searchStudioDocuments(

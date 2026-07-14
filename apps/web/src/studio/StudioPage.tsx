@@ -3,6 +3,7 @@ import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
+import StudioCollections from "./StudioCollections";
 import { getStudioDocument, getStudioDocumentAssets } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import type { StudioAsset, StudioDocument } from "./studio.types";
@@ -11,7 +12,7 @@ import "./studio.css";
 
 const StudioEditor = lazy(() => import("./StudioEditor"));
 
-type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collection" | "document";
+type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "document";
 
 type StudioNavItem = {
   key: StudioSection;
@@ -31,18 +32,18 @@ type DocumentAssetState = {
 
 const studioNavigation: StudioNavItem[] = [
   { key: "home", label: "Início", icon: "ph-house", title: "Um espaço para pensar com clareza.", description: "Registre o que importa e transforme notas em direção, no seu ritmo.", instruction: "Comece registrando uma ideia, decisão ou assunto que não pode se perder." },
-  { key: "inbox", label: "Caixa de entrada", icon: "ph-tray", title: "Caixa de entrada", description: "Tudo o que você capturar chega aqui antes de ganhar um lugar definitivo.", instruction: "Novas capturas aparecerão aqui para você revisar e organizar." },
+  { key: "inbox", label: "Entrada", icon: "ph-tray", title: "Entrada", description: "Tudo o que você capturar chega aqui antes de ganhar um lugar definitivo.", instruction: "Novas capturas aparecerão aqui para você revisar e organizar." },
   { key: "all", label: "Tudo", icon: "ph-files", title: "Tudo", description: "Consulte seus registros em um só lugar, sem misturar o Estúdio com a operação da equipe.", instruction: "Seus documentos aparecerão aqui conforme forem criados." },
   { key: "goals", label: "Metas", icon: "ph-target", title: "Metas", description: "Mantenha os resultados que orientam suas escolhas sempre visíveis.", instruction: "Organize aqui as metas que merecem acompanhamento recorrente." },
   { key: "decisions", label: "Decisões", icon: "ph-signpost", title: "Decisões", description: "Registre escolhas, contexto e motivos para não depender da memória.", instruction: "As decisões identificadas nos seus documentos aparecerão aqui." },
   { key: "plans", label: "Planos", icon: "ph-map-trifold", title: "Planos", description: "Dê forma a caminhos possíveis antes de levá-los para a operação.", instruction: "Reúna planos em elaboração e próximos passos neste espaço." },
   { key: "rituals", label: "Rituais", icon: "ph-calendar-check", title: "Rituais", description: "Reserve momentos de revisão para manter prioridades e decisões vivas.", instruction: "Seus rituais de reflexão aparecerão aqui quando forem definidos." },
-  { key: "collection", label: "Coleção", icon: "ph-folder-simple", title: "Coleção", description: "Agrupe documentos que pertencem ao mesmo contexto ou frente de pensamento.", instruction: "Escolha ou crie uma coleção para reunir documentos relacionados." },
-  { key: "document", label: "Documento", icon: "ph-file-text", title: "Documento", description: "Escreva com calma e preserve o histórico do que mudou.", instruction: "Abra um documento existente ou crie um novo registro para começar." }
+  { key: "collections", label: "Coleções", icon: "ph-folder-simple", title: "Coleções", description: "Agrupe documentos que pertencem ao mesmo contexto ou frente de pensamento.", instruction: "Escolha ou crie uma coleção para reunir documentos relacionados." },
+  { key: "archive", label: "Arquivo", icon: "ph-archive", title: "Arquivo", description: "Registros preservados fora da sua mesa principal.", instruction: "Documentos arquivados podem ser restaurados quando voltarem a importar." }
 ];
 
 export default function StudioPage() {
-  const [section, setSection] = useState<StudioSection>("home");
+  const [section, setSection] = useState<StudioSection>(() => sectionFromHash(window.location.hash));
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
   const [assetState, setAssetState] = useState<DocumentAssetState>({
     documentId: null,
@@ -51,17 +52,18 @@ export default function StudioPage() {
     error: false
   });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
-  const [libraryStatus, setLibraryStatus] = useState<"active" | "archived">("active");
   const [openingSearchResult, setOpeningSearchResult] = useState(false);
   const [searchOpenError, setSearchOpenError] = useState(false);
   const searchOpenController = useRef<AbortController | null>(null);
+  const selectedDocumentId = useRef<string | null>(null);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
   useEffect(() => {
     sweepExpiredStudioDraftQuarantines();
   }, []);
 
-  function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
+  function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome, syncHistory = true) {
+    selectedDocumentId.current = document.id;
     setSelectedDocument(document);
     setAssetState({
       documentId: document.id,
@@ -70,17 +72,22 @@ export default function StudioPage() {
       error: false
     });
     setSection("document");
+    if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(document.id)}`);
   }
 
-  async function openDocumentById(documentId: string) {
-    if (openingSearchResult) return;
+  function navigateSection(next: Exclude<StudioSection, "document">) {
+    setSection(next);
+    window.history.pushState(null, "", `#estudio/${next}`);
+  }
+
+  async function openDocumentById(documentId: string, syncHistory = true) {
     searchOpenController.current?.abort();
     const controller = new AbortController();
     searchOpenController.current = controller;
     setOpeningSearchResult(true);
     setSearchOpenError(false);
     try {
-      openDocument(await getStudioDocument(documentId, fetch, controller.signal));
+      openDocument(await getStudioDocument(documentId, fetch, controller.signal), undefined, syncHistory);
     } catch (error) {
       if (!controller.signal.aborted) setSearchOpenError(true);
     } finally {
@@ -90,6 +97,24 @@ export default function StudioPage() {
   }
 
   useEffect(() => () => searchOpenController.current?.abort(), []);
+
+  useEffect(() => {
+    function restoreInternalRoute() {
+      const next = sectionFromHash(window.location.hash);
+      setSection(next);
+      if (next === "document") {
+        const documentId = documentIdFromHash(window.location.hash);
+        if (documentId && documentId !== selectedDocumentId.current) void openDocumentById(documentId, false);
+      }
+    }
+    restoreInternalRoute();
+    window.addEventListener("popstate", restoreInternalRoute);
+    window.addEventListener("hashchange", restoreInternalRoute);
+    return () => {
+      window.removeEventListener("popstate", restoreInternalRoute);
+      window.removeEventListener("hashchange", restoreInternalRoute);
+    };
+  }, []);
 
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
@@ -135,7 +160,7 @@ export default function StudioPage() {
               type="button"
               key={item.key}
               aria-current={section === item.key ? "page" : undefined}
-              onClick={() => setSection(item.key)}
+              onClick={() => navigateSection(item.key as Exclude<StudioSection, "document">)}
             >
               <i aria-hidden="true" className={`ph-light ${item.icon}`} />
               <span>{item.label}</span>
@@ -151,7 +176,10 @@ export default function StudioPage() {
                   key={selectedDocument.id}
                   document={selectedDocument}
                   focusHeadingOnMount
-                  onDocumentChange={setSelectedDocument}
+                  onDocumentChange={(document) => {
+                    selectedDocumentId.current = document.id;
+                    setSelectedDocument(document);
+                  }}
                 />
               </Suspense>
               <DocumentAssets
@@ -165,24 +193,25 @@ export default function StudioPage() {
           ) : section === "inbox" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary query={{ status: "active", inboxOnly: true }} onOpenDocument={openDocument} />
+              <StudioLibrary query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} />
             </>
           ) : section === "all" ? (
             <>
               <StudioSectionHeading item={active} />
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
-              <div className="studio-library-switch" aria-label="Visão da biblioteca">
-                <button type="button" aria-pressed={libraryStatus === "active"} onClick={() => setLibraryStatus("active")}>Ativos</button>
-                <button type="button" aria-pressed={libraryStatus === "archived"} onClick={() => setLibraryStatus("archived")}>Arquivo</button>
-              </div>
               {openingSearchResult ? <p className="studio-library-opening" role="status">Abrindo registro…</p> : null}
               {searchOpenError ? <p className="studio-library-opening" role="alert">Não foi possível abrir este registro agora.</p> : null}
-              <StudioLibrary query={{ status: libraryStatus }} onOpenDocument={openDocument} />
+              <StudioLibrary query={{ status: "active" }} onOpenDocument={openDocument} />
             </>
-          ) : section === "collection" ? (
+          ) : section === "collections" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary query={{ status: "active" }} onOpenDocument={openDocument} />
+              <StudioCollections onOpenDocument={openDocument} />
+            </>
+          ) : section === "archive" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <StudioLibrary query={{ status: "archived" }} onOpenDocument={openDocument} />
             </>
           ) : (
             <>
@@ -197,6 +226,17 @@ export default function StudioPage() {
       </div>
     </section>
   );
+}
+
+function sectionFromHash(hash: string): StudioSection {
+  const route = hash.replace(/^#estudio\/?/u, "").split("/")[0];
+  if (route === "document") return "document";
+  return studioNavigation.some((item) => item.key === route) ? route as StudioSection : "home";
+}
+
+function documentIdFromHash(hash: string) {
+  const match = hash.match(/^#estudio\/document\/([^/]+)$/u);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
 function StudioSectionHeading({ item }: { item: StudioNavItem }) {

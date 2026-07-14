@@ -146,6 +146,7 @@ function repositoryContract(
       await withRepository(async (repository) => {
         const activeA = await repository.createDocument(documentInput({ bodyText: "A" }));
         const activeB = await repository.createDocument(documentInput({ bodyText: "B" }));
+        const reviewed = await repository.createDocument(documentInput({ bodyText: "Reviewed", inboxState: "reviewed" }));
         const archived = await repository.createDocument(documentInput({ bodyText: "C", status: "archived" }));
         await repository.createDocument(documentInput({ ownerProfileId: "owner_b", bodyText: "private" }));
         await repository.createDocument(documentInput({ workspaceId: "workspace_b", bodyText: "other workspace" }));
@@ -162,15 +163,23 @@ function repositoryContract(
         expect(first.nextCursor).not.toBeNull();
         expect(second.nextCursor).toBeNull();
         expect(new Set([...first.items, ...second.items].map((item) => item.id))).toEqual(
-          new Set([activeA.id, activeB.id, archived.id])
+          new Set([activeA.id, activeB.id, reviewed.id, archived.id])
         );
 
         const active = await repository.listDocuments(
           { workspaceId: "workspace_a", ownerProfileId: "owner_a" },
           { limit: 10, status: "active" }
         );
-        expect(new Set(active.items.map((item) => item.id))).toEqual(new Set([activeA.id, activeB.id]));
+        expect(new Set(active.items.map((item) => item.id))).toEqual(new Set([activeA.id, activeB.id, reviewed.id]));
         expect(active.nextCursor).toBeNull();
+        const collection = await repository.createCollection({ workspaceId: "workspace_a", ownerProfileId: "owner_a", name: "Estratégia" });
+        await repository.addCollectionMembership({ workspaceId: "workspace_a", ownerProfileId: "owner_a", collectionId: collection.id, documentId: activeA.id });
+        const pendingInCollection = await repository.listDocuments(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_a" },
+          { limit: 10, status: "active", inboxState: "pending_review", collectionId: collection.id }
+        );
+        expect(pendingInCollection.items.map((item) => item.id)).toEqual([activeA.id]);
+        expect(pendingInCollection.collectionsByDocumentId).toEqual({ [activeA.id]: [expect.objectContaining({ id: collection.id })] });
         expect(await repository.findDocument(
           { workspaceId: "workspace_b", ownerProfileId: "owner_a" },
           activeA.id
@@ -1122,7 +1131,7 @@ describe("in-memory StudioRepository clock behavior", () => {
     expect(await repository.listDocuments(
       { workspaceId: "workspace_a", ownerProfileId: "owner_a" },
       { limit: 10 }
-    )).toEqual({ items: [], nextCursor: null });
+    )).toEqual({ items: [], nextCursor: null, collectionsByDocumentId: {} });
   });
 
   it("keeps version timestamps monotonic when the clock is frozen", async () => {

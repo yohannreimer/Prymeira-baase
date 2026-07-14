@@ -32,6 +32,8 @@ export type StudioDocumentQuery = {
   cursor?: string;
   limit: number;
   status?: StudioDocumentStatus;
+  inboxState?: "pending_review" | "reviewed";
+  collectionId?: string;
 };
 
 export type StudioDocument = StudioOwnerScope & {
@@ -65,6 +67,7 @@ export type StudioDocumentVersion = StudioOwnerScope & {
 export type StudioDocumentPage = {
   items: StudioDocument[];
   nextCursor: string | null;
+  collectionsByDocumentId: Record<string, StudioCollection[]>;
 };
 
 export type StudioNextRitual = {
@@ -198,6 +201,7 @@ export type StudioSearchResult = {
   excerpt: string;
   updatedAt: string;
   collections: StudioSearchCollection[];
+  structures?: StudioStructureKind[];
 };
 
 export type StudioService = {
@@ -246,6 +250,7 @@ export type StudioRepository = {
   addCollectionMembership(input: StudioOwnerScope & { collectionId: string; documentId: string }): Promise<StudioCollectionMembership>;
   removeCollectionMembership(scope: StudioOwnerScope, collectionId: string, documentId: string): Promise<boolean>;
   listDocumentCollections(scope: StudioOwnerScope, documentId: string): Promise<StudioCollection[]>;
+  listDocumentCollectionsBatch(scope: StudioOwnerScope, documentIds: string[]): Promise<Record<string, StudioCollection[]>>;
   listDocumentAssets(scope: StudioOwnerScope, documentId: string): Promise<StudioAsset[]>;
   findAsset(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   findAssetIncludingDeleting(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;

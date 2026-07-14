@@ -6,7 +6,9 @@ import {
   archiveStudioDocument,
   attachStudioFile,
   attachStudioLink,
+  createStudioCollection,
   createStudioDocument,
+  deleteStudioCollection,
   getStudioAsset,
   getStudioAssetDownload,
   getStudioDocumentAssets,
@@ -16,6 +18,7 @@ import {
   listStudioDocumentVersions,
   listStudioDocuments,
   removeStudioDocumentFromCollection,
+  renameStudioCollection,
   restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
@@ -67,7 +70,13 @@ describe("Studio API client", () => {
         });
       }
       if (input === "/api/studio/documents/document_1") return jsonResponse({ document: rawDocument });
-      if (input.startsWith("/api/studio/documents?")) return jsonResponse({ documents: [rawDocument], next_cursor: "cursor_2" });
+      if (input.startsWith("/api/studio/documents?")) return jsonResponse({
+        documents: [rawDocument],
+        next_cursor: "cursor_2",
+        collections_by_document_id: {
+          document_1: [{ id: "collection_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", name: "Estratégia", created_at: "2026-07-10", updated_at: "2026-07-11" }]
+        }
+      });
       if (input === "/api/studio/collections") {
         return jsonResponse({ collections: [{ id: "collection_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", name: "Estratégia", created_at: "2026-07-10", updated_at: "2026-07-11" }] });
       }
@@ -90,8 +99,10 @@ describe("Studio API client", () => {
     await expect(getStudioDocument("document_1", fetcher)).resolves.toMatchObject({ id: "document_1", captureMode: "text" });
     await expect(listStudioDocuments({ status: "active", limit: 20, cursor: "cursor 1" }, fetcher)).resolves.toMatchObject({
       items: [{ id: "document_1", inboxState: "reviewed" }],
-      nextCursor: "cursor_2"
+      nextCursor: "cursor_2",
+      collectionsByDocumentId: { document_1: [expect.objectContaining({ id: "collection_1" })] }
     });
+    await listStudioDocuments({ status: "active", inbox_state: "pending_review", collection_id: "collection / 1" }, fetcher);
     await expect(listStudioCollections(fetcher)).resolves.toEqual([
       expect.objectContaining({ id: "collection_1", ownerProfileId: "profile_owner", updatedAt: "2026-07-11" })
     ]);
@@ -103,6 +114,7 @@ describe("Studio API client", () => {
     ]);
 
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&limit=20&cursor=cursor+1");
+    expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&inbox_state=pending_review&collection_id=collection+%2F+1");
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/search?query=margem+%26+foco&limit=10");
   });
 
@@ -257,6 +269,31 @@ describe("Studio API client", () => {
       "/api/studio/collections/collection%20%2F%201/documents/document%20%2F%201"
     ]);
     expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "POST", "PUT", "DELETE"]);
+    expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
+  });
+
+  it("creates, renames, and deletes collections through encoded routes", async () => {
+    const controller = new AbortController();
+    const rawCollection = {
+      id: "collection / 1", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
+      name: "Estratégia", created_at: "2026-07-10", updated_at: "2026-07-11"
+    };
+    const fetcher = vi.fn(async (_input: string, init?: RequestInit) => jsonResponse({
+      collection: { ...rawCollection, name: init?.method === "PATCH" ? "Conselho" : rawCollection.name }
+    }));
+
+    await expect(createStudioCollection("Estratégia", controller.signal, fetcher)).resolves.toMatchObject({ name: "Estratégia" });
+    await expect(renameStudioCollection(rawCollection.id, "Conselho", controller.signal, fetcher)).resolves.toMatchObject({ name: "Conselho" });
+    await deleteStudioCollection(rawCollection.id, controller.signal, fetcher);
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/studio/collections",
+      "/api/studio/collections/collection%20%2F%201",
+      "/api/studio/collections/collection%20%2F%201"
+    ]);
+    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "PATCH", "DELETE"]);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ name: "Estratégia" });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({ name: "Conselho" });
     expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
   });
 

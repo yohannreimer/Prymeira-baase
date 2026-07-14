@@ -14,8 +14,8 @@ describe("StudioLibrary", () => {
   it("loads cursor pages without duplicating a document and offers calm empty states", async () => {
     const user = userEvent.setup();
     const loadDocuments = vi.fn(async ({ cursor }: { cursor?: string }): Promise<StudioDocumentPage> => cursor
-      ? { items: [documents[1]!, documents[0]!], nextCursor: null }
-      : { items: [documents[0]!], nextCursor: "cursor_2" });
+      ? { items: [documents[1]!, documents[0]!], nextCursor: null, collectionsByDocumentId: {} }
+      : { items: [documents[0]!], nextCursor: "cursor_2", collectionsByDocumentId: {} });
     const { rerender } = render(
       <StudioLibrary query={{ status: "active" }} loadDocuments={loadDocuments} loadCollections={async () => []} onOpenDocument={vi.fn()} />
     );
@@ -27,7 +27,7 @@ describe("StudioLibrary", () => {
     expect(loadDocuments).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "cursor_2" }), expect.any(AbortSignal));
 
     rerender(
-      <StudioLibrary query={{ status: "archived" }} loadDocuments={async () => ({ items: [], nextCursor: null })} loadCollections={async () => []} onOpenDocument={vi.fn()} />
+      <StudioLibrary query={{ status: "archived" }} loadDocuments={async () => ({ items: [], nextCursor: null, collectionsByDocumentId: {} })} loadCollections={async () => []} onOpenDocument={vi.fn()} />
     );
     expect(await screen.findByText("Seu arquivo está livre por enquanto.")).toBeInTheDocument();
   });
@@ -41,8 +41,11 @@ describe("StudioLibrary", () => {
     const removeMembership = vi.fn(async (_collectionId: string, _documentId: string, _signal?: AbortSignal) => undefined);
     render(
       <StudioLibrary
-        query={{ status: "active", inboxOnly: true }}
-        loadDocuments={async () => ({ items: documents, nextCursor: null })}
+        query={{ status: "active", inbox_state: "pending_review" }}
+        loadDocuments={async (query) => {
+          expect(query).toMatchObject({ inbox_state: "pending_review" });
+          return { items: documents, nextCursor: null, collectionsByDocumentId: { document_1: [collections[0]!] } };
+        }}
         loadCollections={async () => collections}
         updateDocument={updateDocument}
         addMembership={addMembership}
@@ -54,16 +57,56 @@ describe("StudioLibrary", () => {
     const first = await screen.findByRole("listitem", { name: "Plano de expansão" });
     await user.click(within(first).getByRole("button", { name: "Organizar em coleções" }));
     const strategy = within(first).getByRole("checkbox", { name: "Estratégia" });
-    await user.dblClick(strategy);
+    expect(strategy).toBeChecked();
+    await user.click(strategy);
+    await waitFor(() => expect(removeMembership).toHaveBeenCalledTimes(1));
+    const currentStrategy = within(first).getByRole("checkbox", { name: "Estratégia" });
+    await user.click(currentStrategy);
     await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(1));
     await user.click(within(first).getByRole("checkbox", { name: "Conselho" }));
     await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(2));
     expect(addMembership.mock.calls.map(([collectionId]) => collectionId)).toEqual(["collection_1", "collection_2"]);
-    expect(removeMembership).not.toHaveBeenCalled();
 
     await user.click(within(first).getByRole("button", { name: "Marcar como revisado" }));
     await waitFor(() => expect(updateDocument).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("listitem", { name: "Plano de expansão" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Decisão de margem/ })).toHaveFocus());
+  });
+
+  it("serializes rapid collection changes and persists the latest desired state", async () => {
+    const user = userEvent.setup();
+    const firstRemoval = deferred<void>();
+    const removeMembership = vi.fn(() => firstRemoval.promise);
+    const addMembership = vi.fn(async () => undefined);
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({
+          items: [documents[0]!],
+          nextCursor: null,
+          collectionsByDocumentId: { document_1: [collections[0]!] }
+        })}
+        loadCollections={async () => collections}
+        addMembership={addMembership}
+        removeMembership={removeMembership}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    const checkbox = within(row).getByRole("checkbox", { name: "Estratégia" });
+    await user.click(checkbox);
+    await user.click(checkbox);
+
+    expect(removeMembership).toHaveBeenCalledTimes(1);
+    expect(addMembership).not.toHaveBeenCalled();
+    expect(checkbox).toBeChecked();
+
+    firstRemoval.resolve();
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(1));
+    expect(removeMembership.mock.invocationCallOrder[0]).toBeLessThan(addMembership.mock.invocationCallOrder[0]!);
+    expect(checkbox).toBeChecked();
   });
 
   it("archives optimistically, restores archived documents, rolls back failures, and announces status", async () => {
@@ -73,7 +116,7 @@ describe("StudioLibrary", () => {
     const { rerender } = render(
       <StudioLibrary
         query={{ status: "active" }}
-        loadDocuments={async () => ({ items: documents, nextCursor: null })}
+        loadDocuments={async () => ({ items: documents, nextCursor: null, collectionsByDocumentId: {} })}
         loadCollections={async () => []}
         archiveDocument={archiveDocument}
         onOpenDocument={vi.fn()}
@@ -95,7 +138,7 @@ describe("StudioLibrary", () => {
     rerender(
       <StudioLibrary
         query={{ status: "archived" }}
-        loadDocuments={async () => ({ items: [{ ...documents[0]!, status: "archived", archivedAt: "2026-07-13" }], nextCursor: null })}
+        loadDocuments={async () => ({ items: [{ ...documents[0]!, status: "archived", archivedAt: "2026-07-13" }], nextCursor: null, collectionsByDocumentId: {} })}
         loadCollections={async () => []}
         restoreDocument={restoreDocument}
         onOpenDocument={vi.fn()}
@@ -109,7 +152,7 @@ describe("StudioLibrary", () => {
   it("uses roving focus for document navigation", async () => {
     const user = userEvent.setup();
     render(
-      <StudioLibrary query={{ status: "active" }} loadDocuments={async () => ({ items: documents, nextCursor: null })} loadCollections={async () => []} onOpenDocument={vi.fn()} />
+      <StudioLibrary query={{ status: "active" }} loadDocuments={async () => ({ items: documents, nextCursor: null, collectionsByDocumentId: {} })} loadCollections={async () => []} onOpenDocument={vi.fn()} />
     );
     const first = await screen.findByRole("button", { name: /Plano de expansão/ });
     const second = screen.getByRole("button", { name: /Decisão de margem/ });
@@ -132,4 +175,14 @@ function document(id: string, title: string): StudioDocument {
 
 function collection(id: string, name: string): StudioCollection {
   return { id, name, workspaceId: "workspace_a", ownerProfileId: "owner_a", createdAt: "2026-07-12", updatedAt: "2026-07-12" };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

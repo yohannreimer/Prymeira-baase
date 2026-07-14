@@ -52,6 +52,7 @@ export type StudioSearchResult = {
   excerpt: string;
   updatedAt: string;
   collections: StudioSearchCollection[];
+  structures?: Array<"goal" | "decision" | "plan" | "ritual">;
 };
 
 export type StudioNextRitual = {
@@ -70,6 +71,7 @@ export type StudioHome = {
 export type StudioDocumentPage = {
   items: StudioDocument[];
   nextCursor: string | null;
+  collectionsByDocumentId: Record<string, StudioCollection[]>;
 };
 
 export type StudioAsset = {
@@ -167,6 +169,7 @@ export type RawStudioSearchResult = {
   updated_at?: string;
   updatedAt?: string;
   collections: StudioSearchCollection[];
+  structures?: Array<"goal" | "decision" | "plan" | "ritual">;
 };
 
 export type RawStudioNextRitual = {
@@ -193,6 +196,8 @@ export type RawStudioDocumentPageResponse = {
   documents: RawStudioDocument[];
   next_cursor?: string | null;
   nextCursor?: string | null;
+  collections_by_document_id?: Record<string, RawStudioCollection[]>;
+  collectionsByDocumentId?: Record<string, RawStudioCollection[]>;
 };
 export type RawStudioCollectionsResponse = { collections: RawStudioCollection[] };
 export type RawStudioSearchResponse = { results: RawStudioSearchResult[] };

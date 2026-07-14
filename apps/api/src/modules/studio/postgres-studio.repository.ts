@@ -349,6 +349,27 @@ async function findCollection(
   return result.rows[0] ? collectionFromRow(result.rows[0]) : null;
 }
 
+async function listDocumentCollectionsBatch(
+  db: OperationalPool,
+  scope: StudioOwnerScope,
+  documentIds: string[]
+): Promise<Record<string, StudioCollection[]>> {
+  const result: Record<string, StudioCollection[]> = Object.fromEntries(documentIds.map((id) => [id, []]));
+  if (documentIds.length === 0) return result;
+  const rows = await db.query<StudioCollectionRow & { document_id: string }>(
+    `SELECT collection.*,item.document_id FROM studio_collections collection
+     JOIN studio_collection_items item
+       ON item.workspace_id=collection.workspace_id
+      AND item.owner_profile_id=collection.owner_profile_id
+      AND item.collection_id=collection.id
+     WHERE item.workspace_id=$1 AND item.owner_profile_id=$2 AND item.document_id=ANY($3::text[])
+     ORDER BY item.document_id,date_trunc('milliseconds',collection.created_at) ASC,collection.id ASC`,
+    [scope.workspaceId, scope.ownerProfileId, documentIds]
+  );
+  for (const row of rows.rows) result[row.document_id]?.push(collectionFromRow(row));
+  return result;
+}
+
 function foreignKeyDomainError(error: unknown) {
   const candidate = error as { code?: string; constraint?: string };
   if (candidate?.code !== "23503") return null;
@@ -395,6 +416,16 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         params.push(input.status);
         conditions.push(`status=$${params.length}`);
       }
+      if (input.inboxState) {
+        params.push(input.inboxState);
+        conditions.push(`inbox_state=$${params.length}`);
+      }
+      if (input.collectionId) {
+        params.push(input.collectionId);
+        conditions.push(`EXISTS (SELECT 1 FROM studio_collection_items sci
+          WHERE sci.workspace_id=$1 AND sci.owner_profile_id=$2
+            AND sci.document_id=studio_documents.id AND sci.collection_id=$${params.length})`);
+      }
       if (input.cursor) {
         const cursor = decodeCursor(input.cursor);
         params.push(cursor.updatedAt, cursor.id);
@@ -410,11 +441,13 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       );
       const documents = result.rows.map(documentFromRow);
       const items = documents.slice(0, input.limit);
+      const collectionsByDocumentId = await listDocumentCollectionsBatch(db, scope, items.map((document) => document.id));
       return {
         items,
         nextCursor: documents.length > items.length && items.length > 0
           ? encodeCursor(items[items.length - 1]!)
-          : null
+          : null,
+        collectionsByDocumentId
       };
     },
 
@@ -763,6 +796,10 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, documentId]
       );
       return result.rows.map(collectionFromRow);
+    },
+
+    listDocumentCollectionsBatch(scope, documentIds) {
+      return listDocumentCollectionsBatch(db, scope, documentIds);
     },
 
     async listDocumentAssets(scope, documentId) {

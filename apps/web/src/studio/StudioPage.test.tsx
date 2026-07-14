@@ -9,6 +9,7 @@ const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"
 
 describe("StudioPage", () => {
   beforeEach(() => {
+    window.history.replaceState(null, "", "/#estudio");
     installLocalStorage();
     vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
   });
@@ -24,14 +25,14 @@ describe("StudioPage", () => {
     const navigation = within(studio).getByRole("navigation", { name: "Seções do Estúdio" });
     const expectedSections = [
       "Início",
-      "Caixa de entrada",
+      "Entrada",
       "Tudo",
       "Metas",
       "Decisões",
       "Planos",
       "Rituais",
-      "Coleção",
-      "Documento"
+      "Coleções",
+      "Arquivo"
     ];
 
     expect(within(navigation).getAllByRole("button").map((button) => button.textContent?.trim())).toEqual(expectedSections);
@@ -42,8 +43,48 @@ describe("StudioPage", () => {
     expect(within(navigation).getByRole("button", { name: "Decisões" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Decisões" })).toBeInTheDocument();
 
-    fireEvent.click(within(navigation).getByRole("button", { name: "Documento" }));
-    expect(screen.getByRole("heading", { name: "Documento" })).toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole("button", { name: "Arquivo" }));
+    expect(screen.getByRole("heading", { name: "Arquivo" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#estudio/archive");
+  });
+
+  it("restores an internal section from the URL and follows browser navigation", async () => {
+    window.history.replaceState(null, "", "/#estudio/inbox");
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/studio/documents?")) {
+        return jsonResponse({ documents: [], next_cursor: null, collections_by_document_id: {} });
+      }
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    render(<StudioPage />);
+
+    expect(screen.getByRole("button", { name: "Entrada" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByText("Toda captura já foi revisada.")).toBeInTheDocument();
+
+    window.history.replaceState(null, "", "/#estudio/plans");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(screen.getByRole("button", { name: "Planos" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Planos" })).toBeInTheDocument();
+  });
+
+  it("opens a document URL without writing a duplicate history entry", async () => {
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    const pushState = vi.spyOn(window.history, "pushState");
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return jsonResponse({ document: rawDocument });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    render(<StudioPage />);
+
+    expect(await screen.findByRole("heading", { name: "Reflexão estratégica" })).toBeInTheDocument();
+    expect(pushState).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe(`#estudio/document/${rawDocument.id}`);
   });
 
   it("sweeps expired draft quarantines for other documents when Studio opens", async () => {
@@ -74,7 +115,7 @@ describe("StudioPage", () => {
 
     const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
     const home = within(navigation).getByRole("button", { name: "Início" });
-    const inbox = screen.getByRole("button", { name: "Caixa de entrada" });
+    const inbox = screen.getByRole("button", { name: "Entrada" });
     const all = within(navigation).getByRole("button", { name: "Tudo" });
 
     await user.tab();
@@ -84,7 +125,7 @@ describe("StudioPage", () => {
     await user.keyboard("{Enter}");
 
     expect(inbox).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("heading", { name: "Caixa de entrada" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Entrada" })).toBeInTheDocument();
 
     await user.tab();
     expect(all).toHaveFocus();
@@ -116,7 +157,7 @@ describe("StudioPage", () => {
     });
     render(<StudioPage />);
 
-    await user.click(screen.getByRole("button", { name: "Caixa de entrada" }));
+    await user.click(screen.getByRole("button", { name: "Entrada" }));
     expect(await screen.findByText("Toda captura já foi revisada.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Tudo" }));
