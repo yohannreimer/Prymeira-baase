@@ -99,6 +99,7 @@ export type AiTextStreamEvent =
 export type AiEmbeddingRequest = {
   model: string;
   inputs: string[];
+  signal?: AbortSignal;
 };
 
 export type AudioTranscriptionProviderRequest = {

@@ -371,7 +371,13 @@ export type StudioRepository = {
   }): Promise<StudioRelation>;
   listRelations(scope: StudioOwnerScope, documentId?: string): Promise<StudioRelation[]>;
   listIndexJobs(scope: StudioOwnerScope): Promise<StudioIndexJob[]>;
-  claimNextIndexJob(now: string, leaseMs?: number): Promise<StudioIndexJob | null>;
+  claimNextIndexJob(now: string, leaseMs?: number, maxAttempts?: number): Promise<StudioIndexJob | null>;
+  renewIndexJobLease(input: StudioOwnerScope & {
+    jobId: string;
+    claimToken: string;
+    now: string;
+    leaseExpiresAt: string;
+  }): Promise<boolean>;
   completeIndexJob(input: StudioOwnerScope & { jobId: string; claimToken: string }): Promise<boolean>;
   failIndexJob(input: StudioOwnerScope & {
     jobId: string;

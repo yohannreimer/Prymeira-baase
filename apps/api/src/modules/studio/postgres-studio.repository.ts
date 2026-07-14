@@ -1508,14 +1508,24 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(indexJobFromRow);
     },
 
-    async claimNextIndexJob(now, leaseMs = 60_000) {
+    async claimNextIndexJob(now, leaseMs = 60_000, maxAttempts = 5) {
       const claimToken = generatedId("studio_index_claim");
       const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioIndexJobRow>(
-        `WITH candidate AS (
-           SELECT workspace_id,owner_profile_id,id FROM studio_index_jobs
-           WHERE (status IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+        `WITH terminalized AS (
+           UPDATE studio_index_jobs SET status='failed',next_attempt_at=NULL,
+             last_error_code='STUDIO_MEMORY_INDEX_MAX_ATTEMPTS',claim_token=NULL,
+             lease_expires_at=NULL,updated_at=NOW()
+           WHERE attempt_count >= $4 AND (
+             (status IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
              OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           ) RETURNING id
+         ), candidate AS (
+           SELECT workspace_id,owner_profile_id,id FROM studio_index_jobs
+           WHERE attempt_count < $4 AND (
+             (status IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+             OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           )
            ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
          )
          UPDATE studio_index_jobs job SET status='processing',attempt_count=job.attempt_count+1,
@@ -1524,9 +1534,22 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
          WHERE job.workspace_id=candidate.workspace_id AND job.owner_profile_id=candidate.owner_profile_id
            AND job.id=candidate.id
          RETURNING job.*`,
-        [now, claimToken, leaseExpiresAt]
+        [now, claimToken, leaseExpiresAt, maxAttempts]
       );
       return result.rows[0] ? indexJobFromRow(result.rows[0]) : null;
+    },
+
+    async renewIndexJobLease(input) {
+      const result = await db.query<{ id: string }>(
+        `UPDATE studio_index_jobs SET lease_expires_at=$6,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND status='processing' AND claim_token=$4
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > $5
+         RETURNING id`,
+        [input.workspaceId, input.ownerProfileId, input.jobId, input.claimToken,
+          input.now, input.leaseExpiresAt]
+      );
+      return result.rows.length === 1;
     },
 
     async completeIndexJob(input) {
@@ -1534,7 +1557,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         `UPDATE studio_index_jobs SET status='completed',next_attempt_at=NULL,last_error_code=NULL,
            claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
-           AND status='processing' AND claim_token=$4 RETURNING id`,
+           AND status='processing' AND claim_token=$4
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > NOW() RETURNING id`,
         [input.workspaceId, input.ownerProfileId, input.jobId, input.claimToken]
       );
       return result.rows.length === 1;
@@ -1545,7 +1569,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         `UPDATE studio_index_jobs SET status='failed',next_attempt_at=$5,last_error_code=$6,
            claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
-           AND status='processing' AND claim_token=$4 RETURNING *`,
+           AND status='processing' AND claim_token=$4
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > NOW() RETURNING *`,
         [input.workspaceId, input.ownerProfileId, input.jobId, input.claimToken,
           input.nextAttemptAt, input.lastErrorCode]
       );

@@ -21,7 +21,7 @@ type OpenAiResponsesClient = {
     create(payload: unknown, options?: { signal?: AbortSignal }): Promise<OpenAiResponse | AsyncIterable<unknown>>;
   };
   embeddings?: {
-    create(payload: unknown): Promise<{
+    create(payload: unknown, options?: { signal?: AbortSignal }): Promise<{
       data: Array<{ index: number; embedding: number[] }>;
     }>;
   };
@@ -78,7 +78,7 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
       const response = await client.embeddings.create({
         model: request.model,
         input: request.inputs
-      });
+      }, { signal: request.signal });
       const indexed = [...response.data].sort((left, right) => left.index - right.index);
       if (indexed.length !== request.inputs.length
         || indexed.some((item, index) => !Number.isInteger(item.index) || item.index !== index)) {

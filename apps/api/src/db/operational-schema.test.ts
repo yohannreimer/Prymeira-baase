@@ -242,6 +242,54 @@ describe("operational schema", () => {
     ]);
   });
 
+  it("backfills one memory job for the latest active version in every owner scope", async () => {
+    await ensureOperationalSchemaThrough(db, 13);
+    await db.query(
+      `INSERT INTO studio_documents
+         (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode,status)
+       VALUES
+         ('document_a','workspace_a','owner_a','{}','latest active A','text','active'),
+         ('document_b','workspace_a','owner_b','{}','latest active B','text','active'),
+         ('document_archived','workspace_a','owner_a','{}','archived','text','archived')`
+    );
+    await db.query(
+      `INSERT INTO studio_document_versions
+         (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id)
+       VALUES
+         ('version_a_1','workspace_a','owner_a','document_a',1,'{}','old A','user','owner_a'),
+         ('version_a_2','workspace_a','owner_a','document_a',2,'{}','latest A','user','owner_a'),
+         ('version_b_1','workspace_a','owner_b','document_b',1,'{}','latest B','user','owner_b'),
+         ('version_archived_1','workspace_a','owner_a','document_archived',1,'{}','archived','user','owner_a')`
+    );
+
+    await ensureOperationalSchema(db);
+    await ensureOperationalSchema(db);
+
+    const jobs = await db.query<{
+      workspace_id: string;
+      owner_profile_id: string;
+      document_id: string;
+      version_id: string;
+    }>(
+      `SELECT workspace_id,owner_profile_id,document_id,version_id
+       FROM studio_index_jobs ORDER BY owner_profile_id,document_id,version_id`
+    );
+    expect(jobs.rows).toEqual([
+      {
+        workspace_id: "workspace_a",
+        owner_profile_id: "owner_a",
+        document_id: "document_a",
+        version_id: "version_a_2"
+      },
+      {
+        workspace_id: "workspace_a",
+        owner_profile_id: "owner_b",
+        document_id: "document_b",
+        version_id: "version_b_1"
+      }
+    ]);
+  });
+
   it("rolls back a saved Studio version when its unique memory job cannot be enqueued", async () => {
     const statements: string[] = [];
     const failingPool: OperationalPool = {

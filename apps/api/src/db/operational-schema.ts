@@ -932,10 +932,42 @@ const migrations: Migration[] = [{
         OR (status IN ('processing','completed') AND next_attempt_at IS NULL)
       ),
       FOREIGN KEY (workspace_id,owner_profile_id,document_id)
-        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
-      FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
-        REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
     );
+
+    INSERT INTO studio_index_jobs
+      (id,workspace_id,owner_profile_id,document_id,version_id,status,next_attempt_at)
+      SELECT 'studio_index_job_backfill_' || selected_version.selected_version_id,
+        document.workspace_id,document.owner_profile_id,document.id,
+        selected_version.selected_version_id,'pending',NOW()
+      FROM studio_documents document
+      JOIN (
+        SELECT workspace_id,owner_profile_id,document_id,MAX(version_number) AS version_number
+        FROM studio_document_versions
+        GROUP BY workspace_id,owner_profile_id,document_id
+      ) current_version
+        ON current_version.workspace_id=document.workspace_id
+        AND current_version.owner_profile_id=document.owner_profile_id
+        AND current_version.document_id=document.id
+      JOIN (
+        SELECT workspace_id AS version_workspace_id,
+          owner_profile_id AS version_owner_profile_id,
+          document_id AS version_document_id,
+          id AS selected_version_id,
+          version_number
+        FROM studio_document_versions
+      ) selected_version
+        ON selected_version.version_workspace_id=current_version.workspace_id
+        AND selected_version.version_owner_profile_id=current_version.owner_profile_id
+        AND selected_version.version_document_id=current_version.document_id
+        AND selected_version.version_number=current_version.version_number
+      WHERE document.status='active'
+      ON CONFLICT (workspace_id,owner_profile_id,version_id) DO NOTHING;
+
+    ALTER TABLE studio_index_jobs
+      ADD CONSTRAINT studio_index_jobs_version_fkey
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
+      REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE;
 
     CREATE INDEX studio_relations_source_idx
       ON studio_relations (workspace_id,owner_profile_id,source_document_id,created_at,id);

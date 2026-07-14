@@ -248,8 +248,8 @@ describe("OpenAI provider", () => {
           create: async () => ({ output_text: "{}" })
         },
         embeddings: {
-          create: async (payload: unknown) => {
-            calls.push(payload);
+          create: async (payload: unknown, requestOptions?: unknown) => {
+            calls.push({ payload, requestOptions });
             return {
               data: [
                 { index: 1, embedding: [0.3, 0.4] },
@@ -261,11 +261,16 @@ describe("OpenAI provider", () => {
       }
     });
 
+    const controller = new AbortController();
     await expect(provider.createEmbeddings({
       model: "text-embedding-3-small",
-      inputs: ["um", "dois"]
+      inputs: ["um", "dois"],
+      signal: controller.signal
     })).resolves.toEqual([[0.1, 0.2], [0.3, 0.4]]);
-    expect(calls).toEqual([{ model: "text-embedding-3-small", input: ["um", "dois"] }]);
+    expect(calls).toEqual([{
+      payload: { model: "text-embedding-3-small", input: ["um", "dois"] },
+      requestOptions: { signal: controller.signal }
+    }]);
   });
 
   it("rejects provider citations without consent or with an unsafe URL", async () => {

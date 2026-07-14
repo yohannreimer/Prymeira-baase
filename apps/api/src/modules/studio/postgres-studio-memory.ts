@@ -4,14 +4,17 @@ import {
   STUDIO_MEMORY_DEFAULT_BATCH_SIZE,
   STUDIO_MEMORY_DEFAULT_DIMENSIONS,
   STUDIO_MEMORY_DEFAULT_MODEL,
+  STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT,
   chunkStudioText,
   decodeStudioMemoryCursor,
   embedStudioTexts,
   encodeStudioMemoryCursor,
   type StudioMemoryEmbedder,
   type StudioMemoryIndex,
-  type StudioMemoryMatch
+  type StudioMemoryMatch,
+  type StudioMemoryMutationGuard
 } from "./studio-memory";
+import type { OperationalClient } from "../../db/operational-repository-support";
 
 export class StudioVectorPrerequisiteError extends Error {
   readonly code = "STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE";
@@ -61,18 +64,32 @@ export function createPostgresStudioMemoryIndex(
   return {
     ensureSetup,
 
-    async indexVersion(scope, document, version) {
+    async indexVersion(scope, document, version, guard) {
       assertScope(scope, document, version);
-      const chunks = chunkStudioText([document.title, version.bodyText].filter(Boolean).join("\n\n"));
+      const chunks = chunkStudioText(
+        [document.title, version.bodyText].filter(Boolean).join("\n\n"),
+        STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT
+      );
+      if (chunks.length > STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT) {
+        throw new Error("STUDIO_MEMORY_DOCUMENT_TOO_LARGE");
+      }
       const embeddings = await embedStudioTexts(
         options.embedder,
         model,
         chunks,
         batchSize,
-        dimensions
+        dimensions,
+        guard?.signal
       );
+      if (!await externalGuardCurrent(guard)) return false;
       await ensureSetup();
-      await withOperationalTransaction(db, async (client) => {
+      return withOperationalTransaction(db, async (client) => {
+        if (!await validatePostgresMutation(client, scope, document.id, "active", {
+          guard,
+          documentRevision: document.revision,
+          versionId: version.id,
+          versionNumber: version.versionNumber
+        })) return false;
         await client.query(
           `INSERT INTO studio_memory_document_state
              (workspace_id,owner_profile_id,document_id,version_id,version_number,embedding_model,embedding_dimensions,updated_at)
@@ -85,7 +102,7 @@ export function createPostgresStudioMemoryIndex(
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3 FOR UPDATE`,
           [scope.workspaceId, scope.ownerProfileId, document.id]
         );
-        if (state.rows[0]!.version_number > version.versionNumber) return;
+        if (state.rows[0]!.version_number > version.versionNumber) return false;
         await client.query(
           `DELETE FROM studio_memory_chunks
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
@@ -119,12 +136,20 @@ export function createPostgresStudioMemoryIndex(
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
           [scope.workspaceId, scope.ownerProfileId, document.id, version.id, version.versionNumber, model, dimensions, version.createdAt]
         );
+        return true;
       });
     },
 
-    async removeDocument(scope, documentId) {
+    async removeDocument(scope, documentId, guard) {
+      if (!await externalGuardCurrent(guard)) return false;
       await ensureSetup();
-      await withOperationalTransaction(db, async (client) => {
+      return withOperationalTransaction(db, async (client) => {
+        if (guard && !await validatePostgresMutation(client, scope, documentId, "archived", {
+          guard,
+          documentRevision: guard.expectedDocumentRevision,
+          versionId: guard.expectedVersionId,
+          versionNumber: guard.expectedVersionNumber
+        })) return false;
         await client.query(
           `DELETE FROM studio_memory_chunks
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
@@ -135,6 +160,7 @@ export function createPostgresStudioMemoryIndex(
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
           [scope.workspaceId, scope.ownerProfileId, documentId]
         );
+        return true;
       });
     },
 
@@ -215,13 +241,14 @@ export function createPostgresStudioMemoryIndex(
 }
 
 async function setupVectorStorage(db: OperationalPool, dimensions: number) {
+  const setupState: { phase: "lock" | "extension" | "storage" } = { phase: "lock" };
   try {
-    await db.query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public");
-  } catch (error) {
-    throw new StudioVectorPrerequisiteError(error);
-  }
-  try {
-    await db.query(`
+    await withOperationalTransaction(db, async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock($1,$2)", [1398034253, 1296389189]);
+      setupState.phase = "extension";
+      await client.query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public");
+      setupState.phase = "storage";
+      await client.query(`
       CREATE TABLE IF NOT EXISTS studio_memory_document_state (
         workspace_id TEXT NOT NULL,
         owner_profile_id TEXT NOT NULL,
@@ -237,8 +264,8 @@ async function setupVectorStorage(db: OperationalPool, dimensions: number) {
         FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
           REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
       )
-    `);
-    await db.query(`
+      `);
+      await client.query(`
       CREATE TABLE IF NOT EXISTS studio_memory_chunks (
         id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
@@ -260,25 +287,27 @@ async function setupVectorStorage(db: OperationalPool, dimensions: number) {
         FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
           REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
       )
-    `);
-    const vectorType = await db.query<{ vector_type: string }>(
-      `SELECT format_type(attribute.atttypid,attribute.atttypmod) AS vector_type
-       FROM pg_attribute attribute
-       WHERE attribute.attrelid='studio_memory_chunks'::regclass
-         AND attribute.attname='embedding' AND NOT attribute.attisdropped`
-    );
-    if (!vectorType.rows[0]?.vector_type.endsWith(`vector(${dimensions})`)) {
-      throw new Error("STUDIO_MEMORY_STORAGE_DIMENSION_MISMATCH");
-    }
-    await db.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_owner_idx
-      ON studio_memory_chunks (workspace_id,owner_profile_id,embedding_model,embedding_dimensions,document_id)`);
-    await db.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_search_idx
-      ON studio_memory_chunks USING GIN (search_vector)`);
-    if (dimensions <= 2_000) {
-      await db.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_embedding_idx
-        ON studio_memory_chunks USING hnsw (embedding public.vector_cosine_ops)`);
-    }
+      `);
+      const vectorType = await client.query<{ vector_type: string }>(
+        `SELECT format_type(attribute.atttypid,attribute.atttypmod) AS vector_type
+         FROM pg_attribute attribute
+         WHERE attribute.attrelid='studio_memory_chunks'::regclass
+           AND attribute.attname='embedding' AND NOT attribute.attisdropped`
+      );
+      if (!vectorType.rows[0]?.vector_type.endsWith(`vector(${dimensions})`)) {
+        throw new Error("STUDIO_MEMORY_STORAGE_DIMENSION_MISMATCH");
+      }
+      await client.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_owner_idx
+        ON studio_memory_chunks (workspace_id,owner_profile_id,embedding_model,embedding_dimensions,document_id)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_search_idx
+        ON studio_memory_chunks USING GIN (search_vector)`);
+      if (dimensions <= 2_000) {
+        await client.query(`CREATE INDEX IF NOT EXISTS studio_memory_chunks_embedding_idx
+          ON studio_memory_chunks USING hnsw (embedding public.vector_cosine_ops)`);
+      }
+    });
   } catch (error) {
+    if (setupState.phase === "extension") throw new StudioVectorPrerequisiteError(error);
     if (error instanceof Error && error.message === "STUDIO_MEMORY_STORAGE_DIMENSION_MISMATCH") throw error;
     const postgresError = error as { code?: string };
     if (postgresError.code === "42704" || postgresError.code === "58P01") {
@@ -286,6 +315,81 @@ async function setupVectorStorage(db: OperationalPool, dimensions: number) {
     }
     throw error;
   }
+}
+
+async function validatePostgresMutation(
+  client: OperationalClient,
+  scope: { workspaceId: string; ownerProfileId: string },
+  documentId: string,
+  expectedStatus: "active" | "archived",
+  expected: {
+    guard?: StudioMemoryMutationGuard;
+    documentRevision: number;
+    versionId: string;
+    versionNumber: number;
+  }
+) {
+  throwIfAborted(expected.guard?.signal);
+  await client.query("SELECT pg_advisory_xact_lock($1,$2)", [
+    1398034253,
+    stableLockValue(`${scope.workspaceId}\u0000${scope.ownerProfileId}\u0000${documentId}`)
+  ]);
+  const current = await client.query<{
+    revision: number;
+    status: "active" | "archived";
+    version_id: string | null;
+    version_number: number | null;
+  }>(
+    `SELECT document.revision,document.status,
+       latest.id AS version_id,latest.version_number
+     FROM studio_documents document
+     LEFT JOIN LATERAL (
+       SELECT id,version_number FROM studio_document_versions
+       WHERE workspace_id=document.workspace_id
+         AND owner_profile_id=document.owner_profile_id
+         AND document_id=document.id
+       ORDER BY version_number DESC,id DESC LIMIT 1
+     ) latest ON TRUE
+     WHERE document.workspace_id=$1 AND document.owner_profile_id=$2 AND document.id=$3
+     FOR UPDATE OF document`,
+    [scope.workspaceId, scope.ownerProfileId, documentId]
+  );
+  const row = current.rows[0];
+  if (!row || row.revision !== expected.documentRevision || row.status !== expectedStatus
+    || row.version_id !== expected.versionId || row.version_number !== expected.versionNumber) return false;
+  if (expected.guard) {
+    const claim = await client.query<{ id: string }>(
+      `SELECT id FROM studio_index_jobs
+       WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+         AND document_id=$4 AND version_id=$5 AND status='processing'
+         AND claim_token=$6 AND lease_expires_at IS NOT NULL AND lease_expires_at>NOW()
+       FOR UPDATE`,
+      [scope.workspaceId, scope.ownerProfileId, expected.guard.jobId,
+        documentId, expected.guard.expectedVersionId, expected.guard.claimToken]
+    );
+    if (!claim.rows[0]) return false;
+  }
+  throwIfAborted(expected.guard?.signal);
+  return true;
+}
+
+async function externalGuardCurrent(guard?: StudioMemoryMutationGuard) {
+  throwIfAborted(guard?.signal);
+  if (guard?.isCurrent && !await guard.isCurrent()) return false;
+  throwIfAborted(guard?.signal);
+  return true;
+}
+
+function stableLockValue(value: string) {
+  let hash = 0;
+  for (const character of value) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return hash;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("STUDIO_MEMORY_INDEX_ABORTED");
 }
 
 function validateDimensions(dimensions: number) {

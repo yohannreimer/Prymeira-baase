@@ -117,7 +117,9 @@ describe("Studio asset maintenance runner", () => {
       const processor = {
         processNext: vi.fn((signal?: AbortSignal) => {
           stalledSignal = signal;
-          return new Promise<null>(() => undefined);
+          return new Promise<null>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
         })
       };
       const scavenge = vi.fn(async (input?: { cursor?: string | null }) => {
@@ -143,6 +145,47 @@ describe("Studio asset maintenance runner", () => {
       expect(scavenge).toHaveBeenCalledTimes(2);
       expect(seenCursors).toEqual([null, "batch-1"]);
       await runner.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not abandon timed-out memory work or overlap the next maintenance run", async () => {
+    vi.useFakeTimers();
+    try {
+      let active = 0;
+      let maximumActive = 0;
+      const memoryProcessor = {
+        processNext: vi.fn((signal?: AbortSignal) => new Promise<null>((resolve) => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          signal?.addEventListener("abort", () => {
+            setTimeout(() => {
+              active -= 1;
+              resolve(null);
+            }, 20);
+          }, { once: true });
+        }))
+      };
+      const runner = createStudioAssetMaintenanceRunner({
+        assetProcessor: idle,
+        cleanupProcessor: idle,
+        uploadCleanupProcessor: idle,
+        memoryProcessor,
+        logger: { error: vi.fn() },
+        maxItemsPerProcessor: 1,
+        perItemTimeoutMs: 10,
+        scavenge: vi.fn(async () => undefined)
+      });
+      const first = runner.runOnce();
+      await vi.advanceTimersByTimeAsync(10);
+      const second = runner.runOnce();
+      expect(second).toBe(first);
+      expect(memoryProcessor.processNext).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(20);
+      await first;
+      expect(maximumActive).toBe(1);
+      expect(active).toBe(0);
     } finally {
       vi.useRealTimers();
     }

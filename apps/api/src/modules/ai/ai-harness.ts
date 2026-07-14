@@ -174,8 +174,10 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
     },
 
     async createEmbeddings(request: AiEmbeddingRequest): Promise<number[][]> {
+      if (request.signal?.aborted) throw request.signal.reason;
       validateEmbeddingRequest(request);
       const embeddings = await options.provider.createEmbeddings(request);
+      if (request.signal?.aborted) throw request.signal.reason;
       validateEmbeddings(request, embeddings);
       return embeddings;
     },

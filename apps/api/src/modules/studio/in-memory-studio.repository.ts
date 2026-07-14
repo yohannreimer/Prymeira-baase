@@ -1081,10 +1081,25 @@ export function createInMemoryStudioRepository(
         .map(cloneIndexJob);
     },
 
-    async claimNextIndexJob(at, leaseMs = 60_000) {
+    async claimNextIndexJob(at, leaseMs = 60_000, maxAttempts = 5) {
       const timestamp = normalizeTimestamp(at);
       const timestampMs = new Date(timestamp).getTime();
+      for (const job of indexJobs) {
+        const due = (job.status === "pending" || job.status === "failed")
+          ? job.nextAttemptAt !== null && new Date(job.nextAttemptAt).getTime() <= timestampMs
+          : job.status === "processing" && job.leaseExpiresAt !== null
+            && new Date(job.leaseExpiresAt).getTime() <= timestampMs;
+        if (due && job.attemptCount >= maxAttempts) {
+          job.status = "failed";
+          job.nextAttemptAt = null;
+          job.claimToken = null;
+          job.leaseExpiresAt = null;
+          job.lastErrorCode = "STUDIO_MEMORY_INDEX_MAX_ATTEMPTS";
+          job.updatedAt = timestamp;
+        }
+      }
       const eligible = indexJobs
+        .filter((job) => job.attemptCount < maxAttempts)
         .filter((job) => (job.status === "pending" || job.status === "failed")
           ? job.nextAttemptAt !== null && new Date(job.nextAttemptAt).getTime() <= timestampMs
           : job.status === "processing" && job.leaseExpiresAt !== null
@@ -1101,6 +1116,24 @@ export function createInMemoryStudioRepository(
       return cloneIndexJob(eligible);
     },
 
+    async renewIndexJobLease(input) {
+      const inputNow = normalizeTimestamp(input.now);
+      const leaseExpiresAt = normalizeTimestamp(input.leaseExpiresAt);
+      const job = indexJobs.find((candidate) =>
+        candidate.workspaceId === input.workspaceId
+        && candidate.ownerProfileId === input.ownerProfileId
+        && candidate.id === input.jobId
+        && candidate.status === "processing"
+        && candidate.claimToken === input.claimToken
+        && candidate.leaseExpiresAt !== null
+        && candidate.leaseExpiresAt > inputNow
+      );
+      if (!job) return false;
+      job.leaseExpiresAt = leaseExpiresAt;
+      job.updatedAt = inputNow;
+      return true;
+    },
+
     async completeIndexJob(input) {
       const job = indexJobs.find((candidate) =>
         candidate.workspaceId === input.workspaceId
@@ -1108,6 +1141,8 @@ export function createInMemoryStudioRepository(
         && candidate.id === input.jobId
         && candidate.status === "processing"
         && candidate.claimToken === input.claimToken
+        && candidate.leaseExpiresAt !== null
+        && candidate.leaseExpiresAt > now()
       );
       if (!job) return false;
       job.status = "completed";
@@ -1125,6 +1160,8 @@ export function createInMemoryStudioRepository(
         && candidate.id === input.jobId
         && candidate.status === "processing"
         && candidate.claimToken === input.claimToken
+        && candidate.leaseExpiresAt !== null
+        && candidate.leaseExpiresAt > now()
       );
       if (!job) return null;
       job.status = "failed";

@@ -176,20 +176,14 @@ async function withAbortDeadline<T>(
   timeout.unref?.();
   const operationPromise = Promise.resolve().then(() => operation(controller.signal));
   try {
-    return await abortable(operationPromise, controller.signal);
+    // Do not abandon an in-flight provider call. The operation receives the
+    // deadline signal and the runner waits until it acknowledges that abort,
+    // preserving single-flight behavior across maintenance cycles.
+    return await operationPromise;
   } finally {
     clearTimeout(timeout);
     parentSignal.removeEventListener("abort", abortFromParent);
   }
-}
-
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-  });
 }
 
 export function startStudioAssetMaintenance(input: {

@@ -9,11 +9,22 @@ import type {
 export const STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES = 1_200;
 export const STUDIO_MEMORY_CHUNK_OVERLAP_GRAPHEMES = 150;
 export const STUDIO_MEMORY_DEFAULT_BATCH_SIZE = 32;
+export const STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT = 256;
 export const STUDIO_MEMORY_DEFAULT_MODEL = "text-embedding-3-small";
 export const STUDIO_MEMORY_DEFAULT_DIMENSIONS = 1_536;
 
 export type StudioMemoryEmbedder = {
-  createEmbeddings(input: { model: string; inputs: string[] }): Promise<number[][]>;
+  createEmbeddings(input: { model: string; inputs: string[]; signal?: AbortSignal }): Promise<number[][]>;
+};
+
+export type StudioMemoryMutationGuard = {
+  expectedDocumentRevision: number;
+  expectedVersionId: string;
+  expectedVersionNumber: number;
+  jobId: string;
+  claimToken: string;
+  signal?: AbortSignal;
+  isCurrent?: () => Promise<boolean>;
 };
 
 export type StudioMemoryMatch = {
@@ -33,9 +44,14 @@ export type StudioMemoryIndex = {
   indexVersion(
     scope: StudioOwnerScope,
     document: StudioDocument,
-    version: StudioDocumentVersion
-  ): Promise<void>;
-  removeDocument(scope: StudioOwnerScope, documentId: string): Promise<void>;
+    version: StudioDocumentVersion,
+    guard?: StudioMemoryMutationGuard
+  ): Promise<boolean>;
+  removeDocument(
+    scope: StudioOwnerScope,
+    documentId: string,
+    guard?: StudioMemoryMutationGuard
+  ): Promise<boolean>;
   findRelated(scope: StudioOwnerScope, input: {
     documentId?: string;
     query: string;
@@ -56,7 +72,8 @@ type StoredChunk = StudioOwnerScope & {
 
 type MemoryCursor = Pick<StudioMemoryMatch, "score" | "updatedAt" | "documentId" | "chunkIndex">;
 
-export function chunkStudioText(input: string): string[] {
+export function chunkStudioText(input: string, maxChunks = Number.MAX_SAFE_INTEGER): string[] {
+  if (!Number.isSafeInteger(maxChunks) || maxChunks < 1) throw new Error("STUDIO_MEMORY_MAX_CHUNKS_INVALID");
   const paragraphs = input.replace(/\r\n?/gu, "\n")
     .split(/\n[\t ]*\n+/gu)
     .map((paragraph) => paragraph.trim())
@@ -64,24 +81,31 @@ export function chunkStudioText(input: string): string[] {
   if (paragraphs.length === 0) return [];
 
   const chunks: string[] = [];
+  const pushChunk = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    if (chunks.length >= maxChunks) throw new Error("STUDIO_MEMORY_DOCUMENT_TOO_LARGE");
+    chunks.push(normalized);
+  };
   let current = "";
   for (const paragraph of paragraphs) {
     const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
-    if (graphemes(candidate).length <= STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES) {
+    const candidateUnits = graphemes(candidate);
+    if (candidateUnits.length <= STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES) {
       current = candidate;
       continue;
     }
-    if (current) chunks.push(current);
+    if (current) pushChunk(current);
     current = current ? `${tail(current, STUDIO_MEMORY_CHUNK_OVERLAP_GRAPHEMES)}\n\n${paragraph}` : paragraph;
-    while (graphemes(current).length > STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES) {
-      const units = graphemes(current);
-      chunks.push(units.slice(0, STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES).join("").trim());
-      current = units.slice(
-        STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES - STUDIO_MEMORY_CHUNK_OVERLAP_GRAPHEMES
-      ).join("").trim();
+    const units = graphemes(current);
+    let offset = 0;
+    while (units.length - offset > STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES) {
+      pushChunk(units.slice(offset, offset + STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES).join(""));
+      offset += STUDIO_MEMORY_CHUNK_MAX_GRAPHEMES - STUDIO_MEMORY_CHUNK_OVERLAP_GRAPHEMES;
     }
+    current = units.slice(offset).join("").trim();
   }
-  if (current) chunks.push(current);
+  if (current) pushChunk(current);
   return chunks.filter(Boolean);
 }
 
@@ -90,7 +114,8 @@ export async function embedStudioTexts(
   model: string,
   inputs: string[],
   batchSize = STUDIO_MEMORY_DEFAULT_BATCH_SIZE,
-  expectedDimensions?: number
+  expectedDimensions?: number,
+  signal?: AbortSignal
 ): Promise<number[][]> {
   if (!model.trim()) throw new Error("STUDIO_MEMORY_MODEL_REQUIRED");
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 256) {
@@ -99,8 +124,10 @@ export async function embedStudioTexts(
   const result: number[][] = [];
   let dimensions = expectedDimensions;
   for (let offset = 0; offset < inputs.length; offset += batchSize) {
+    throwIfAborted(signal);
     const batch = inputs.slice(offset, offset + batchSize);
-    const vectors = await embedder.createEmbeddings({ model, inputs: batch });
+    const vectors = await embedder.createEmbeddings({ model, inputs: batch, signal });
+    throwIfAborted(signal);
     if (vectors.length !== batch.length) throw new Error("STUDIO_MEMORY_EMBEDDING_LENGTH_MISMATCH");
     for (const vector of vectors) {
       if (vector.length === 0) throw new Error("STUDIO_MEMORY_EMBEDDING_EMPTY");
@@ -129,19 +156,27 @@ export function createInMemoryStudioMemoryIndex(options: {
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async indexVersion(scope, document, version) {
+    async indexVersion(scope, document, version, guard) {
       assertScopedVersion(scope, document, version);
-      const texts = chunkStudioText([document.title, version.bodyText].filter(Boolean).join("\n\n"));
+      const texts = chunkStudioText(
+        [document.title, version.bodyText].filter(Boolean).join("\n\n"),
+        STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT
+      );
+      if (texts.length > STUDIO_MEMORY_MAX_CHUNKS_PER_DOCUMENT) {
+        throw new Error("STUDIO_MEMORY_DOCUMENT_TOO_LARGE");
+      }
       const embeddings = await embedStudioTexts(
         options.embedder,
         model,
         texts,
         options.batchSize,
-        options.dimensions
+        options.dimensions,
+        guard?.signal
       );
+      if (!await mutationIsCurrent(guard)) return false;
       const key = scopeKey(scope, document.id);
       const current = indexedVersion.get(key);
-      if (current !== undefined && current > version.versionNumber) return;
+      if (current !== undefined && current > version.versionNumber) return false;
       removeScopedChunks(chunks, scope, document.id);
       indexedVersion.set(key, version.versionNumber);
       for (let index = 0; index < texts.length; index += 1) {
@@ -156,11 +191,14 @@ export function createInMemoryStudioMemoryIndex(options: {
           updatedAt: version.createdAt
         });
       }
+      return true;
     },
 
-    async removeDocument(scope, documentId) {
+    async removeDocument(scope, documentId, guard) {
+      if (!await mutationIsCurrent(guard)) return false;
       removeScopedChunks(chunks, scope, documentId);
       indexedVersion.delete(scopeKey(scope, documentId));
+      return true;
     },
 
     async findRelated(scope, input) {
@@ -204,47 +242,112 @@ export function createStudioMemoryIndexProcessor(options: {
 }) {
   const now = options.now ?? (() => new Date().toISOString());
   const maxAttempts = options.maxAttempts ?? 5;
-  return {
-    async processNext(signal?: AbortSignal): Promise<StudioIndexJob | null> {
-      throwIfAborted(signal);
-      const claimed = await options.repository.claimNextIndexJob(now(), options.leaseMs);
-      if (!claimed) return null;
-      try {
-        const scope: StudioOwnerScope = {
-          workspaceId: claimed.workspaceId,
-          ownerProfileId: claimed.ownerProfileId
-        };
-        const [document, versions] = await Promise.all([
+  const leaseMs = options.leaseMs ?? 60_000;
+  let active: Promise<StudioIndexJob | null> | null = null;
+
+  async function run(signal?: AbortSignal): Promise<StudioIndexJob | null> {
+    throwIfAborted(signal);
+    const claimed = await options.repository.claimNextIndexJob(now(), leaseMs, maxAttempts);
+    if (!claimed) return null;
+    const scope: StudioOwnerScope = {
+      workspaceId: claimed.workspaceId,
+      ownerProfileId: claimed.ownerProfileId
+    };
+    const operation = composeAbortSignal(signal);
+    let heartbeatStopped = false;
+    let heartbeatChain = Promise.resolve();
+    const renewClaim = async () => {
+      const at = now();
+      const renewed = await options.repository.renewIndexJobLease({
+        ...scope,
+        jobId: claimed.id,
+        claimToken: claimed.claimToken!,
+        now: at,
+        leaseExpiresAt: new Date(parseTimestamp(at, "STUDIO_MEMORY_CLOCK_INVALID") + leaseMs).toISOString()
+      });
+      if (!renewed) operation.controller.abort(new Error("STUDIO_MEMORY_INDEX_LEASE_LOST"));
+      return renewed;
+    };
+    const heartbeat = setInterval(() => {
+      heartbeatChain = heartbeatChain.then(async () => {
+        if (!heartbeatStopped && !operation.signal.aborted) await renewClaim();
+      }).catch((error) => operation.controller.abort(error));
+    }, Math.max(10, Math.floor(leaseMs / 3)));
+    heartbeat.unref?.();
+
+    try {
+      const [document, versions] = await Promise.all([
+        options.repository.findDocument(scope, claimed.documentId),
+        options.repository.listVersions(scope, claimed.documentId)
+      ]);
+      const version = versions.find((item) => item.id === claimed.versionId);
+      const latest = versions.at(-1);
+      if (!document || !version || !latest) throw new Error("STUDIO_MEMORY_SOURCE_NOT_FOUND");
+      const isCurrent = async () => {
+        if (!await renewClaim()) return false;
+        throwIfAborted(operation.signal);
+        const [currentDocument, currentVersions] = await Promise.all([
           options.repository.findDocument(scope, claimed.documentId),
           options.repository.listVersions(scope, claimed.documentId)
         ]);
-        const version = versions.find((item) => item.id === claimed.versionId);
-        if (!document || !version) throw new Error("STUDIO_MEMORY_SOURCE_NOT_FOUND");
-        throwIfAborted(signal);
-        if (document.status === "archived") await options.memoryIndex.removeDocument(scope, document.id);
-        else await options.memoryIndex.indexVersion(scope, document, version);
-        throwIfAborted(signal);
-        const completed = await options.repository.completeIndexJob({
-          ...scope,
-          jobId: claimed.id,
-          claimToken: claimed.claimToken!
-        });
-        if (!completed) throw new Error("STUDIO_MEMORY_INDEX_LEASE_LOST");
-        return { ...claimed, status: "completed", claimToken: null, leaseExpiresAt: null };
-      } catch (error) {
-        const retryAt = claimed.attemptCount >= maxAttempts
-          ? null
-          : new Date(parseTimestamp(now(), "STUDIO_MEMORY_CLOCK_INVALID") + retryDelayMs(claimed.attemptCount)).toISOString();
-        await options.repository.failIndexJob({
-          workspaceId: claimed.workspaceId,
-          ownerProfileId: claimed.ownerProfileId,
-          jobId: claimed.id,
-          claimToken: claimed.claimToken!,
-          lastErrorCode: safeErrorCode(error),
-          nextAttemptAt: retryAt
-        });
-        throw error;
-      }
+        const currentLatest = currentVersions.at(-1);
+        return currentDocument?.revision === document.revision
+          && currentDocument.status === document.status
+          && currentLatest?.id === claimed.versionId
+          && currentLatest.versionNumber === version.versionNumber;
+      };
+      const guard: StudioMemoryMutationGuard = {
+        expectedDocumentRevision: document.revision,
+        expectedVersionId: version.id,
+        expectedVersionNumber: version.versionNumber,
+        jobId: claimed.id,
+        claimToken: claimed.claimToken!,
+        signal: operation.signal,
+        isCurrent
+      };
+      throwIfAborted(operation.signal);
+      const applied = document.status === "archived"
+        ? await options.memoryIndex.removeDocument(scope, document.id, guard)
+        : await options.memoryIndex.indexVersion(scope, document, version, guard);
+      throwIfAborted(operation.signal);
+      void applied; // A newer committed generation may supersede this job while it works.
+      const completed = await options.repository.completeIndexJob({
+        ...scope,
+        jobId: claimed.id,
+        claimToken: claimed.claimToken!
+      });
+      if (!completed) throw new Error("STUDIO_MEMORY_INDEX_LEASE_LOST");
+      return { ...claimed, status: "completed", claimToken: null, leaseExpiresAt: null };
+    } catch (error) {
+      const retryAt = claimed.attemptCount >= maxAttempts
+        ? null
+        : new Date(parseTimestamp(now(), "STUDIO_MEMORY_CLOCK_INVALID") + retryDelayMs(claimed.attemptCount)).toISOString();
+      await options.repository.failIndexJob({
+        ...scope,
+        jobId: claimed.id,
+        claimToken: claimed.claimToken!,
+        lastErrorCode: safeErrorCode(error),
+        nextAttemptAt: retryAt
+      });
+      throw error;
+    } finally {
+      heartbeatStopped = true;
+      clearInterval(heartbeat);
+      await heartbeatChain.catch(() => undefined);
+      operation.cleanup();
+    }
+  }
+
+  return {
+    processNext(signal?: AbortSignal): Promise<StudioIndexJob | null> {
+      if (active) return active;
+      const running = run(signal);
+      let tracked!: Promise<StudioIndexJob | null>;
+      tracked = running.finally(() => {
+        if (active === tracked) active = null;
+      });
+      active = tracked;
+      return tracked;
     }
   };
 }
@@ -394,6 +497,25 @@ function retryDelayMs(attempt: number) {
 function safeErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : "STUDIO_MEMORY_INDEX_FAILED";
   return /^[A-Z][A-Z0-9_]{2,100}$/u.test(message) ? message : "STUDIO_MEMORY_INDEX_FAILED";
+}
+
+async function mutationIsCurrent(guard?: StudioMemoryMutationGuard) {
+  throwIfAborted(guard?.signal);
+  if (guard?.isCurrent && !await guard.isCurrent()) return false;
+  throwIfAborted(guard?.signal);
+  return true;
+}
+
+function composeAbortSignal(parent?: AbortSignal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(parent?.reason ?? new Error("STUDIO_MEMORY_INDEX_ABORTED"));
+  if (parent?.aborted) abort();
+  else parent?.addEventListener("abort", abort, { once: true });
+  return {
+    controller,
+    signal: controller.signal,
+    cleanup: () => parent?.removeEventListener("abort", abort)
+  };
 }
 
 function throwIfAborted(signal?: AbortSignal) {
