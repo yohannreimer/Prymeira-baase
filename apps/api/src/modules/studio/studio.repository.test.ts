@@ -1166,6 +1166,9 @@ function repositoryContract(
         });
         const [left, right] = await Promise.all([create("token-a"), create("token-b")]);
         expect(left.id).toBe(right.id);
+        expect(left).toMatchObject({
+          synthesisToken: null, synthesisLeaseExpiresAt: null, synthesisFailureCode: null
+        });
         expect(await repository.findRitualSession({ ...scope, ownerProfileId: "owner_b" }, left.id)).toBeNull();
         await expect(repository.updateRitualSession({ ...left, status: "in_progress", answersJson: { a: "b" } }, 0))
           .rejects.toThrow("STUDIO_RITUAL_SESSION_STALE");
@@ -1180,6 +1183,16 @@ function repositoryContract(
           .rejects.toThrow("STUDIO_RITUAL_SESSION_COMPLETED");
         const next = await create("token-c");
         expect(next.id).not.toBe(completed.id);
+        const archived = await repository.updateStructure({
+          ...ritual, lifecycleStatus: "archived", archivedAt: "2026-07-13T12:04:00.000Z"
+        }, ritual.revision);
+        expect(archived.lifecycleStatus).toBe("archived");
+        const nextCompleted = await repository.updateRitualSession({
+          ...next, status: "completed", completedAt: "2026-07-13T12:05:00.000Z",
+          preparationToken: null, preparationLeaseExpiresAt: null
+        }, next.revision);
+        expect(nextCompleted.status).toBe("completed");
+        await expect(create("token-after-archive")).rejects.toThrow("STUDIO_RITUAL_NOT_FOUND");
         expect((await repository.listRitualSessions(scope, ritual.id, { limit: 1 })).nextCursor).not.toBeNull();
         expect((await repository.listRitualSessions(scope, ritual.id, { limit: 10 })).items).toHaveLength(2);
       });
@@ -1374,6 +1387,33 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("creates or returns an open ritual session from an active locked ritual with bounded retries", async () => {
+    const statements: string[] = [];
+    const pool: OperationalPool = {
+      async query<T>() { return { rows: [] as T[] }; },
+      async connect() {
+        return {
+          async query<T>(text: string) {
+            statements.push(text);
+            return { rows: [] as T[] };
+          },
+          release() {}
+        };
+      }
+    };
+    const repository = createPostgresStudioRepository(pool);
+    await expect(repository.createRitualSession({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", ritualId: "ritual_a",
+      preparationToken: "token_a", preparationLeaseExpiresAt: "2026-07-13T12:02:00.000Z"
+    })).rejects.toThrow("STUDIO_RITUAL_NOT_FOUND");
+    const attempts = statements.filter((statement) => statement.includes("WITH active_ritual AS MATERIALIZED"));
+    expect(attempts).toHaveLength(3);
+    expect(attempts[0]).toContain("lifecycle_status='active'");
+    expect(attempts[0]).toContain("FOR UPDATE");
+    expect(attempts[0]).toContain("ON CONFLICT");
+    expect(statements).toContain("ROLLBACK");
+  });
+
   it("uses the relational Studio repository for either operational store", async () => {
     const statements: string[] = [];
     const pool: OperationalPool = {

@@ -281,6 +281,9 @@ export type StudioRitualSession = StudioOwnerScope & {
   synthesisAiRunId: string | null;
   preparationToken: string | null;
   preparationLeaseExpiresAt: string | null;
+  synthesisToken: string | null;
+  synthesisLeaseExpiresAt: string | null;
+  synthesisFailureCode: string | null;
   failureCode: string | null;
   createdAt: string;
   updatedAt: string;

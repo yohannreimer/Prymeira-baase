@@ -157,6 +157,8 @@ type StudioRitualSessionRow = {
   answers_json: Record<string, string>; synthesis_json: Record<string, unknown> | null;
   prepare_ai_run_id: string | null; synthesis_ai_run_id: string | null; failure_code: string | null;
   preparation_token: string | null; preparation_lease_expires_at: string | Date | null;
+  synthesis_token: string | null; synthesis_lease_expires_at: string | Date | null;
+  synthesis_failure_code: string | null;
   created_at: string | Date; updated_at: string | Date; completed_at: string | Date | null;
 };
 
@@ -379,6 +381,9 @@ function ritualSessionFromRow(row: StudioRitualSessionRow): StudioRitualSession 
     prepareAiRunId: row.prepare_ai_run_id, synthesisAiRunId: row.synthesis_ai_run_id,
     preparationToken: row.preparation_token,
     preparationLeaseExpiresAt: row.preparation_lease_expires_at === null ? null : iso(row.preparation_lease_expires_at),
+    synthesisToken: row.synthesis_token,
+    synthesisLeaseExpiresAt: row.synthesis_lease_expires_at === null ? null : iso(row.synthesis_lease_expires_at),
+    synthesisFailureCode: row.synthesis_failure_code,
     failureCode: row.failure_code, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
     completedAt: row.completed_at === null ? null : iso(row.completed_at)
   };
@@ -923,29 +928,37 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
     },
 
     async createRitualSession(input) {
-      const id = generatedId("studio_ritual_session");
-      const inserted = await db.query<StudioRitualSessionRow>(
-        `INSERT INTO studio_ritual_sessions
-           (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at)
-         SELECT $1,$2,$3,$4,$5,$6 FROM studio_structures
-         WHERE workspace_id=$2 AND owner_profile_id=$3 AND id=$4
-           AND kind='ritual' AND lifecycle_status='active'
-         ON CONFLICT (workspace_id,owner_profile_id,ritual_id)
-           WHERE status IN ('preparing','ready','in_progress','failed') DO NOTHING
-         RETURNING *`,
-        [id, input.workspaceId, input.ownerProfileId, input.ritualId,
-          input.preparationToken, input.preparationLeaseExpiresAt]
-      );
-      if (inserted.rows[0]) return ritualSessionFromRow(inserted.rows[0]);
-      const existing = await db.query<StudioRitualSessionRow>(
-        `SELECT * FROM studio_ritual_sessions
-         WHERE workspace_id=$1 AND owner_profile_id=$2 AND ritual_id=$3
-           AND status IN ('preparing','ready','in_progress','failed')
-         ORDER BY created_at DESC,id DESC LIMIT 1`,
-        [input.workspaceId, input.ownerProfileId, input.ritualId]
-      );
-      if (existing.rows[0]) return ritualSessionFromRow(existing.rows[0]);
-      throw new Error("STUDIO_RITUAL_NOT_FOUND");
+      return withOperationalTransaction(db, async (client) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const id = generatedId("studio_ritual_session");
+          const result = await client.query<StudioRitualSessionRow>(
+            `WITH active_ritual AS MATERIALIZED (
+               SELECT id FROM studio_structures
+               WHERE workspace_id=$2 AND owner_profile_id=$3 AND id=$4
+                 AND kind='ritual' AND lifecycle_status='active'
+               FOR UPDATE
+             ), inserted AS (
+               INSERT INTO studio_ritual_sessions
+                 (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at)
+               SELECT $1,$2,$3,$4,$5,$6 FROM active_ritual
+               ON CONFLICT (workspace_id,owner_profile_id,ritual_id)
+                 WHERE status IN ('preparing','ready','in_progress','failed') DO NOTHING
+               RETURNING *
+             )
+             SELECT * FROM inserted
+             UNION ALL
+             SELECT sessions.* FROM studio_ritual_sessions sessions
+             JOIN active_ritual ON active_ritual.id=sessions.ritual_id
+             WHERE sessions.workspace_id=$2 AND sessions.owner_profile_id=$3
+               AND sessions.status IN ('preparing','ready','in_progress','failed')
+             ORDER BY created_at DESC,id DESC LIMIT 1`,
+            [id, input.workspaceId, input.ownerProfileId, input.ritualId,
+              input.preparationToken, input.preparationLeaseExpiresAt]
+          );
+          if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
+        }
+        throw new Error("STUDIO_RITUAL_NOT_FOUND");
+      });
     },
 
     async updateRitualSession(input, expectedRevision) {
@@ -954,7 +967,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            status=$4,context_json=$5::jsonb,preparation_json=$6::jsonb,answers_json=$7::jsonb,
            synthesis_json=$8::jsonb,prepare_ai_run_id=$9,synthesis_ai_run_id=$10,
            preparation_token=$11,preparation_lease_expires_at=$12,failure_code=$13,
-           completed_at=$14,revision=revision+1,updated_at=NOW()
+           completed_at=$14,synthesis_token=$16,synthesis_lease_expires_at=$17,
+           synthesis_failure_code=$18,revision=revision+1,updated_at=NOW()
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$15
            AND (status<>'completed' OR $4='completed')
          RETURNING *`,
@@ -963,7 +977,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           input.preparationJson === null ? null : JSON.stringify(input.preparationJson),
           JSON.stringify(input.answersJson), input.synthesisJson === null ? null : JSON.stringify(input.synthesisJson),
           input.prepareAiRunId, input.synthesisAiRunId, input.preparationToken,
-          input.preparationLeaseExpiresAt, input.failureCode, input.completedAt, expectedRevision]
+          input.preparationLeaseExpiresAt, input.failureCode, input.completedAt, expectedRevision,
+          input.synthesisToken, input.synthesisLeaseExpiresAt, input.synthesisFailureCode]
       );
       if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
       const existing = await db.query<{ revision: number; status: StudioRitualSession["status"] }>(

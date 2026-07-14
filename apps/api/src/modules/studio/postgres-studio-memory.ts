@@ -175,8 +175,10 @@ export function createPostgresStudioMemoryIndex(
         model,
         [query],
         batchSize,
-        dimensions
+        dimensions,
+        input.signal
       );
+      throwIfAborted(input.signal);
       await ensureSetup();
       const timestamp = new Date(now());
       if (Number.isNaN(timestamp.getTime())) throw new Error("STUDIO_MEMORY_CLOCK_INVALID");
@@ -235,6 +237,7 @@ export function createPostgresStudioMemoryIndex(
          LIMIT $${params.length}`,
         params
       );
+      throwIfAborted(input.signal);
       return result.rows.map(memoryMatchFromRow);
     }
   };

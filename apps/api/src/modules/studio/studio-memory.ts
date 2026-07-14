@@ -57,6 +57,7 @@ export type StudioMemoryIndex = {
     query: string;
     limit: number;
     cursor?: string;
+    signal?: AbortSignal;
   }): Promise<StudioMemoryMatch[]>;
 };
 
@@ -209,8 +210,10 @@ export function createInMemoryStudioMemoryIndex(options: {
         model,
         [query],
         options.batchSize,
-        options.dimensions
+        options.dimensions,
+        input.signal
       );
+      throwIfAborted(input.signal);
       const currentTime = parseTimestamp(now(), "STUDIO_MEMORY_CLOCK_INVALID");
       const bestByDocument = new Map<string, StudioMemoryMatch>();
       for (const chunk of chunks) {
@@ -225,6 +228,7 @@ export function createInMemoryStudioMemoryIndex(options: {
         if (!existing || compareStudioMemoryMatches(match, existing) < 0) bestByDocument.set(chunk.documentId, match);
       }
       const cursor = input.cursor ? decodeStudioMemoryCursor(input.cursor) : null;
+      throwIfAborted(input.signal);
       return [...bestByDocument.values()]
         .sort(compareStudioMemoryMatches)
         .filter((match) => !cursor || isAfterMemoryCursor(match, cursor))

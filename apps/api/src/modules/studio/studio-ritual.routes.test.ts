@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import Fastify from "fastify";
+import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "../../app";
 import { createMockAiProvider } from "../ai/providers/mock-ai.provider";
+import { registerStudioRoutes } from "./studio.routes";
+import type { StudioService } from "./studio.types";
+import type { StudioRitualService } from "./studio-ritual.service";
 
 const owner = {
   "x-baase-workspace-id": "workspace_a", "x-baase-role": "owner", "x-baase-profile-id": "owner_a"
 };
+const now = "2026-07-13T12:00:00.000Z";
 
 async function setup() {
   let ritualId = "";
@@ -49,5 +54,37 @@ describe("Studio ritual routes", () => {
     const otherOwner = { ...owner, "x-baase-profile-id": "owner_b" };
     expect((await app.inject({ method: "POST", url: `/studio/rituals/${ritual.id}/sessions`, headers: otherOwner })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: `/studio/rituals/${ritual.id}/sessions`, headers: { ...owner, "x-baase-role": "manager" } })).statusCode).toBe(403);
+  });
+
+  it("creates a request-owned AbortSignal for preparation and synthesis routes", async () => {
+    const app = Fastify();
+    const session = {
+      id: "session_a", ritualId: "ritual_a", workspaceId: "workspace_a", ownerProfileId: "owner_a",
+      status: "completed", revision: 1, contextJson: null, preparationJson: null, answersJson: {},
+      synthesisJson: null, prepareAiRunId: null, synthesisAiRunId: null,
+      preparationToken: null, preparationLeaseExpiresAt: null,
+      synthesisToken: null, synthesisLeaseExpiresAt: null, synthesisFailureCode: null,
+      failureCode: null, createdAt: now, updatedAt: now, completedAt: now
+    } as const;
+    const startSession = vi.fn(async (_scope, _ritualId, input) => {
+      expect(input?.signal).toBeInstanceOf(AbortSignal);
+      return session as never;
+    });
+    const finishSession = vi.fn(async (_scope, _sessionId, input) => {
+      expect(input.signal).toBeInstanceOf(AbortSignal);
+      return session as never;
+    });
+    await registerStudioRoutes(app, {} as StudioService, undefined, {
+      startSession, finishSession,
+      listSessions: vi.fn(), updateSession: vi.fn()
+    } as unknown as StudioRitualService);
+    expect((await app.inject({ method: "POST", url: "/studio/rituals/ritual_a/sessions", headers: owner })).statusCode).toBe(201);
+    expect((await app.inject({
+      method: "POST", url: "/studio/ritual-sessions/session_a/finish", headers: owner,
+      payload: { expected_revision: 1, answers: {}, request_synthesis: true }
+    })).statusCode).toBe(200);
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(finishSession).toHaveBeenCalledTimes(1);
+    await app.close();
   });
 });

@@ -15,7 +15,12 @@ import type {
 } from "./studio.types";
 
 const PREPARATION_LEASE_MS = 120_000;
+const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 const MAX_SESSION_JSON_BYTES = 512_000;
+const MAX_INTENTION_CODE_POINTS = 8_000;
+const MAX_INTENTION_BYTES = 24_000;
+const MAX_GUIDE_QUESTIONS = 20;
+const MAX_GUIDE_QUESTION_CODE_POINTS = 2_000;
 const MAX_ANSWERS = 100;
 const MAX_ANSWER_KEY = 240;
 const MAX_ANSWER_VALUE = 20_000;
@@ -51,11 +56,16 @@ type StudioRitualServiceOptions = {
   contextBuilder: StudioContextBuilder;
   memoryIndex: StudioMemoryIndex;
   now?: () => Date;
+  preparationTimeoutMs?: number;
+  synthesisTimeoutMs?: number;
 };
 
 export function createStudioRitualService(options: StudioRitualServiceOptions): StudioRitualService {
   const now = options.now ?? (() => new Date());
-  const inFlight = new Map<string, Promise<StudioRitualSession>>();
+  const preparationTimeoutMs = operationTimeout(options.preparationTimeoutMs);
+  const synthesisTimeoutMs = operationTimeout(options.synthesisTimeoutMs);
+  const preparationInFlight = new Map<string, Promise<StudioRitualSession>>();
+  const synthesisInFlight = new Map<string, Promise<StudioRitualSession>>();
 
   return {
     async listSessions(scope, ritualId, query) {
@@ -65,12 +75,20 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
     },
 
     startSession(scope, ritualId, input = {}) {
-      const key = `${scope.workspaceId}\u0000${scope.ownerProfileId}\u0000${ritualId}`;
-      const current = inFlight.get(key);
+      const key = scopeKey(scope, ritualId);
+      const current = preparationInFlight.get(key);
       if (current) return current;
-      const pending = startSession(options, now, scope, ritualId, input.signal)
-        .finally(() => { if (inFlight.get(key) === pending) inFlight.delete(key); });
-      inFlight.set(key, pending);
+      const operation = createDeadlineSignal(
+        input.signal,
+        preparationTimeoutMs,
+        "STUDIO_RITUAL_PREPARATION_TIMEOUT"
+      );
+      const pending = startSession(options, now, scope, ritualId, operation)
+        .finally(() => {
+          operation.cleanup();
+          if (preparationInFlight.get(key) === pending) preparationInFlight.delete(key);
+        });
+      preparationInFlight.set(key, pending);
       return pending;
     },
 
@@ -78,11 +96,10 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       const current = await requireSession(options.repository, scope, sessionId);
       if (current.status === "completed") throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
       if (current.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
-      const answers = mergeAnswers(current.answersJson, input.answers);
       return assertSession(await options.repository.updateRitualSession({
         ...current,
         status: "in_progress",
-        answersJson: answers,
+        answersJson: mergeAnswers(current.answersJson, input.answers),
         preparationToken: null,
         preparationLeaseExpiresAt: null,
         failureCode: null
@@ -91,42 +108,63 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
 
     async finishSession(scope, sessionId, input) {
       throwIfAborted(input.signal);
-      const current = await requireSession(options.repository, scope, sessionId);
-      if (current.status === "completed") return current;
-      if (current.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
-      const completedAt = timestamp(now);
-      const completed = assertSession(await options.repository.updateRitualSession({
-        ...current,
-        status: "completed",
-        answersJson: mergeAnswers(current.answersJson, input.answers),
-        preparationToken: null,
-        preparationLeaseExpiresAt: null,
-        failureCode: null,
-        completedAt
-      }, current.revision));
-      if (!input.requestSynthesis) return completed;
-      return synthesizeCompletedSession(options, scope, completed, input.signal).catch(() => completed);
+      let completed = await requireSession(options.repository, scope, sessionId);
+      if (completed.status !== "completed") {
+        if (completed.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+        completed = assertSession(await options.repository.updateRitualSession({
+          ...completed,
+          status: "completed",
+          answersJson: mergeAnswers(completed.answersJson, input.answers),
+          preparationToken: null,
+          preparationLeaseExpiresAt: null,
+          failureCode: null,
+          completedAt: timestamp(now)
+        }, completed.revision));
+      }
+      if (!input.requestSynthesis || completed.synthesisJson !== null) return completed;
+
+      const key = scopeKey(scope, completed.id);
+      const current = synthesisInFlight.get(key);
+      if (current) return current;
+      const operation = createDeadlineSignal(
+        input.signal,
+        synthesisTimeoutMs,
+        "STUDIO_RITUAL_SYNTHESIS_TIMEOUT"
+      );
+      const pending = synthesizeCompletedSession(options, now, scope, completed, operation)
+        .finally(() => {
+          operation.cleanup();
+          if (synthesisInFlight.get(key) === pending) synthesisInFlight.delete(key);
+        });
+      synthesisInFlight.set(key, pending);
+      return pending;
     }
   };
 }
+
+type DeadlineOperation = {
+  signal: AbortSignal;
+  timedOut(): boolean;
+  cleanup(): void;
+};
 
 async function startSession(
   options: StudioRitualServiceOptions,
   now: () => Date,
   scope: StudioOwnerScope,
   ritualId: string,
-  signal?: AbortSignal
+  operation: DeadlineOperation
 ) {
-  throwIfAborted(signal);
-  const ritual = await requireRitual(options.repository, scope, ritualId, true);
+  throwIfAborted(operation.signal);
+  const ritual = await raceAbort(requireRitual(options.repository, scope, ritualId, true), operation.signal);
   const preparationToken = randomUUID();
   const startedAt = validDate(now());
-  let session = assertSession(await options.repository.createRitualSession({
+  let session = assertSession(await raceAbort(options.repository.createRitualSession({
     ...scope,
     ritualId,
     preparationToken,
     preparationLeaseExpiresAt: new Date(startedAt.getTime() + PREPARATION_LEASE_MS).toISOString()
-  }));
+  }), operation.signal));
   if (session.status === "ready" || session.status === "in_progress") return session;
 
   const ownsPreparation = session.preparationToken === preparationToken;
@@ -134,13 +172,13 @@ async function startSession(
     && new Date(session.preparationLeaseExpiresAt).getTime() <= startedAt.getTime();
   if (!ownsPreparation && (session.status === "failed" || leaseExpired)) {
     try {
-      session = assertSession(await options.repository.updateRitualSession({
+      session = assertSession(await raceAbort(options.repository.updateRitualSession({
         ...session,
         status: "preparing",
         preparationToken,
         preparationLeaseExpiresAt: new Date(startedAt.getTime() + PREPARATION_LEASE_MS).toISOString(),
         failureCode: null
-      }, session.revision));
+      }, session.revision), operation.signal));
     } catch (error) {
       if (!isStale(error)) throw error;
       return requireSession(options.repository, scope, session.id);
@@ -150,17 +188,22 @@ async function startSession(
   }
 
   try {
-    return await prepareSession(options, scope, ritual, session, signal, startedAt);
+    return await prepareSession(options, scope, ritual, session, operation.signal, startedAt);
   } catch (error) {
     const latest = await requireSession(options.repository, scope, session.id);
     if (latest.status !== "completed" && latest.preparationToken === preparationToken) {
+      const failureCode = operation.timedOut()
+        ? "STUDIO_RITUAL_PREPARATION_TIMEOUT"
+        : operation.signal.aborted
+          ? "STUDIO_RITUAL_PREPARATION_CANCELLED"
+          : "STUDIO_RITUAL_PREPARATION_FAILED";
       try {
         session = assertSession(await options.repository.updateRitualSession({
           ...latest,
           status: "failed",
           preparationToken: null,
           preparationLeaseExpiresAt: null,
-          failureCode: signal?.aborted ? "STUDIO_RITUAL_PREPARATION_CANCELLED" : "STUDIO_RITUAL_PREPARATION_FAILED"
+          failureCode
         }, latest.revision));
       } catch (updateError) {
         if (!isStale(updateError)) throw updateError;
@@ -169,7 +212,9 @@ async function startSession(
     } else {
       session = latest;
     }
-    if (signal?.aborted) throw signal.reason ?? new Error("STUDIO_RITUAL_PREPARATION_CANCELLED");
+    if (operation.signal.aborted && !operation.timedOut()) {
+      throw operation.signal.reason ?? new Error("STUDIO_RITUAL_PREPARATION_CANCELLED");
+    }
     return session;
   }
 }
@@ -179,34 +224,49 @@ async function prepareSession(
   scope: StudioOwnerScope,
   ritual: StudioStructure,
   session: StudioRitualSession,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
   startedAt: Date
 ) {
   const properties = studioStructurePropertiesSchema("ritual").parse(ritual.propertiesJson);
-  const document = await options.repository.findDocument(scope, ritual.documentId);
+  const document = await raceAbort(options.repository.findDocument(scope, ritual.documentId), signal);
   if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
-  const intent = properties.intention?.trim() || document.title?.trim() || document.bodyText.trim() || "Revisar este ritual";
+  const intent = boundedStudioText(
+    properties.intention?.trim() || document.title?.trim() || document.bodyText.trim() || "Revisar este ritual",
+    MAX_INTENTION_CODE_POINTS,
+    MAX_INTENTION_BYTES
+  ) || "Revisar este ritual";
+  const guideQuestions = (properties.guide_questions ?? [])
+    .slice(0, MAX_GUIDE_QUESTIONS)
+    .map((question) => boundedStudioText(question, MAX_GUIDE_QUESTION_CODE_POINTS, MAX_INTENTION_BYTES))
+    .filter(Boolean);
   const to = startedAt.toISOString().slice(0, 10);
   const from = new Date(startedAt.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
   const resourceTypes = [...new Set((properties.allowed_internal_sources ?? [])
     .filter((source): source is "dashboard" | "task" | "routine" | "process" | "training" | "announcement" | "people" => (
       OPERATIONAL_RESOURCE_TYPES.has(source)
     )))].sort();
-  throwIfAborted(signal);
-  const [operational, related] = await Promise.all([
+  const [operational, related] = await raceAbort(Promise.all([
     resourceTypes.length
-      ? options.contextBuilder.buildStudioContext(scope, { from, to, resourceTypes, personIds: [] })
+      ? options.contextBuilder.buildStudioContext(
+        scope,
+        { from, to, resourceTypes, personIds: [] },
+        { signal }
+      )
       : Promise.resolve({ period: { from, to }, facts: [], citations: [], serializedBytes: 0, truncated: false }),
-    options.memoryIndex.findRelated(scope, { documentId: ritual.documentId, query: intent.slice(0, 8_000), limit: 12 })
-  ]);
-  throwIfAborted(signal);
+    options.memoryIndex.findRelated(scope, {
+      documentId: ritual.documentId,
+      query: intent,
+      limit: 12,
+      signal
+    })
+  ]), signal);
   const contextJson = assertJsonBounds({
     preparedAt: startedAt.toISOString(),
     ritual: {
       id: ritual.id,
       documentId: ritual.documentId,
       intention: intent,
-      guideQuestions: properties.guide_questions ?? [],
+      guideQuestions,
       cadence: ritual.cadenceJson,
       nextRunAt: ritual.nextRunAt
     },
@@ -219,12 +279,11 @@ async function prepareSession(
       updatedAt: match.updatedAt
     })).sort((left, right) => right.score - left.score || left.documentId.localeCompare(right.documentId))
   });
-  const withContext = assertSession(await options.repository.updateRitualSession({
+  const withContext = assertSession(await raceAbort(options.repository.updateRitualSession({
     ...session,
     contextJson
-  }, session.revision));
-  throwIfAborted(signal);
-  const result = await options.harness.runStructured({
+  }, session.revision), signal));
+  const result = await raceAbort(options.harness.runStructured({
     workspaceId: scope.workspaceId,
     actorProfileId: scope.ownerProfileId,
     source: "owner_studio",
@@ -239,10 +298,9 @@ async function prepareSession(
     outputSchema: studioRitualPrepareSchema,
     schemaName: "studio_ritual_prepare",
     signal
-  });
-  throwIfAborted(signal);
+  }), signal);
   if (result.output.proposal.ritual_id !== ritual.id) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
-  return assertSession(await options.repository.updateRitualSession({
+  return assertSession(await raceAbort(options.repository.updateRitualSession({
     ...withContext,
     status: "ready",
     preparationJson: assertJsonBounds(result.output),
@@ -250,42 +308,81 @@ async function prepareSession(
     preparationToken: null,
     preparationLeaseExpiresAt: null,
     failureCode: null
-  }, withContext.revision));
+  }, withContext.revision), signal));
 }
 
 async function synthesizeCompletedSession(
   options: StudioRitualServiceOptions,
+  now: () => Date,
   scope: StudioOwnerScope,
-  completed: StudioRitualSession,
-  signal?: AbortSignal
+  initial: StudioRitualSession,
+  operation: DeadlineOperation
 ) {
-  throwIfAborted(signal);
-  const result = await options.harness.runStructured({
-    workspaceId: scope.workspaceId,
-    actorProfileId: scope.ownerProfileId,
-    source: "owner_studio",
-    inputMode: "text",
-    taskKind: "studio_synthesize",
-    agentKey: "studio_ritual_facilitator",
-    promptKey: "agent/studio-ritual-facilitator",
-    promptVersion: "1",
-    model: "gpt-5.5",
-    reasoningEffort: "medium",
-    input: { context: completed.contextJson, preparation: completed.preparationJson, answers: completed.answersJson },
-    outputSchema: ritualSynthesisSchema,
-    schemaName: "studio_ritual_synthesis",
-    signal
-  });
-  throwIfAborted(signal);
+  let completed = assertSession(initial);
+  if (completed.synthesisJson !== null) return completed;
+  const timestampNow = validDate(now());
+  const liveClaim = completed.synthesisToken !== null
+    && completed.synthesisLeaseExpiresAt !== null
+    && new Date(completed.synthesisLeaseExpiresAt).getTime() > timestampNow.getTime();
+  if (liveClaim) return completed;
+
+  const synthesisToken = randomUUID();
   try {
-    return assertSession(await options.repository.updateRitualSession({
+    completed = assertSession(await raceAbort(options.repository.updateRitualSession({
       ...completed,
-      synthesisJson: assertJsonBounds(result.output),
-      synthesisAiRunId: result.run.id
-    }, completed.revision));
+      synthesisToken,
+      synthesisLeaseExpiresAt: new Date(timestampNow.getTime() + PREPARATION_LEASE_MS).toISOString(),
+      synthesisFailureCode: null
+    }, completed.revision), operation.signal));
   } catch (error) {
     if (!isStale(error)) throw error;
     return requireSession(options.repository, scope, completed.id);
+  }
+
+  try {
+    const result = await raceAbort(options.harness.runStructured({
+      workspaceId: scope.workspaceId,
+      actorProfileId: scope.ownerProfileId,
+      source: "owner_studio",
+      inputMode: "text",
+      taskKind: "studio_synthesize",
+      agentKey: "studio_ritual_facilitator",
+      promptKey: "agent/studio-ritual-facilitator",
+      promptVersion: "1",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      input: { context: completed.contextJson, preparation: completed.preparationJson, answers: completed.answersJson },
+      outputSchema: ritualSynthesisSchema,
+      schemaName: "studio_ritual_synthesis",
+      signal: operation.signal
+    }), operation.signal);
+    return assertSession(await options.repository.updateRitualSession({
+      ...completed,
+      synthesisJson: assertJsonBounds(result.output),
+      synthesisAiRunId: result.run.id,
+      synthesisToken: null,
+      synthesisLeaseExpiresAt: null,
+      synthesisFailureCode: null
+    }, completed.revision));
+  } catch (error) {
+    const latest = await requireSession(options.repository, scope, completed.id);
+    if (latest.synthesisJson !== null || latest.synthesisToken !== synthesisToken) return latest;
+    const failureCode = operation.timedOut()
+      ? "STUDIO_RITUAL_SYNTHESIS_TIMEOUT"
+      : operation.signal.aborted
+        ? "STUDIO_RITUAL_SYNTHESIS_CANCELLED"
+        : "STUDIO_RITUAL_SYNTHESIS_FAILED";
+    try {
+      return assertSession(await options.repository.updateRitualSession({
+        ...latest,
+        synthesisToken: null,
+        synthesisLeaseExpiresAt: null,
+        synthesisFailureCode: failureCode
+      }, latest.revision));
+    } catch (updateError) {
+      if (!isStale(updateError)) throw updateError;
+      return requireSession(options.repository, scope, completed.id);
+    }
   }
 }
 
@@ -314,18 +411,40 @@ async function requireSession(repository: StudioRepository, scope: StudioOwnerSc
 }
 
 function assertSession(session: StudioRitualSession) {
-  if (!["preparing", "ready", "in_progress", "completed", "failed"].includes(session.status)
-    || !Number.isSafeInteger(session.revision) || session.revision < 1
-    || (session.status === "completed") !== (session.completedAt !== null)
-    || (session.status === "failed") !== (session.failureCode !== null)
-    || (session.preparationToken === null) !== (session.preparationLeaseExpiresAt === null)) {
+  try {
+    const preparationClaimPaired = (session.preparationToken === null) === (session.preparationLeaseExpiresAt === null);
+    const synthesisClaimPaired = (session.synthesisToken === null) === (session.synthesisLeaseExpiresAt === null);
+    if (!(["preparing", "ready", "in_progress", "completed", "failed"] as string[]).includes(session.status)
+      || !Number.isSafeInteger(session.revision) || session.revision < 1
+      || (session.status === "completed") !== (session.completedAt !== null)
+      || (session.status === "failed") !== (session.failureCode !== null)
+      || !preparationClaimPaired || !synthesisClaimPaired
+      || (session.status === "preparing") !== (session.preparationToken !== null)
+      || (session.synthesisToken !== null && (session.status !== "completed" || session.synthesisJson !== null))
+      || (session.synthesisFailureCode !== null
+        && (session.status !== "completed" || session.synthesisJson !== null || session.synthesisToken !== null))) {
+      throw new Error();
+    }
+    mergeAnswers({}, session.answersJson);
+    if (session.contextJson !== null) assertJsonBounds(session.contextJson);
+    if (session.preparationJson !== null) {
+      const preparation = studioRitualPrepareSchema.parse(assertJsonBounds(session.preparationJson));
+      if (preparation.proposal.ritual_id !== session.ritualId || session.prepareAiRunId === null) throw new Error();
+    } else if (session.prepareAiRunId !== null || session.status === "ready") {
+      throw new Error();
+    }
+    if (session.synthesisJson !== null) {
+      ritualSynthesisSchema.parse(assertJsonBounds(session.synthesisJson));
+      if (session.status !== "completed" || session.synthesisAiRunId === null
+        || session.synthesisFailureCode !== null || session.synthesisToken !== null) throw new Error();
+    } else if (session.synthesisAiRunId !== null) {
+      throw new Error();
+    }
+    return session;
+  } catch (error) {
+    if (error instanceof Error && error.message === "STUDIO_RITUAL_ANSWERS_INVALID") throw error;
     throw new Error("STUDIO_RITUAL_SESSION_DATA_INVALID");
   }
-  mergeAnswers({}, session.answersJson);
-  if (session.contextJson !== null) assertJsonBounds(session.contextJson);
-  if (session.preparationJson !== null) assertJsonBounds(session.preparationJson);
-  if (session.synthesisJson !== null) assertJsonBounds(session.synthesisJson);
-  return session;
 }
 
 function mergeAnswers(current: Record<string, string>, next: Record<string, string>) {
@@ -353,6 +472,64 @@ function assertJsonBounds<T extends object>(value: T): T & Record<string, unknow
   }
 }
 
+function boundedStudioText(value: string, maxCodePoints: number, maxBytes: number) {
+  const normalized = value.replace(/[\u0000-\u001F\u007F]/gu, " ").replace(/\s+/gu, " ").trim();
+  let result = "";
+  let codePoints = 0;
+  let bytes = 0;
+  for (const character of normalized) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (codePoints >= maxCodePoints || bytes + characterBytes > maxBytes) break;
+    result += character;
+    codePoints += 1;
+    bytes += characterBytes;
+  }
+  return result.trim();
+}
+
+function createDeadlineSignal(parent: AbortSignal | undefined, timeoutMs: number, timeoutCode: string): DeadlineOperation {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => {
+    if (!controller.signal.aborted) controller.abort(parent?.reason ?? new Error("STUDIO_RITUAL_CANCELLED"));
+  };
+  if (parent?.aborted) abortFromParent();
+  else parent?.addEventListener("abort", abortFromParent, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!controller.signal.aborted) controller.abort(new Error(timeoutCode));
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup() {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", abortFromParent);
+    }
+  };
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("STUDIO_RITUAL_CANCELLED"));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("STUDIO_RITUAL_CANCELLED"));
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", abort); resolve(value); },
+      (error) => { signal.removeEventListener("abort", abort); reject(error); }
+    );
+  });
+}
+
+function operationTimeout(value: number | undefined) {
+  const timeout = value ?? DEFAULT_OPERATION_TIMEOUT_MS;
+  if (!Number.isFinite(timeout) || timeout < 1 || timeout >= PREPARATION_LEASE_MS) {
+    throw new Error("STUDIO_RITUAL_TIMEOUT_INVALID");
+  }
+  return Math.floor(timeout);
+}
+
 function validDate(value: Date) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error("STUDIO_CLOCK_INVALID");
@@ -369,4 +546,8 @@ function throwIfAborted(signal?: AbortSignal) {
 
 function isStale(error: unknown) {
   return error instanceof Error && error.message === "STUDIO_RITUAL_SESSION_STALE";
+}
+
+function scopeKey(scope: StudioOwnerScope, id: string) {
+  return `${scope.workspaceId}\u0000${scope.ownerProfileId}\u0000${id}`;
 }

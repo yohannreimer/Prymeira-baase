@@ -1160,6 +1160,9 @@ const migrations: Migration[] = [{
       synthesis_ai_run_id TEXT,
       preparation_token TEXT,
       preparation_lease_expires_at TIMESTAMPTZ,
+      synthesis_token TEXT,
+      synthesis_lease_expires_at TIMESTAMPTZ,
+      synthesis_failure_code TEXT,
       failure_code TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT
         date_bin('1 millisecond'::interval,NOW(),'2000-01-01 00:00:00+00'::timestamptz),
@@ -1173,8 +1176,15 @@ const migrations: Migration[] = [{
       CHECK (preparation_json IS NULL OR jsonb_typeof(preparation_json)='object'),
       CHECK (synthesis_json IS NULL OR jsonb_typeof(synthesis_json)='object'),
       CHECK ((preparation_token IS NULL)=(preparation_lease_expires_at IS NULL)),
+      CHECK ((synthesis_token IS NULL)=(synthesis_lease_expires_at IS NULL)),
       CHECK ((status='completed' AND completed_at IS NOT NULL) OR (status<>'completed' AND completed_at IS NULL)),
-      CHECK ((status='failed' AND failure_code IS NOT NULL) OR (status<>'failed' AND failure_code IS NULL))
+      CHECK ((status='failed' AND failure_code IS NOT NULL) OR (status<>'failed' AND failure_code IS NULL)),
+      CHECK (status='preparing' OR preparation_token IS NULL),
+      CHECK (status<>'ready' OR (preparation_json IS NOT NULL AND prepare_ai_run_id IS NOT NULL)),
+      CHECK (synthesis_token IS NULL OR (status='completed' AND synthesis_json IS NULL)),
+      CHECK (synthesis_failure_code IS NULL OR (status='completed' AND synthesis_json IS NULL AND synthesis_token IS NULL)),
+      CHECK (synthesis_json IS NULL OR (status='completed' AND synthesis_ai_run_id IS NOT NULL
+        AND synthesis_token IS NULL AND synthesis_failure_code IS NULL))
     );
 
     CREATE UNIQUE INDEX studio_ritual_sessions_open_uidx

@@ -35,7 +35,11 @@ export type StudioContextBuilderOptions = {
 };
 
 export type StudioContextBuilder = {
-  buildStudioContext(scope: StudioOwnerScope, request: StudioContextRequest): Promise<StudioContextSnapshot>;
+  buildStudioContext(
+    scope: StudioOwnerScope,
+    request: StudioContextRequest,
+    operation?: { signal?: AbortSignal }
+  ): Promise<StudioContextSnapshot>;
 };
 
 const RESOURCE_ORDER: StudioOperationalResourceType[] = [
@@ -64,7 +68,8 @@ export function createStudioContextBuilder(
   const caps = normalizeCaps(options.perTypeCaps);
 
   return {
-    async buildStudioContext(scope, request) {
+    async buildStudioContext(scope, request, operation) {
+      throwIfContextAborted(operation?.signal);
       const observedAt = normalizeNow(now());
       const period = resolvePeriod(request, observedAt, maxPeriodDays);
       const resourceTypes = normalizeResourceTypes(request.resourceTypes);
@@ -76,6 +81,7 @@ export function createStudioContextBuilder(
         ids: peopleIds,
         limit: peopleIds ? peopleIds.length + 1 : maxSourceRecords + 1
       });
+      throwIfContextAborted(operation?.signal);
       assertSourceBound("people", workspacePeople, maxSourceRecords);
       const people = authorizeScopeAndPeople(workspacePeople, scope, request.personIds, maxPersonIds);
       const membership = ownerMembership(people.owner);
@@ -84,10 +90,12 @@ export function createStudioContextBuilder(
       const snapshot = await readOperationalSnapshot(
         repositories, scope, resourceTypes, maxSourceRecords, workspacePeople, personIds, period
       );
+      throwIfContextAborted(operation?.signal);
       const needsOverview = resourceTypes.has("dashboard") || resourceTypes.has("task") || resourceTypes.has("announcement");
       const overviews = needsOverview
         ? await readOverviews(snapshot, repositories, now, scope, membership, period, personIds)
         : [];
+      throwIfContextAborted(operation?.signal);
       const result: StudioContextSnapshot = {
         period,
         facts: [],
@@ -208,9 +216,14 @@ export function createStudioContextBuilder(
         }
       }
       result.serializedBytes = serializedBytes(result);
+      throwIfContextAborted(operation?.signal);
       return result;
     }
   };
+}
+
+function throwIfContextAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw signal.reason ?? new Error("STUDIO_CONTEXT_CANCELLED");
 }
 
 type AppendInput = {

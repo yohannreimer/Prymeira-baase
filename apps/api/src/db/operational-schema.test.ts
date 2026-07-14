@@ -184,6 +184,12 @@ describe("operational schema", () => {
     expect(sql).toContain("create unique index studio_ritual_sessions_open_uidx");
     expect(sql).toContain("where status in ('preparing','ready','in_progress','failed')");
     expect(sql).toContain("create index studio_ritual_sessions_ritual_cursor_idx");
+    expect(sql).toContain("synthesis_token text");
+    expect(sql).toContain("synthesis_lease_expires_at timestamptz");
+    expect(sql).toContain("synthesis_failure_code text");
+    expect(sql).toContain("check ((synthesis_token is null)=(synthesis_lease_expires_at is null))");
+    expect(sql).toContain("status<>'ready' or (preparation_json is not null and prepare_ai_run_id is not null)");
+    expect(sql).toContain("synthesis_json is null or (status='completed' and synthesis_ai_run_id is not null");
   });
 
   it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {

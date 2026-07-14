@@ -115,6 +115,21 @@ async function runStudioOperation<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withRequestAbortSignal<T>(request: FastifyRequest, operation: (signal: AbortSignal) => Promise<T>) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort(new Error("STUDIO_RITUAL_REQUEST_CANCELLED"));
+  };
+  request.raw.once("aborted", abort);
+  request.raw.socket?.once("close", abort);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    request.raw.removeListener("aborted", abort);
+    request.raw.socket?.removeListener("close", abort);
+  }
+}
+
 function readNoRouteParams(request: FastifyRequest) {
   studioEmptyRouteSchema.parse(request.params);
 }
@@ -258,7 +273,10 @@ export async function registerStudioRoutes(
       const params = studioRitualParamsSchema.parse(request.params);
       readNoQuery(request);
       readNoBody(request);
-      const session = await runStudioOperation(() => ritualService.startSession(scope, params.ritualId));
+      const session = await runStudioOperation(() => withRequestAbortSignal(
+        request,
+        (signal) => ritualService.startSession(scope, params.ritualId, { signal })
+      ));
       return reply.status(201).send({ session });
     });
 
@@ -278,11 +296,14 @@ export async function registerStudioRoutes(
       const params = studioRitualSessionParamsSchema.parse(request.params);
       readNoQuery(request);
       const body = finishStudioRitualSessionSchema.parse(request.body);
-      return { session: await runStudioOperation(() => ritualService.finishSession(scope, params.sessionId, {
-        expectedRevision: body.expected_revision,
-        answers: body.answers,
-        requestSynthesis: body.request_synthesis
-      })) };
+      return { session: await runStudioOperation(() => withRequestAbortSignal(request, (signal) => (
+        ritualService.finishSession(scope, params.sessionId, {
+          expectedRevision: body.expected_revision,
+          answers: body.answers,
+          requestSynthesis: body.request_synthesis,
+          signal
+        })
+      ))) };
     });
   }
 
