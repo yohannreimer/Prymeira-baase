@@ -3,6 +3,8 @@ export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
+export type StudioRelationType = "related_to" | "supports" | "contradicts" | "originated" | "informs" | "supersedes";
+export type StudioIndexJobStatus = "pending" | "processing" | "failed" | "completed";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioAssetLifecycleStatus = "active" | "deleting";
@@ -62,6 +64,29 @@ export type StudioDocumentVersion = StudioOwnerScope & {
   actorProfileId: string;
   aiRunId: string | null;
   createdAt: string;
+};
+
+export type StudioRelation = StudioOwnerScope & {
+  id: string;
+  sourceDocumentId: string;
+  targetDocumentId: string;
+  relationType: StudioRelationType;
+  createdByProfileId: string;
+  createdAt: string;
+};
+
+export type StudioIndexJob = StudioOwnerScope & {
+  id: string;
+  documentId: string;
+  versionId: string;
+  status: StudioIndexJobStatus;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastErrorCode: string | null;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type StudioDocumentPage = {
@@ -226,6 +251,13 @@ export type StudioService = {
   deleteCollection(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioCollection>;
   addDocumentToCollection(scope: StudioOwnerScope, actorProfileId: string, collectionId: string, documentId: string): Promise<StudioCollectionMembership>;
   removeDocumentFromCollection(scope: StudioOwnerScope, actorProfileId: string, collectionId: string, documentId: string): Promise<boolean>;
+  relateDocuments(
+    scope: StudioOwnerScope,
+    actorProfileId: string,
+    sourceDocumentId: string,
+    targetDocumentId: string,
+    relationType: StudioRelationType
+  ): Promise<StudioRelation>;
 };
 
 export type StudioRepository = {
@@ -331,4 +363,20 @@ export type StudioRepository = {
     jobId: string;
     claimToken: string;
   }): Promise<boolean>;
+  createRelation(input: StudioOwnerScope & {
+    sourceDocumentId: string;
+    targetDocumentId: string;
+    relationType: StudioRelationType;
+    createdByProfileId: string;
+  }): Promise<StudioRelation>;
+  listRelations(scope: StudioOwnerScope, documentId?: string): Promise<StudioRelation[]>;
+  listIndexJobs(scope: StudioOwnerScope): Promise<StudioIndexJob[]>;
+  claimNextIndexJob(now: string, leaseMs?: number): Promise<StudioIndexJob | null>;
+  completeIndexJob(input: StudioOwnerScope & { jobId: string; claimToken: string }): Promise<boolean>;
+  failIndexJob(input: StudioOwnerScope & {
+    jobId: string;
+    claimToken: string;
+    lastErrorCode: string;
+    nextAttemptAt: string | null;
+  }): Promise<StudioIndexJob | null>;
 };

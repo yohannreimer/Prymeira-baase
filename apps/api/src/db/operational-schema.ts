@@ -15,8 +15,8 @@ type Migration = {
   sql: string;
 };
 
-// Versions 14–19 are intentionally unavailable to incidental hardening work.
-// They preserve the ordered migrations approved for Owner Studio Tasks 14, 16, 18, 20, 22, and 24.
+// Versions 15–19 remain unavailable to incidental hardening work. Version 14 is now the
+// implemented memory migration; the ledger preserves the rest of the approved Studio order.
 export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   14: "studio_relations_and_index_jobs",
   15: "studio_conversations_messages_suggestions_citations",
@@ -874,6 +874,76 @@ const migrations: Migration[] = [{
       OR (storage_session_state='active' AND storage_upload_id IS NOT NULL AND status='uploading')
       OR (storage_session_state='abort_pending' AND status IN ('cleanup_pending','processing','failed'))
     );
+  `
+}, {
+  version: 14,
+  name: "studio_relations_and_index_jobs",
+  sql: `
+    ALTER TABLE studio_document_versions
+      ADD CONSTRAINT studio_document_versions_document_id_id_uidx
+      UNIQUE (workspace_id,owner_profile_id,document_id,id);
+
+    CREATE TABLE studio_relations (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      source_document_id TEXT NOT NULL,
+      target_document_id TEXT NOT NULL,
+      relation_type TEXT NOT NULL CHECK (relation_type IN (
+        'related_to','supports','contradicts','originated','informs','supersedes'
+      )),
+      created_by_profile_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      UNIQUE (
+        workspace_id,owner_profile_id,source_document_id,target_document_id,relation_type
+      ),
+      CHECK (source_document_id <> target_document_id),
+      FOREIGN KEY (workspace_id,owner_profile_id,source_document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,target_document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE studio_index_jobs (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','processing','failed','completed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ,
+      last_error_code TEXT,
+      claim_token TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      UNIQUE (workspace_id,owner_profile_id,version_id),
+      CHECK (
+        (status='processing' AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR (status<>'processing' AND claim_token IS NULL AND lease_expires_at IS NULL)
+      ),
+      CHECK (
+        (status='pending' AND next_attempt_at IS NOT NULL)
+        OR (status='failed')
+        OR (status IN ('processing','completed') AND next_attempt_at IS NULL)
+      ),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
+        REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX studio_relations_source_idx
+      ON studio_relations (workspace_id,owner_profile_id,source_document_id,created_at,id);
+    CREATE INDEX studio_relations_target_idx
+      ON studio_relations (workspace_id,owner_profile_id,target_document_id,created_at,id);
+    CREATE INDEX studio_index_jobs_claim_idx
+      ON studio_index_jobs (status,next_attempt_at,lease_expires_at,created_at,id)
+      WHERE status IN ('pending','processing','failed');
   `
 }, {
   version: 20,

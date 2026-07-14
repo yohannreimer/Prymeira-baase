@@ -12,6 +12,8 @@ import type {
   StudioDocument,
   StudioDocumentStatus,
   StudioDocumentVersion,
+  StudioIndexJob,
+  StudioRelation,
   StudioRepository,
   StudioOwnerScope,
   StudioSearchDocument
@@ -77,6 +79,33 @@ type StudioCollectionMembershipRow = {
   collection_id: string;
   document_id: string;
   created_at: string | Date;
+};
+
+type StudioRelationRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  source_document_id: string;
+  target_document_id: string;
+  relation_type: StudioRelation["relationType"];
+  created_by_profile_id: string;
+  created_at: string | Date;
+};
+
+type StudioIndexJobRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  document_id: string;
+  version_id: string;
+  status: StudioIndexJob["status"];
+  attempt_count: number;
+  next_attempt_at: string | Date | null;
+  last_error_code: string | null;
+  claim_token: string | null;
+  lease_expires_at: string | Date | null;
+  created_at: string | Date;
+  updated_at: string | Date;
 };
 
 type StudioAssetRow = {
@@ -212,6 +241,37 @@ function membershipFromRow(row: StudioCollectionMembershipRow): StudioCollection
     collectionId: row.collection_id,
     documentId: row.document_id,
     createdAt: iso(row.created_at)
+  };
+}
+
+function relationFromRow(row: StudioRelationRow): StudioRelation {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    sourceDocumentId: row.source_document_id,
+    targetDocumentId: row.target_document_id,
+    relationType: row.relation_type,
+    createdByProfileId: row.created_by_profile_id,
+    createdAt: iso(row.created_at)
+  };
+}
+
+function indexJobFromRow(row: StudioIndexJobRow): StudioIndexJob {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id,
+    versionId: row.version_id,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
+    lastErrorCode: row.last_error_code,
+    claimToken: row.claim_token,
+    leaseExpiresAt: row.lease_expires_at ? iso(row.lease_expires_at) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
   };
 }
 
@@ -404,7 +464,22 @@ async function insertVersion(
       input.aiRunId
     ]
   );
-  return versionFromRow(result.rows[0]!);
+  const version = versionFromRow(result.rows[0]!);
+  await client.query(
+    `INSERT INTO studio_index_jobs
+       (id,workspace_id,owner_profile_id,document_id,version_id,status,next_attempt_at)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6)
+     ON CONFLICT (workspace_id,owner_profile_id,version_id) DO NOTHING`,
+    [
+      generatedId("studio_index_job"),
+      version.workspaceId,
+      version.ownerProfileId,
+      version.documentId,
+      version.id,
+      version.createdAt
+    ]
+  );
+  return version;
 }
 
 export function createPostgresStudioRepository(db: OperationalPool): StudioRepository {
@@ -1373,6 +1448,108 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         }
         return true;
       });
+    },
+
+    async createRelation(input) {
+      if (input.createdByProfileId !== input.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
+      if (input.sourceDocumentId === input.targetDocumentId) throw new Error("STUDIO_RELATION_SELF_INVALID");
+      return withOperationalTransaction(db, async (client) => {
+        const ownedDocuments = await client.query<{ id: string }>(
+          `SELECT id FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=ANY($3::text[])
+           FOR KEY SHARE`,
+          [input.workspaceId, input.ownerProfileId, [input.sourceDocumentId, input.targetDocumentId]]
+        );
+        if (new Set(ownedDocuments.rows.map((row) => row.id)).size !== 2) {
+          throw new Error("STUDIO_RELATION_DOCUMENT_NOT_FOUND");
+        }
+        const inserted = await client.query<StudioRelationRow>(
+          `INSERT INTO studio_relations
+             (id,workspace_id,owner_profile_id,source_document_id,target_document_id,relation_type,created_by_profile_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (workspace_id,owner_profile_id,source_document_id,target_document_id,relation_type)
+           DO NOTHING RETURNING *`,
+          [generatedId("studio_relation"), input.workspaceId, input.ownerProfileId,
+            input.sourceDocumentId, input.targetDocumentId, input.relationType, input.createdByProfileId]
+        );
+        if (inserted.rows[0]) return relationFromRow(inserted.rows[0]);
+        const existing = await client.query<StudioRelationRow>(
+          `SELECT * FROM studio_relations
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND source_document_id=$3
+             AND target_document_id=$4 AND relation_type=$5`,
+          [input.workspaceId, input.ownerProfileId, input.sourceDocumentId,
+            input.targetDocumentId, input.relationType]
+        );
+        if (!existing.rows[0]) throw new Error("STUDIO_RELATION_CREATE_FAILED");
+        return relationFromRow(existing.rows[0]);
+      });
+    },
+
+    async listRelations(scope, documentId) {
+      const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
+      const documentFilter = documentId
+        ? (params.push(documentId), `AND (source_document_id=$3 OR target_document_id=$3)`)
+        : "";
+      const result = await db.query<StudioRelationRow>(
+        `SELECT * FROM studio_relations
+         WHERE workspace_id=$1 AND owner_profile_id=$2 ${documentFilter}
+         ORDER BY created_at ASC,id ASC`,
+        params
+      );
+      return result.rows.map(relationFromRow);
+    },
+
+    async listIndexJobs(scope) {
+      const result = await db.query<StudioIndexJobRow>(
+        `SELECT * FROM studio_index_jobs
+         WHERE workspace_id=$1 AND owner_profile_id=$2 ORDER BY created_at ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId]
+      );
+      return result.rows.map(indexJobFromRow);
+    },
+
+    async claimNextIndexJob(now, leaseMs = 60_000) {
+      const claimToken = generatedId("studio_index_claim");
+      const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
+      const result = await db.query<StudioIndexJobRow>(
+        `WITH candidate AS (
+           SELECT workspace_id,owner_profile_id,id FROM studio_index_jobs
+           WHERE (status IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
+             OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
+         )
+         UPDATE studio_index_jobs job SET status='processing',attempt_count=job.attempt_count+1,
+           next_attempt_at=NULL,last_error_code=NULL,claim_token=$2,lease_expires_at=$3,updated_at=NOW()
+         FROM candidate
+         WHERE job.workspace_id=candidate.workspace_id AND job.owner_profile_id=candidate.owner_profile_id
+           AND job.id=candidate.id
+         RETURNING job.*`,
+        [now, claimToken, leaseExpiresAt]
+      );
+      return result.rows[0] ? indexJobFromRow(result.rows[0]) : null;
+    },
+
+    async completeIndexJob(input) {
+      const result = await db.query<{ id: string }>(
+        `UPDATE studio_index_jobs SET status='completed',next_attempt_at=NULL,last_error_code=NULL,
+           claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND status='processing' AND claim_token=$4 RETURNING id`,
+        [input.workspaceId, input.ownerProfileId, input.jobId, input.claimToken]
+      );
+      return result.rows.length === 1;
+    },
+
+    async failIndexJob(input) {
+      const result = await db.query<StudioIndexJobRow>(
+        `UPDATE studio_index_jobs SET status='failed',next_attempt_at=$5,last_error_code=$6,
+           claim_token=NULL,lease_expires_at=NULL,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND status='processing' AND claim_token=$4 RETURNING *`,
+        [input.workspaceId, input.ownerProfileId, input.jobId, input.claimToken,
+          input.nextAttemptAt, input.lastErrorCode]
+      );
+      return result.rows[0] ? indexJobFromRow(result.rows[0]) : null;
     }
   };
 }

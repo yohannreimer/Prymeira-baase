@@ -6,6 +6,8 @@ import {
   type OperationalSchemaClient,
   type OperationalSchemaPool
 } from "./operational-schema";
+import { createPostgresStudioMemoryIndex, StudioVectorPrerequisiteError } from "../modules/studio/postgres-studio-memory";
+import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
 
 // Use an expendable PostgreSQL 16 database; each test creates and drops an isolated schema.
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -66,7 +68,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
     });
   });
 
@@ -127,7 +129,88 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "studio_assets_object_key_uidx",
         "studio_assets_idempotency_uidx",
         "studio_collection_items_collection_idx"
+        ,"studio_relations_source_idx"
+        ,"studio_relations_target_idx"
+        ,"studio_index_jobs_claim_idx"
       ]));
+    });
+  });
+
+  it("creates owner-scoped relations and atomically enqueues one index job per committed version", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      const repository = createPostgresStudioRepository(pool);
+      const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+      const first = await repository.createDocument({
+        ...ownerA, title: "A", bodyJson: {}, bodyText: "primeiro", captureMode: "text",
+        inboxState: "pending_review", isFocused: false, status: "active"
+      });
+      const second = await repository.createDocument({
+        ...ownerA, title: "B", bodyJson: {}, bodyText: "segundo", captureMode: "text",
+        inboxState: "pending_review", isFocused: false, status: "active"
+      });
+      const foreign = await repository.createDocument({
+        workspaceId: "workspace_a", ownerProfileId: "owner_b", title: "segredo", bodyJson: {},
+        bodyText: "privado", captureMode: "text", inboxState: "pending_review", isFocused: false, status: "active"
+      });
+      expect(await repository.listIndexJobs(ownerA)).toHaveLength(2);
+      await repository.updateDocument({ ...first, bodyText: "editado" }, first.revision);
+      expect(await repository.listIndexJobs(ownerA)).toHaveLength(3);
+      await expect(repository.createRelation({
+        ...ownerA, sourceDocumentId: first.id, targetDocumentId: second.id,
+        relationType: "supports", createdByProfileId: "owner_a"
+      })).resolves.toMatchObject({ relationType: "supports" });
+      await expect(repository.createRelation({
+        ...ownerA, sourceDocumentId: first.id, targetDocumentId: foreign.id,
+        relationType: "related_to", createdByProfileId: "owner_a"
+      })).rejects.toThrow("STUDIO_RELATION_DOCUMENT_NOT_FOUND");
+    });
+  });
+
+  it("uses pgvector only through its guarded adapter and reports an unavailable prerequisite explicitly", async (context) => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      const repository = createPostgresStudioRepository(pool);
+      const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+      const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
+      const create = async (scope: typeof ownerA, title: string, bodyText: string) => {
+        const document = await repository.createDocument({
+          ...scope, title, bodyJson: {}, bodyText, captureMode: "text",
+          inboxState: "reviewed", isFocused: false, status: "active"
+        });
+        return { document, version: (await repository.listVersions(scope, document.id))[0]! };
+      };
+      const embedder = {
+        async createEmbeddings({ inputs }: { model: string; inputs: string[] }) {
+          return inputs.map((input) => input.includes("caixa") ? [1, 0, 0] : [0, 1, 0]);
+        }
+      };
+      const memory = createPostgresStudioMemoryIndex(pool, {
+        embedder, dimensions: 3, now: () => "2026-07-14T12:00:00.000Z"
+      });
+      try {
+        await memory.ensureSetup();
+      } catch (error) {
+        if (error instanceof StudioVectorPrerequisiteError) {
+          console.warn("Skipping pgvector assertions: STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE");
+          context.skip();
+          return;
+        }
+        throw error;
+      }
+      const left = await create(ownerA, "Fluxo", "caixa para amanhã");
+      const right = await create(ownerA, "Equipe", "contratações futuras");
+      const foreign = await create(ownerB, "Privado", "caixa confidencial");
+      await memory.indexVersion(ownerA, left.document, left.version);
+      await memory.indexVersion(ownerA, right.document, right.version);
+      await memory.indexVersion(ownerB, foreign.document, foreign.version);
+      const results = await memory.findRelated(ownerA, {
+        documentId: left.document.id, query: "caixa", limit: 10
+      });
+      expect(results.map((item) => item.documentId)).toEqual([right.document.id]);
+      expect(results.every((item) => item.documentId !== foreign.document.id)).toBe(true);
+      await memory.removeDocument(ownerA, right.document.id);
+      await expect(memory.findRelated(ownerA, { query: "equipe", limit: 10 })).resolves.toEqual([]);
     });
   });
 
@@ -156,7 +239,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const catalog = await pool.query<{ columns: number; cleanup_table: boolean; object_nullable: string }>(
         `select
           (select count(*)::int from information_schema.columns
@@ -199,7 +282,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const catalog = await pool.query<{ intent_table: boolean; intent_indexes: number }>(
         `select
           to_regclass('studio_asset_upload_intents') is not null intent_table,
@@ -234,7 +317,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const columns = await pool.query<{ column_name: string }>(
         `select column_name from information_schema.columns
          where table_schema=current_schema() and table_name='studio_asset_upload_intents'
@@ -282,7 +365,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "select version from baase_schema_migrations order by version"
       );
       expect(versions.rows.map((row) => row.version)).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21
       ]);
       const migrated = await pool.query<{
         status: string;
@@ -302,7 +385,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
-  it("reserves migrations 14 through 19 and adds concurrent active asset idempotency in migration 20", async () => {
+  it("applies migration 14, reserves 15 through 19, and adds concurrent active asset idempotency in migration 20", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 13);
       await pool.query(
@@ -316,7 +399,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations where version between 14 and 21 order by version"
       );
-      expect(versions.rows).toEqual([{ version: 20 }, { version: 21 }]);
+      expect(versions.rows).toEqual([{ version: 14 }, { version: 20 }, { version: 21 }]);
       const cursorIndexes = await pool.query<{ indexname: string; indexdef: string }>(
         `select indexname,indexdef from pg_indexes
          where schemaname=current_schema()
@@ -624,7 +707,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const upgradedConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -669,7 +752,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const v3Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; source_key: boolean; revision_snapshot: boolean; people_fks: number; active_order_index: boolean }>(
         `select
           exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
@@ -705,7 +788,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
       const catalog = await pool.query<{ full_constraints: number; partial_indexes: number }>(
         `select
           (select count(*)::int from pg_constraint c join pg_namespace n on n.oid=c.connamespace

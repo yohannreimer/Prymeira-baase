@@ -9,6 +9,7 @@ export function createStudioAssetMaintenanceRunner(options: {
   assetProcessor: Processor;
   cleanupProcessor: Processor;
   uploadCleanupProcessor: Processor;
+  memoryProcessor?: Processor;
   logger: MaintenanceLogger;
   maxItemsPerProcessor?: number;
   intervalMs?: number;
@@ -68,11 +69,13 @@ export function createStudioAssetMaintenanceRunner(options: {
         if (!signal.aborted) reportError(error, "Studio upload scavenger failed");
       }
     }
-    for (const [name, processor] of [
+    const processors: Array<readonly [string, Processor]> = [
       ["asset extraction", options.assetProcessor],
       ["asset deletion", options.cleanupProcessor],
       ["upload intent cleanup", options.uploadCleanupProcessor]
-    ] as const) {
+    ];
+    if (options.memoryProcessor) processors.push(["memory indexing", options.memoryProcessor]);
+    for (const [name, processor] of processors) {
       for (let index = 0; index < maxItems && !signal.aborted; index += 1) {
         try {
           const result = await withAbortDeadline(
@@ -193,6 +196,7 @@ export function startStudioAssetMaintenance(input: {
   studioAssetProcessor: Processor;
   studioAssetCleanupProcessor: Processor;
   studioAssetUploadCleanupProcessor: Processor;
+  studioMemoryIndexProcessor?: Processor;
   log: MaintenanceLogger;
 }, options: {
   maxItemsPerProcessor?: number;
@@ -209,6 +213,7 @@ export function startStudioAssetMaintenance(input: {
     assetProcessor: input.studioAssetProcessor,
     cleanupProcessor: input.studioAssetCleanupProcessor,
     uploadCleanupProcessor: input.studioAssetUploadCleanupProcessor,
+    memoryProcessor: input.studioMemoryIndexProcessor,
     logger: input.log,
     ...options
   });

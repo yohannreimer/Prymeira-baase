@@ -45,6 +45,15 @@ import {
 } from "./modules/studio/studio-assets.routes";
 import { createStudioService } from "./modules/studio/studio.service";
 import type { StudioRepository } from "./modules/studio/studio.types";
+import type { OperationalPool } from "./db/operational-repository-support";
+import {
+  createInMemoryStudioMemoryIndex,
+  createStudioMemoryIndexProcessor,
+  STUDIO_MEMORY_DEFAULT_DIMENSIONS,
+  STUDIO_MEMORY_DEFAULT_MODEL,
+  type StudioMemoryIndex
+} from "./modules/studio/studio-memory";
+import { createPostgresStudioMemoryIndex } from "./modules/studio/postgres-studio-memory";
 import { createStudioAssetProcessor } from "./modules/studio/studio-asset-processor";
 import { createStudioAssetCleanupProcessor } from "./modules/studio/studio-asset-cleanup";
 import { createStudioAssetUploadCleanupProcessor } from "./modules/studio/studio-asset-upload-cleanup";
@@ -68,6 +77,10 @@ export type BuildAppOptions = {
   aiRepository?: AiRepository;
   aiProvider?: AiProvider;
   studioRepository?: StudioRepository;
+  studioMemoryIndex?: StudioMemoryIndex;
+  studioMemoryPool?: OperationalPool;
+  studioMemoryModel?: string;
+  studioMemoryDimensions?: number;
   studioLinkResolver?: StudioLinkResolver;
   studioLinkFetcher?: StudioLinkFetcher;
   studioUploadSemaphore?: StudioUploadSemaphore;
@@ -114,17 +127,35 @@ export function buildApp(options: BuildAppOptions = {}) {
   const aiRepository = options.aiRepository ?? createInMemoryAiRepository();
   const aiProvider = options.aiProvider ?? createDefaultAiProvider();
   const studioRepository = options.studioRepository ?? createInMemoryStudioRepository();
+  const aiHarness = createAiHarness({
+    repository: aiRepository,
+    provider: aiProvider,
+    now: options.now ? () => options.now!().getTime() : undefined
+  });
+  const studioMemoryIndex = options.studioMemoryIndex ?? (options.studioMemoryPool
+    ? createPostgresStudioMemoryIndex(options.studioMemoryPool, {
+        embedder: aiHarness,
+        model: options.studioMemoryModel ?? STUDIO_MEMORY_DEFAULT_MODEL,
+        dimensions: options.studioMemoryDimensions ?? STUDIO_MEMORY_DEFAULT_DIMENSIONS,
+        now: options.now ? () => options.now!().toISOString() : undefined
+      })
+    : createInMemoryStudioMemoryIndex({
+        embedder: aiHarness,
+        model: options.studioMemoryModel ?? STUDIO_MEMORY_DEFAULT_MODEL,
+        now: options.now ? () => options.now!().toISOString() : undefined
+      }));
+  const studioMemoryIndexProcessor = createStudioMemoryIndexProcessor({
+    repository: studioRepository,
+    memoryIndex: studioMemoryIndex,
+    now: options.now ? () => options.now!().toISOString() : undefined
+  });
   const studioService = createStudioService(studioRepository, {
     now: options.now ? () => options.now!().toISOString() : undefined
   });
   const studioAssetProcessor = createStudioAssetProcessor({
     repository: studioRepository,
     objectStorage,
-    transcriptionHarness: createAiHarness({
-      repository: aiRepository,
-      provider: aiProvider,
-      now: options.now ? () => options.now!().getTime() : undefined
-    }),
+    transcriptionHarness: aiHarness,
     now: options.now ? () => options.now!().toISOString() : undefined
   });
   const studioAssetCleanupProcessor = createStudioAssetCleanupProcessor({
@@ -317,6 +348,8 @@ export function buildApp(options: BuildAppOptions = {}) {
   return Object.assign(app, {
     studioAssetProcessor,
     studioAssetCleanupProcessor,
-    studioAssetUploadCleanupProcessor
+    studioAssetUploadCleanupProcessor,
+    studioMemoryIndex,
+    studioMemoryIndexProcessor
   });
 }

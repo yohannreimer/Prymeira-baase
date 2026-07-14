@@ -7,6 +7,8 @@ import type {
   StudioAssetUploadIntent,
   StudioDocument,
   StudioDocumentVersion,
+  StudioIndexJob,
+  StudioRelation,
   StudioRepository
 } from "./studio.types";
 import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
@@ -47,6 +49,14 @@ function cloneCleanupJob(job: StudioAssetCleanupJob): StudioAssetCleanupJob {
 
 function cloneUploadIntent(intent: StudioAssetUploadIntent): StudioAssetUploadIntent {
   return structuredClone(intent);
+}
+
+function cloneRelation(relation: StudioRelation): StudioRelation {
+  return structuredClone(relation);
+}
+
+function cloneIndexJob(job: StudioIndexJob): StudioIndexJob {
+  return structuredClone(job);
 }
 
 function normalizeTimestamp(value: unknown) {
@@ -111,6 +121,8 @@ export function createInMemoryStudioRepository(
   const assets: StudioAsset[] = [];
   const assetCleanupJobs: StudioAssetCleanupJob[] = [];
   const assetUploadIntents: StudioAssetUploadIntent[] = [];
+  const relations: StudioRelation[] = [];
+  const indexJobs: StudioIndexJob[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -150,6 +162,21 @@ export function createInMemoryStudioRepository(
       createdAt: timestamp
     };
     versions.push(version);
+    indexJobs.push({
+      workspaceId: version.workspaceId,
+      ownerProfileId: version.ownerProfileId,
+      id: `studio_index_job_${randomUUID()}`,
+      documentId: version.documentId,
+      versionId: version.id,
+      status: "pending",
+      attemptCount: 0,
+      nextAttemptAt: timestamp,
+      lastErrorCode: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
     return cloneVersion(version);
   }
 
@@ -1006,6 +1033,107 @@ export function createInMemoryStudioRepository(
       }
       assetCleanupJobs.splice(jobIndex, 1);
       return true;
+    },
+
+    async createRelation(input) {
+      if (input.createdByProfileId !== input.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
+      if (input.sourceDocumentId === input.targetDocumentId) throw new Error("STUDIO_RELATION_SELF_INVALID");
+      const owns = (id: string) => documents.some((document) =>
+        document.workspaceId === input.workspaceId
+        && document.ownerProfileId === input.ownerProfileId
+        && document.id === id
+      );
+      if (!owns(input.sourceDocumentId) || !owns(input.targetDocumentId)) {
+        throw new Error("STUDIO_RELATION_DOCUMENT_NOT_FOUND");
+      }
+      const existing = relations.find((relation) =>
+        relation.workspaceId === input.workspaceId
+        && relation.ownerProfileId === input.ownerProfileId
+        && relation.sourceDocumentId === input.sourceDocumentId
+        && relation.targetDocumentId === input.targetDocumentId
+        && relation.relationType === input.relationType
+      );
+      if (existing) return cloneRelation(existing);
+      const relation: StudioRelation = {
+        ...structuredClone(input),
+        id: `studio_relation_${randomUUID()}`,
+        createdAt: now()
+      };
+      relations.push(relation);
+      return cloneRelation(relation);
+    },
+
+    async listRelations(scope, documentId) {
+      return relations
+        .filter((relation) => relation.workspaceId === scope.workspaceId)
+        .filter((relation) => relation.ownerProfileId === scope.ownerProfileId)
+        .filter((relation) => !documentId
+          || relation.sourceDocumentId === documentId
+          || relation.targetDocumentId === documentId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+        .map(cloneRelation);
+    },
+
+    async listIndexJobs(scope) {
+      return indexJobs
+        .filter((job) => job.workspaceId === scope.workspaceId && job.ownerProfileId === scope.ownerProfileId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+        .map(cloneIndexJob);
+    },
+
+    async claimNextIndexJob(at, leaseMs = 60_000) {
+      const timestamp = normalizeTimestamp(at);
+      const timestampMs = new Date(timestamp).getTime();
+      const eligible = indexJobs
+        .filter((job) => (job.status === "pending" || job.status === "failed")
+          ? job.nextAttemptAt !== null && new Date(job.nextAttemptAt).getTime() <= timestampMs
+          : job.status === "processing" && job.leaseExpiresAt !== null
+            && new Date(job.leaseExpiresAt).getTime() <= timestampMs)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+      if (!eligible) return null;
+      eligible.status = "processing";
+      eligible.attemptCount += 1;
+      eligible.nextAttemptAt = null;
+      eligible.lastErrorCode = null;
+      eligible.claimToken = `studio_index_claim_${randomUUID()}`;
+      eligible.leaseExpiresAt = new Date(timestampMs + leaseMs).toISOString();
+      eligible.updatedAt = timestamp;
+      return cloneIndexJob(eligible);
+    },
+
+    async completeIndexJob(input) {
+      const job = indexJobs.find((candidate) =>
+        candidate.workspaceId === input.workspaceId
+        && candidate.ownerProfileId === input.ownerProfileId
+        && candidate.id === input.jobId
+        && candidate.status === "processing"
+        && candidate.claimToken === input.claimToken
+      );
+      if (!job) return false;
+      job.status = "completed";
+      job.claimToken = null;
+      job.leaseExpiresAt = null;
+      job.nextAttemptAt = null;
+      job.updatedAt = now();
+      return true;
+    },
+
+    async failIndexJob(input) {
+      const job = indexJobs.find((candidate) =>
+        candidate.workspaceId === input.workspaceId
+        && candidate.ownerProfileId === input.ownerProfileId
+        && candidate.id === input.jobId
+        && candidate.status === "processing"
+        && candidate.claimToken === input.claimToken
+      );
+      if (!job) return null;
+      job.status = "failed";
+      job.claimToken = null;
+      job.leaseExpiresAt = null;
+      job.lastErrorCode = input.lastErrorCode;
+      job.nextAttemptAt = input.nextAttemptAt;
+      job.updatedAt = now();
+      return cloneIndexJob(job);
     }
   };
 }

@@ -231,6 +231,22 @@ export function createStudioService(
       await requireCollection(repository, scope, collectionId);
       await requireDocument(repository, scope, documentId);
       return repository.removeCollectionMembership(scope, collectionId, documentId);
+    },
+
+    async relateDocuments(scope, actorProfileId, sourceDocumentId, targetDocumentId, relationType) {
+      assertActor(scope, actorProfileId);
+      if (sourceDocumentId === targetDocumentId) throw new Error("STUDIO_RELATION_SELF_INVALID");
+      await Promise.all([
+        requireDocument(repository, scope, sourceDocumentId),
+        requireDocument(repository, scope, targetDocumentId)
+      ]);
+      return repository.createRelation({
+        ...scope,
+        sourceDocumentId,
+        targetDocumentId,
+        relationType,
+        createdByProfileId: actorProfileId
+      });
     }
   };
 }

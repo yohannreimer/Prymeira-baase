@@ -268,7 +268,7 @@ type PostgresRepositoryBundle = Required<Pick<
   | "onboardingRepository"
   | "aiRepository"
   | "studioRepository"
->>;
+>> & { studioMemoryPool: OperationalPool };
 
 async function assertJsonbActiveArea(store: JsonbRecordStore, workspaceId: string, areaId: string | null | undefined) {
   if (!areaId) return;
@@ -312,7 +312,8 @@ export function createPostgresRepositoryBundle(
     announcementRepository: createPostgresAnnouncementRepository(store),
     onboardingRepository: createPostgresOnboardingRepository(store),
     aiRepository: createPostgresAiRepository(store),
-    studioRepository: createPostgresStudioRepository(db)
+    studioRepository: createPostgresStudioRepository(db),
+    studioMemoryPool: db
   };
 }
 

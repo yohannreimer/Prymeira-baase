@@ -11,6 +11,8 @@ import {
   type OperationalSchemaPool
 } from "./operational-schema";
 import type { ErrorWithCleanup } from "./migration-cleanup-errors";
+import type { OperationalPool } from "./operational-repository-support";
+import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
 
 let db: Pool;
 
@@ -66,13 +68,13 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
     await ensureOperationalSchema(db);
     const tables = await db.query<{ table_name: string }>(
-      `select table_name from information_schema.tables
+      `select distinct table_name from information_schema.tables
        where table_name in (
          'studio_documents',
          'studio_document_versions',
@@ -207,7 +209,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("reserves the six approved future Studio migrations and applies additive migrations 20 and 21", async () => {
+  it("applies Studio memory migration 14, reserves 15 through 19, and keeps additive migrations 20 and 21", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -230,7 +232,68 @@ describe("operational schema", () => {
     const versions = await db.query<{ version: number }>(
       "select version from baase_schema_migrations where version between 14 and 21 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 20 }, { version: 21 }]);
+    expect(versions.rows).toEqual([{ version: 14 }, { version: 20 }, { version: 21 }]);
+    const studioTables = await db.query<{ table_name: string }>(
+      `select distinct table_name from information_schema.tables
+       where table_name in ('studio_relations','studio_index_jobs') order by table_name`
+    );
+    expect(studioTables.rows.map((row) => row.table_name)).toEqual([
+      "studio_index_jobs", "studio_relations"
+    ]);
+  });
+
+  it("rolls back a saved Studio version when its unique memory job cannot be enqueued", async () => {
+    const statements: string[] = [];
+    const failingPool: OperationalPool = {
+      async query<T>() { return { rows: [] as T[] }; },
+      async connect() {
+        return {
+          query<T>(text: string, params?: unknown[]) {
+            statements.push(text.trim());
+            if (text.includes("SELECT id FROM studio_documents")) {
+              return Promise.resolve({ rows: [{ id: "document_atomic" }] as T[] });
+            }
+            if (text.includes("INSERT INTO studio_document_versions")) {
+              return Promise.resolve({ rows: [{
+                id: "version_atomic",
+                workspace_id: "workspace_a",
+                owner_profile_id: "owner_a",
+                document_id: "document_atomic",
+                version_number: 1,
+                body_json: {},
+                body_text: "não pode ficar sem job",
+                origin: "user",
+                actor_profile_id: "owner_a",
+                ai_run_id: null,
+                created_at: "2026-07-14T12:00:00.000Z"
+              }] as T[] });
+            }
+            if (text.includes("INSERT INTO studio_index_jobs")) {
+              throw new Error("INJECTED_STUDIO_INDEX_JOB_FAILURE");
+            }
+            void params;
+            return Promise.resolve({ rows: [] as T[] });
+          },
+          release() {}
+        };
+      }
+    };
+    const repository = createPostgresStudioRepository(failingPool);
+    await expect(repository.appendVersion({
+      workspaceId: "workspace_a",
+      ownerProfileId: "owner_a",
+      documentId: "document_atomic",
+      bodyJson: {},
+      bodyText: "não pode ficar sem job",
+      origin: "user",
+      actorProfileId: "owner_a",
+      aiRunId: null
+    })).rejects.toThrow("INJECTED_STUDIO_INDEX_JOB_FAILURE");
+    expect(statements[0]).toBe("BEGIN");
+    expect(statements.some((statement) => statement.includes("INSERT INTO studio_document_versions"))).toBe(true);
+    expect(statements.some((statement) => statement.includes("INSERT INTO studio_index_jobs"))).toBe(true);
+    expect(statements.at(-1)).toBe("ROLLBACK");
+    expect(statements).not.toContain("COMMIT");
   });
 
   it("matches Studio library cursor queries to immutable owner-scoped indexes", () => {

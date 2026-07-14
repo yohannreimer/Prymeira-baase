@@ -4,6 +4,20 @@ import { createStudioAssetMaintenanceRunner } from "./studio-asset-maintenance-r
 const idle = { processNext: vi.fn(async () => null) };
 
 describe("Studio asset maintenance runner", () => {
+  it("drains the optional semantic-memory processor with the other Studio maintenance", async () => {
+    const memoryProcessor = { processNext: vi.fn(async () => null) };
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: idle,
+      cleanupProcessor: idle,
+      uploadCleanupProcessor: idle,
+      memoryProcessor,
+      logger: { error: vi.fn() },
+      scavenge: vi.fn(async () => undefined)
+    });
+    await runner.runOnce();
+    expect(memoryProcessor.processNext).toHaveBeenCalledTimes(1);
+  });
+
   it("runs single-flight drains with a bounded item count", async () => {
     let release!: () => void;
     const first = new Promise<void>((resolve) => { release = resolve; });
