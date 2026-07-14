@@ -63,6 +63,71 @@ describe("Studio strategic structures", () => {
     }
   });
 
+  it("accepts the minimal measurable goal and its optional strategic state", async () => {
+    const { app, document } = await setup();
+    const response = await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/structures`, headers: owner,
+      payload: {
+        kind: "goal",
+        metric_json: { label: "Receita", target: 100 },
+        properties_json: { desired_outcome: "Crescer", state: "in_focus" }
+      }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().structure).toMatchObject({
+      lifecycleStatus: "active",
+      metricJson: { label: "Receita", target: 100 },
+      propertiesJson: { state: "in_focus" }
+    });
+  });
+
+  it("allows an unscheduled ritual and removing a configured cadence optimistically", async () => {
+    const { app, document } = await setup();
+    const created = await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/structures`, headers: owner,
+      payload: { kind: "ritual", properties_json: { intention: "Quando eu quiser" } }
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().structure).toMatchObject({ cadenceJson: null, nextRunAt: null });
+    const archived = await app.inject({ method: "DELETE", url: `/studio/structures/${created.json().structure.id}`, headers: owner });
+    expect(archived.statusCode).toBe(200);
+    const scheduled = await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/structures`, headers: owner,
+      payload: {
+        kind: "ritual",
+        cadence_json: { frequency: "daily", local_time: "09:00", timezone: "America/Sao_Paulo" },
+        properties_json: { intention: "Diário" }
+      }
+    });
+    expect(scheduled.json().structure.nextRunAt).toBeTruthy();
+    const removed = await app.inject({
+      method: "PATCH", url: `/studio/structures/${scheduled.json().structure.id}`, headers: owner,
+      payload: { expected_revision: 1, cadence_json: null }
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().structure).toMatchObject({ revision: 2, cadenceJson: null, nextRunAt: null });
+  });
+
+  it("stores an optional decision date separately from its review date", async () => {
+    const { app, document } = await setup();
+    const response = await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/structures`, headers: owner,
+      payload: {
+        kind: "decision",
+        properties_json: { decision: "Contratar", decision_date: "2026-07-01", review_date: "2026-08-01" }
+      }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().structure.propertiesJson).toMatchObject({
+      decision_date: "2026-07-01", review_date: "2026-08-01"
+    });
+    const invalid = await app.inject({
+      method: "PATCH", url: `/studio/structures/${response.json().structure.id}`, headers: owner,
+      payload: { expected_revision: 1, properties_json: { decision: "Contratar", decision_date: "01/07/2026" } }
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it("prevents duplicate active structures, updates optimistically, archives idempotently, filters and isolates", async () => {
     const { app, document } = await setup();
     const request = {

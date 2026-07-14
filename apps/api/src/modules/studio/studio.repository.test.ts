@@ -1116,6 +1116,22 @@ function repositoryContract(
         expect((await repository.listStructures(scope, { kind: "goal", lifecycleStatus: "active", limit: 1 })).items)
           .toEqual([recreated]);
 
+        const ritual = await repository.createStructure({
+          ...scope, documentId: document.id, kind: "ritual", lifecycleStatus: "active",
+          horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
+          propertiesJson: { intention: "Sob demanda" }
+        });
+        expect(ritual).toMatchObject({ cadenceJson: null, nextRunAt: null });
+        const scheduledRitual = await repository.updateStructure({
+          ...ritual,
+          cadenceJson: { frequency: "daily", local_time: "09:00", timezone: "America/Sao_Paulo" },
+          nextRunAt: "2026-07-15T12:00:00.000Z"
+        }, ritual.revision);
+        const unscheduledAgain = await repository.updateStructure({
+          ...scheduledRitual, cadenceJson: null, nextRunAt: null
+        }, scheduledRitual.revision);
+        expect(unscheduledAgain).toMatchObject({ revision: 3, cadenceJson: null, nextRunAt: null });
+
         for (let index = 0; index < 2; index += 1) {
           const another = await repository.createDocument(documentInput({ bodyText: `Goal ${index}` }));
           await repository.createStructure({ ...input, documentId: another.id });

@@ -58,9 +58,13 @@ function assertStructure(structure: StudioStructure): StudioStructure {
       if (structure.metricJson !== null) studioGoalMetricSchema.parse(structure.metricJson);
       if (structure.cadenceJson !== null || structure.nextRunAt !== null) throw new Error();
     } else if (structure.kind === "ritual") {
-      if (structure.metricJson !== null || structure.cadenceJson === null) throw new Error();
-      studioRitualCadenceSchema.parse(structure.cadenceJson);
-      if (structure.nextRunAt === null) throw new Error();
+      if (structure.metricJson !== null) throw new Error();
+      if (structure.cadenceJson === null) {
+        if (structure.nextRunAt !== null) throw new Error();
+      } else {
+        studioRitualCadenceSchema.parse(structure.cadenceJson);
+        if (structure.nextRunAt === null) throw new Error();
+      }
     } else if (structure.metricJson !== null || structure.cadenceJson !== null || structure.nextRunAt !== null) {
       throw new Error();
     }
@@ -117,13 +121,12 @@ function nextRitualRun(cadence: StudioRitualCadence, afterIso: string) {
 function normalizeStructureInput(kind: StudioStructure["kind"], input: CreateStudioStructure) {
   if (kind !== "goal" && input.metric_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
   if (kind !== "ritual" && input.cadence_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
-  if (kind === "ritual" && input.cadence_json == null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
   const propertiesJson = studioStructurePropertiesSchema(kind).parse(input.properties_json) as Record<string, unknown>;
   const metricJson = kind === "goal" && input.metric_json != null
     ? studioGoalMetricSchema.parse(input.metric_json)
     : null;
   const cadenceJson = kind === "ritual"
-    ? studioRitualCadenceSchema.parse(input.cadence_json)
+    ? (input.cadence_json == null ? null : studioRitualCadenceSchema.parse(input.cadence_json))
     : null;
   if (kind === "decision" && input.horizon_at && typeof propertiesJson.review_date === "string"
     && input.horizon_at.slice(0, 10) !== propertiesJson.review_date) {
@@ -373,7 +376,9 @@ export function createStudioService(
           ? (input.metric_json === undefined ? current.metricJson : input.metric_json === null ? null : studioGoalMetricSchema.parse(input.metric_json))
           : null;
         const cadenceJson = current.kind === "ritual"
-          ? (input.cadence_json === undefined ? current.cadenceJson : studioRitualCadenceSchema.parse(input.cadence_json))
+          ? (input.cadence_json === undefined
+            ? current.cadenceJson
+            : input.cadence_json === null ? null : studioRitualCadenceSchema.parse(input.cadence_json))
           : null;
         const horizonAt = input.horizon_at === undefined ? current.horizonAt : input.horizon_at;
         if (current.kind === "decision" && horizonAt && typeof propertiesJson.review_date === "string"

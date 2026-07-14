@@ -151,6 +151,8 @@ describe("operational schema", () => {
     expect(sql).toContain("create unique index studio_structures_active_kind_uidx");
     expect(sql).toContain("create index studio_structures_owner_cursor_idx");
     expect(sql).toContain("create index studio_structures_owner_kind_cursor_idx");
+    expect(sql).toContain("on studio_structures (workspace_id,owner_profile_id,kind,created_at desc,id desc)");
+    expect(sql).toContain("create index studio_structures_owner_kind_lifecycle_cursor_idx");
     expect(sql).toContain("create index studio_structures_owner_lifecycle_cursor_idx");
     expect(sql).toContain("create index studio_structures_next_run_idx");
   });

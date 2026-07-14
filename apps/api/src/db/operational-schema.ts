@@ -1104,7 +1104,8 @@ const migrations: Migration[] = [{
       cadence_json JSONB,
       next_run_at TIMESTAMPTZ,
       properties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT
+        date_bin('1 millisecond'::interval,NOW(),'2000-01-01 00:00:00+00'::timestamptz),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       archived_at TIMESTAMPTZ,
       PRIMARY KEY (workspace_id,owner_profile_id,id),
@@ -1116,7 +1117,10 @@ const migrations: Migration[] = [{
       ),
       CHECK (
         (kind='goal' AND cadence_json IS NULL AND next_run_at IS NULL)
-        OR (kind='ritual' AND metric_json IS NULL AND cadence_json IS NOT NULL AND next_run_at IS NOT NULL)
+        OR (kind='ritual' AND metric_json IS NULL AND (
+          (cadence_json IS NULL AND next_run_at IS NULL)
+          OR (cadence_json IS NOT NULL AND next_run_at IS NOT NULL)
+        ))
         OR (kind IN ('decision','plan') AND metric_json IS NULL AND cadence_json IS NULL AND next_run_at IS NULL)
       )
     );
@@ -1127,6 +1131,8 @@ const migrations: Migration[] = [{
     CREATE INDEX studio_structures_owner_cursor_idx
       ON studio_structures (workspace_id,owner_profile_id,created_at DESC,id DESC);
     CREATE INDEX studio_structures_owner_kind_cursor_idx
+      ON studio_structures (workspace_id,owner_profile_id,kind,created_at DESC,id DESC);
+    CREATE INDEX studio_structures_owner_kind_lifecycle_cursor_idx
       ON studio_structures (workspace_id,owner_profile_id,kind,lifecycle_status,created_at DESC,id DESC);
     CREATE INDEX studio_structures_owner_lifecycle_cursor_idx
       ON studio_structures (workspace_id,owner_profile_id,lifecycle_status,created_at DESC,id DESC);

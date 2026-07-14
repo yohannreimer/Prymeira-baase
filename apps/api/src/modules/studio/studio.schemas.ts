@@ -99,19 +99,12 @@ export const studioLinkCaptureSchema = z.object({
 
 export const studioGoalMetricSchema = z.object({
   label: z.string().trim().min(1).max(120),
-  unit: z.string().trim().min(1).max(40),
-  baseline: z.number().finite(),
-  current: z.number().finite(),
   target: z.number().finite(),
-  direction: z.enum(["increase", "decrease"])
-}).strict().superRefine((metric, context) => {
-  if (metric.direction === "increase" && metric.target <= metric.baseline) {
-    context.addIssue({ code: "custom", message: "An increasing goal target must exceed its baseline.", path: ["target"] });
-  }
-  if (metric.direction === "decrease" && metric.target >= metric.baseline) {
-    context.addIssue({ code: "custom", message: "A decreasing goal target must be below its baseline.", path: ["target"] });
-  }
-});
+  unit: z.string().trim().min(1).max(40).optional(),
+  baseline: z.number().finite().optional(),
+  current: z.number().finite().optional(),
+  direction: z.enum(["increase", "decrease"]).optional()
+}).strict();
 
 const isoTimestampSchema = z.string().datetime({ offset: true }).transform((value) => new Date(value).toISOString());
 const dateOnlySchema = z.string().date();
@@ -149,6 +142,7 @@ export const studioRitualCadenceSchema = z.object({
 const goalPropertiesSchema = z.object({
   desired_outcome: structureTextSchema.optional(),
   reason: structureTextSchema.optional(),
+  state: z.enum(["in_focus", "waiting", "achieved"]).optional(),
   progress_evidence: structureTextListSchema.optional()
 }).strict();
 
@@ -159,6 +153,7 @@ const decisionPropertiesSchema = z.object({
   reason: structureTextSchema.optional(),
   hypothesis_or_risk: structureTextSchema.optional(),
   learnings: structureTextSchema.optional(),
+  decision_date: dateOnlySchema.optional(),
   review_date: dateOnlySchema.optional()
 }).strict();
 
@@ -199,7 +194,7 @@ export const createStudioStructureSchema = z.discriminatedUnion("kind", [
   z.object({ ...structureBase, kind: z.literal("goal"), metric_json: studioGoalMetricSchema.nullable().optional(), cadence_json: z.null().optional() }).strict(),
   z.object({ ...structureBase, kind: z.literal("decision"), metric_json: z.null().optional(), cadence_json: z.null().optional() }).strict(),
   z.object({ ...structureBase, kind: z.literal("plan"), metric_json: z.null().optional(), cadence_json: z.null().optional() }).strict(),
-  z.object({ ...structureBase, kind: z.literal("ritual"), metric_json: z.null().optional(), cadence_json: studioRitualCadenceSchema }).strict()
+  z.object({ ...structureBase, kind: z.literal("ritual"), metric_json: z.null().optional(), cadence_json: studioRitualCadenceSchema.nullable().optional() }).strict()
 ]).superRefine((input, context) => {
   const result = studioStructurePropertiesSchema(input.kind).safeParse(input.properties_json);
   if (!result.success) result.error.issues.forEach((issue) => context.addIssue({ ...issue, path: ["properties_json", ...issue.path] }));

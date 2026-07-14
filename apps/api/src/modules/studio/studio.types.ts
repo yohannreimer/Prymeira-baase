@@ -5,11 +5,11 @@ export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioStructureLifecycleStatus = "active" | "archived";
 export type StudioGoalMetric = {
   label: string;
-  unit: string;
-  baseline: number;
-  current: number;
   target: number;
-  direction: "increase" | "decrease";
+  unit?: string;
+  baseline?: number;
+  current?: number;
+  direction?: "increase" | "decrease";
 };
 export type StudioRitualCadence = {
   frequency: "daily" | "weekly" | "monthly";

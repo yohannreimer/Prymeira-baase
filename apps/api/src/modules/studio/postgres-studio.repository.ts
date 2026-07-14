@@ -855,13 +855,12 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       if (input.cursor) {
         const cursor = decodeStructureCursor(input.cursor);
         params.push(cursor.createdAt, cursor.id);
-        conditions.push(`(date_bin('1 millisecond'::interval,created_at,'2000-01-01 00:00:00+00'::timestamptz),id)
-          < (date_bin('1 millisecond'::interval,$${params.length - 1}::timestamptz,'2000-01-01 00:00:00+00'::timestamptz),$${params.length}::text)`);
+        conditions.push(`(created_at,id) < ($${params.length - 1}::timestamptz,$${params.length}::text)`);
       }
       params.push(input.limit + 1);
       const result = await db.query<StudioStructureRow>(
         `SELECT * FROM studio_structures WHERE ${conditions.join(" AND ")}
-         ORDER BY date_bin('1 millisecond'::interval,created_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC
+         ORDER BY created_at DESC,id DESC
          LIMIT $${params.length}`,
         params
       );
