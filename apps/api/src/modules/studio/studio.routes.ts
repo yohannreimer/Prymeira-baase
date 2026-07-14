@@ -17,10 +17,16 @@ import {
   createStudioStructureSchema,
   patchStudioStructureSchema,
   studioStructureParamsSchema,
-  studioStructureListQuerySchema
+  studioStructureListQuerySchema,
+  studioRitualParamsSchema,
+  studioRitualSessionParamsSchema,
+  studioRitualSessionListQuerySchema,
+  patchStudioRitualSessionSchema,
+  finishStudioRitualSessionSchema
 } from "./studio.schemas";
 import type { StudioOwnerScope, StudioService } from "./studio.types";
 import type { StudioMemoryIndex } from "./studio-memory";
+import type { StudioRitualService } from "./studio-ritual.service";
 
 const studioRelatedQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(12).default(6) }).strict();
 const studioRelationBodySchema = z.object({
@@ -69,6 +75,18 @@ function studioRouteError(error: unknown) {
   if (error.message === "STUDIO_STRUCTURE_ACTIVE_DUPLICATE") {
     return new ApiError(409, "STUDIO_STRUCTURE_ACTIVE_DUPLICATE", "Já existe uma estrutura ativa deste tipo para o documento.");
   }
+  if (error.message === "STUDIO_RITUAL_NOT_FOUND") {
+    return new ApiError(404, "STUDIO_RITUAL_NOT_FOUND", "Ritual do Studio não encontrado.");
+  }
+  if (error.message === "STUDIO_RITUAL_SESSION_NOT_FOUND") {
+    return new ApiError(404, "STUDIO_RITUAL_SESSION_NOT_FOUND", "Sessão de ritual não encontrada.");
+  }
+  if (error.message === "STUDIO_RITUAL_SESSION_STALE") {
+    return new ApiError(409, "STUDIO_RITUAL_SESSION_CHANGED", "A sessão mudou. Atualize e tente novamente.");
+  }
+  if (error.message === "STUDIO_RITUAL_SESSION_COMPLETED") {
+    return new ApiError(409, "STUDIO_RITUAL_SESSION_COMPLETED", "Esta sessão já foi concluída.");
+  }
   if (["STUDIO_COLLECTION_NOT_FOUND", "STUDIO_COLLECTION_MEMBERSHIP_NOT_FOUND"].includes(error.message)) {
     return new ApiError(404, "STUDIO_COLLECTION_NOT_FOUND", "Coleção do Studio não encontrada.");
   }
@@ -79,7 +97,10 @@ function studioRouteError(error: unknown) {
     "STUDIO_DOCUMENT_CURSOR_INVALID",
     "STUDIO_STRUCTURE_CURSOR_INVALID",
     "STUDIO_STRUCTURE_DATA_INVALID",
-    "STUDIO_RITUAL_NEXT_RUN_UNAVAILABLE"
+    "STUDIO_RITUAL_NEXT_RUN_UNAVAILABLE",
+    "STUDIO_RITUAL_SESSION_CURSOR_INVALID",
+    "STUDIO_RITUAL_SESSION_DATA_INVALID",
+    "STUDIO_RITUAL_ANSWERS_INVALID"
   ].includes(error.message)) {
     return new ApiError(400, error.message, "Dados inválidos para esta operação do Studio.");
   }
@@ -112,7 +133,12 @@ function readDocumentCaptureKey(request: FastifyRequest): string | null {
   return studioAssetIdempotencyKeySchema.parse(raw);
 }
 
-export async function registerStudioRoutes(app: FastifyInstance, service: StudioService, memoryIndex?: StudioMemoryIndex) {
+export async function registerStudioRoutes(
+  app: FastifyInstance,
+  service: StudioService,
+  memoryIndex?: StudioMemoryIndex,
+  ritualService?: StudioRitualService
+) {
   app.get("/studio/home", async (request) => {
     const scope = requireStudioScope(request);
     readNoRouteParams(request);
@@ -215,6 +241,49 @@ export async function registerStudioRoutes(app: FastifyInstance, service: Studio
       scope, scope.ownerProfileId, params.structureId
     )) };
   });
+
+  if (ritualService) {
+    app.get("/studio/rituals/:ritualId/sessions", async (request) => {
+      const scope = requireStudioScope(request);
+      const params = studioRitualParamsSchema.parse(request.params);
+      const query = studioRitualSessionListQuerySchema.parse(request.query);
+      readNoBody(request);
+      const page = await runStudioOperation(() => ritualService.listSessions(scope, params.ritualId, query));
+      return { sessions: page.items, nextCursor: page.nextCursor };
+    });
+
+    app.post("/studio/rituals/:ritualId/sessions", async (request, reply) => {
+      const scope = requireStudioScope(request);
+      const params = studioRitualParamsSchema.parse(request.params);
+      readNoQuery(request);
+      readNoBody(request);
+      const session = await runStudioOperation(() => ritualService.startSession(scope, params.ritualId));
+      return reply.status(201).send({ session });
+    });
+
+    app.patch("/studio/ritual-sessions/:sessionId", async (request) => {
+      const scope = requireStudioScope(request);
+      const params = studioRitualSessionParamsSchema.parse(request.params);
+      readNoQuery(request);
+      const body = patchStudioRitualSessionSchema.parse(request.body);
+      return { session: await runStudioOperation(() => ritualService.updateSession(scope, params.sessionId, {
+        expectedRevision: body.expected_revision,
+        answers: body.answers
+      })) };
+    });
+
+    app.post("/studio/ritual-sessions/:sessionId/finish", async (request) => {
+      const scope = requireStudioScope(request);
+      const params = studioRitualSessionParamsSchema.parse(request.params);
+      readNoQuery(request);
+      const body = finishStudioRitualSessionSchema.parse(request.body);
+      return { session: await runStudioOperation(() => ritualService.finishSession(scope, params.sessionId, {
+        expectedRevision: body.expected_revision,
+        answers: body.answers,
+        requestSynthesis: body.request_synthesis
+      })) };
+    });
+  }
 
   app.post("/studio/documents", async (request, reply) => {
     const scope = requireStudioScope(request);

@@ -44,6 +44,12 @@ beforeEach(() => {
     returns: DataType.timestamptz,
     implementation: (_interval: unknown, value: Date) => value
   });
+  memoryDb.public.registerFunction({
+    name: "jsonb_typeof",
+    args: [DataType.jsonb],
+    returns: DataType.text,
+    implementation: (value: unknown) => Array.isArray(value) ? "array" : value === null ? "null" : typeof value
+  });
   memoryDb.public.registerOperator({
     operator: "~",
     left: DataType.text,
@@ -68,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -157,6 +163,29 @@ describe("operational schema", () => {
     expect(sql).toContain("create index studio_structures_next_run_idx");
   });
 
+  it("adds owner-scoped ritual sessions and fences one open session in migration 17", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() { client.release(); }
+        };
+      }
+    };
+    await ensureOperationalSchema(observedPool);
+    const sql = statements.join("\n").toLowerCase();
+    expect(sql).toContain("create table studio_ritual_sessions");
+    expect(sql).toContain("foreign key (workspace_id,owner_profile_id,ritual_id)");
+    expect(sql).toContain("create unique index studio_ritual_sessions_open_uidx");
+    expect(sql).toContain("where status in ('preparing','ready','in_progress','failed')");
+    expect(sql).toContain("create index studio_ritual_sessions_ritual_cursor_idx");
+  });
+
   it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {
     await ensureOperationalSchema(db);
     const columns = await db.query<{ column_name: string }>(
@@ -234,7 +263,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio migrations 14 through 16, reserves 17 through 19, and keeps additive migrations 20 and 21", async () => {
+  it("applies Studio migrations 14 through 17, reserves 18 through 19, and keeps additive migrations 20 and 21", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -257,7 +286,7 @@ describe("operational schema", () => {
     const versions = await db.query<{ version: number }>(
       "select version from baase_schema_migrations where version between 14 and 21 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 16 }, { version: 20 }, { version: 21 }]);
+    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 20 }, { version: 21 }]);
     const structureColumns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns where table_name='studio_structures'
        and column_name in ('revision','horizon_at','metric_json','cadence_json','next_run_at','properties_json')`

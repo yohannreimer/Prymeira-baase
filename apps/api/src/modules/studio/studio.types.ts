@@ -263,6 +263,30 @@ export type StudioStructureQuery = {
 
 export type StudioStructurePage = { items: StudioStructure[]; nextCursor: string | null };
 
+export type StudioRitualSessionStatus = "preparing" | "ready" | "in_progress" | "completed" | "failed";
+
+export type StudioRitualSession = StudioOwnerScope & {
+  id: string;
+  ritualId: string;
+  status: StudioRitualSessionStatus;
+  revision: number;
+  contextJson: Record<string, unknown> | null;
+  preparationJson: Record<string, unknown> | null;
+  answersJson: Record<string, string>;
+  synthesisJson: Record<string, unknown> | null;
+  prepareAiRunId: string | null;
+  synthesisAiRunId: string | null;
+  preparationToken: string | null;
+  preparationLeaseExpiresAt: string | null;
+  failureCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type StudioRitualSessionQuery = { cursor?: string; limit: number };
+export type StudioRitualSessionPage = { items: StudioRitualSession[]; nextCursor: string | null };
+
 export type StudioRelation = StudioOwnerScope & {
   id: string;
   sourceDocumentId: string;
@@ -474,6 +498,14 @@ export type StudioRepository = {
   createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;
   updateStructure(input: StudioStructure, expectedRevision: number): Promise<StudioStructure>;
   listStructures(scope: StudioOwnerScope, query: StudioStructureQuery): Promise<StudioStructurePage>;
+  findRitualSession(scope: StudioOwnerScope, sessionId: string): Promise<StudioRitualSession | null>;
+  createRitualSession(input: StudioOwnerScope & {
+    ritualId: string;
+    preparationToken: string;
+    preparationLeaseExpiresAt: string;
+  }): Promise<StudioRitualSession>;
+  updateRitualSession(input: StudioRitualSession, expectedRevision: number): Promise<StudioRitualSession>;
+  listRitualSessions(scope: StudioOwnerScope, ritualId: string, query: StudioRitualSessionQuery): Promise<StudioRitualSessionPage>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;
   searchDocuments(scope: StudioOwnerScope, input: StudioLexicalSearchQuery): Promise<StudioSearchDocument[]>;
   listRecentDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;

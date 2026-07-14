@@ -46,6 +46,7 @@ import {
 import { createStudioService } from "./modules/studio/studio.service";
 import { createStudioContextBuilder } from "./modules/studio/studio-context-builder";
 import { createStudioAssistantService } from "./modules/studio/studio-assistant.service";
+import { createStudioRitualService } from "./modules/studio/studio-ritual.service";
 import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import type { OperationalPool } from "./db/operational-repository-support";
@@ -166,6 +167,13 @@ export function buildApp(options: BuildAppOptions = {}) {
     repository: studioRepository,
     harness: aiHarness,
     contextBuilder: studioContextBuilder,
+    now: options.now
+  });
+  const studioRitualService = createStudioRitualService({
+    repository: studioRepository,
+    harness: aiHarness,
+    contextBuilder: studioContextBuilder,
+    memoryIndex: studioMemoryIndex,
     now: options.now
   });
   const studioAssetProcessor = createStudioAssetProcessor({
@@ -346,7 +354,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     routineRepository,
     trainingRepository
   }));
-  app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex));
+  app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex, studioRitualService));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,

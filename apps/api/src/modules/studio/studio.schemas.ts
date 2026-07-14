@@ -223,3 +223,24 @@ export const studioStructureListQuerySchema = z.object({
   cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
   limit: routeLimitSchema.default(50)
 }).strict();
+
+const studioRitualAnswersSchema = z.record(
+  z.string().trim().min(1).max(240),
+  z.string().trim().max(20_000)
+).refine((answers) => Object.keys(answers).length <= 100, "Ritual answers are limited to 100 entries.");
+
+export const studioRitualParamsSchema = z.object({ ritualId: routeIdSchema }).strict();
+export const studioRitualSessionParamsSchema = z.object({ sessionId: routeIdSchema }).strict();
+export const studioRitualSessionListQuerySchema = z.object({
+  cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  limit: routeLimitSchema.default(50)
+}).strict();
+export const patchStudioRitualSessionSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  answers: studioRitualAnswersSchema
+}).strict();
+export const finishStudioRitualSessionSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  answers: studioRitualAnswersSchema.default({}),
+  request_synthesis: z.boolean().default(false)
+}).strict();

@@ -14,6 +14,7 @@ import type {
   StudioSuggestion,
   StudioCitation,
   StudioStructure,
+  StudioRitualSession,
   CreateStudioCitation,
   StudioRepository
 } from "./studio.types";
@@ -70,6 +71,7 @@ function cloneMessage(value: StudioMessage) { return structuredClone(value); }
 function cloneSuggestion(value: StudioSuggestion) { return structuredClone(value); }
 function cloneCitation(value: StudioCitation) { return structuredClone(value); }
 function cloneStructure(value: StudioStructure) { return structuredClone(value); }
+function cloneRitualSession(value: StudioRitualSession) { return structuredClone(value); }
 
 function normalizeTimestamp(value: unknown) {
   if (typeof value !== "string") throw new Error("STUDIO_CLOCK_INVALID");
@@ -140,6 +142,7 @@ export function createInMemoryStudioRepository(
   const suggestions: StudioSuggestion[] = [];
   const citations: StudioCitation[] = [];
   const structures: StudioStructure[] = [];
+  const ritualSessions: StudioRitualSession[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -430,6 +433,91 @@ export function createInMemoryStudioRepository(
       const last = page[page.length - 1];
       return {
         items: page.map(cloneStructure),
+        nextCursor: matches.length > page.length && last
+          ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString("base64url")
+          : null
+      };
+    },
+
+    async findRitualSession(scope, sessionId) {
+      const session = ritualSessions.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === sessionId);
+      return session ? cloneRitualSession(session) : null;
+    },
+
+    async createRitualSession(input) {
+      const ritualExists = structures.some((structure) => structure.workspaceId === input.workspaceId
+        && structure.ownerProfileId === input.ownerProfileId && structure.id === input.ritualId
+        && structure.kind === "ritual" && structure.lifecycleStatus === "active");
+      if (!ritualExists) throw new Error("STUDIO_RITUAL_NOT_FOUND");
+      const open = ritualSessions.find((session) => session.workspaceId === input.workspaceId
+        && session.ownerProfileId === input.ownerProfileId && session.ritualId === input.ritualId
+        && session.status !== "completed");
+      if (open) return cloneRitualSession(open);
+      const timestamp = now();
+      const session: StudioRitualSession = {
+        ...input,
+        id: `studio_ritual_session_${randomUUID()}`,
+        status: "preparing",
+        revision: 1,
+        contextJson: null,
+        preparationJson: null,
+        answersJson: {},
+        synthesisJson: null,
+        prepareAiRunId: null,
+        synthesisAiRunId: null,
+        preparationToken: input.preparationToken,
+        preparationLeaseExpiresAt: input.preparationLeaseExpiresAt,
+        failureCode: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null
+      };
+      ritualSessions.push(session);
+      return cloneRitualSession(session);
+    },
+
+    async updateRitualSession(input, expectedRevision) {
+      const index = ritualSessions.findIndex((session) => session.workspaceId === input.workspaceId
+        && session.ownerProfileId === input.ownerProfileId && session.id === input.id);
+      if (index < 0) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+      const persisted = ritualSessions[index]!;
+      if (persisted.revision !== expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+      if (persisted.status === "completed" && input.status !== "completed") {
+        throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
+      }
+      const updated: StudioRitualSession = {
+        ...structuredClone(input),
+        revision: persisted.revision + 1,
+        createdAt: persisted.createdAt,
+        updatedAt: nextTimestamp(now, persisted.updatedAt)
+      };
+      ritualSessions[index] = updated;
+      return cloneRitualSession(updated);
+    },
+
+    async listRitualSessions(scope, ritualId, input) {
+      let cursor: { createdAt: string; id: string } | null = null;
+      if (input.cursor) {
+        try {
+          const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length !== 2
+            || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string" || !parsed.id
+            || new Date(parsed.createdAt).toISOString() !== parsed.createdAt
+            || Buffer.from(JSON.stringify(parsed)).toString("base64url") !== input.cursor) throw new Error();
+          cursor = { createdAt: parsed.createdAt, id: parsed.id };
+        } catch { throw new Error("STUDIO_RITUAL_SESSION_CURSOR_INVALID"); }
+      }
+      const appliedCursor = cursor;
+      const matches = ritualSessions.filter((session) => session.workspaceId === scope.workspaceId
+        && session.ownerProfileId === scope.ownerProfileId && session.ritualId === ritualId)
+        .filter((session) => !appliedCursor || session.createdAt < appliedCursor.createdAt
+          || (session.createdAt === appliedCursor.createdAt && session.id < appliedCursor.id))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+      const page = matches.slice(0, input.limit);
+      const last = page[page.length - 1];
+      return {
+        items: page.map(cloneRitualSession),
         nextCursor: matches.length > page.length && last
           ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString("base64url")
           : null

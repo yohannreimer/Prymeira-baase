@@ -43,6 +43,12 @@ beforeEach(async () => {
     returns: DataType.timestamptz,
     implementation: (_interval: unknown, value: Date) => value
   });
+  memoryDb.public.registerFunction({
+    name: "jsonb_typeof",
+    args: [DataType.jsonb],
+    returns: DataType.text,
+    implementation: (value: unknown) => Array.isArray(value) ? "array" : value === null ? "null" : typeof value
+  });
   memoryDb.public.registerOperator({
     operator: "~",
     left: DataType.text,

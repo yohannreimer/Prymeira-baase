@@ -1141,6 +1141,51 @@ const migrations: Migration[] = [{
       WHERE kind='ritual' AND lifecycle_status='active' AND next_run_at IS NOT NULL;
   `
 }, {
+  version: 17,
+  name: "studio_ritual_sessions",
+  sql: `
+    CREATE TABLE studio_ritual_sessions (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      ritual_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'preparing'
+        CHECK (status IN ('preparing','ready','in_progress','completed','failed')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+      context_json JSONB,
+      preparation_json JSONB,
+      answers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      synthesis_json JSONB,
+      prepare_ai_run_id TEXT,
+      synthesis_ai_run_id TEXT,
+      preparation_token TEXT,
+      preparation_lease_expires_at TIMESTAMPTZ,
+      failure_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT
+        date_bin('1 millisecond'::interval,NOW(),'2000-01-01 00:00:00+00'::timestamptz),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,ritual_id)
+        REFERENCES studio_structures(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      CHECK (jsonb_typeof(answers_json)='object'),
+      CHECK (context_json IS NULL OR jsonb_typeof(context_json)='object'),
+      CHECK (preparation_json IS NULL OR jsonb_typeof(preparation_json)='object'),
+      CHECK (synthesis_json IS NULL OR jsonb_typeof(synthesis_json)='object'),
+      CHECK ((preparation_token IS NULL)=(preparation_lease_expires_at IS NULL)),
+      CHECK ((status='completed' AND completed_at IS NOT NULL) OR (status<>'completed' AND completed_at IS NULL)),
+      CHECK ((status='failed' AND failure_code IS NOT NULL) OR (status<>'failed' AND failure_code IS NULL))
+    );
+
+    CREATE UNIQUE INDEX studio_ritual_sessions_open_uidx
+      ON studio_ritual_sessions (workspace_id,owner_profile_id,ritual_id)
+      WHERE status IN ('preparing','ready','in_progress','failed');
+    CREATE INDEX studio_ritual_sessions_ritual_cursor_idx
+      ON studio_ritual_sessions (workspace_id,owner_profile_id,ritual_id,created_at DESC,id DESC);
+    CREATE INDEX studio_ritual_sessions_owner_status_idx
+      ON studio_ritual_sessions (workspace_id,owner_profile_id,status,updated_at DESC,id DESC);
+  `
+}, {
   version: 20,
   name: "studio_asset_capture_idempotency",
   sql: `

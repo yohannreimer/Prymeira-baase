@@ -19,6 +19,7 @@ import type {
   StudioSuggestion,
   StudioCitation,
   StudioStructure,
+  StudioRitualSession,
   CreateStudioCitation,
   StudioRepository,
   StudioOwnerScope,
@@ -147,6 +148,16 @@ type StudioStructureRow = {
   metric_json: StudioStructure["metricJson"]; cadence_json: StudioStructure["cadenceJson"];
   next_run_at: string | Date | null; properties_json: Record<string, unknown>;
   created_at: string | Date; updated_at: string | Date; archived_at: string | Date | null;
+};
+
+type StudioRitualSessionRow = {
+  id: string; workspace_id: string; owner_profile_id: string; ritual_id: string;
+  status: StudioRitualSession["status"]; revision: number;
+  context_json: Record<string, unknown> | null; preparation_json: Record<string, unknown> | null;
+  answers_json: Record<string, string>; synthesis_json: Record<string, unknown> | null;
+  prepare_ai_run_id: string | null; synthesis_ai_run_id: string | null; failure_code: string | null;
+  preparation_token: string | null; preparation_lease_expires_at: string | Date | null;
+  created_at: string | Date; updated_at: string | Date; completed_at: string | Date | null;
 };
 
 type StudioAssetRow = {
@@ -357,6 +368,22 @@ function structureFromRow(row: StudioStructureRow): StudioStructure {
   };
 }
 
+function ritualSessionFromRow(row: StudioRitualSessionRow): StudioRitualSession {
+  return {
+    id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    ritualId: row.ritual_id, status: row.status, revision: row.revision,
+    contextJson: row.context_json === null ? null : structuredClone(row.context_json),
+    preparationJson: row.preparation_json === null ? null : structuredClone(row.preparation_json),
+    answersJson: structuredClone(row.answers_json),
+    synthesisJson: row.synthesis_json === null ? null : structuredClone(row.synthesis_json),
+    prepareAiRunId: row.prepare_ai_run_id, synthesisAiRunId: row.synthesis_ai_run_id,
+    preparationToken: row.preparation_token,
+    preparationLeaseExpiresAt: row.preparation_lease_expires_at === null ? null : iso(row.preparation_lease_expires_at),
+    failureCode: row.failure_code, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),
+    completedAt: row.completed_at === null ? null : iso(row.completed_at)
+  };
+}
+
 function encodeStructureCursor(structure: StudioStructure) {
   return Buffer.from(JSON.stringify({ createdAt: structure.createdAt, id: structure.id })).toString("base64url");
 }
@@ -372,6 +399,21 @@ function decodeStructureCursor(cursor: string) {
     if (timestamp.toISOString() !== value.createdAt || !value.id) throw new Error();
     return { createdAt: value.createdAt, id: value.id };
   } catch { throw new Error("STUDIO_STRUCTURE_CURSOR_INVALID"); }
+}
+
+function encodeRitualSessionCursor(session: StudioRitualSession) {
+  return Buffer.from(JSON.stringify({ createdAt: session.createdAt, id: session.id })).toString("base64url");
+}
+
+function decodeRitualSessionCursor(cursor: string) {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length !== 2
+      || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string" || !parsed.id
+      || new Date(parsed.createdAt).toISOString() !== parsed.createdAt
+      || Buffer.from(JSON.stringify(parsed)).toString("base64url") !== cursor) throw new Error();
+    return { createdAt: parsed.createdAt, id: parsed.id };
+  } catch { throw new Error("STUDIO_RITUAL_SESSION_CURSOR_INVALID"); }
 }
 
 function assetFromRow(row: StudioAssetRow): StudioAsset {
@@ -868,6 +910,94 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       const items = rows.slice(0, input.limit);
       return { items, nextCursor: rows.length > items.length && items.length
         ? encodeStructureCursor(items[items.length - 1]!) : null };
+    },
+
+    async findRitualSession(scope, sessionId) {
+      const result = await db.query<StudioRitualSessionRow>(
+        `SELECT * FROM studio_ritual_sessions
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, sessionId]
+      );
+      return result.rows[0] ? ritualSessionFromRow(result.rows[0]) : null;
+    },
+
+    async createRitualSession(input) {
+      const id = generatedId("studio_ritual_session");
+      const inserted = await db.query<StudioRitualSessionRow>(
+        `INSERT INTO studio_ritual_sessions
+           (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at)
+         SELECT $1,$2,$3,$4,$5,$6 FROM studio_structures
+         WHERE workspace_id=$2 AND owner_profile_id=$3 AND id=$4
+           AND kind='ritual' AND lifecycle_status='active'
+         ON CONFLICT (workspace_id,owner_profile_id,ritual_id)
+           WHERE status IN ('preparing','ready','in_progress','failed') DO NOTHING
+         RETURNING *`,
+        [id, input.workspaceId, input.ownerProfileId, input.ritualId,
+          input.preparationToken, input.preparationLeaseExpiresAt]
+      );
+      if (inserted.rows[0]) return ritualSessionFromRow(inserted.rows[0]);
+      const existing = await db.query<StudioRitualSessionRow>(
+        `SELECT * FROM studio_ritual_sessions
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND ritual_id=$3
+           AND status IN ('preparing','ready','in_progress','failed')
+         ORDER BY created_at DESC,id DESC LIMIT 1`,
+        [input.workspaceId, input.ownerProfileId, input.ritualId]
+      );
+      if (existing.rows[0]) return ritualSessionFromRow(existing.rows[0]);
+      throw new Error("STUDIO_RITUAL_NOT_FOUND");
+    },
+
+    async updateRitualSession(input, expectedRevision) {
+      const result = await db.query<StudioRitualSessionRow>(
+        `UPDATE studio_ritual_sessions SET
+           status=$4,context_json=$5::jsonb,preparation_json=$6::jsonb,answers_json=$7::jsonb,
+           synthesis_json=$8::jsonb,prepare_ai_run_id=$9,synthesis_ai_run_id=$10,
+           preparation_token=$11,preparation_lease_expires_at=$12,failure_code=$13,
+           completed_at=$14,revision=revision+1,updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$15
+           AND (status<>'completed' OR $4='completed')
+         RETURNING *`,
+        [input.workspaceId, input.ownerProfileId, input.id, input.status,
+          input.contextJson === null ? null : JSON.stringify(input.contextJson),
+          input.preparationJson === null ? null : JSON.stringify(input.preparationJson),
+          JSON.stringify(input.answersJson), input.synthesisJson === null ? null : JSON.stringify(input.synthesisJson),
+          input.prepareAiRunId, input.synthesisAiRunId, input.preparationToken,
+          input.preparationLeaseExpiresAt, input.failureCode, input.completedAt, expectedRevision]
+      );
+      if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
+      const existing = await db.query<{ revision: number; status: StudioRitualSession["status"] }>(
+        `SELECT revision,status FROM studio_ritual_sessions
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [input.workspaceId, input.ownerProfileId, input.id]
+      );
+      if (!existing.rows[0]) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+      if (existing.rows[0].status === "completed" && input.status !== "completed") {
+        throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
+      }
+      throw new Error("STUDIO_RITUAL_SESSION_STALE");
+    },
+
+    async listRitualSessions(scope, ritualId, input) {
+      const params: unknown[] = [scope.workspaceId, scope.ownerProfileId, ritualId];
+      const conditions = ["workspace_id=$1", "owner_profile_id=$2", "ritual_id=$3"];
+      if (input.cursor) {
+        const cursor = decodeRitualSessionCursor(input.cursor);
+        params.push(cursor.createdAt, cursor.id);
+        conditions.push(`(created_at,id) < ($${params.length - 1}::timestamptz,$${params.length}::text)`);
+      }
+      params.push(input.limit + 1);
+      const result = await db.query<StudioRitualSessionRow>(
+        `SELECT * FROM studio_ritual_sessions WHERE ${conditions.join(" AND ")}
+         ORDER BY created_at DESC,id DESC LIMIT $${params.length}`,
+        params
+      );
+      const rows = result.rows.map(ritualSessionFromRow);
+      const items = rows.slice(0, input.limit);
+      return {
+        items,
+        nextCursor: rows.length > items.length && items.length
+          ? encodeRitualSessionCursor(items[items.length - 1]!) : null
+      };
     },
 
     async appendVersion(input) {

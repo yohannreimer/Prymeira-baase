@@ -1144,6 +1144,40 @@ function repositoryContract(
         expect(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size).toBe(3);
       });
     });
+
+    it("keeps one owner-scoped open ritual session with optimistic answers and stable history", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const ritual = await repository.createStructure({
+          ...scope, documentId: document.id, kind: "ritual", lifecycleStatus: "active",
+          horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
+          propertiesJson: { intention: "Revisar" }
+        });
+        const create = (token: string) => repository.createRitualSession({
+          ...scope, ritualId: ritual.id, preparationToken: token,
+          preparationLeaseExpiresAt: "2026-07-13T12:02:00.000Z"
+        });
+        const [left, right] = await Promise.all([create("token-a"), create("token-b")]);
+        expect(left.id).toBe(right.id);
+        expect(await repository.findRitualSession({ ...scope, ownerProfileId: "owner_b" }, left.id)).toBeNull();
+        await expect(repository.updateRitualSession({ ...left, status: "in_progress", answersJson: { a: "b" } }, 0))
+          .rejects.toThrow("STUDIO_RITUAL_SESSION_STALE");
+        const answered = await repository.updateRitualSession({
+          ...left, status: "in_progress", answersJson: { a: "b" },
+          preparationToken: null, preparationLeaseExpiresAt: null
+        }, left.revision);
+        const completed = await repository.updateRitualSession({
+          ...answered, status: "completed", completedAt: "2026-07-13T12:03:00.000Z"
+        }, answered.revision);
+        await expect(repository.updateRitualSession({ ...completed, status: "in_progress", completedAt: null }, completed.revision))
+          .rejects.toThrow("STUDIO_RITUAL_SESSION_COMPLETED");
+        const next = await create("token-c");
+        expect(next.id).not.toBe(completed.id);
+        expect((await repository.listRitualSessions(scope, ritual.id, { limit: 1 })).nextCursor).not.toBeNull();
+        expect((await repository.listRitualSessions(scope, ritual.id, { limit: 10 })).items).toHaveLength(2);
+      });
+    });
   });
 }
 
