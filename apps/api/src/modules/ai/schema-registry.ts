@@ -340,6 +340,23 @@ export const studioCitationSchema = z.object({
   period_to: studioIsoDateSchema.nullable()
 }).strict().superRefine((citation, context) => {
   const isExternal = citation.source_type === "external_url";
+  if (citation.url) {
+    const parsedUrl = new URL(citation.url);
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      context.addIssue({
+        code: "custom",
+        message: "citation urls must use http or https",
+        path: ["url"]
+      });
+    }
+    if (parsedUrl.username || parsedUrl.password) {
+      context.addIssue({
+        code: "custom",
+        message: "citation urls must not contain credentials",
+        path: ["url"]
+      });
+    }
+  }
   if (isExternal && (!citation.url || citation.source_id !== null)) {
     context.addIssue({
       code: "custom",

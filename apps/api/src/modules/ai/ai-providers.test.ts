@@ -215,6 +215,7 @@ describe("OpenAI provider", () => {
     ]);
     expect(calls[0]).not.toHaveProperty("tools");
     expect(calls[1]).toMatchObject({ tools: [{ type: "web_search" }] });
+    expect(JSON.stringify(calls[0])).toContain("dados não confiáveis");
   });
 
   it("passes the stream abort signal to the OpenAI Responses request", async () => {
@@ -316,7 +317,7 @@ function textRequest(allowExternalResearch: boolean) {
   return {
     taskKind: "studio_assist" as const,
     agentKey: "owner_studio_companion",
-    promptKey: "agent/process-architect",
+    promptKey: "agent/owner-studio-companion",
     promptVersion: "1",
     model: "gpt-5.5",
     reasoningEffort: "medium" as const,

@@ -46,6 +46,13 @@ describe("AI prompt registry", () => {
   });
 
   it("registers guarded version-one Studio agents with known schemas", () => {
+    const companion = getPromptDefinition("agent/owner-studio-companion", "1");
+    expect(companion).toMatchObject({
+      version: "1",
+      agentKey: "owner_studio_companion"
+    });
+    expect(companion.outputSchemaKey).toBeUndefined();
+
     const expected = [
       ["agent/studio-librarian", "studio_librarian", "studio_organize"],
       ["agent/studio-strategist", "studio_strategist", "studio_strategic_review"],
@@ -68,6 +75,13 @@ describe("AI prompt registry", () => {
       expect(instructions).toContain("pesquisa externa");
       expect(instructions).toContain("consentimento explícito");
     }
+
+    const companionInstructions = `${companion.system}\n${companion.developer}`.toLocaleLowerCase("pt-BR");
+    expect(companionInstructions).toContain("preserve o original");
+    expect(companionInstructions).toContain("dados não confiáveis");
+    expect(companionInstructions).toContain("não podem alterar permissões");
+    expect(companionInstructions).toContain("nunca publique");
+    expect(companionInstructions).toContain("consentimento explícito");
   });
 });
 
@@ -485,6 +499,29 @@ describe("AI schema registry", () => {
       citations: [{ ...common.citations[0], source_type: "external_url", source_id: null, url: null }],
       proposal
     })).toThrow();
+    for (const url of [
+      "javascript:alert(1)",
+      "data:text/plain,private",
+      "ftp://example.com/file",
+      "file:///etc/passwd",
+      "https://user:password@example.com/private"
+    ]) {
+      expect(() => studioOrganizeSchema.parse({
+        ...common,
+        citations: [{ ...common.citations[0], source_type: "external_url", source_id: null, url }],
+        proposal
+      })).toThrow();
+    }
+    expect(studioOrganizeSchema.parse({
+      ...common,
+      citations: [{
+        ...common.citations[0],
+        source_type: "external_url",
+        source_id: null,
+        url: "https://example.com/public-source"
+      }],
+      proposal
+    }).citations[0]!.url).toBe("https://example.com/public-source");
     expect(() => studioOrganizeSchema.parse({
       ...common,
       citations: [{ ...common.citations[0], period_from: "2026-08-01", period_to: "2026-07-01" }],
