@@ -10,12 +10,13 @@ export function createInMemoryAiRepository(options: InMemoryAiRepositoryOptions 
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async listRuns(workspaceId) {
-      return runs.filter((run) => run.workspaceId === workspaceId);
+    async listRuns(workspaceId, actorProfileId) {
+      return runs.filter((run) => run.workspaceId === workspaceId && canReadRun(run, actorProfileId));
     },
 
-    async findRun(workspaceId, runId) {
-      return runs.find((run) => run.workspaceId === workspaceId && run.id === runId) ?? null;
+    async findRun(workspaceId, runId, actorProfileId) {
+      return runs.find((run) => run.workspaceId === workspaceId && run.id === runId
+        && canReadRun(run, actorProfileId)) ?? null;
     },
 
     async createRun(input: CreateAiRunRecordInput) {
@@ -33,6 +34,11 @@ export function createInMemoryAiRepository(options: InMemoryAiRepositoryOptions 
     async updateRun(run) {
       const index = runs.findIndex((item) => item.workspaceId === run.workspaceId && item.id === run.id);
       if (index === -1) throw new Error("AI_RUN_NOT_FOUND");
+      const persisted = runs[index]!;
+      if ((persisted.source === "owner_studio" || run.source === "owner_studio")
+        && (persisted.source !== run.source || persisted.actorProfileId !== run.actorProfileId)) {
+        throw new Error("AI_RUN_NOT_FOUND");
+      }
 
       const updated = {
         ...run,
@@ -42,4 +48,8 @@ export function createInMemoryAiRepository(options: InMemoryAiRepositoryOptions 
       return updated;
     }
   };
+}
+
+function canReadRun(run: AiRun, actorProfileId?: string) {
+  return run.source !== "owner_studio" || Boolean(actorProfileId && run.actorProfileId === actorProfileId);
 }

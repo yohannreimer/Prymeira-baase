@@ -114,6 +114,7 @@ describe("OpenAI provider", () => {
   it("builds a Responses API request with prompt, reasoning effort and structured output schema", async () => {
     const calls: unknown[] = [];
     const provider = createOpenAiProvider({
+      citationResolver: async () => ["93.184.216.34"],
       client: {
         responses: {
           create: async (payload: unknown) => {
@@ -184,6 +185,7 @@ describe("OpenAI provider", () => {
       ])
     ];
     const provider = createOpenAiProvider({
+      citationResolver: async () => ["93.184.216.34"],
       client: {
         responses: {
           create: async (payload: unknown) => {
@@ -241,6 +243,50 @@ describe("OpenAI provider", () => {
       inputs: ["um", "dois"]
     })).resolves.toEqual([[0.1, 0.2], [0.3, 0.4]]);
     expect(calls).toEqual([{ model: "text-embedding-3-small", input: ["um", "dois"] }]);
+  });
+
+  it("rejects provider citations without consent or with an unsafe URL", async () => {
+    const streams = [
+      asyncEvents([{
+        type: "response.output_text.annotation.added",
+        annotation: { type: "url_citation", title: "Fonte", url: "https://example.com/fonte" }
+      }]),
+      asyncEvents([{
+        type: "response.output_text.annotation.added",
+        annotation: { type: "url_citation", title: "Fonte", url: "https://internal.example.com/admin" }
+      }])
+    ];
+    const provider = createOpenAiProvider({
+      citationResolver: async () => ["10.0.0.7"],
+      client: {
+        responses: { create: async () => streams.shift()! },
+        embeddings: { create: async () => ({ data: [] }) }
+      }
+    });
+
+    await expect(collect(provider.streamText(textRequest(false))))
+      .rejects.toThrow("AI_STREAM_UNAUTHORIZED_CITATION");
+    await expect(collect(provider.streamText(textRequest(true))))
+      .rejects.toThrow("AI_STREAM_CITATION_INVALID");
+  });
+
+  it("rejects duplicate, missing, and out-of-range embedding indices", async () => {
+    const responses = [
+      { data: [{ index: 0, embedding: [0.1] }, { index: 0, embedding: [0.2] }] },
+      { data: [{ index: 1, embedding: [0.1] }] },
+      { data: [{ index: 0, embedding: [0.1] }, { index: 2, embedding: [0.2] }] }
+    ];
+    const provider = createOpenAiProvider({
+      client: {
+        responses: { create: async () => ({ output_text: "{}" }) },
+        embeddings: { create: async () => responses.shift()! }
+      }
+    });
+    const request = { model: "text-embedding-3-small", inputs: ["um", "dois"] };
+
+    await expect(provider.createEmbeddings(request)).rejects.toThrow("OPENAI_EMBEDDING_INDEX_MISMATCH");
+    await expect(provider.createEmbeddings(request)).rejects.toThrow("OPENAI_EMBEDDING_INDEX_MISMATCH");
+    await expect(provider.createEmbeddings(request)).rejects.toThrow("OPENAI_EMBEDDING_INDEX_MISMATCH");
   });
 });
 

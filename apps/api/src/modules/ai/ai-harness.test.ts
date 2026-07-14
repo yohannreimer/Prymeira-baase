@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAiHarness } from "./ai-harness";
 import type {
@@ -176,7 +176,7 @@ describe("AI harness", () => {
     });
   });
 
-  it("audits a successful text stream and stores only its bounded final summary", async () => {
+  it("audits a successful private text stream without storing private input or output content", async () => {
     const repository = createInMemoryAiRepository({ now: () => "2026-07-07T12:00:00.000Z" });
     const updates: string[] = [];
     const auditedRepository = {
@@ -206,15 +206,16 @@ describe("AI harness", () => {
       { type: "done", text: `Resumo ${privateTail}` }
     ]);
 
-    const [run] = await repository.listRuns("workspace_a");
+    const [run] = await repository.listRuns("workspace_a", "profile_owner");
     expect(run).toMatchObject({
       source: "owner_studio",
       taskKind: "studio_assist",
       status: "completed",
       validationErrors: []
     });
-    expect(run?.outputSummary).toHaveLength(160);
-    expect(run?.outputSummary?.endsWith("...")).toBe(true);
+    expect(run?.inputSummary).toBe("[private owner studio input]");
+    expect(run?.outputSummary).toBe("[private owner studio output]");
+    expect(JSON.stringify(run)).not.toContain("privado");
     expect(updates).toEqual(["completed"]);
   });
 
@@ -241,8 +242,8 @@ describe("AI harness", () => {
     const { events } = await harness.runTextStream(streamRunRequest());
     await expect(collect(events)).rejects.toThrow("PROVIDER_STREAM_FAILED");
 
-    const [run] = await repository.listRuns("workspace_a");
-    expect(run).toMatchObject({ status: "failed", validationErrors: ["PROVIDER_STREAM_FAILED"] });
+    const [run] = await repository.listRuns("workspace_a", "profile_owner");
+    expect(run).toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
     expect(updates).toEqual(["failed"]);
   });
 
@@ -256,8 +257,8 @@ describe("AI harness", () => {
     const harness = createAiHarness({ repository, provider });
 
     await expect(harness.runTextStream(streamRunRequest())).rejects.toThrow("PROVIDER_START_FAILED");
-    await expect(repository.listRuns("workspace_a")).resolves.toEqual([
-      expect.objectContaining({ status: "failed", validationErrors: ["PROVIDER_START_FAILED"] })
+    await expect(repository.listRuns("workspace_a", "profile_owner")).resolves.toEqual([
+      expect.objectContaining({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] })
     ]);
   });
 
@@ -291,9 +292,9 @@ describe("AI harness", () => {
     await expect(iterator.next()).resolves.toMatchObject({ value: { type: "delta", text: "Primeiro" } });
     await iterator.return?.();
 
-    const [run] = await repository.listRuns("workspace_a");
+    const [run] = await repository.listRuns("workspace_a", "profile_owner");
     expect(providerClosed).toBe(true);
-    expect(run).toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_CANCELLED"] });
+    expect(run).toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
     expect(updates).toEqual(["failed"]);
   });
 
@@ -331,9 +332,217 @@ describe("AI harness", () => {
       { type: "delta", text: "Oi" },
       { type: "done", text: "Oi" }
     ]);
-    await expect(duplicateRepository.listRuns("workspace_a")).resolves.toEqual([
-      expect.objectContaining({ status: "completed", outputSummary: "Oi" })
+    await expect(duplicateRepository.listRuns("workspace_a", "profile_owner")).resolves.toEqual([
+      expect.objectContaining({ status: "completed", outputSummary: "[private owner studio output]" })
     ]);
+  });
+
+  it("finalizes an aborted or never-consumed stream without waiting for the first pull", async () => {
+    const abortedRepository = createInMemoryAiRepository();
+    const controller = new AbortController();
+    const abortedHarness = createAiHarness({
+      repository: abortedRepository,
+      provider: createMockAiProvider(),
+      streamStartTimeoutMs: 1_000
+    });
+    const aborted = await abortedHarness.runTextStream({ ...streamRunRequest(), signal: controller.signal });
+    controller.abort();
+    await vi.waitFor(async () => {
+      await expect(abortedRepository.findRun(
+        "workspace_a", aborted.run.id, "profile_owner"
+      )).resolves.toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
+    });
+
+    const idleRepository = createInMemoryAiRepository();
+    const idleHarness = createAiHarness({
+      repository: idleRepository,
+      provider: createMockAiProvider(),
+      streamStartTimeoutMs: 5
+    });
+    const idle = await idleHarness.runTextStream(streamRunRequest());
+    await vi.waitFor(async () => {
+      await expect(idleRepository.findRun(
+        "workspace_a", idle.run.id, "profile_owner"
+      )).resolves.toMatchObject({ status: "failed", validationErrors: ["AI_STREAM_FAILED"] });
+    });
+  });
+
+  it("bounds an idle provider pull and closes it without leaving the run active", async () => {
+    const repository = createInMemoryAiRepository();
+    let returned = 0;
+    const provider = createProvider({
+      streamText() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<AiTextStreamEvent>>(() => undefined),
+              async return() {
+                returned += 1;
+                return { done: true, value: undefined };
+              }
+            };
+          }
+        };
+      }
+    });
+    const harness = createAiHarness({
+      repository,
+      provider,
+      streamStartTimeoutMs: 1_000,
+      streamIdleTimeoutMs: 5
+    });
+    const result = await harness.runTextStream(streamRunRequest());
+
+    await expect(collect(result.events)).rejects.toThrow("AI_STREAM_IDLE_TIMEOUT");
+    await expect(repository.findRun("workspace_a", result.run.id, "profile_owner")).resolves.toMatchObject({
+      status: "failed",
+      validationErrors: ["AI_STREAM_FAILED"]
+    });
+    expect(returned).toBe(1);
+  });
+
+  it("allows one consumer, rejects concurrent pulls, and never yields after done", async () => {
+    let resolveFirst: ((value: IteratorResult<AiTextStreamEvent>) => void) | undefined;
+    let returned = 0;
+    const provider = createProvider({
+      streamText() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<AiTextStreamEvent>>((resolve) => { resolveFirst = resolve; }),
+              async return() {
+                returned += 1;
+                return { done: true, value: undefined };
+              }
+            };
+          }
+        };
+      }
+    });
+    const harness = createAiHarness({ repository: createInMemoryAiRepository(), provider });
+    const { events } = await harness.runTextStream(streamRunRequest());
+    const iterator = events[Symbol.asyncIterator]();
+    expect(() => events[Symbol.asyncIterator]()).toThrow("AI_STREAM_ALREADY_CONSUMED");
+    const first = iterator.next();
+    await expect(iterator.next()).rejects.toThrow("AI_STREAM_CONCURRENT_NEXT");
+    resolveFirst?.({ done: false, value: { type: "done", text: "Final" } });
+    await expect(first).resolves.toEqual({ done: false, value: { type: "done", text: "Final" } });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    expect(returned).toBe(1);
+  });
+
+  it("fails safely when iterator acquisition throws", async () => {
+    const repository = createInMemoryAiRepository();
+    const harness = createAiHarness({
+      repository,
+      provider: createProvider({
+        streamText() {
+          return {
+            [Symbol.asyncIterator]() {
+              throw new Error("PRIVATE_ITERATOR_FAILURE");
+            }
+          };
+        }
+      })
+    });
+    const result = await harness.runTextStream(streamRunRequest());
+    await expect(collect(result.events)).rejects.toThrow("PRIVATE_ITERATOR_FAILURE");
+    await expect(repository.findRun("workspace_a", result.run.id, "profile_owner")).resolves.toMatchObject({
+      status: "failed",
+      validationErrors: ["AI_STREAM_FAILED"]
+    });
+  });
+
+  it("rejects unauthorized and unsafe citations at the harness boundary", async () => {
+    const createCitationHarness = (allowExternalResearch: boolean, url: string) => {
+      const repository = createInMemoryAiRepository();
+      const harness = createAiHarness({
+        repository,
+        citationResolver: async () => ["10.0.0.7"],
+        provider: createMockAiProvider({
+          streamEvents: [{ type: "citation", title: "Fonte", url, publishedAt: null }]
+        })
+      });
+      return { repository, result: harness.runTextStream({ ...streamRunRequest(), allowExternalResearch }) };
+    };
+
+    const unauthorized = createCitationHarness(false, "https://example.com/fonte");
+    const unauthorizedResult = await unauthorized.result;
+    await expect(collect(unauthorizedResult.events)).rejects.toThrow("AI_STREAM_UNAUTHORIZED_CITATION");
+    await expect(unauthorized.repository.findRun(
+      "workspace_a", unauthorizedResult.run.id, "profile_owner"
+    )).resolves.toMatchObject({ status: "failed" });
+
+    const unsafe = createCitationHarness(true, "https://internal.example.com/private");
+    const unsafeResult = await unsafe.result;
+    await expect(collect(unsafeResult.events)).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+  });
+
+  it("bounds citation metadata and accepts a normalized public citation", async () => {
+    const runCitation = async (event: Extract<AiTextStreamEvent, { type: "citation" }>) => {
+      const harness = createAiHarness({
+        repository: createInMemoryAiRepository(),
+        provider: createMockAiProvider({ streamEvents: [event] }),
+        citationResolver: async () => ["93.184.216.34"]
+      });
+      const result = await harness.runTextStream({ ...streamRunRequest(), allowExternalResearch: true });
+      return collect(result.events);
+    };
+
+    await expect(runCitation({
+      type: "citation",
+      title: "x".repeat(241),
+      url: "https://example.com/fonte",
+      publishedAt: null
+    })).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+    await expect(runCitation({
+      type: "citation",
+      title: "Fonte",
+      url: "https://example.com/fonte",
+      publishedAt: "não-é-data"
+    })).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+    await expect(runCitation({
+      type: "citation",
+      title: "  Fonte pública  ",
+      url: "https://example.com/fonte",
+      publishedAt: "2026-06-01"
+    })).resolves.toEqual([{
+      type: "citation",
+      title: "Fonte pública",
+      url: "https://example.com/fonte",
+      publishedAt: "2026-06-01"
+    }]);
+  });
+
+  it("handles cyclic private input and truncates non-private Unicode summaries safely", async () => {
+    const cyclic: { self?: unknown; text?: string } = { text: "segredo absoluto" };
+    cyclic.self = cyclic;
+    const privateRepository = createInMemoryAiRepository();
+    const privateHarness = createAiHarness({ repository: privateRepository, provider: createMockAiProvider() });
+    const privateResult = await privateHarness.runTextStream({ ...streamRunRequest(), input: cyclic });
+    await collect(privateResult.events);
+    await expect(privateRepository.findRun(
+      "workspace_a", privateResult.run.id, "profile_owner"
+    )).resolves.toMatchObject({
+      inputSummary: "[private owner studio input]",
+      outputSummary: "[private owner studio output]"
+    });
+
+    const unicodeRepository = createInMemoryAiRepository();
+    const unicodeText = "😀".repeat(200);
+    const unicodeHarness = createAiHarness({
+      repository: unicodeRepository,
+      provider: createMockAiProvider({ streamEvents: [{ type: "done", text: unicodeText }] })
+    });
+    const unicodeResult = await unicodeHarness.runTextStream({
+      ...streamRunRequest(),
+      source: "create_with_ai",
+      taskKind: "process_draft"
+    });
+    await collect(unicodeResult.events);
+    const unicodeRun = await unicodeRepository.findRun("workspace_a", unicodeResult.run.id);
+    expect(Array.from(unicodeRun?.outputSummary ?? "")).toHaveLength(160);
+    expect(unicodeRun?.outputSummary).not.toContain("�");
   });
 
   it("returns one finite, consistently-sized embedding per input", async () => {
@@ -359,6 +568,9 @@ describe("AI harness", () => {
     await expect(createHarness([[0.1], [0.2, 0.3]]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_DIMENSION_MISMATCH");
     await expect(createHarness([[0.1], [Number.NaN]]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_NON_FINITE_VALUE");
     await expect(createHarness([[], []]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_EMPTY_VECTOR");
+    await expect(createHarness([]).createEmbeddings({ model: " ", inputs: ["a"] })).rejects.toThrow("AI_EMBEDDING_MODEL_REQUIRED");
+    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [] })).rejects.toThrow("AI_EMBEDDING_INPUTS_REQUIRED");
+    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [" "] })).rejects.toThrow("AI_EMBEDDING_INPUT_INVALID");
   });
 });
 

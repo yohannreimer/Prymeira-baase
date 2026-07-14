@@ -542,4 +542,38 @@ describe("Postgres repositories", () => {
       companyName: staleSession.companyName
     });
   });
+
+  it("scopes private owner studio AI runs in PostgreSQL reads and updates", async () => {
+    const pool = createMemoryPool();
+    await ensurePostgresSchema(pool);
+    const repository = createPostgresRepositoryBundle(pool).aiRepository;
+    const createPrivate = (actorProfileId: string) => repository.createRun({
+      workspaceId: "workspace_a",
+      actorProfileId,
+      source: "owner_studio",
+      inputMode: "text",
+      taskKind: "studio_assist",
+      agentKey: "owner_studio_companion",
+      promptVersion: "agent/owner-studio-companion@1",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      status: "running",
+      traceId: null,
+      inputSummary: "[private owner studio input]",
+      outputSummary: null,
+      validationErrors: [],
+      costEstimateCents: null,
+      latencyMs: null
+    });
+    const first = await createPrivate("owner_a");
+    const second = await createPrivate("owner_b");
+
+    await expect(repository.listRuns("workspace_a", "owner_a")).resolves.toEqual([first]);
+    await expect(repository.listRuns("workspace_a", "owner_b")).resolves.toEqual([second]);
+    await expect(repository.listRuns("workspace_a")).resolves.toEqual([]);
+    await expect(repository.findRun("workspace_a", first.id, "owner_b")).resolves.toBeNull();
+    await expect(repository.updateRun({ ...first, actorProfileId: "owner_b" }))
+      .rejects.toThrow("AI_RUN_NOT_FOUND");
+    await expect(repository.findRun("workspace_a", first.id, "owner_a")).resolves.toEqual(first);
+  });
 });

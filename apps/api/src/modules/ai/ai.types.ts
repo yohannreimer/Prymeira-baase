@@ -61,8 +61,8 @@ export type AiRun = {
 export type CreateAiRunRecordInput = Omit<AiRun, "id" | "createdAt" | "updatedAt">;
 
 export type AiRepository = {
-  listRuns(workspaceId: string): Promise<AiRun[]>;
-  findRun(workspaceId: string, runId: string): Promise<AiRun | null>;
+  listRuns(workspaceId: string, actorProfileId?: string): Promise<AiRun[]>;
+  findRun(workspaceId: string, runId: string, actorProfileId?: string): Promise<AiRun | null>;
   createRun(input: CreateAiRunRecordInput): Promise<AiRun>;
   updateRun(run: AiRun): Promise<AiRun>;
 };

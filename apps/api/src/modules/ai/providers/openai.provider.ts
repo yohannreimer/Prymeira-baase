@@ -5,6 +5,8 @@ import type {
   AiTextStreamRequest,
   AudioTranscriptionResult
 } from "../ai.types";
+import { validateAiCitation } from "../ai-citation";
+import type { StudioLinkResolver } from "../../studio/studio-link-fetcher";
 import { getPromptDefinition } from "../prompt-registry";
 
 type OpenAiResponse = {
@@ -28,6 +30,7 @@ type OpenAiResponsesClient = {
 type CreateOpenAiProviderOptions = {
   client?: OpenAiResponsesClient;
   apiKey?: string;
+  citationResolver?: StudioLinkResolver;
 };
 
 export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}): AiProvider {
@@ -53,13 +56,18 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
 
       let doneEmitted = false;
       for await (const rawEvent of response) {
-        const event = readStreamEvent(rawEvent);
+        const event = await readStreamEvent(
+          rawEvent,
+          request.allowExternalResearch,
+          options.citationResolver
+        );
         if (!event) continue;
         if (event.type === "delta") yield event;
         if (event.type === "citation") yield event;
         if (event.type === "done" && !doneEmitted) {
           doneEmitted = true;
           yield event;
+          return;
         }
       }
     },
@@ -70,8 +78,12 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
         model: request.model,
         input: request.inputs
       });
-      return [...response.data]
-        .sort((left, right) => left.index - right.index)
+      const indexed = [...response.data].sort((left, right) => left.index - right.index);
+      if (indexed.length !== request.inputs.length
+        || indexed.some((item, index) => !Number.isInteger(item.index) || item.index !== index)) {
+        throw new Error("OPENAI_EMBEDDING_INDEX_MISMATCH");
+      }
+      return indexed
         .map((item) => item.embedding);
     },
 
@@ -160,7 +172,11 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return Boolean(value && typeof value === "object" && Symbol.asyncIterator in value);
 }
 
-function readStreamEvent(rawEvent: unknown) {
+async function readStreamEvent(
+  rawEvent: unknown,
+  allowExternalResearch: boolean,
+  citationResolver?: StudioLinkResolver
+) {
   if (!rawEvent || typeof rawEvent !== "object" || !("type" in rawEvent) || typeof rawEvent.type !== "string") {
     return null;
   }
@@ -172,7 +188,8 @@ function readStreamEvent(rawEvent: unknown) {
     return { type: "done" as const, text: rawEvent.text };
   }
   if (rawEvent.type === "response.output_text.annotation.added" && "annotation" in rawEvent) {
-    return readCitation(rawEvent.annotation);
+    const citation = readCitation(rawEvent.annotation);
+    return citation ? validateAiCitation(citation, allowExternalResearch, citationResolver) : null;
   }
   if (rawEvent.type === "response.failed") throw new Error(readResponseFailure(rawEvent, "OPENAI_TEXT_STREAM_FAILED"));
   if (rawEvent.type === "response.incomplete") throw new Error(readResponseFailure(rawEvent, "OPENAI_TEXT_STREAM_INCOMPLETE"));

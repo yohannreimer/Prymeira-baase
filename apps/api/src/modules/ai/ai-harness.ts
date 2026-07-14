@@ -1,5 +1,7 @@
 import { zodTextFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
+import { validateAiCitation } from "./ai-citation";
+import type { StudioLinkResolver } from "../studio/studio-link-fetcher";
 import type {
   AiEmbeddingRequest,
   AiHarness,
@@ -18,6 +20,9 @@ type CreateAiHarnessOptions = {
   repository: AiRepository;
   provider: AiProvider;
   now?: () => number;
+  streamStartTimeoutMs?: number;
+  streamIdleTimeoutMs?: number;
+  citationResolver?: StudioLinkResolver;
 };
 
 export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
@@ -40,7 +45,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         reasoningEffort: request.reasoningEffort,
         status: "running",
         traceId: null,
-        inputSummary: summarizeInput(request.input),
+        inputSummary: summarizeInput(request.input, request.source),
         outputSummary: null,
         validationErrors: [],
         costEstimateCents: null,
@@ -63,7 +68,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         const completedRun = await options.repository.updateRun({
           ...run,
           status: "completed",
-          outputSummary: summarizeOutput(parsedOutput),
+          outputSummary: summarizeOutput(parsedOutput, request.source),
           validationErrors: [],
           latencyMs: now() - startedAt
         });
@@ -100,7 +105,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         reasoningEffort: request.reasoningEffort,
         status: "running",
         traceId: null,
-        inputSummary: summarizeInput(request.input),
+        inputSummary: summarizeInput(request.input, request.source),
         outputSummary: null,
         validationErrors: [],
         costEstimateCents: null,
@@ -123,7 +128,11 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         await options.repository.updateRun({
           ...run,
           status: "failed",
-          validationErrors: [readErrorMessage(error, "AI_STREAM_FAILED")],
+          validationErrors: [sanitizeStoredError(
+            readErrorMessage(error, "AI_STREAM_FAILED"),
+            request.source,
+            "AI_STREAM_FAILED"
+          )],
           latencyMs: now() - startedAt
         });
         throw error;
@@ -134,6 +143,11 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         events: createAuditedTextStream({
           events: providerEvents,
           signal: request.signal,
+          allowExternalResearch: request.allowExternalResearch,
+          privateOutput: request.source === "owner_studio",
+          startTimeoutMs: options.streamStartTimeoutMs ?? 30_000,
+          idleTimeoutMs: options.streamIdleTimeoutMs ?? 120_000,
+          citationResolver: options.citationResolver,
           complete: (outputSummary) => options.repository.updateRun({
             ...run,
             status: "completed",
@@ -144,7 +158,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           fail: (message) => options.repository.updateRun({
             ...run,
             status: "failed",
-            validationErrors: [message],
+            validationErrors: [sanitizeStoredError(message, request.source, "AI_STREAM_FAILED")],
             latencyMs: now() - startedAt
           })
         })
@@ -152,6 +166,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
     },
 
     async createEmbeddings(request: AiEmbeddingRequest): Promise<number[][]> {
+      validateEmbeddingRequest(request);
       const embeddings = await options.provider.createEmbeddings(request);
       validateEmbeddings(request, embeddings);
       return embeddings;
@@ -171,7 +186,9 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         reasoningEffort: "none",
         status: "running",
         traceId: null,
-        inputSummary: request.audioUrl ?? "audio_buffer",
+        inputSummary: request.source === "owner_studio"
+          ? PRIVATE_INPUT_SUMMARY
+          : request.audioUrl ?? "audio_buffer",
         outputSummary: null,
         validationErrors: [],
         costEstimateCents: null,
@@ -191,7 +208,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         await options.repository.updateRun({
           ...run,
           status: "completed",
-          outputSummary: summarizeText(transcript.text),
+          outputSummary: request.source === "owner_studio" ? PRIVATE_OUTPUT_SUMMARY : summarizeText(transcript.text),
           latencyMs: now() - startedAt
         });
 
@@ -200,7 +217,11 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
         await options.repository.updateRun({
           ...run,
           status: "failed",
-          validationErrors: [error instanceof Error ? error.message : "AI_TRANSCRIPTION_FAILED"],
+          validationErrors: [sanitizeStoredError(
+            error instanceof Error ? error.message : "AI_TRANSCRIPTION_FAILED",
+            request.source,
+            "AI_TRANSCRIPTION_FAILED"
+          )],
           latencyMs: now() - startedAt
         });
         throw error;
@@ -212,32 +233,94 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
 type AuditedTextStreamOptions = {
   events: AsyncIterable<AiTextStreamEvent>;
   signal?: AbortSignal;
+  allowExternalResearch: boolean;
+  privateOutput: boolean;
+  startTimeoutMs: number;
+  idleTimeoutMs: number;
+  citationResolver?: StudioLinkResolver;
   complete(outputSummary: string): Promise<unknown>;
   fail(message: string): Promise<unknown>;
 };
 
 function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterable<AiTextStreamEvent> {
-  const providerIterator = options.events[Symbol.asyncIterator]();
   const summary = createBoundedSummary();
+  let providerIterator: AsyncIterator<AiTextStreamEvent> | null = null;
+  let claimed = false;
+  let nextInFlight = false;
   let finalized = false;
   let closed = false;
+  let closing: Promise<void> | null = null;
+  let finalization: Promise<void> | null = null;
+  let resolveTermination!: () => void;
+  const termination = new Promise<void>((resolve) => { resolveTermination = resolve; });
+
+  const clearStartTimer = () => clearTimeout(startTimer);
+  const cleanup = () => {
+    clearStartTimer();
+    options.signal?.removeEventListener("abort", onAbort);
+  };
+
+  function getProviderIterator() {
+    if (providerIterator) return providerIterator;
+    const iteratorFactory = options.events?.[Symbol.asyncIterator];
+    if (typeof iteratorFactory !== "function") throw new Error("AI_STREAM_ITERATOR_INVALID");
+    providerIterator = iteratorFactory.call(options.events);
+    if (!providerIterator || typeof providerIterator.next !== "function") {
+      throw new Error("AI_STREAM_ITERATOR_INVALID");
+    }
+    return providerIterator;
+  }
 
   async function closeProvider() {
     if (closed) return;
-    closed = true;
-    await providerIterator.return?.();
+    if (closing) return closing;
+    closing = (async () => {
+      const iterator = getProviderIterator();
+      if (iterator.return) await iterator.return();
+      closed = true;
+    })();
+    try {
+      await closing;
+    } finally {
+      closing = null;
+    }
+  }
+
+  async function closeProviderBounded() {
+    await withUnrefTimeout(
+      closeProvider(),
+      Math.min(1_000, Math.max(1, options.idleTimeoutMs)),
+      "AI_STREAM_CLOSE_TIMEOUT"
+    );
   }
 
   async function complete() {
-    if (finalized) return;
+    if (finalization) return finalization;
     finalized = true;
-    await options.complete(summary.read());
+    resolveTermination();
+    cleanup();
+    finalization = Promise.resolve(options.complete(
+      options.privateOutput ? PRIVATE_OUTPUT_SUMMARY : summary.read()
+    )).then(() => undefined);
+    return finalization;
   }
 
   async function fail(message: string) {
-    if (finalized) return;
+    if (finalization) return finalization;
     finalized = true;
-    await options.fail(message);
+    resolveTermination();
+    cleanup();
+    finalization = Promise.resolve(options.fail(message)).then(() => undefined);
+    return finalization;
+  }
+
+  async function cancel(message: string) {
+    await fail(message);
+    await closeProviderBounded().catch(() => undefined);
+  }
+
+  function onAbort() {
+    void cancel("AI_STREAM_CANCELLED").catch(() => undefined);
   }
 
   const iterator: AsyncIterableIterator<AiTextStreamEvent> = {
@@ -246,77 +329,127 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
     },
 
     async next() {
+      if (nextInFlight) throw new Error("AI_STREAM_CONCURRENT_NEXT");
       if (finalized) return { done: true, value: undefined };
+      nextInFlight = true;
+      clearStartTimer();
       if (options.signal?.aborted) {
-        await closeProvider().catch(() => undefined);
-        await fail("AI_STREAM_CANCELLED");
+        await cancel("AI_STREAM_CANCELLED");
+        nextInFlight = false;
         throw createAbortError();
       }
 
       try {
-        const nextEvent = await providerIterator.next();
+        const providerNext = getProviderIterator().next();
+        void providerNext.finally(() => {
+          if (finalized) return closeProviderBounded().catch(() => undefined);
+          return undefined;
+        }).catch(() => undefined);
+        const nextEvent = await Promise.race([
+          withUnrefTimeout(providerNext, options.idleTimeoutMs, "AI_STREAM_IDLE_TIMEOUT"),
+          termination.then(() => terminatedResult)
+        ]);
+        if ("terminated" in nextEvent) {
+          return { done: true, value: undefined };
+        }
+        if (finalized) {
+          await closeProviderBounded().catch(() => undefined);
+          return { done: true, value: undefined };
+        }
         if (nextEvent.done) {
           closed = true;
           await complete();
           return { done: true, value: undefined };
         }
 
-        const event = nextEvent.value;
+        const event = nextEvent.value.type === "citation"
+          ? await validateAiCitation(
+              nextEvent.value,
+              options.allowExternalResearch,
+              options.citationResolver
+            )
+          : nextEvent.value;
         if (event.type === "delta") summary.append(event.text);
         if (event.type === "done") {
           summary.replace(event.text);
-          await closeProvider();
+          await closeProviderBounded();
           await complete();
         }
         return { done: false, value: event };
       } catch (error) {
-        await closeProvider().catch(() => undefined);
         await fail(readErrorMessage(error, "AI_STREAM_FAILED"));
+        await closeProviderBounded().catch(() => undefined);
         throw error;
+      } finally {
+        nextInFlight = false;
       }
     },
 
     async return() {
-      if (!finalized) {
-        await closeProvider().catch(() => undefined);
-        await fail("AI_STREAM_CANCELLED");
-      }
+      await cancel("AI_STREAM_CANCELLED");
       return { done: true, value: undefined };
     },
 
     async throw(error?: unknown) {
-      await closeProvider().catch(() => undefined);
       await fail(readErrorMessage(error, "AI_STREAM_CANCELLED"));
+      await closeProviderBounded().catch(() => undefined);
       throw error;
     }
   };
 
-  return iterator;
+  const startTimer = setTimeout(() => {
+    void cancel("AI_STREAM_NOT_CONSUMED").catch(() => undefined);
+  }, Math.max(1, options.startTimeoutMs));
+  startTimer.unref?.();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+
+  return {
+    [Symbol.asyncIterator]() {
+      if (claimed) throw new Error("AI_STREAM_ALREADY_CONSUMED");
+      claimed = true;
+      return iterator;
+    }
+  };
+}
+
+const terminatedResult = { terminated: true } as const;
+
+function withUnrefTimeout<T>(promise: Promise<T>, timeoutMs: number, code: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(code)), Math.max(1, timeoutMs));
+    timer.unref?.();
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 function createBoundedSummary() {
   const maximumSourceLength = 160;
-  let value = "";
+  let value: string[] = [];
   let truncated = false;
 
   return {
     append(text: string) {
-      if (value.length >= maximumSourceLength) {
-        if (text.length > 0) truncated = true;
-        return;
+      for (const character of text) {
+        if (value.length < maximumSourceLength) value.push(character);
+        else truncated = true;
       }
-      const room = maximumSourceLength - value.length;
-      value += text.slice(0, room);
-      if (text.length > room) truncated = true;
     },
     replace(text: string) {
-      value = text.slice(0, maximumSourceLength);
-      truncated = text.length > maximumSourceLength;
+      const characters = Array.from(text);
+      value = characters.slice(0, maximumSourceLength);
+      truncated = characters.length > maximumSourceLength;
     },
     read() {
-      return truncated ? `${value.slice(0, 157)}...` : value;
+      return truncated ? `${value.slice(0, 157).join("")}...` : value.join("");
     }
   };
+}
+
+function validateEmbeddingRequest(request: AiEmbeddingRequest) {
+  if (!request.model.trim()) throw new Error("AI_EMBEDDING_MODEL_REQUIRED");
+  if (request.inputs.length === 0) throw new Error("AI_EMBEDDING_INPUTS_REQUIRED");
+  if (request.inputs.some((input) => !input.trim())) throw new Error("AI_EMBEDDING_INPUT_INVALID");
 }
 
 function validateEmbeddings(request: AiEmbeddingRequest, embeddings: number[][]) {
@@ -345,24 +478,43 @@ function buildStrictJsonSchema(outputSchema: AiStructuredRunRequest<unknown, unk
   return zodTextFormat(outputSchema, schemaName).schema as Record<string, unknown>;
 }
 
-function summarizeInput(input: unknown) {
+const PRIVATE_INPUT_SUMMARY = "[private owner studio input]";
+const PRIVATE_OUTPUT_SUMMARY = "[private owner studio output]";
+
+function summarizeInput(input: unknown, source: AiTextStreamRunRequest["source"]) {
+  if (source === "owner_studio") return PRIVATE_INPUT_SUMMARY;
   if (typeof input === "string") return summarizeText(input);
   if (typeof input === "object" && input && "text" in input && typeof input.text === "string") {
     return summarizeText(input.text);
   }
-  return summarizeText(JSON.stringify(input));
+  return summarizeText(safeSerialize(input));
 }
 
-function summarizeOutput(output: unknown) {
+function summarizeOutput(output: unknown, source: AiTextStreamRunRequest["source"]) {
+  if (source === "owner_studio") return PRIVATE_OUTPUT_SUMMARY;
   if (typeof output === "object" && output && "title" in output && typeof output.title === "string") {
     return summarizeText(output.title);
   }
   if (typeof output === "string") return summarizeText(output);
-  return summarizeText(JSON.stringify(output));
+  return summarizeText(safeSerialize(output));
 }
 
 function summarizeText(text: string) {
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+  const characters = Array.from(text);
+  return characters.length > 160 ? `${characters.slice(0, 157).join("")}...` : text;
+}
+
+function safeSerialize(value: unknown) {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized : String(value);
+  } catch {
+    return "[unserializable input]";
+  }
+}
+
+function sanitizeStoredError(message: string, source: AiTextStreamRunRequest["source"], fallback: string) {
+  return source === "owner_studio" ? fallback : message;
 }
 
 function readValidationErrors(error: unknown) {

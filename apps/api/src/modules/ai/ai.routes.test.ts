@@ -10,6 +10,11 @@ const ownerHeaders = {
   "x-baase-role": "owner"
 };
 
+const secondOwnerHeaders = {
+  ...ownerHeaders,
+  "x-baase-profile-id": "profile_second_owner"
+};
+
 const employeeHeaders = {
   "x-baase-workspace-id": "workspace_a",
   "x-baase-profile-id": "profile_employee",
@@ -307,6 +312,36 @@ describe("AI routes", () => {
     });
   });
 
+  it("isolates private owner studio runs between owners in the same workspace", async () => {
+    const aiRepository = createInMemoryAiRepository();
+    const first = await aiRepository.createRun(privateRunInput("profile_owner", "primeiro segredo"));
+    const second = await aiRepository.createRun(privateRunInput("profile_second_owner", "segundo segredo"));
+    const app = buildApp({ aiRepository, aiProvider: createMockAiProvider() });
+
+    const firstList = await app.inject({ method: "GET", url: "/ai/runs", headers: ownerHeaders });
+    const secondList = await app.inject({ method: "GET", url: "/ai/runs", headers: secondOwnerHeaders });
+    expect(firstList.json().runs.map((run: { id: string }) => run.id)).toEqual([first.id]);
+    expect(secondList.json().runs.map((run: { id: string }) => run.id)).toEqual([second.id]);
+    expect(firstList.body).not.toContain("segundo segredo");
+    expect(secondList.body).not.toContain("primeiro segredo");
+
+    const alteredId = await app.inject({
+      method: "GET",
+      url: `/ai/runs/${first.id}`,
+      headers: secondOwnerHeaders
+    });
+    expect(alteredId.statusCode).toBe(404);
+    expect(alteredId.body).not.toContain("primeiro segredo");
+    await expect(aiRepository.findRun("workspace_a", first.id, "profile_second_owner")).resolves.toBeNull();
+    await expect(aiRepository.listRuns("workspace_a")).resolves.toEqual([]);
+    await expect(aiRepository.updateRun({ ...first, actorProfileId: "profile_second_owner" }))
+      .rejects.toThrow("AI_RUN_NOT_FOUND");
+    await expect(aiRepository.findRun("workspace_a", first.id, "profile_owner")).resolves.toMatchObject({
+      actorProfileId: "profile_owner",
+      inputSummary: "primeiro segredo"
+    });
+  });
+
   it("creates an announcement draft through the AI harness", async () => {
     const app = buildApp({
       aiRepository: createInMemoryAiRepository(),
@@ -552,3 +587,24 @@ describe("AI routes", () => {
     expect(response.statusCode).toBe(403);
   });
 });
+
+function privateRunInput(actorProfileId: string, privateSummary: string) {
+  return {
+    workspaceId: "workspace_a",
+    actorProfileId,
+    source: "owner_studio" as const,
+    inputMode: "text" as const,
+    taskKind: "studio_assist" as const,
+    agentKey: "owner_studio_companion",
+    promptVersion: "agent/owner-studio-companion@1",
+    model: "gpt-5.5",
+    reasoningEffort: "medium" as const,
+    status: "completed" as const,
+    traceId: null,
+    inputSummary: privateSummary,
+    outputSummary: privateSummary,
+    validationErrors: [],
+    costEstimateCents: null,
+    latencyMs: 10
+  };
+}

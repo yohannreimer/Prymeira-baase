@@ -51,7 +51,7 @@ export async function captureStudioLinkSnapshot(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("STUDIO_LINK_TIMEOUT")), LINK_TIMEOUT_MS);
   try {
-    let url = readSafeUrl(sourceUrl);
+    let url = readSafePublicHttpUrl(sourceUrl);
     let redirectCount = 0;
     while (true) {
       const hostname = url.hostname.replace(/^\[|\]$/gu, "");
@@ -70,7 +70,7 @@ export async function captureStudioLinkSnapshot(
         if (redirectCount >= MAX_LINK_REDIRECTS) {
           throw new ApiError(400, "STUDIO_LINK_REDIRECT_LIMIT", "O link redirecionou vezes demais.");
         }
-        url = readSafeUrl(new URL(location, url).toString());
+        url = readSafePublicHttpUrl(new URL(location, url).toString());
         redirectCount += 1;
         continue;
       }
@@ -129,13 +129,34 @@ export function isGloballyRoutableAddress(address: string) {
   }
 }
 
-function readSafeUrl(value: string) {
+export function readSafePublicHttpUrl(value: string) {
   const url = new URL(value);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new ApiError(400, "STUDIO_LINK_PROTOCOL_UNSUPPORTED", "O link usa um protocolo não permitido.");
   }
   if (url.username || url.password) {
     throw new ApiError(400, "STUDIO_LINK_CREDENTIALS_FORBIDDEN", "Links com credenciais não são permitidos.");
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
+    throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
+  }
+  if (isIP(hostname) !== 0 && !isGloballyRoutableAddress(hostname)) {
+    throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
+  }
+  return url;
+}
+
+export async function validateSafePublicHttpUrl(
+  value: string,
+  resolver: StudioLinkResolver = defaultStudioLinkResolver
+) {
+  const url = readSafePublicHttpUrl(value);
+  const hostname = url.hostname.replace(/^\[|\]$/gu, "");
+  const addresses = await resolver(hostname);
+  if (addresses.length === 0 || addresses.some((address) => !isGloballyRoutableAddress(address))) {
+    throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
   }
   return url;
 }

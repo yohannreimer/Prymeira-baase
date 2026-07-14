@@ -106,8 +106,17 @@ export async function registerAiRoutes(
     const context = readRequestContext(request);
     if (!canEditCompanyBase(context.role)) throw forbiddenError();
 
-    const runs = await repository.listRuns(context.workspaceId);
+    const runs = await repository.listRuns(context.workspaceId, context.profileId);
     return { runs };
+  });
+
+  app.get("/ai/runs/:runId", async (request) => {
+    const context = readRequestContext(request);
+    if (!canEditCompanyBase(context.role)) throw forbiddenError();
+    const { runId } = z.object({ runId: z.string().min(1).max(180) }).parse(request.params);
+    const run = await repository.findRun(context.workspaceId, runId, context.profileId);
+    if (!run) throw new ApiError(404, "AI_RUN_NOT_FOUND", "Execução de IA não encontrada.");
+    return { run };
   });
 
   app.post("/ai/drafts", async (request, reply) => {

@@ -94,6 +94,30 @@ class JsonbRecordStore {
     return result.rows[0]?.data ?? null;
   }
 
+  async listScopedAiRuns(workspaceId: string, actorProfileId?: string) {
+    const result = await this.db.query<RecordRow<AiRun>>(
+      `SELECT data FROM ${tableName}
+       WHERE kind = 'ai_run' AND workspace_id = $1
+         AND (COALESCE(data ->> 'source', '') <> 'owner_studio'
+           OR ($2::text IS NOT NULL AND data ->> 'actorProfileId' = $2))
+       ORDER BY created_at ASC, id ASC`,
+      [workspaceId, actorProfileId ?? null]
+    );
+    return result.rows.map((row) => row.data);
+  }
+
+  async findScopedAiRun(workspaceId: string, runId: string, actorProfileId?: string) {
+    const result = await this.db.query<RecordRow<AiRun>>(
+      `SELECT data FROM ${tableName}
+       WHERE kind = 'ai_run' AND workspace_id = $1 AND id = $2
+         AND (COALESCE(data ->> 'source', '') <> 'owner_studio'
+           OR ($3::text IS NOT NULL AND data ->> 'actorProfileId' = $3))
+       LIMIT 1`,
+      [workspaceId, runId, actorProfileId ?? null]
+    );
+    return result.rows[0]?.data ?? null;
+  }
+
   async findByTextField<T>(kind: string, field: string, value: string) {
     const result = await this.db.query<RecordRow<T>>(
       `SELECT data FROM ${tableName} WHERE kind = $1 AND data ->> $2 = $3 LIMIT 1`,
@@ -117,6 +141,20 @@ class JsonbRecordStore {
     );
     if (!result.rows[0]) throw new Error(`${kind.toUpperCase()}_NOT_FOUND`);
     return record;
+  }
+
+  async updateAiRun(run: AiRun) {
+    const result = await this.db.query<{ id: string }>(
+      `UPDATE ${tableName} SET data = $4::jsonb, updated_at = $5
+       WHERE kind = 'ai_run' AND workspace_id = $1 AND id = $2
+         AND ((COALESCE(data ->> 'source', '') <> 'owner_studio' AND $6 <> 'owner_studio')
+           OR (data ->> 'source' = 'owner_studio' AND $6 = 'owner_studio'
+             AND data ->> 'actorProfileId' = $3))
+       RETURNING id`,
+      [run.workspaceId, run.id, run.actorProfileId, JSON.stringify(run), run.updatedAt, run.source]
+    );
+    if (!result.rows[0]) throw new Error("AI_RUN_NOT_FOUND");
+    return run;
   }
 
   async delete(kind: string, workspaceId: string, id: string) {
@@ -368,12 +406,12 @@ function readNumericIdSuffix(id: string) {
 
 function createPostgresAiRepository(store: JsonbRecordStore): AiRepository {
   return {
-    listRuns(workspaceId) {
-      return store.list<AiRun>("ai_run", workspaceId);
+    listRuns(workspaceId, actorProfileId) {
+      return store.listScopedAiRuns(workspaceId, actorProfileId);
     },
 
-    findRun(workspaceId, runId) {
-      return store.find<AiRun>("ai_run", workspaceId, runId);
+    findRun(workspaceId, runId, actorProfileId) {
+      return store.findScopedAiRun(workspaceId, runId, actorProfileId);
     },
 
     async createRun(input) {
@@ -386,8 +424,8 @@ function createPostgresAiRepository(store: JsonbRecordStore): AiRepository {
       });
     },
 
-    updateRun(run) {
-      return store.update<AiRun>("ai_run", {
+    async updateRun(run) {
+      return store.updateAiRun({
         ...run,
         updatedAt: now()
       });
