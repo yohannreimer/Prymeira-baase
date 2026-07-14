@@ -2,6 +2,25 @@ export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
+export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
+export type StudioStructureLifecycleStatus = "active" | "archived";
+
+export type StudioGoalMetric = {
+  label: string;
+  target: number;
+  unit?: string;
+  baseline?: number;
+  current?: number;
+  direction?: "increase" | "decrease";
+};
+
+export type StudioRitualCadence = {
+  frequency: "daily" | "weekly" | "monthly";
+  local_time: string;
+  timezone: string;
+  weekdays?: number[];
+  month_day?: number;
+};
 
 export type StudioDocument = {
   id: string;
@@ -33,6 +52,24 @@ export type StudioDocumentVersion = {
   actorProfileId: string;
   aiRunId: string | null;
   createdAt: string;
+};
+
+export type StudioStructure = {
+  id: string;
+  workspaceId: string;
+  ownerProfileId: string;
+  documentId: string;
+  kind: StudioStructureKind;
+  lifecycleStatus: StudioStructureLifecycleStatus;
+  revision: number;
+  horizonAt: string | null;
+  metricJson: StudioGoalMetric | null;
+  cadenceJson: StudioRitualCadence | null;
+  nextRunAt: string | null;
+  propertiesJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
 };
 
 export type StudioCollection = {
@@ -199,6 +236,36 @@ export type RawStudioDocumentVersion = {
   createdAt?: string;
 };
 
+export type RawStudioStructure = {
+  id: string;
+  workspace_id?: string;
+  workspaceId?: string;
+  owner_profile_id?: string;
+  ownerProfileId?: string;
+  document_id?: string;
+  documentId?: string;
+  kind: StudioStructureKind;
+  lifecycle_status?: StudioStructureLifecycleStatus;
+  lifecycleStatus?: StudioStructureLifecycleStatus;
+  revision: number;
+  horizon_at?: string | null;
+  horizonAt?: string | null;
+  metric_json?: StudioGoalMetric | null;
+  metricJson?: StudioGoalMetric | null;
+  cadence_json?: StudioRitualCadence | null;
+  cadenceJson?: StudioRitualCadence | null;
+  next_run_at?: string | null;
+  nextRunAt?: string | null;
+  properties_json?: Record<string, unknown>;
+  propertiesJson?: Record<string, unknown>;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  archived_at?: string | null;
+  archivedAt?: string | null;
+};
+
 export type RawStudioCollection = {
   id: string;
   workspace_id?: string;
@@ -253,6 +320,12 @@ export type RawStudioDocumentPageResponse = {
 export type RawStudioCollectionsResponse = { collections: RawStudioCollection[] };
 export type RawStudioSearchResponse = { results: RawStudioSearchResult[] };
 export type RawStudioVersionsResponse = { versions: RawStudioDocumentVersion[] };
+export type RawStudioStructureResponse = { structure: RawStudioStructure };
+export type RawStudioStructuresResponse = {
+  structures: RawStudioStructure[];
+  next_cursor?: string | null;
+  nextCursor?: string | null;
+};
 
 export type RawStudioAsset = {
   id: string;

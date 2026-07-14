@@ -8,6 +8,7 @@ import {
   attachStudioLink,
   createStudioCollection,
   createStudioDocument,
+  createStudioStructure,
   deleteStudioCollection,
   getStudioAsset,
   getStudioAssetDownload,
@@ -17,13 +18,15 @@ import {
   listStudioCollections,
   listStudioDocumentVersions,
   listStudioDocuments,
+  listStudioStructures,
   removeStudioDocumentFromCollection,
   renameStudioCollection,
   restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
   studioRequest,
-  updateStudioDocument
+  updateStudioDocument,
+  updateStudioStructure
 } from "./studio-api";
 
 const rawDocument = {
@@ -249,6 +252,56 @@ describe("Studio API client", () => {
       body_json: { type: "doc", content: [] },
       body_text: "Nova direção"
     });
+  });
+
+  it("maps, creates, and updates strategic structures through the API contract", async () => {
+    const controller = new AbortController();
+    const rawStructure = {
+      id: "structure_1",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      document_id: "document_1",
+      kind: "goal",
+      lifecycle_status: "active",
+      revision: 1,
+      horizon_at: null,
+      metric_json: null,
+      cadence_json: null,
+      next_run_at: null,
+      properties_json: { desired_outcome: "Crescer com margem" },
+      created_at: "2026-07-14T10:00:00.000Z",
+      updated_at: "2026-07-14T10:00:00.000Z",
+      archived_at: null
+    } as const;
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
+      if (!init?.method) return jsonResponse({ structures: [rawStructure], next_cursor: "cursor_2" });
+      const payload = JSON.parse(String(init.body));
+      return jsonResponse({ structure: {
+        ...rawStructure,
+        document_id: input.includes("/documents/") ? "document / 1" : rawStructure.document_id,
+        revision: init.method === "PATCH" ? 2 : 1,
+        properties_json: payload.properties_json
+      } }, init.method === "POST" ? 201 : 200);
+    });
+
+    await expect(listStudioStructures({ kind: "goal", lifecycle_status: "active", cursor: "cursor 1", limit: 25 }, fetcher, controller.signal))
+      .resolves.toMatchObject({ items: [{ documentId: "document_1", propertiesJson: { desired_outcome: "Crescer com margem" } }], nextCursor: "cursor_2" });
+    await createStudioStructure("document / 1", {
+      kind: "goal", horizon_at: null, metric_json: null,
+      properties_json: { desired_outcome: "Expandir" }
+    }, controller.signal, fetcher);
+    await updateStudioStructure("structure / 1", {
+      expected_revision: 1,
+      properties_json: { desired_outcome: "Expandir com margem" }
+    }, controller.signal, fetcher);
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/studio/structures?kind=goal&lifecycle_status=active&cursor=cursor+1&limit=25",
+      "/api/studio/documents/document%20%2F%201/structures",
+      "/api/studio/structures/structure%20%2F%201"
+    ]);
+    expect(fetcher.mock.calls.map(([, init]) => init?.signal)).toEqual([controller.signal, controller.signal, controller.signal]);
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({ expected_revision: 1 });
   });
 
   it("archives, restores, and changes collection membership with encoded owner-scoped routes", async () => {

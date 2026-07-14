@@ -11,6 +11,7 @@ import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
 import StudioCopilot from "./StudioCopilot";
 import RelatedThoughts from "./RelatedThoughts";
+import StudioStructures from "./StudioStructures";
 
 type StudioEditorProps = {
   document: StudioDocument;
@@ -428,6 +429,7 @@ function StudioEditorSession({
             Ver histórico de versões
           </button>
         </div>
+        <StudioStructures documentId={sourceDocument.id} documentTitle={title.trim() || null} />
       </header>
 
       <div className="studio-editor__toolbar" role="toolbar" aria-label="Formatação do documento">

@@ -13,6 +13,9 @@ import type {
   RawStudioNextRitual,
   RawStudioSearchResponse,
   RawStudioSearchResult,
+  RawStudioStructure,
+  RawStudioStructureResponse,
+  RawStudioStructuresResponse,
   RawStudioVersionsResponse,
   StudioCollection,
   StudioAsset,
@@ -24,6 +27,11 @@ import type {
   StudioHome,
   StudioNextRitual,
   StudioSearchResult,
+  StudioGoalMetric,
+  StudioRitualCadence,
+  StudioStructure,
+  StudioStructureKind,
+  StudioStructureLifecycleStatus,
   StudioCitation,
   StudioSuggestion,
   StudioRelatedThought,
@@ -161,6 +169,26 @@ export function mapStudioDocumentVersion(raw: RawStudioDocumentVersion): StudioD
     actorProfileId: required(raw.actor_profile_id, raw.actorProfileId, "actor_profile_id"),
     aiRunId: raw.ai_run_id !== undefined ? raw.ai_run_id : raw.aiRunId ?? null,
     createdAt: required(raw.created_at, raw.createdAt, "created_at")
+  };
+}
+
+export function mapStudioStructure(raw: RawStudioStructure): StudioStructure {
+  return {
+    id: raw.id,
+    workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
+    ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
+    documentId: required(raw.document_id, raw.documentId, "document_id"),
+    kind: raw.kind,
+    lifecycleStatus: required(raw.lifecycle_status, raw.lifecycleStatus, "lifecycle_status"),
+    revision: raw.revision,
+    horizonAt: raw.horizon_at !== undefined ? raw.horizon_at : raw.horizonAt ?? null,
+    metricJson: raw.metric_json !== undefined ? raw.metric_json : raw.metricJson ?? null,
+    cadenceJson: raw.cadence_json !== undefined ? raw.cadence_json : raw.cadenceJson ?? null,
+    nextRunAt: raw.next_run_at !== undefined ? raw.next_run_at : raw.nextRunAt ?? null,
+    propertiesJson: required(raw.properties_json, raw.propertiesJson, "properties_json"),
+    createdAt: required(raw.created_at, raw.createdAt, "created_at"),
+    updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
+    archivedAt: raw.archived_at !== undefined ? raw.archived_at : raw.archivedAt ?? null
   };
 }
 
@@ -484,6 +512,88 @@ export async function listStudioDocumentVersions(
     fetcher
   );
   return response.versions.map(mapStudioDocumentVersion);
+}
+
+export type StudioStructurePage = { items: StudioStructure[]; nextCursor: string | null };
+
+export async function listStudioStructures(
+  query: {
+    kind?: StudioStructureKind;
+    lifecycle_status?: StudioStructureLifecycleStatus;
+    cursor?: string;
+    limit?: number;
+  } = {},
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioStructurePage> {
+  const params = new URLSearchParams();
+  if (query.kind) params.set("kind", query.kind);
+  if (query.lifecycle_status) params.set("lifecycle_status", query.lifecycle_status);
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const response = await studioRequest<RawStudioStructuresResponse>(`/structures${suffix}`, { signal }, fetcher);
+  return {
+    items: response.structures.map(mapStudioStructure),
+    nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null
+  };
+}
+
+export type CreateStudioStructureInput = {
+  kind: StudioStructureKind;
+  horizon_at?: string | null;
+  metric_json?: StudioGoalMetric | null;
+  cadence_json?: StudioRitualCadence | null;
+  properties_json: Record<string, unknown>;
+};
+
+export async function createStudioStructure(
+  documentId: string,
+  input: CreateStudioStructureInput,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioStructure> {
+  const response = await studioRequest<RawStudioStructureResponse>(
+    `/documents/${encodeURIComponent(documentId)}/structures`,
+    { method: "POST", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return mapStudioStructure(response.structure);
+}
+
+export type UpdateStudioStructureInput = {
+  expected_revision: number;
+  horizon_at?: string | null;
+  metric_json?: StudioGoalMetric | null;
+  cadence_json?: StudioRitualCadence | null;
+  properties_json?: Record<string, unknown>;
+};
+
+export async function updateStudioStructure(
+  structureId: string,
+  input: UpdateStudioStructureInput,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioStructure> {
+  const response = await studioRequest<RawStudioStructureResponse>(
+    `/structures/${encodeURIComponent(structureId)}`,
+    { method: "PATCH", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return mapStudioStructure(response.structure);
+}
+
+export async function archiveStudioStructure(
+  structureId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioStructure> {
+  const response = await studioRequest<RawStudioStructureResponse>(
+    `/structures/${encodeURIComponent(structureId)}`,
+    { method: "DELETE", signal },
+    fetcher
+  );
+  return mapStudioStructure(response.structure);
 }
 
 type RawStudioCitation = {
