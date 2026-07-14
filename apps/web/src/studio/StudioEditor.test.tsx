@@ -84,6 +84,56 @@ describe("StudioEditor", () => {
     expect(String(url)).not.toContain(documentA.id);
   });
 
+  it("round-trips rich TipTap text through a local envelope without quarantining it", async () => {
+    const user = userEvent.setup();
+    const richDocument: StudioDocument = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Primeiro" },
+              { type: "hardBreak" },
+              { type: "text", text: "linha" }
+            ]
+          },
+          { type: "paragraph", content: [{ type: "text", text: "Segundo" }] },
+          {
+            type: "bulletList",
+            content: [
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Marcador A" }] }] },
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Marcador B" }] }] }
+            ]
+          },
+          {
+            type: "orderedList",
+            attrs: { start: 1, type: null },
+            content: [
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Ordem A" }] }] },
+              { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Ordem B" }] }] }
+            ]
+          }
+        ]
+      },
+      bodyText: "Primeiro\nlinha\nSegundo\nMarcador A\nMarcador B\nOrdem A\nOrdem B"
+    };
+    const first = render(<StudioEditor document={richDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " revisado");
+    const stored = JSON.parse(window.localStorage.getItem(`baase:studio:draft:${richDocument.id}`)!);
+    expect(stored.draft.bodyText).toBe(richDocument.bodyText);
+    first.unmount();
+
+    render(<StudioEditor document={richDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+
+    expect(screen.getByRole("textbox", { name: "Título do documento" })).toHaveValue("Plano anual revisado");
+    expect(screen.queryByRole("alert", { name: "Rascunho local inválido" })).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(`baase:studio:draft:${richDocument.id}`)!).draft.bodyText)
+      .toBe(richDocument.bodyText);
+  });
+
   it("lets the owner explicitly discard a bounded invalid-draft quarantine", async () => {
     const user = userEvent.setup();
     const invalid = { title: null, bodyJson: { type: "secretWidget" }, bodyText: "sensitive" };
@@ -92,12 +142,66 @@ describe("StudioEditor", () => {
 
     const warning = await screen.findByRole("alert", { name: "Rascunho local inválido" });
     expect(warning).toHaveTextContent(/isolado.*24 horas/i);
-    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    const quarantineKey = `baase:studio:draft:${document.id}:quarantine`;
     expect(window.localStorage.getItem(quarantineKey)).not.toBeNull();
     await user.click(within(warning).getByRole("button", { name: "Descartar rascunho inválido" }));
 
     expect(window.localStorage.getItem(quarantineKey)).toBeNull();
     expect(screen.queryByRole("alert", { name: "Rascunho local inválido" })).not.toBeInTheDocument();
+  });
+
+  it("does not claim an invalid draft was isolated when quarantine persistence fails", async () => {
+    const invalid = { title: null, bodyJson: { type: "secretWidget" }, bodyText: "sensitive" };
+    storeDraftEnvelopeFor(document.id, invalid, document.revision);
+    const storage = window.localStorage;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: storage.clear,
+        getItem: storage.getItem,
+        key: storage.key,
+        get length() { return storage.length; },
+        removeItem: storage.removeItem,
+        setItem: () => { throw new DOMException("full", "QuotaExceededError"); }
+      }
+    });
+
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    expect(await screen.findByRole("alert", { name: "Rascunho local inválido" }))
+      .toHaveTextContent(/não foi possível isolar/i);
+    expect(screen.getByRole("alert", { name: "Armazenamento local indisponível" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(`baase:studio:draft:${document.id}:quarantine`)).toBeNull();
+  });
+
+  it("keeps the recovery warning visible when discarding quarantine fails", async () => {
+    const user = userEvent.setup();
+    const invalid = { title: null, bodyJson: { type: "secretWidget" }, bodyText: "sensitive" };
+    storeDraftEnvelopeFor(document.id, invalid, document.revision);
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+    const warning = await screen.findByRole("alert", { name: "Rascunho local inválido" });
+    const storage = window.localStorage;
+    const quarantineKey = `baase:studio:draft:${document.id}:quarantine`;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: storage.clear,
+        getItem: storage.getItem,
+        key: storage.key,
+        get length() { return storage.length; },
+        setItem: storage.setItem,
+        removeItem: (key: string) => {
+          if (key === quarantineKey) throw new DOMException("blocked", "SecurityError");
+          storage.removeItem(key);
+        }
+      }
+    });
+
+    await user.click(within(warning).getByRole("button", { name: "Descartar rascunho inválido" }));
+
+    expect(screen.getByRole("alert", { name: "Rascunho local inválido" })).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Armazenamento local indisponível" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(quarantineKey)).not.toBeNull();
   });
 
   it("does not overwrite newer edits when reloading the server version finishes late", async () => {

@@ -336,7 +336,7 @@ describe("useStudioAutosave", () => {
   });
 
   it("keeps only one time-bounded quarantine and purges it on the next valid draft", () => {
-    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    const quarantineKey = `baase:studio:draft:${document.id}:quarantine`;
     const firstInvalid = { title: null, bodyJson: { type: "unknown" }, bodyText: "primeiro" } as StudioDocumentDraft;
     storeEnvelope(firstInvalid, 4);
     const first = renderHook(() => useStudioAutosave(document, vi.fn()));
@@ -352,7 +352,7 @@ describe("useStudioAutosave", () => {
   });
 
   it("purges an expired invalid-draft quarantine on the next read", () => {
-    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    const quarantineKey = `baase:studio:draft:${document.id}:quarantine`;
     window.localStorage.setItem(quarantineKey, JSON.stringify({
       version: 1,
       quarantinedAt: Date.now() - 100_000,

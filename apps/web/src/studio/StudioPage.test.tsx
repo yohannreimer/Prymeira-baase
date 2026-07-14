@@ -46,6 +46,28 @@ describe("StudioPage", () => {
     expect(screen.getByRole("heading", { name: "Documento" })).toBeInTheDocument();
   });
 
+  it("sweeps expired draft quarantines for other documents when Studio opens", async () => {
+    const expiredKey = "baase:studio:draft:another-document:quarantine";
+    const retainedKey = "baase:studio:draft:retained-document:quarantine";
+    window.localStorage.setItem(expiredKey, JSON.stringify({
+      version: 1,
+      quarantinedAt: Date.now() - 100_000,
+      expiresAt: Date.now() - 1,
+      raw: "expired-sensitive-copy"
+    }));
+    window.localStorage.setItem(retainedKey, JSON.stringify({
+      version: 1,
+      quarantinedAt: Date.now(),
+      expiresAt: Date.now() + 100_000,
+      raw: "retained-sensitive-copy"
+    }));
+
+    render(<StudioPage />);
+
+    await waitFor(() => expect(window.localStorage.getItem(expiredKey)).toBeNull());
+    expect(window.localStorage.getItem(retainedKey)).not.toBeNull();
+  });
+
   it("supports native keyboard activation and ordered focus", async () => {
     const user = userEvent.setup();
     render(<StudioPage />);
@@ -237,7 +259,9 @@ function installLocalStorage() {
       clear: () => values.clear(),
       getItem: (key: string) => values.get(key) ?? null,
       removeItem: (key: string) => values.delete(key),
-      setItem: (key: string, value: string) => values.set(key, String(value))
+      setItem: (key: string, value: string) => values.set(key, String(value)),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; }
     }
   });
 }

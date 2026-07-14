@@ -1,6 +1,4 @@
-import Link from "@tiptap/extension-link";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createStudioDocument,
@@ -9,6 +7,7 @@ import {
   updateStudioDocument
 } from "./studio-api";
 import type { StudioDocument, StudioDocumentVersion } from "./studio.types";
+import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-editor-content";
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
 
 type StudioEditorProps = {
@@ -92,10 +91,7 @@ function StudioEditorSession({
 
   const editor = useEditor({
     immediatelyRender: false,
-    extensions: [
-      StarterKit.configure({ link: false }),
-      Link.configure({ openOnClick: false, HTMLAttributes: { rel: "noopener noreferrer" } })
-    ],
+    extensions: createStudioEditorExtensions(),
     content: documentContent(sourceDocument, autosave.initialDraft),
     editorProps: {
       attributes: {
@@ -109,7 +105,7 @@ function StudioEditorSession({
       autosave.queueSave({
         title: titleRef.current.trim() || null,
         bodyJson: currentEditor.getJSON(),
-        bodyText: currentEditor.getText()
+        bodyText: currentEditor.getText(studioEditorTextOptions)
       });
     }
   });
@@ -130,14 +126,14 @@ function StudioEditorSession({
     autosave.queueSave({
       title: nextTitle.trim() || null,
       bodyJson: editor.getJSON(),
-      bodyText: editor.getText()
+      bodyText: editor.getText(studioEditorTextOptions)
     });
   }, [autosave.queueSave, editor]);
 
   const getCurrentEditorDraft = useCallback((): StudioDocumentDraft => ({
     title: titleRef.current.trim() || null,
     bodyJson: editor?.getJSON() ?? autosave.currentDraft?.bodyJson ?? autosave.document.bodyJson,
-    bodyText: editor?.getText() ?? autosave.currentDraft?.bodyText ?? autosave.document.bodyText
+    bodyText: editor?.getText(studioEditorTextOptions) ?? autosave.currentDraft?.bodyText ?? autosave.document.bodyText
   }), [autosave.currentDraft, autosave.document.bodyJson, autosave.document.bodyText, editor]);
 
   const captureEditorGeneration = useCallback(() => {
@@ -464,8 +460,15 @@ function StudioEditorSession({
           role="alert"
           aria-label="Rascunho local inválido"
         >
-          <p>{autosave.recoveryWarning} Você pode descartá-lo agora; caso contrário, ele será removido automaticamente.</p>
-          <button type="button" onClick={autosave.discardRecoveryWarning}>Descartar rascunho inválido</button>
+          <p>
+            {autosave.recoveryWarning}{" "}
+            {autosave.recoveryQuarantined
+              ? "Você pode descartá-lo agora; caso contrário, ele será removido automaticamente."
+              : "O conteúdo inválido não foi aberto para proteger o Estúdio."}
+          </p>
+          {autosave.recoveryQuarantined ? (
+            <button type="button" onClick={autosave.discardRecoveryWarning}>Descartar rascunho inválido</button>
+          ) : null}
         </div>
       ) : null}
 

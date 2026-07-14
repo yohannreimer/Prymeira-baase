@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { StudioApiError } from "./studio-api";
 import type { StudioDocument } from "./studio.types";
+import { studioBodyText } from "./studio-editor-content";
+import {
+  browserStudioStorage,
+  shouldDiscardStudioDraftQuarantine,
+  studioDraftQuarantineKey,
+  studioDraftStorageKey
+} from "./studio-draft-storage";
+
+export { studioDraftQuarantineKey, studioDraftStorageKey } from "./studio-draft-storage";
 
 export type AutosaveState = "idle" | "dirty" | "saving" | "saved" | "offline" | "conflict" | "error";
 
@@ -27,7 +36,7 @@ type StoredDraftEnvelope = {
 type StoredDraftRead =
   | { kind: "none" }
   | { kind: "valid"; envelope: StoredDraftEnvelope }
-  | { kind: "invalid"; warning: string }
+  | { kind: "invalid"; warning: string; quarantined: boolean; storageUnavailable: boolean }
   | { kind: "unavailable" };
 
 type QueuedDraft = {
@@ -42,6 +51,7 @@ type AutosaveView = {
   conflictDraft: StudioDocumentDraft | null;
   currentDraft: StudioDocumentDraft | null;
   recoveryWarning: string | null;
+  recoveryQuarantined: boolean;
   storageUnavailable: boolean;
 };
 
@@ -54,20 +64,8 @@ const blockNodeTypes = new Set([
 const inlineNodeTypes = new Set(["text", "hardBreak"]);
 const simpleMarkTypes = new Set(["bold", "italic", "strike", "code", "underline"]);
 
-export function studioDraftStorageKey(documentId: string) {
-  return `baase:studio:draft:${documentId}`;
-}
-
-export function studioDraftQuarantineKey(documentId: string) {
-  return `baase:studio:draft-quarantine:${documentId}`;
-}
-
 function serializeDraft(draft: StudioDocumentDraft) {
   return JSON.stringify(draft);
-}
-
-function browserStorage() {
-  return typeof window === "undefined" ? null : window.localStorage;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,26 +170,18 @@ function validTipTapNode(value: unknown): value is Record<string, unknown> {
   }
 }
 
-function tipTapNodeText(node: Record<string, unknown>): string {
-  if (node.type === "text") return node.text as string;
-  if (node.type === "hardBreak") return "\n";
-  if (!Array.isArray(node.content)) return "";
-  const separator = node.type === "doc"
-    || node.type === "blockquote"
-    || node.type === "bulletList"
-    || node.type === "orderedList"
-    || node.type === "listItem" ? "\n" : "";
-  return node.content.map((child) => tipTapNodeText(child as Record<string, unknown>)).join(separator);
-}
-
 function parseDraft(value: unknown): StudioDocumentDraft | null {
   if (!isRecord(value)
     || !hasOnlyKeys(value, ["title", "bodyJson", "bodyText"])
     || (value.title !== null && typeof value.title !== "string")
     || typeof value.bodyText !== "string"
     || !validTipTapNode(value.bodyJson)
-    || value.bodyJson.type !== "doc"
-    || tipTapNodeText(value.bodyJson) !== value.bodyText) return null;
+    || value.bodyJson.type !== "doc") return null;
+  try {
+    if (studioBodyText(value.bodyJson) !== value.bodyText) return null;
+  } catch {
+    return null;
+  }
   return { title: value.title, bodyJson: value.bodyJson, bodyText: value.bodyText };
 }
 
@@ -219,15 +209,7 @@ function purgeQuarantine(storage: Storage, documentId: string) {
   const key = studioDraftQuarantineKey(documentId);
   const raw = storage.getItem(key);
   if (!raw) return;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (parsed.version !== QUARANTINE_VERSION
-      || typeof parsed.expiresAt !== "number"
-      || parsed.expiresAt <= Date.now()
-      || typeof parsed.raw !== "string") storage.removeItem(key);
-  } catch {
-    storage.removeItem(key);
-  }
+  if (shouldDiscardStudioDraftQuarantine(raw)) storage.removeItem(key);
 }
 
 function quarantineInvalidDraft(storage: Storage, documentId: string, raw: string) {
@@ -239,21 +221,39 @@ function quarantineInvalidDraft(storage: Storage, documentId: string, raw: strin
       expiresAt: quarantinedAt + QUARANTINE_TTL_MS,
       raw
     }));
+    return true;
   } catch {
-    // If quarantine cannot be written, the invalid active value is still removed below.
+    return false;
   }
+}
+
+function removeInvalidActiveDraft(storage: Storage, documentId: string) {
   try {
     storage.removeItem(studioDraftStorageKey(documentId));
+    return true;
   } catch {
-    // The warning remains visible even if cleanup is blocked.
+    return false;
   }
+}
+
+function invalidStoredDraft(storage: Storage, documentId: string, raw: string): StoredDraftRead {
+  const quarantined = quarantineInvalidDraft(storage, documentId, raw);
+  const activeRemoved = removeInvalidActiveDraft(storage, documentId);
+  return {
+    kind: "invalid",
+    quarantined,
+    storageUnavailable: !quarantined || !activeRemoved,
+    warning: quarantined
+      ? "Um rascunho local inválido foi isolado por até 24 horas."
+      : "Um rascunho local inválido foi encontrado, mas não foi possível isolar uma cópia neste dispositivo."
+  };
 }
 
 function readStoredDraft(documentId: string): StoredDraftRead {
   let storage: Storage | null;
   let raw: string | null;
   try {
-    storage = browserStorage();
+    storage = browserStudioStorage();
     if (!storage) return { kind: "none" };
     purgeQuarantine(storage, documentId);
     raw = storage.getItem(studioDraftStorageKey(documentId));
@@ -265,13 +265,11 @@ function readStoredDraft(documentId: string): StoredDraftRead {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    quarantineInvalidDraft(storage, documentId, raw);
-    return { kind: "invalid", warning: "Um rascunho local inválido foi isolado por até 24 horas." };
+    return invalidStoredDraft(storage, documentId, raw);
   }
   const envelope = parseEnvelope(parsed);
   if (!envelope) {
-    quarantineInvalidDraft(storage, documentId, raw);
-    return { kind: "invalid", warning: "Um rascunho local inválido foi isolado por até 24 horas." };
+    return invalidStoredDraft(storage, documentId, raw);
   }
   try {
     storage.removeItem(studioDraftQuarantineKey(documentId));
@@ -293,7 +291,7 @@ function makeEnvelope(draft: StudioDocumentDraft, baseRevision: number, generati
 
 function writeStoredDraft(documentId: string, envelope: StoredDraftEnvelope) {
   try {
-    const storage = browserStorage();
+    const storage = browserStudioStorage();
     if (!storage) return false;
     storage.setItem(studioDraftStorageKey(documentId), JSON.stringify(envelope));
     storage.removeItem(studioDraftQuarantineKey(documentId));
@@ -305,7 +303,7 @@ function writeStoredDraft(documentId: string, envelope: StoredDraftEnvelope) {
 
 function clearMatchingStoredDraft(documentId: string, item: Pick<StoredDraftEnvelope, "signature" | "generation">) {
   try {
-    const storage = browserStorage();
+    const storage = browserStudioStorage();
     if (!storage) return false;
     const raw = storage.getItem(studioDraftStorageKey(documentId));
     if (!raw) return true;
@@ -321,7 +319,7 @@ function clearMatchingStoredDraft(documentId: string, item: Pick<StoredDraftEnve
 
 function clearStoredDraft(documentId: string) {
   try {
-    const storage = browserStorage();
+    const storage = browserStudioStorage();
     if (!storage) return false;
     storage.removeItem(studioDraftStorageKey(documentId));
     return true;
@@ -332,7 +330,7 @@ function clearStoredDraft(documentId: string) {
 
 function clearQuarantinedDraft(documentId: string) {
   try {
-    const storage = browserStorage();
+    const storage = browserStudioStorage();
     if (!storage) return false;
     storage.removeItem(studioDraftQuarantineKey(documentId));
     return true;
@@ -351,7 +349,9 @@ function recoveryView(sourceDocument: StudioDocument, recovery: StoredDraftRead)
     conflictDraft: conflict ? envelope?.draft ?? null : null,
     currentDraft: envelope?.draft ?? null,
     recoveryWarning: recovery.kind === "invalid" ? recovery.warning : null,
+    recoveryQuarantined: recovery.kind === "invalid" && recovery.quarantined,
     storageUnavailable: recovery.kind === "unavailable"
+      || (recovery.kind === "invalid" && recovery.storageUnavailable)
   };
 }
 
@@ -521,8 +521,11 @@ export function useStudioAutosave(
   }, [markStorageAvailable, markStorageUnavailable]);
 
   const discardRecoveryWarning = useCallback(() => {
-    if (!clearQuarantinedDraft(documentIdRef.current)) markStorageUnavailable();
-    setView((current) => ({ ...current, recoveryWarning: null }));
+    if (!clearQuarantinedDraft(documentIdRef.current)) {
+      markStorageUnavailable();
+      return;
+    }
+    setView((current) => ({ ...current, recoveryWarning: null, recoveryQuarantined: false }));
   }, [markStorageUnavailable]);
 
   useEffect(() => {

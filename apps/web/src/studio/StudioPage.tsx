@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import { getStudioDocumentAssets } from "./studio-api";
+import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import type { StudioAsset, StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
@@ -49,6 +50,10 @@ export default function StudioPage() {
   });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
+
+  useEffect(() => {
+    sweepExpiredStudioDraftQuarantines();
+  }, []);
 
   function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
     setSelectedDocument(document);
