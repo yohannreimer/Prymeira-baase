@@ -14,6 +14,11 @@ import type {
   StudioDocumentVersion,
   StudioIndexJob,
   StudioRelation,
+  StudioConversation,
+  StudioMessage,
+  StudioSuggestion,
+  StudioCitation,
+  CreateStudioCitation,
   StudioRepository,
   StudioOwnerScope,
   StudioSearchDocument
@@ -106,6 +111,32 @@ type StudioIndexJobRow = {
   lease_expires_at: string | Date | null;
   created_at: string | Date;
   updated_at: string | Date;
+};
+
+type StudioConversationRow = {
+  id: string; workspace_id: string; owner_profile_id: string; document_id: string | null;
+  created_at: string | Date; updated_at: string | Date;
+};
+
+type StudioMessageRow = {
+  id: string; workspace_id: string; owner_profile_id: string; conversation_id: string;
+  role: StudioMessage["role"]; content: string; ai_run_id: string | null;
+  status: StudioMessage["status"]; created_at: string | Date;
+};
+
+type StudioSuggestionRow = {
+  id: string; workspace_id: string; owner_profile_id: string; document_id: string | null;
+  conversation_id: string | null; ai_run_id: string; kind: StudioSuggestion["kind"];
+  payload_json: StudioSuggestion["payloadJson"]; status: StudioSuggestion["status"];
+  accepted_version_id: string | null; created_at: string | Date; decided_at: string | Date | null;
+};
+
+type StudioCitationRow = {
+  id: string; workspace_id: string; owner_profile_id: string; message_id: string | null;
+  suggestion_id: string | null; source_type: StudioCitation["sourceType"];
+  source_id: string | null; url: string | null; label: string; excerpt: string;
+  observed_at: string | Date; period_from: string | Date | null; period_to: string | Date | null;
+  metadata: Record<string, unknown>; created_at: string | Date;
 };
 
 type StudioAssetRow = {
@@ -273,6 +304,34 @@ function indexJobFromRow(row: StudioIndexJobRow): StudioIndexJob {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at)
   };
+}
+
+function conversationFromRow(row: StudioConversationRow): StudioConversation {
+  return { id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
+}
+
+function messageFromRow(row: StudioMessageRow): StudioMessage {
+  return { id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    conversationId: row.conversation_id, role: row.role, content: row.content,
+    aiRunId: row.ai_run_id, status: row.status, createdAt: iso(row.created_at) };
+}
+
+function suggestionFromRow(row: StudioSuggestionRow): StudioSuggestion {
+  return { id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id, conversationId: row.conversation_id, aiRunId: row.ai_run_id,
+    kind: row.kind, payloadJson: structuredClone(row.payload_json), status: row.status,
+    acceptedVersionId: row.accepted_version_id, createdAt: iso(row.created_at),
+    decidedAt: row.decided_at ? iso(row.decided_at) : null };
+}
+
+function citationFromRow(row: StudioCitationRow): StudioCitation {
+  return { id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    messageId: row.message_id, suggestionId: row.suggestion_id, sourceType: row.source_type,
+    sourceId: row.source_id, url: row.url, label: row.label, excerpt: row.excerpt,
+    observedAt: iso(row.observed_at), periodFrom: row.period_from ? iso(row.period_from).slice(0, 10) : null,
+    periodTo: row.period_to ? iso(row.period_to).slice(0, 10) : null,
+    metadata: structuredClone(row.metadata), createdAt: iso(row.created_at) };
 }
 
 function assetFromRow(row: StudioAssetRow): StudioAsset {
@@ -480,6 +539,28 @@ async function insertVersion(
     ]
   );
   return version;
+}
+
+async function insertCitations(
+  client: OperationalClient,
+  inputs: CreateStudioCitation[],
+  target: { messageId: string | null; suggestionId: string | null }
+) {
+  const stored: StudioCitation[] = [];
+  for (const input of inputs) {
+    const result = await client.query<StudioCitationRow>(
+      `INSERT INTO studio_citations
+        (id,workspace_id,owner_profile_id,message_id,suggestion_id,source_type,source_id,url,
+         label,excerpt,observed_at,period_from,period_to,metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb) RETURNING *`,
+      [generatedId("studio_citation"), input.workspaceId, input.ownerProfileId,
+        target.messageId, target.suggestionId, input.sourceType, input.sourceId, input.url,
+        input.label, input.excerpt, input.observedAt, input.periodFrom, input.periodTo,
+        JSON.stringify(input.metadata)]
+    );
+    stored.push(citationFromRow(result.rows[0]!));
+  }
+  return stored;
 }
 
 export function createPostgresStudioRepository(db: OperationalPool): StudioRepository {
@@ -1575,6 +1656,210 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           input.nextAttemptAt, input.lastErrorCode]
       );
       return result.rows[0] ? indexJobFromRow(result.rows[0]) : null;
+    },
+
+    async startAssistantTurn(input) {
+      return withOperationalTransaction(db, async (client) => {
+        let conversation: StudioConversation;
+        if (input.conversationId) {
+          const result = await client.query<StudioConversationRow>(
+            `SELECT * FROM studio_conversations
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+            [input.workspaceId, input.ownerProfileId, input.conversationId]
+          );
+          if (!result.rows[0]) throw new Error("STUDIO_CONVERSATION_NOT_FOUND");
+          conversation = conversationFromRow(result.rows[0]);
+          if (input.documentId !== null && input.documentId !== conversation.documentId) {
+            throw new Error("STUDIO_CONVERSATION_DOCUMENT_MISMATCH");
+          }
+        } else {
+          if (input.documentId) {
+            const document = await client.query<{ id: string }>(
+              `SELECT id FROM studio_documents
+               WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR KEY SHARE`,
+              [input.workspaceId, input.ownerProfileId, input.documentId]
+            );
+            if (!document.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+          }
+          const result = await client.query<StudioConversationRow>(
+            `INSERT INTO studio_conversations (id,workspace_id,owner_profile_id,document_id)
+             VALUES ($1,$2,$3,$4) RETURNING *`,
+            [generatedId("studio_conversation"), input.workspaceId, input.ownerProfileId, input.documentId]
+          );
+          conversation = conversationFromRow(result.rows[0]!);
+        }
+        const messageResult = await client.query<StudioMessageRow>(
+          `INSERT INTO studio_messages
+             (id,workspace_id,owner_profile_id,conversation_id,role,content,ai_run_id,status)
+           VALUES ($1,$2,$3,$4,'user',$5,NULL,'complete') RETURNING *`,
+          [generatedId("studio_message"), input.workspaceId, input.ownerProfileId, conversation.id, input.content]
+        );
+        const updatedConversation = await client.query<StudioConversationRow>(
+          `UPDATE studio_conversations SET updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [input.workspaceId, input.ownerProfileId, conversation.id]
+        );
+        return { conversation: conversationFromRow(updatedConversation.rows[0]!), message: messageFromRow(messageResult.rows[0]!) };
+      });
+    },
+
+    async listConversationMessages(scope, conversationId, limit) {
+      const conversation = await db.query<{ id: string }>(
+        `SELECT id FROM studio_conversations WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, conversationId]
+      );
+      if (!conversation.rows[0]) throw new Error("STUDIO_CONVERSATION_NOT_FOUND");
+      const result = await db.query<StudioMessageRow>(
+        `SELECT * FROM (
+           SELECT * FROM studio_messages
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND conversation_id=$3
+           ORDER BY created_at DESC,id DESC LIMIT $4
+         ) recent ORDER BY created_at ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId, conversationId, limit]
+      );
+      return result.rows.map(messageFromRow);
+    },
+
+    async finishAssistantTurn(input) {
+      return withOperationalTransaction(db, async (client) => {
+        const conversation = await client.query<{ id: string }>(
+          `SELECT id FROM studio_conversations
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [input.workspaceId, input.ownerProfileId, input.conversationId]
+        );
+        if (!conversation.rows[0]) throw new Error("STUDIO_CONVERSATION_NOT_FOUND");
+        const messageResult = await client.query<StudioMessageRow>(
+          `INSERT INTO studio_messages
+             (id,workspace_id,owner_profile_id,conversation_id,role,content,ai_run_id,status)
+           VALUES ($1,$2,$3,$4,'assistant',$5,$6,'complete') RETURNING *`,
+          [generatedId("studio_message"), input.workspaceId, input.ownerProfileId,
+            input.conversationId, input.content, input.aiRunId]
+        );
+        const message = messageFromRow(messageResult.rows[0]!);
+        const citations = await insertCitations(client, input.citations, { messageId: message.id, suggestionId: null });
+        await client.query(
+          `UPDATE studio_conversations SET updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [input.workspaceId, input.ownerProfileId, input.conversationId]
+        );
+        return { message, citations };
+      });
+    },
+
+    async createAssistantSuggestion(input) {
+      return withOperationalTransaction(db, async (client) => {
+        if (input.conversationId) {
+          const conversation = await client.query<{ id: string }>(
+            `SELECT id FROM studio_conversations
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR KEY SHARE`,
+            [input.workspaceId, input.ownerProfileId, input.conversationId]
+          );
+          if (!conversation.rows[0]) throw new Error("STUDIO_CONVERSATION_NOT_FOUND");
+        }
+        if (input.documentId) {
+          const document = await client.query<{ id: string }>(
+            `SELECT id FROM studio_documents
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR KEY SHARE`,
+            [input.workspaceId, input.ownerProfileId, input.documentId]
+          );
+          if (!document.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        }
+        if (input.payloadJson.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+        const result = await client.query<StudioSuggestionRow>(
+          `INSERT INTO studio_suggestions
+             (id,workspace_id,owner_profile_id,document_id,conversation_id,ai_run_id,kind,payload_json,status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'pending') RETURNING *`,
+          [generatedId("studio_suggestion"), input.workspaceId, input.ownerProfileId,
+            input.documentId, input.conversationId, input.aiRunId, input.kind,
+            JSON.stringify(input.payloadJson)]
+        );
+        const suggestion = suggestionFromRow(result.rows[0]!);
+        const citations = await insertCitations(client, input.citations, { messageId: null, suggestionId: suggestion.id });
+        return { suggestion, citations };
+      });
+    },
+
+    async findSuggestion(scope, suggestionId) {
+      const result = await db.query<StudioSuggestionRow>(
+        `SELECT * FROM studio_suggestions WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, suggestionId]
+      );
+      return result.rows[0] ? suggestionFromRow(result.rows[0]) : null;
+    },
+
+    async acceptSuggestion(scope, suggestionId, actorProfileId) {
+      if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
+      return withOperationalTransaction(db, async (client) => {
+        const result = await client.query<StudioSuggestionRow>(
+          `SELECT * FROM studio_suggestions
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, suggestionId]
+        );
+        if (!result.rows[0]) throw new Error("STUDIO_SUGGESTION_NOT_FOUND");
+        const suggestion = suggestionFromRow(result.rows[0]);
+        if (suggestion.status === "accepted") {
+          const version = await client.query<StudioDocumentVersionRow>(
+            `SELECT * FROM studio_document_versions
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [scope.workspaceId, scope.ownerProfileId, suggestion.acceptedVersionId]
+          );
+          if (!version.rows[0]) throw new Error("STUDIO_SUGGESTION_VERSION_NOT_FOUND");
+          return { suggestion, version: versionFromRow(version.rows[0]) };
+        }
+        if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
+        const payload = suggestion.payloadJson;
+        if (!suggestion.documentId || payload.document_id !== suggestion.documentId) {
+          throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+        }
+        const documentResult = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, suggestion.documentId]
+        );
+        if (!documentResult.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const document = documentFromRow(documentResult.rows[0]);
+        if (document.revision !== payload.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+        const search = prepareStudioSearchFields(payload.title, payload.body_text);
+        await client.query(
+          `UPDATE studio_documents SET title=$4,body_json=$5::jsonb,body_text=$6,
+             search_title_folded=$7,search_body_folded=$8,search_tokens=$9::text[],
+             search_prefix_tokens=$10::text[],revision=revision+1,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, document.id, payload.title,
+            JSON.stringify(payload.body_json), payload.body_text, search.titleFolded,
+            search.bodyFolded, search.tokens, search.prefixTokens]
+        );
+        const version = await insertVersion(client, {
+          ...scope, documentId: document.id, bodyJson: payload.body_json, bodyText: payload.body_text,
+          origin: "accepted_ai_suggestion", actorProfileId, aiRunId: suggestion.aiRunId
+        });
+        const accepted = await client.query<StudioSuggestionRow>(
+          `UPDATE studio_suggestions SET status='accepted',accepted_version_id=$4,decided_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, suggestionId, version.id]
+        );
+        return { suggestion: suggestionFromRow(accepted.rows[0]!), version };
+      });
+    },
+
+    async dismissSuggestion(scope, suggestionId) {
+      return withOperationalTransaction(db, async (client) => {
+        const result = await client.query<StudioSuggestionRow>(
+          `SELECT * FROM studio_suggestions
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, suggestionId]
+        );
+        if (!result.rows[0]) throw new Error("STUDIO_SUGGESTION_NOT_FOUND");
+        const suggestion = suggestionFromRow(result.rows[0]);
+        if (suggestion.status === "dismissed") return { suggestion, version: null };
+        if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
+        const dismissed = await client.query<StudioSuggestionRow>(
+          `UPDATE studio_suggestions SET status='dismissed',decided_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, suggestionId]
+        );
+        return { suggestion: suggestionFromRow(dismissed.rows[0]!), version: null };
+      });
     }
   };
 }

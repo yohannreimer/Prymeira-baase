@@ -68,7 +68,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -209,7 +209,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio memory migration 14, reserves 15 through 19, and keeps additive migrations 20 and 21", async () => {
+  it("applies Studio migrations 14 and 15, reserves 16 through 19, and keeps additive migrations 20 and 21", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -232,7 +232,7 @@ describe("operational schema", () => {
     const versions = await db.query<{ version: number }>(
       "select version from baase_schema_migrations where version between 14 and 21 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 14 }, { version: 20 }, { version: 21 }]);
+    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 20 }, { version: 21 }]);
     const studioTables = await db.query<{ table_name: string }>(
       `select distinct table_name from information_schema.tables
        where table_name in ('studio_relations','studio_index_jobs') order by table_name`
@@ -240,6 +240,82 @@ describe("operational schema", () => {
     expect(studioTables.rows.map((row) => row.table_name)).toEqual([
       "studio_index_jobs", "studio_relations"
     ]);
+  });
+
+  it("creates relational owner-scoped assistant state with citation identity constraints", async () => {
+    await ensureOperationalSchema(db);
+    const tables = await db.query<{ table_name: string }>(
+      `select distinct table_name from information_schema.tables
+       where table_name in ('studio_conversations','studio_messages','studio_suggestions','studio_citations')
+       order by table_name`
+    );
+    expect(tables.rows.map((row) => row.table_name)).toEqual([
+      "studio_citations", "studio_conversations", "studio_messages", "studio_suggestions"
+    ]);
+    await db.query(
+      `insert into studio_documents
+        (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode)
+       values ('document_a','workspace_a','owner_a','{}','private','text')`
+    );
+    await db.query(
+      `insert into studio_conversations (id,workspace_id,owner_profile_id,document_id)
+       values ('conversation_a','workspace_a','owner_a','document_a')`
+    );
+    await db.query(
+      `insert into studio_messages
+        (id,workspace_id,owner_profile_id,conversation_id,role,content,ai_run_id)
+       values ('message_a','workspace_a','owner_a','conversation_a','assistant','resposta','opaque-run')`
+    );
+    await expect(db.query(
+      `insert into studio_citations
+        (id,workspace_id,owner_profile_id,message_id,source_type,source_id,url,label,excerpt,observed_at)
+       values ('citation_invalid','workspace_a','owner_a','message_a','external_url','internal','https://example.com','Fonte','',now())`
+    )).rejects.toThrow();
+    await expect(db.query(
+      `insert into studio_conversations (id,workspace_id,owner_profile_id,document_id)
+       values ('conversation_cross','workspace_a','owner_b','document_a')`
+    )).rejects.toThrow();
+  });
+
+  it("keeps Postgres assistant persistence and suggestion decisions atomic and idempotent", async () => {
+    await ensureOperationalSchema(db);
+    const repository = createPostgresStudioRepository(db);
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    await db.query(
+      `insert into studio_documents
+        (id,workspace_id,owner_profile_id,title,body_json,body_text,capture_mode)
+       values ('document_atomic','workspace_a','owner_a','Original','{}','Original','text');
+       insert into studio_document_versions
+        (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id)
+       values ('version_initial','workspace_a','owner_a','document_atomic',1,'{}','Original','user','owner_a');
+       insert into studio_index_jobs
+        (id,workspace_id,owner_profile_id,document_id,version_id,status,next_attempt_at)
+       values ('index_initial','workspace_a','owner_a','document_atomic','version_initial','pending',now())`
+    );
+    const document = await repository.findDocument(scope, "document_atomic");
+    if (!document) throw new Error("expected document fixture");
+    const turn = await repository.startAssistantTurn({ ...scope, conversationId: null,
+      documentId: document.id, content: "Mensagem privada" });
+    const final = await repository.finishAssistantTurn({ ...scope, conversationId: turn.conversation.id,
+      aiRunId: "opaque-narrative-run", content: "Resposta final", citations: [{ ...scope,
+        sourceType: "operational_metric", sourceId: "dashboard:period", url: null,
+        label: "Painel", excerpt: "Execução", observedAt: "2026-07-14T12:00:00.000Z",
+        periodFrom: "2026-07-01", periodTo: "2026-07-14", metadata: {} }] });
+    expect(final.citations).toHaveLength(1);
+    expect((await repository.listConversationMessages(scope, turn.conversation.id, 10)).map((item) => item.role))
+      .toEqual(["user", "assistant"]);
+    const pending = await repository.createAssistantSuggestion({ ...scope, documentId: document.id,
+      conversationId: turn.conversation.id, aiRunId: "opaque-structured-run", kind: "text",
+      payloadJson: { document_id: document.id, expected_revision: document.revision,
+        title: "Aceito", body_json: { type: "doc" }, body_text: "Conteúdo aceito" }, citations: [] });
+    const accepted = await repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId);
+    const repeated = await repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId);
+    expect(repeated.version?.id).toBe(accepted.version?.id);
+    expect(accepted.version).toMatchObject({ origin: "accepted_ai_suggestion", aiRunId: "opaque-structured-run" });
+    expect(await repository.listIndexJobs(scope)).toHaveLength(2);
+    await expect(repository.findSuggestion(
+      { workspaceId: scope.workspaceId, ownerProfileId: "owner_b" }, pending.suggestion.id
+    )).resolves.toBeNull();
   });
 
   it("backfills one memory job for the latest active version in every owner scope", async () => {

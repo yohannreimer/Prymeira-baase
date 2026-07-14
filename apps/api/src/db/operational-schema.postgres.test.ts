@@ -132,6 +132,11 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         ,"studio_relations_source_idx"
         ,"studio_relations_target_idx"
         ,"studio_index_jobs_claim_idx"
+        ,"studio_conversations_owner_updated_idx"
+        ,"studio_messages_conversation_idx"
+        ,"studio_suggestions_owner_status_idx"
+        ,"studio_citations_message_idx"
+        ,"studio_citations_suggestion_idx"
       ]));
     });
   });
@@ -164,6 +169,33 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         ...ownerA, sourceDocumentId: first.id, targetDocumentId: foreign.id,
         relationType: "related_to", createdByProfileId: "owner_a"
       })).rejects.toThrow("STUDIO_RELATION_DOCUMENT_NOT_FOUND");
+    });
+  });
+
+  it("locks concurrent assistant suggestion decisions and preserves owner scope", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchema(pool);
+      const repository = createPostgresStudioRepository(pool);
+      const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+      const document = await repository.createDocument({ ...scope, title: "Original", bodyJson: {},
+        bodyText: "Original", captureMode: "text", inboxState: "pending_review", isFocused: false, status: "active" });
+      const turn = await repository.startAssistantTurn({ ...scope, conversationId: null,
+        documentId: document.id, content: "Mensagem" });
+      await repository.finishAssistantTurn({ ...scope, conversationId: turn.conversation.id,
+        aiRunId: "opaque-narrative", content: "Resposta", citations: [] });
+      const pending = await repository.createAssistantSuggestion({ ...scope, documentId: document.id,
+        conversationId: turn.conversation.id, aiRunId: "opaque-structured", kind: "text",
+        payloadJson: { document_id: document.id, expected_revision: document.revision,
+          title: "Aceito", body_json: {}, body_text: "Aceito" }, citations: [] });
+      const [left, right] = await Promise.all([
+        repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId),
+        repository.acceptSuggestion(scope, pending.suggestion.id, scope.ownerProfileId)
+      ]);
+      expect(left.version?.id).toBe(right.version?.id);
+      expect(await repository.listVersions(scope, document.id)).toHaveLength(2);
+      expect(await repository.findSuggestion(
+        { workspaceId: scope.workspaceId, ownerProfileId: "owner_b" }, pending.suggestion.id
+      )).toBeNull();
     });
   });
 
@@ -385,7 +417,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
-  it("applies migration 14, reserves 15 through 19, and adds concurrent active asset idempotency in migration 20", async () => {
+  it("applies migrations 14 and 15, reserves 16 through 19, and adds concurrent active asset idempotency in migration 20", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 13);
       await pool.query(
@@ -399,7 +431,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations where version between 14 and 21 order by version"
       );
-      expect(versions.rows).toEqual([{ version: 14 }, { version: 20 }, { version: 21 }]);
+      expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 20 }, { version: 21 }]);
       const cursorIndexes = await pool.query<{ indexname: string; indexdef: string }>(
         `select indexname,indexdef from pg_indexes
          where schemaname=current_schema()

@@ -978,6 +978,113 @@ const migrations: Migration[] = [{
       WHERE status IN ('pending','processing','failed');
   `
 }, {
+  version: 15,
+  name: "studio_conversations_messages_suggestions_citations",
+  sql: `
+    CREATE TABLE studio_conversations (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE studio_messages (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+      content TEXT NOT NULL CHECK (content <> ''),
+      ai_run_id TEXT,
+      status TEXT NOT NULL DEFAULT 'complete' CHECK (status='complete'),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,conversation_id)
+        REFERENCES studio_conversations(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      CHECK ((role='user' AND ai_run_id IS NULL) OR (role='assistant' AND ai_run_id IS NOT NULL))
+    );
+
+    CREATE TABLE studio_suggestions (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT,
+      conversation_id TEXT,
+      ai_run_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind='text'),
+      payload_json JSONB NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','accepted','dismissed','expired')),
+      accepted_version_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at TIMESTAMPTZ,
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,conversation_id)
+        REFERENCES studio_conversations(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id,accepted_version_id)
+        REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id),
+      CHECK (
+        (status='pending' AND decided_at IS NULL AND accepted_version_id IS NULL)
+        OR (status='accepted' AND decided_at IS NOT NULL AND accepted_version_id IS NOT NULL)
+        OR (status IN ('dismissed','expired') AND decided_at IS NOT NULL AND accepted_version_id IS NULL)
+      )
+    );
+
+    CREATE TABLE studio_citations (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      message_id TEXT,
+      suggestion_id TEXT,
+      source_type TEXT NOT NULL CHECK (source_type IN (
+        'studio_document','studio_asset','operational_resource','operational_metric','external_url'
+      )),
+      source_id TEXT,
+      url TEXT,
+      label TEXT NOT NULL CHECK (label <> ''),
+      excerpt TEXT NOT NULL,
+      observed_at TIMESTAMPTZ NOT NULL,
+      period_from DATE,
+      period_to DATE,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,message_id)
+        REFERENCES studio_messages(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,suggestion_id)
+        REFERENCES studio_suggestions(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      CHECK (
+        (message_id IS NOT NULL AND suggestion_id IS NULL)
+        OR (message_id IS NULL AND suggestion_id IS NOT NULL)
+      ),
+      CHECK (
+        (source_type='external_url' AND source_id IS NULL AND url IS NOT NULL)
+        OR (source_type<>'external_url' AND source_id IS NOT NULL AND url IS NULL)
+      ),
+      CHECK ((period_from IS NULL AND period_to IS NULL) OR (period_from IS NOT NULL AND period_to IS NOT NULL AND period_from <= period_to))
+    );
+
+    CREATE INDEX studio_conversations_owner_updated_idx
+      ON studio_conversations (workspace_id,owner_profile_id,updated_at DESC,id DESC);
+    CREATE INDEX studio_messages_conversation_idx
+      ON studio_messages (workspace_id,owner_profile_id,conversation_id,created_at DESC,id DESC);
+    CREATE INDEX studio_suggestions_owner_status_idx
+      ON studio_suggestions (workspace_id,owner_profile_id,status,created_at DESC,id DESC);
+    CREATE INDEX studio_citations_message_idx
+      ON studio_citations (workspace_id,owner_profile_id,message_id,created_at,id)
+      WHERE message_id IS NOT NULL;
+    CREATE INDEX studio_citations_suggestion_idx
+      ON studio_citations (workspace_id,owner_profile_id,suggestion_id,created_at,id)
+      WHERE suggestion_id IS NOT NULL;
+  `
+}, {
   version: 20,
   name: "studio_asset_capture_idempotency",
   sql: `

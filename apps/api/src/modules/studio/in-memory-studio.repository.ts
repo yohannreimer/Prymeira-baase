@@ -9,6 +9,11 @@ import type {
   StudioDocumentVersion,
   StudioIndexJob,
   StudioRelation,
+  StudioConversation,
+  StudioMessage,
+  StudioSuggestion,
+  StudioCitation,
+  CreateStudioCitation,
   StudioRepository
 } from "./studio.types";
 import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
@@ -58,6 +63,11 @@ function cloneRelation(relation: StudioRelation): StudioRelation {
 function cloneIndexJob(job: StudioIndexJob): StudioIndexJob {
   return structuredClone(job);
 }
+
+function cloneConversation(value: StudioConversation) { return structuredClone(value); }
+function cloneMessage(value: StudioMessage) { return structuredClone(value); }
+function cloneSuggestion(value: StudioSuggestion) { return structuredClone(value); }
+function cloneCitation(value: StudioCitation) { return structuredClone(value); }
 
 function normalizeTimestamp(value: unknown) {
   if (typeof value !== "string") throw new Error("STUDIO_CLOCK_INVALID");
@@ -123,6 +133,10 @@ export function createInMemoryStudioRepository(
   const assetUploadIntents: StudioAssetUploadIntent[] = [];
   const relations: StudioRelation[] = [];
   const indexJobs: StudioIndexJob[] = [];
+  const conversations: StudioConversation[] = [];
+  const messages: StudioMessage[] = [];
+  const suggestions: StudioSuggestion[] = [];
+  const citations: StudioCitation[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -178,6 +192,36 @@ export function createInMemoryStudioRepository(
       updatedAt: timestamp
     });
     return cloneVersion(version);
+  }
+
+  function requireConversation(workspaceId: string, ownerProfileId: string, conversationId: string) {
+    const conversation = conversations.find((item) => item.workspaceId === workspaceId
+      && item.ownerProfileId === ownerProfileId && item.id === conversationId);
+    if (!conversation) throw new Error("STUDIO_CONVERSATION_NOT_FOUND");
+    return conversation;
+  }
+
+  function validateCitationScope(input: CreateStudioCitation, workspaceId: string, ownerProfileId: string) {
+    if (input.workspaceId !== workspaceId || input.ownerProfileId !== ownerProfileId) {
+      throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
+    }
+  }
+
+  function storeCitations(
+    inputs: CreateStudioCitation[],
+    target: { messageId: string | null; suggestionId: string | null },
+    createdAt: string
+  ) {
+    return inputs.map((input) => {
+      const citation: StudioCitation = {
+        ...structuredClone(input),
+        id: `studio_citation_${randomUUID()}`,
+        ...target,
+        createdAt
+      };
+      citations.push(citation);
+      return cloneCitation(citation);
+    });
   }
 
   return {
@@ -1171,6 +1215,165 @@ export function createInMemoryStudioRepository(
       job.nextAttemptAt = input.nextAttemptAt;
       job.updatedAt = now();
       return cloneIndexJob(job);
+    },
+
+    async startAssistantTurn(input) {
+      let conversation: StudioConversation;
+      if (input.conversationId) {
+        conversation = requireConversation(input.workspaceId, input.ownerProfileId, input.conversationId);
+        if (input.documentId !== null && input.documentId !== conversation.documentId) {
+          throw new Error("STUDIO_CONVERSATION_DOCUMENT_MISMATCH");
+        }
+      } else {
+        if (input.documentId && !documents.some((item) => item.workspaceId === input.workspaceId
+          && item.ownerProfileId === input.ownerProfileId && item.id === input.documentId)) {
+          throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        }
+        const timestamp = now();
+        conversation = {
+          workspaceId: input.workspaceId,
+          ownerProfileId: input.ownerProfileId,
+          id: `studio_conversation_${randomUUID()}`,
+          documentId: input.documentId,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
+        conversations.push(conversation);
+      }
+      const timestamp = nextTimestamp(now, conversation.updatedAt);
+      const message: StudioMessage = {
+        workspaceId: input.workspaceId,
+        ownerProfileId: input.ownerProfileId,
+        id: `studio_message_${randomUUID()}`,
+        conversationId: conversation.id,
+        role: "user",
+        content: input.content,
+        aiRunId: null,
+        status: "complete",
+        createdAt: timestamp
+      };
+      messages.push(message);
+      conversation.updatedAt = timestamp;
+      return { conversation: cloneConversation(conversation), message: cloneMessage(message) };
+    },
+
+    async listConversationMessages(scope, conversationId, limit) {
+      requireConversation(scope.workspaceId, scope.ownerProfileId, conversationId);
+      return messages.filter((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.conversationId === conversationId)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+        .slice(0, limit)
+        .reverse()
+        .map(cloneMessage);
+    },
+
+    async finishAssistantTurn(input) {
+      const conversation = requireConversation(input.workspaceId, input.ownerProfileId, input.conversationId);
+      input.citations.forEach((citation) => validateCitationScope(citation, input.workspaceId, input.ownerProfileId));
+      const timestamp = nextTimestamp(now, conversation.updatedAt);
+      const message: StudioMessage = {
+        workspaceId: input.workspaceId,
+        ownerProfileId: input.ownerProfileId,
+        id: `studio_message_${randomUUID()}`,
+        conversationId: input.conversationId,
+        role: "assistant",
+        content: input.content,
+        aiRunId: input.aiRunId,
+        status: "complete",
+        createdAt: timestamp
+      };
+      messages.push(message);
+      const storedCitations = storeCitations(input.citations, { messageId: message.id, suggestionId: null }, timestamp);
+      conversation.updatedAt = timestamp;
+      return { message: cloneMessage(message), citations: storedCitations };
+    },
+
+    async createAssistantSuggestion(input) {
+      if (input.conversationId) requireConversation(input.workspaceId, input.ownerProfileId, input.conversationId);
+      if (input.documentId && !documents.some((item) => item.workspaceId === input.workspaceId
+        && item.ownerProfileId === input.ownerProfileId && item.id === input.documentId)) {
+        throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      }
+      if (input.payloadJson.document_id !== input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+      input.citations.forEach((citation) => validateCitationScope(citation, input.workspaceId, input.ownerProfileId));
+      const timestamp = now();
+      const suggestion: StudioSuggestion = {
+        workspaceId: input.workspaceId,
+        ownerProfileId: input.ownerProfileId,
+        id: `studio_suggestion_${randomUUID()}`,
+        documentId: input.documentId,
+        conversationId: input.conversationId,
+        aiRunId: input.aiRunId,
+        kind: input.kind,
+        payloadJson: structuredClone(input.payloadJson),
+        status: "pending",
+        acceptedVersionId: null,
+        createdAt: timestamp,
+        decidedAt: null
+      };
+      suggestions.push(suggestion);
+      const storedCitations = storeCitations(input.citations, { messageId: null, suggestionId: suggestion.id }, timestamp);
+      return { suggestion: cloneSuggestion(suggestion), citations: storedCitations };
+    },
+
+    async findSuggestion(scope, suggestionId) {
+      const suggestion = suggestions.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === suggestionId);
+      return suggestion ? cloneSuggestion(suggestion) : null;
+    },
+
+    async acceptSuggestion(scope, suggestionId, actorProfileId) {
+      if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
+      const suggestion = suggestions.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === suggestionId);
+      if (!suggestion) throw new Error("STUDIO_SUGGESTION_NOT_FOUND");
+      if (suggestion.status === "accepted") {
+        const version = versions.find((item) => item.workspaceId === scope.workspaceId
+          && item.ownerProfileId === scope.ownerProfileId && item.id === suggestion.acceptedVersionId);
+        if (!version) throw new Error("STUDIO_SUGGESTION_VERSION_NOT_FOUND");
+        return { suggestion: cloneSuggestion(suggestion), version: cloneVersion(version) };
+      }
+      if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
+      const payload = suggestion.payloadJson;
+      const documentIndex = documents.findIndex((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === payload.document_id);
+      if (documentIndex < 0) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const document = documents[documentIndex]!;
+      if (document.revision !== payload.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+      const timestamp = nextTimestamp(now, document.updatedAt);
+      const updated: StudioDocument = {
+        ...document,
+        title: payload.title,
+        bodyJson: structuredClone(payload.body_json),
+        bodyText: payload.body_text,
+        revision: document.revision + 1,
+        updatedAt: timestamp
+      };
+      documents[documentIndex] = updated;
+      const version = appendStoredVersion({
+        ...scope,
+        documentId: document.id,
+        bodyJson: payload.body_json,
+        bodyText: payload.body_text,
+        origin: "accepted_ai_suggestion",
+        actorProfileId,
+        aiRunId: suggestion.aiRunId
+      }, timestamp);
+      suggestion.status = "accepted";
+      suggestion.acceptedVersionId = version.id;
+      suggestion.decidedAt = timestamp;
+      return { suggestion: cloneSuggestion(suggestion), version };
+    },
+
+    async dismissSuggestion(scope, suggestionId) {
+      const suggestion = suggestions.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === suggestionId);
+      if (!suggestion) throw new Error("STUDIO_SUGGESTION_NOT_FOUND");
+      if (suggestion.status === "dismissed") return { suggestion: cloneSuggestion(suggestion), version: null };
+      if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
+      suggestion.status = "dismissed";
+      suggestion.decidedAt = now();
+      return { suggestion: cloneSuggestion(suggestion), version: null };
     }
   };
 }

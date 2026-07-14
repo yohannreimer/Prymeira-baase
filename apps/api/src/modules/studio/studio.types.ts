@@ -3,6 +3,14 @@ export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
+export type StudioMessageRole = "user" | "assistant";
+export type StudioMessageStatus = "complete";
+export type StudioCitationSourceType =
+  | "studio_document"
+  | "studio_asset"
+  | "operational_resource"
+  | "operational_metric"
+  | "external_url";
 export type StudioOperationalResourceType =
   | "dashboard"
   | "task"
@@ -63,6 +71,67 @@ export type StudioContextSnapshot = {
   citations: StudioCitationInput[];
   serializedBytes: number;
   truncated: boolean;
+};
+
+export type StudioConversation = StudioOwnerScope & {
+  id: string;
+  documentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type StudioMessage = StudioOwnerScope & {
+  id: string;
+  conversationId: string;
+  role: StudioMessageRole;
+  content: string;
+  aiRunId: string | null;
+  status: StudioMessageStatus;
+  createdAt: string;
+};
+
+export type StudioSuggestion = StudioOwnerScope & {
+  id: string;
+  documentId: string | null;
+  conversationId: string | null;
+  aiRunId: string;
+  kind: "text";
+  payloadJson: StudioTextSuggestionPayload;
+  status: StudioSuggestionStatus;
+  acceptedVersionId: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+export type StudioTextSuggestionPayload = {
+  document_id: string;
+  expected_revision: number;
+  title: string | null;
+  body_json: Record<string, unknown>;
+  body_text: string;
+};
+
+export type StudioCitation = StudioOwnerScope & {
+  id: string;
+  messageId: string | null;
+  suggestionId: string | null;
+  sourceType: StudioCitationSourceType;
+  sourceId: string | null;
+  url: string | null;
+  label: string;
+  excerpt: string;
+  observedAt: string;
+  periodFrom: string | null;
+  periodTo: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type CreateStudioCitation = Omit<StudioCitation, "id" | "createdAt" | "messageId" | "suggestionId">;
+
+export type StudioSuggestionDecision = {
+  suggestion: StudioSuggestion;
+  version: StudioDocumentVersion | null;
 };
 
 export type CreateStudioDocument = {
@@ -437,4 +506,27 @@ export type StudioRepository = {
     lastErrorCode: string;
     nextAttemptAt: string | null;
   }): Promise<StudioIndexJob | null>;
+  startAssistantTurn(input: StudioOwnerScope & {
+    conversationId: string | null;
+    documentId: string | null;
+    content: string;
+  }): Promise<{ conversation: StudioConversation; message: StudioMessage }>;
+  listConversationMessages(scope: StudioOwnerScope, conversationId: string, limit: number): Promise<StudioMessage[]>;
+  finishAssistantTurn(input: StudioOwnerScope & {
+    conversationId: string;
+    aiRunId: string;
+    content: string;
+    citations: CreateStudioCitation[];
+  }): Promise<{ message: StudioMessage; citations: StudioCitation[] }>;
+  createAssistantSuggestion(input: StudioOwnerScope & {
+    documentId: string | null;
+    conversationId: string | null;
+    aiRunId: string;
+    kind: "text";
+    payloadJson: StudioTextSuggestionPayload;
+    citations: CreateStudioCitation[];
+  }): Promise<{ suggestion: StudioSuggestion; citations: StudioCitation[] }>;
+  findSuggestion(scope: StudioOwnerScope, suggestionId: string): Promise<StudioSuggestion | null>;
+  acceptSuggestion(scope: StudioOwnerScope, suggestionId: string, actorProfileId: string): Promise<StudioSuggestionDecision>;
+  dismissSuggestion(scope: StudioOwnerScope, suggestionId: string): Promise<StudioSuggestionDecision>;
 };

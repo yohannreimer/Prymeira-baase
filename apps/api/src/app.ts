@@ -44,6 +44,9 @@ import {
   type StudioLinkResolver
 } from "./modules/studio/studio-assets.routes";
 import { createStudioService } from "./modules/studio/studio.service";
+import { createStudioContextBuilder } from "./modules/studio/studio-context-builder";
+import { createStudioAssistantService } from "./modules/studio/studio-assistant.service";
+import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import type { OperationalPool } from "./db/operational-repository-support";
 import {
@@ -151,6 +154,19 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
   const studioService = createStudioService(studioRepository, {
     now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const studioContextBuilder = createStudioContextBuilder({
+    companyRepository,
+    processRepository,
+    routineRepository,
+    trainingRepository,
+    announcementRepository
+  }, { now: options.now });
+  const studioAssistantService = createStudioAssistantService({
+    repository: studioRepository,
+    harness: aiHarness,
+    contextBuilder: studioContextBuilder,
+    now: options.now
   });
   const studioAssetProcessor = createStudioAssetProcessor({
     repository: studioRepository,
@@ -331,6 +347,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     trainingRepository
   }));
   app.register((routes) => registerStudioRoutes(routes, studioService));
+  app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,
