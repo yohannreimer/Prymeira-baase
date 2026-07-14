@@ -27,6 +27,64 @@ describe("StudioEditor", () => {
     expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toBeInTheDocument();
   });
 
+  it("blocks an AI suggestion while the editor has a locally persisted dirty draft", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/assistant/turns")) return sse(studioSuggestionStream());
+      return response({}, 404);
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize este plano");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+
+    await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " em edição");
+
+    expect(within(card).getByText(/aguarde suas alterações serem salvas/i)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Aceitar como nova versão" })).toBeDisabled();
+    expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes("/suggestions/"))).toHaveLength(0);
+    expect(JSON.parse(window.localStorage.getItem(`baase:studio:draft:${document.id}`)!).draft.title)
+      .toBe("Plano anual em edição");
+  });
+
+  it("keeps an edit made while an AI suggestion is being accepted", async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const loadedDocument = deferred<Response>();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/assistant/turns")) return sse(studioSuggestionStream());
+      if (url.endsWith("/suggestions/suggestion_1/accept")) {
+        return response({ suggestion: rawStudioSuggestion(), version: acceptedStudioVersion() });
+      }
+      if (url.endsWith(`/documents/${document.id}`) && !init?.method) return loadedDocument.promise;
+      return response({}, 404);
+    });
+    render(<StudioEditor document={document} onDocumentChange={onDocumentChange} debounceMs={60_000} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize este plano");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(card).getByRole("button", { name: "Aceitar como nova versão" }));
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input, init]) => (
+      String(input).endsWith(`/documents/${document.id}`) && !init?.method
+    ))).toBe(true));
+
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await user.type(title, " preservado");
+    loadedDocument.resolve(response({ document: {
+      ...rawDocument,
+      revision: 5,
+      title: "Título proposto",
+      body_text: "Texto proposto"
+    } }));
+
+    expect(title).toHaveValue("Plano anual preservado");
+    expect(await within(card).findByRole("alert")).toHaveTextContent(/sua escrita foi preservada/i);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(`baase:studio:draft:${document.id}`)!).draft.title)
+      .toBe("Plano anual preservado");
+  });
+
   it("describes blocked local storage truthfully without claiming device persistence", () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,
@@ -623,6 +681,57 @@ const rawVersion = {
 
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function sse(body: string) {
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function studioSuggestionStream() {
+  return `event: suggestion\ndata: ${JSON.stringify(rawStudioSuggestion())}\n\nevent: done\ndata: {"message_id":"message_1"}\n\n`;
+}
+
+function rawStudioSuggestion() {
+  return {
+    id: "suggestion_1",
+    document_id: document.id,
+    conversation_id: "conversation_1",
+    ai_run_id: "run_1",
+    kind: "text",
+    status: "pending",
+    accepted_version_id: null,
+    created_at: "2026-07-14T10:00:00.000Z",
+    decided_at: null,
+    payload_json: {
+      facts: [],
+      inferences: [],
+      gaps: [],
+      citations: [],
+      proposal: {
+        document_id: document.id,
+        expected_revision: document.revision,
+        title: "Título proposto",
+        body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Texto proposto" }] }] },
+        body_text: "Texto proposto"
+      }
+    }
+  };
+}
+
+function acceptedStudioVersion() {
+  return {
+    id: "version_5",
+    workspace_id: document.workspaceId,
+    owner_profile_id: document.ownerProfileId,
+    document_id: document.id,
+    version_number: 5,
+    body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Texto proposto" }] }] },
+    body_text: "Texto proposto",
+    origin: "accepted_ai_suggestion",
+    actor_profile_id: document.ownerProfileId,
+    ai_run_id: "run_1",
+    created_at: "2026-07-14T10:00:00.000Z"
+  };
 }
 
 function installLocalStorage() {

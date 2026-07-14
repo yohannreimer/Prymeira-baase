@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import StudioCopilot from "./StudioCopilot";
 import { parseStudioSseStream, StudioAssistantStreamError } from "./studio-api";
 import type { StudioDocument } from "./studio.types";
+import type { StudioSuggestionAcceptanceGuard } from "./StudioCopilot";
 
 describe("Studio assistant SSE", () => {
   it("decodes arbitrary UTF-8 boundaries, named events and multiline data incrementally", async () => {
@@ -101,7 +102,8 @@ describe("StudioCopilot", () => {
       if (url.endsWith("/documents/document_1") && !init?.method) return documentResponse.promise;
       return json({}, 404);
     });
-    render(<StudioCopilot document={document} onDocumentChange={onDocumentChange} />);
+    const acceptance = acceptanceGuard();
+    render(<StudioCopilot document={document} onDocumentChange={onDocumentChange} suggestionAcceptance={acceptance} />);
     await user.click(screen.getByRole("checkbox", { name: /criar proposta/i }));
     await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
@@ -116,21 +118,108 @@ describe("StudioCopilot", () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
     documentResponse.resolve(json({ document: { ...rawDocument(), revision: 2, body_text: "Versão editada" } }));
     await waitFor(() => expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 2, bodyText: "Versão editada" })));
+    expect(acceptance.capture).toHaveBeenCalledOnce();
+    expect(acceptance.isCurrent).toHaveBeenCalledOnce();
   });
 
-  it("cancels an active turn and ignores stale stream updates", async () => {
+  it("blocks suggestion acceptance while the editor is not safely saved", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(String(input));
+      return sse(suggestionStream());
+    });
+    const acceptance = acceptanceGuard({
+      canAccept: false,
+      status: "Aguarde suas alterações serem salvas antes de aceitar a proposta."
+    });
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} suggestionAcceptance={acceptance} />);
+
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    expect(within(card).getByText(/aguarde suas alterações serem salvas/i)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Aceitar como nova versão" })).toBeDisabled();
+    expect(requests.filter((url) => url.includes("/suggestions/")).length).toBe(0);
+    expect(acceptance.capture).not.toHaveBeenCalled();
+  });
+
+  it("preserves a local edit made while suggestion acceptance is pending", async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const documentResponse = deferred<Response>();
+    let current = true;
+    const acceptance = acceptanceGuard({
+      isCurrent: vi.fn(() => current)
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/assistant/turns")) return sse(suggestionStream());
+      if (url.endsWith("/suggestions/suggestion_1/accept")) return json({ suggestion: rawSuggestion(), version: rawVersion() });
+      if (url.endsWith("/documents/document_1") && !init?.method) return documentResponse.promise;
+      return json({}, 404);
+    });
+    render(<StudioCopilot document={document} onDocumentChange={onDocumentChange} suggestionAcceptance={acceptance} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(card).getByRole("button", { name: "Aceitar como nova versão" }));
+
+    current = false;
+    documentResponse.resolve(json({ document: { ...rawDocument(), revision: 2, body_text: "Proposta" } }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent(/sua escrita foi preservada/i);
+    expect(acceptance.onConflict).toHaveBeenCalledOnce();
+    expect(onDocumentChange).not.toHaveBeenCalled();
+  });
+
+  it("cancels the active turn, preserves its retry and resets research consent", async () => {
     const user = userEvent.setup();
     let controller: ReadableStreamDefaultController<Uint8Array>;
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new ReadableStream({ start(value) { controller = value; } }), {
-      headers: { "content-type": "text/event-stream" }
-    }));
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      if (bodies.length === 1) return new Response(new ReadableStream({ start(value) { controller = value; } }), {
+        headers: { "content-type": "text/event-stream" }
+      });
+      return sse("event: delta\ndata: {\"text\":\"Resposta recuperada\"}\n\nevent: done\ndata: {\"message_id\":\"message\"}\n\n");
+    });
     render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.click(screen.getByRole("checkbox", { name: /pesquisar na internet/i }));
     await user.type(screen.getByLabelText(/o que você quer entender/i), "Pensar");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     await user.click(screen.getByRole("button", { name: "Parar resposta" }));
+    const cancelled = screen.getByText("Resposta interrompida.");
+    expect(cancelled).toBeInTheDocument();
+    expect(screen.queryByText("Pensando…")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveFocus());
+    await user.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    expect(await screen.findByText("Resposta recuperada")).toBeInTheDocument();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ message: "Pensar", allow_external_research: true });
+    expect(bodies[1]).toMatchObject({ message: "Pensar", allow_external_research: false });
     controller!.enqueue(new TextEncoder().encode("event: delta\ndata: {\"text\":\"não deve aparecer\"}\n\n"));
     controller!.close();
     expect(screen.queryByText("não deve aparecer")).not.toBeInTheDocument();
+  });
+
+  it("coalesces many stream deltas and preserves their exact final text", async () => {
+    const user = userEvent.setup();
+    const callbacks: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    const expected = Array.from({ length: 250 }, (_, index) => `${index}|`).join("");
+    const stream = `${Array.from({ length: 250 }, (_, index) => `event: delta\ndata: ${JSON.stringify({ text: `${index}|` })}\n\n`).join("")}event: done\ndata: {"message_id":"message"}\n\n`;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sse(stream));
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Fluxo longo");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    expect(requestFrame).toHaveBeenCalledOnce();
+    expect(cancelFrame).toHaveBeenCalledOnce();
   });
 
   it("becomes a focus-contained mobile sheet and restores the page on Escape", async () => {
@@ -188,7 +277,7 @@ describe("StudioCopilot", () => {
     await user.type(screen.getByLabelText(/o que você quer entender/i), "Sugira");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     await user.click(await screen.findByRole("button", { name: "Dispensar" }));
-    const decision = await screen.findByRole("status", { name: "" });
+    const decision = await screen.findByText("Proposta dispensada.");
     expect(decision).toHaveTextContent("Proposta dispensada");
     await waitFor(() => expect(decision).toHaveFocus());
     expect(requests.at(-1)).toContain("/suggestions/suggestion_1/dismiss");
@@ -271,3 +360,13 @@ function streamResponse(chunks: Uint8Array[]) { return new Response(new Readable
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
 function documentBody() { return window.document.body; }
+function acceptanceGuard(overrides: Partial<StudioSuggestionAcceptanceGuard> = {}): StudioSuggestionAcceptanceGuard {
+  return {
+    canAccept: true,
+    status: "Documento salvo.",
+    capture: vi.fn(() => ({ documentId: "document_1", revision: 1, generation: 0, signature: "draft" })),
+    isCurrent: vi.fn(() => true),
+    onConflict: vi.fn(),
+    ...overrides
+  };
+}

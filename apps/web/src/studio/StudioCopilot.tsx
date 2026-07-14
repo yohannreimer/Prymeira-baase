@@ -13,6 +13,22 @@ type Props = {
   selectedText?: string;
   onDocumentChange(document: StudioDocument): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
+  suggestionAcceptance?: StudioSuggestionAcceptanceGuard;
+};
+
+export type StudioEditorAcceptanceSnapshot = {
+  documentId: string;
+  revision: number;
+  generation: number;
+  signature: string;
+};
+
+export type StudioSuggestionAcceptanceGuard = {
+  canAccept: boolean;
+  status: string;
+  capture(): StudioEditorAcceptanceSnapshot;
+  isCurrent(snapshot: StudioEditorAcceptanceSnapshot): boolean;
+  onConflict(): void;
 };
 
 type AssistantTurn = {
@@ -21,14 +37,14 @@ type AssistantTurn = {
   response: string;
   citations: StudioCitation[];
   suggestion: StudioSuggestion | null;
-  complete: boolean;
+  status: "streaming" | "complete" | "cancelled" | "error";
 };
 
 const WIDTH_KEY = "baase:studio:copilot-width";
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 520;
 
-export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource }: Props) {
+export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance }: Props) {
   const [open, setOpen] = useState(true);
   const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 900px)").matches ?? false);
   const [width, setWidth] = useState(readWidth);
@@ -39,14 +55,18 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const [turns, setTurns] = useState<AssistantTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [liveStatus, setLiveStatus] = useState("Copiloto pronto.");
   const panelRef = useRef<HTMLElement>(null);
   const openTriggerRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const streamErrorRef = useRef<HTMLDivElement>(null);
+  const liveStatusRef = useRef<HTMLParagraphElement>(null);
   const generationRef = useRef(0);
   const turnIdRef = useRef(0);
   const activeRef = useRef<ReturnType<typeof startStudioAssistantTurn> | null>(null);
   const retryRef = useRef<{ message: string; research: boolean; suggestion: boolean; selection: string } | null>(null);
+  const bufferedDeltasRef = useRef(new Map<number, string[]>());
+  const deltaFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     const media = window.matchMedia?.("(max-width: 900px)");
@@ -59,6 +79,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   useEffect(() => () => {
     generationRef.current += 1;
     activeRef.current?.controller.abort();
+    discardBufferedDeltas();
     window.document.body.style.overflow = "";
   }, []);
 
@@ -66,10 +87,12 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     generationRef.current += 1;
     activeRef.current?.controller.abort();
     activeRef.current = null;
+    discardBufferedDeltas();
     setConversationId(null);
     setTurns([]);
     setStreaming(false);
     setStreamError(null);
+    setLiveStatus("Copiloto pronto.");
   }, [document.id]);
 
   useEffect(() => {
@@ -79,6 +102,10 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   useEffect(() => {
     if (streamError) streamErrorRef.current?.focus();
   }, [streamError]);
+
+  useEffect(() => {
+    if (liveStatus.startsWith("Resposta interrompida por você")) liveStatusRef.current?.focus();
+  }, [liveStatus]);
 
   useEffect(() => {
     if (!compact || !open) {
@@ -122,8 +149,9 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     retryRef.current = request;
     const id = ++turnIdRef.current;
     const generation = ++generationRef.current;
-    setTurns((current) => [...current, { id, prompt: request.message, response: "", citations: [], suggestion: null, complete: false }]);
+    setTurns((current) => [...current, { id, prompt: request.message, response: "", citations: [], suggestion: null, status: "streaming" }]);
     setStreaming(true);
+    setLiveStatus("Gerando resposta…");
     const isCurrent = () => generationRef.current === generation;
     const stream = startStudioAssistantTurn({
       conversationId,
@@ -134,19 +162,27 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
       selectedTextContext: request.selection || null
     }, {
       onRun(run) { if (isCurrent()) setConversationId(run.conversationId); },
-      onDelta(text) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, response: turn.response + text })); },
+      onDelta(text) { if (isCurrent()) queueDelta(id, text); },
       onCitation(citation) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, citations: [...turn.citations, citation] })); },
       onSuggestion(suggestion) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, suggestion })); },
-      onDone() { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, complete: true })); }
+      onDone() {
+        if (!isCurrent()) return;
+        flushDeltas();
+        patchTurn(id, (turn) => ({ ...turn, status: "complete" }));
+        setLiveStatus("Resposta concluída.");
+      }
     });
     activeRef.current = stream;
     try {
       await stream.finished;
     } catch (error) {
       if (isCurrent() && !stream.controller.signal.aborted) {
+        flushDeltas();
+        patchTurn(id, (turn) => ({ ...turn, status: "error" }));
         setStreamError(error instanceof StudioAssistantStreamError && error.code === "STUDIO_ASSISTANT_INCOMPLETE"
           ? "A resposta foi interrompida antes de terminar. Você pode tentar novamente."
           : "O copiloto não conseguiu concluir esta resposta. Seu documento continua salvo.");
+        setLiveStatus("Resposta interrompida. Tente novamente se desejar.");
       }
     } finally {
       if (isCurrent()) { setStreaming(false); activeRef.current = null; }
@@ -157,11 +193,45 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     setTurns((current) => current.map((turn) => turn.id === id ? update(turn) : turn));
   }
 
+  function queueDelta(id: number, text: string) {
+    const buffered = bufferedDeltasRef.current.get(id);
+    if (buffered) buffered.push(text);
+    else bufferedDeltasRef.current.set(id, [text]);
+    if (deltaFrameRef.current !== null) return;
+    deltaFrameRef.current = window.requestAnimationFrame(() => {
+      deltaFrameRef.current = null;
+      flushDeltas();
+    });
+  }
+
+  function flushDeltas() {
+    if (deltaFrameRef.current !== null) window.cancelAnimationFrame(deltaFrameRef.current);
+    deltaFrameRef.current = null;
+    const buffered = bufferedDeltasRef.current;
+    if (!buffered.size) return;
+    bufferedDeltasRef.current = new Map<number, string[]>();
+    setTurns((current) => current.map((turn) => {
+      const deltas = buffered.get(turn.id);
+      return deltas ? { ...turn, response: turn.response + deltas.join("") } : turn;
+    }));
+  }
+
+  function discardBufferedDeltas() {
+    bufferedDeltasRef.current.clear();
+    if (deltaFrameRef.current !== null) window.cancelAnimationFrame(deltaFrameRef.current);
+    deltaFrameRef.current = null;
+  }
+
   function cancel() {
+    const activeTurnId = turnIdRef.current;
+    flushDeltas();
     generationRef.current += 1;
     activeRef.current?.controller.abort();
     activeRef.current = null;
+    patchTurn(activeTurnId, (turn) => ({ ...turn, status: "cancelled" }));
     setStreaming(false);
+    setStreamError(null);
+    setLiveStatus("Resposta interrompida por você. É possível tentar novamente.");
   }
 
   function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -217,21 +287,30 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
         }}><i className="ph-light ph-sidebar-simple" aria-hidden="true" /></button>
       </header>
 
-      <div className="studio-copilot__conversation" aria-live="polite">
+      <p ref={liveStatusRef} className="sr-only" role="status" aria-live="polite" tabIndex={-1}>{liveStatus}</p>
+      <div className="studio-copilot__conversation">
         {!turns.length ? <div className="studio-copilot__welcome">
           <p>Use este espaço para questionar, organizar ou confrontar o que você está escrevendo.</p>
           <span>A IA propõe. Você decide o que entra.</span>
         </div> : null}
         {turns.map((turn) => <article className="studio-copilot-turn" key={turn.id}>
           <p className="studio-copilot-turn__prompt">{turn.prompt}</p>
-          <div className="studio-copilot-turn__answer">{turn.response || (!turn.complete ? <span className="studio-copilot__thinking">Pensando…</span> : null)}</div>
+          <div className="studio-copilot-turn__answer">{turn.response || (turn.status === "streaming" ? <span className="studio-copilot__thinking">Pensando…</span> : null)}</div>
+          {turn.status === "cancelled" ? <p className="studio-copilot-turn__status">Resposta interrompida.</p> : null}
           <StudioCitations citations={turn.citations} onOpenInternal={onOpenInternalSource} />
-          {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange} onOpenInternalSource={onOpenInternalSource} /> : null}
+          {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange}
+            onOpenInternalSource={onOpenInternalSource} acceptance={suggestionAcceptance} /> : null}
         </article>)}
       </div>
 
       {streamError ? <div ref={streamErrorRef} className="studio-copilot__error" role="alert" tabIndex={-1}>
-        <p>{streamError}</p><button type="button" onClick={() => retryRef.current && void send(retryRef.current)}>Tentar novamente</button>
+        <p>{streamError}</p><button type="button" onClick={() => retryRef.current && void send({ ...retryRef.current, research: allowResearch })}>Tentar novamente</button>
+      </div> : null}
+      {!streaming && turns.at(-1)?.status === "cancelled" && retryRef.current ? <div className="studio-copilot__retry-cancelled">
+        <button type="button" onClick={() => {
+          const retry = retryRef.current;
+          if (retry) void send({ ...retry, research: allowResearch });
+        }}>Tentar novamente</button>
       </div> : null}
 
       <form className="studio-copilot__composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
@@ -251,24 +330,28 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   </>;
 }
 
-function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource }: {
+function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, acceptance }: {
   suggestion: StudioSuggestion;
   onDocumentChange(document: StudioDocument): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
+  acceptance?: StudioSuggestionAcceptanceGuard;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(suggestion.payload.proposal.title ?? "");
   const [body, setBody] = useState(suggestion.payload.proposal.bodyText);
-  const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error">("pending");
+  const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error" | "conflict">("pending");
   const errorRef = useRef<HTMLParagraphElement>(null);
   const decisionRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     if (state === "dismissed") decisionRef.current?.focus();
+    if (state === "error" || state === "conflict") errorRef.current?.focus();
   }, [state]);
 
   async function accept() {
     if (state !== "pending" && state !== "error") return;
+    if (acceptance && !acceptance.canAccept) return;
+    const editorSnapshot = acceptance?.capture();
     setState("accepting");
     try {
       const edited = title !== (suggestion.payload.proposal.title ?? "") || body !== suggestion.payload.proposal.bodyText;
@@ -278,11 +361,15 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource }: 
         bodyText: body,
         bodyJson: plainTextDocument(body)
       } : suggestion.payload.proposal);
+      if (acceptance && editorSnapshot && !acceptance.isCurrent(editorSnapshot)) {
+        acceptance.onConflict();
+        setState("conflict");
+        return;
+      }
       onDocumentChange(document);
       setState("accepted");
     } catch {
       setState("error");
-      queueMicrotask(() => errorRef.current?.focus());
     }
   }
 
@@ -293,7 +380,7 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource }: 
       await dismissStudioSuggestion(suggestion.id);
       setState("dismissed");
     }
-    catch { setState("error"); queueMicrotask(() => errorRef.current?.focus()); }
+    catch { setState("error"); }
   }
 
   if (state === "dismissed") return <p ref={decisionRef} className="studio-suggestion__decision" role="status" tabIndex={-1}>Proposta dispensada.</p>;
@@ -312,10 +399,12 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource }: 
     </div> : <div className="studio-suggestion__preview"><h4>{title || "Sem título"}</h4><p>{body}</p></div>}
     </section>
     <StudioCitations citations={suggestion.payload.citations} onOpenInternal={onOpenInternalSource} />
+    {acceptance && !acceptance.canAccept && state !== "conflict" ? <p className="studio-suggestion__guard" role="status">{acceptance.status}</p> : null}
+    {state === "conflict" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta chegou ao servidor, mas sua edição local mudou. Sua escrita foi preservada para você resolver o conflito.</p> : null}
     {state === "error" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta não foi aplicada. O texto original continua intacto.</p> : null}
     <footer>
-      <button type="button" disabled={["accepting", "dismissing", "accepted"].includes(state)} onClick={() => void dismiss()}>{state === "dismissing" ? "Dispensando…" : "Dispensar"}</button>
-      <button className="primary" type="button" disabled={["accepting", "dismissing", "accepted"].includes(state)} onClick={() => void accept()}>{state === "accepted" ? "Aplicada em nova versão" : state === "accepting" ? "Aplicando…" : "Aceitar como nova versão"}</button>
+      <button type="button" disabled={["accepting", "dismissing", "accepted", "conflict"].includes(state)} onClick={() => void dismiss()}>{state === "dismissing" ? "Dispensando…" : "Dispensar"}</button>
+      <button className="primary" type="button" disabled={["accepting", "dismissing", "accepted", "conflict"].includes(state) || (acceptance ? !acceptance.canAccept : false)} onClick={() => void accept()}>{state === "accepted" ? "Aplicada em nova versão" : state === "accepting" ? "Aplicando…" : "Aceitar como nova versão"}</button>
     </footer>
   </section>;
 }

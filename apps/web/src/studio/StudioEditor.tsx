@@ -151,16 +151,18 @@ function StudioEditorSession({
     const draft = getCurrentEditorDraft();
     return {
       documentId: sourceDocumentIdRef.current,
+      revision: autosave.document.revision,
       generation: editGenerationRef.current,
       signature: JSON.stringify(draft)
     };
-  }, [getCurrentEditorDraft]);
+  }, [autosave.document.revision, getCurrentEditorDraft]);
 
   const isCurrentEditorGeneration = useCallback((snapshot: ReturnType<typeof captureEditorGeneration>) => (
     snapshot.documentId === sourceDocumentIdRef.current
+    && snapshot.revision === autosave.document.revision
     && snapshot.generation === editGenerationRef.current
     && snapshot.signature === JSON.stringify(getCurrentEditorDraft())
-  ), [getCurrentEditorDraft]);
+  ), [autosave.document.revision, getCurrentEditorDraft]);
 
   useEffect(() => {
     if (focusHeadingOnMount) headingRef.current?.focus();
@@ -362,6 +364,14 @@ function StudioEditorSession({
   }
 
   const hasUnsavedChanges = !["idle", "saved"].includes(autosave.state);
+  const canAcceptSuggestion = !hasUnsavedChanges && !autosave.storageUnavailable;
+  const suggestionAcceptanceStatus = autosave.storageUnavailable
+    ? "O armazenamento local está indisponível. Resolva o salvamento antes de aceitar uma proposta."
+    : autosave.state === "saving" || autosave.state === "dirty"
+      ? "Aguarde suas alterações serem salvas antes de aceitar a proposta."
+      : autosave.state === "conflict"
+        ? "Resolva o conflito de versões antes de aceitar a proposta."
+        : "Tente salvar novamente antes de aceitar a proposta.";
   const saveLabel = autosave.state === "offline" && autosave.storageUnavailable
     ? "Servidor indisponível"
     : saveLabels[autosave.state];
@@ -552,6 +562,16 @@ function StudioEditorSession({
       document={autosave.document}
       selectedText={selectedText}
       onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
+      suggestionAcceptance={{
+        canAccept: canAcceptSuggestion,
+        status: suggestionAcceptanceStatus,
+        capture: captureEditorGeneration,
+        isCurrent: isCurrentEditorGeneration,
+        onConflict: () => {
+          autosave.markConflict(getCurrentEditorDraft());
+          setResolutionError("A proposta foi salva como nova versão no servidor, mas sua edição local mudou durante o aceite. Sua escrita foi preservada para você decidir como continuar.");
+        }
+      }}
       onOpenInternalSource={(target, citation) => {
         if (target.kind === "studio_document" && target.resourceId) onOpenDocument?.(target.resourceId);
         else onOpenInternalSource?.(target, citation);
