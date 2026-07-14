@@ -6,6 +6,7 @@ import { readRequestContext } from "../../http/auth-context";
 import type { ObjectStorage } from "../../storage/object-storage";
 import {
   studioAssetParamsSchema,
+  studioAssetIdempotencyKeySchema,
   studioDocumentParamsSchema,
   studioEmptyRouteSchema,
   studioLinkCaptureSchema
@@ -49,6 +50,15 @@ export type RegisterStudioAssetRoutesOptions = {
 export async function registerStudioAssetRoutes(app: FastifyInstance, options: RegisterStudioAssetRoutesOptions) {
   const uploadSemaphore = options.uploadSemaphore ?? createStudioUploadSemaphore(2);
 
+  app.get("/studio/documents/:documentId/assets", async (request) => {
+    const scope = requireStudioScope(request);
+    const { documentId } = studioDocumentParamsSchema.parse(request.params);
+    studioEmptyRouteSchema.parse(request.query);
+    if (request.body !== undefined) studioEmptyRouteSchema.parse(request.body);
+    await requireDocument(options.repository, scope, documentId);
+    return { assets: await options.repository.listDocumentAssets(scope, documentId) };
+  });
+
   app.get("/studio/assets/:assetId", async (request) => {
     const scope = requireStudioScope(request);
     const { assetId } = studioAssetParamsSchema.parse(request.params);
@@ -73,6 +83,7 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
     const { documentId } = studioDocumentParamsSchema.parse(request.params);
     studioEmptyRouteSchema.parse(request.query);
     await requireDocument(options.repository, scope, documentId);
+    const idempotencyKey = readAssetIdempotencyKey(request);
 
     if (request.isMultipart()) {
       const release = uploadSemaphore.tryAcquire();
@@ -81,8 +92,10 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       }
       const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
       const control = createUploadReceiveStorageControl(putTimeoutMs);
-      const ownerSettlement = uploadFileAsset(request, reply, options, scope, documentId, control, putTimeoutMs).then(
-        (asset) => ({ ok: true as const, asset }),
+      const ownerSettlement = uploadFileAsset(
+        request, reply, options, scope, documentId, idempotencyKey, control, putTimeoutMs
+      ).then(
+        (result) => ({ ok: true as const, result }),
         (error: unknown) => ({ ok: false as const, error })
       );
       void ownerSettlement.then(() => {
@@ -97,8 +110,8 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       ]);
       if ("interrupt" in outcome) throw outcome.interrupt.responseError;
       if (!outcome.owner.ok) throw outcome.owner.error;
-      const asset = outcome.owner.asset;
-      return reply.status(201).send({ asset });
+      const { asset, replayed } = outcome.owner.result;
+      return reply.status(replayed ? 200 : 201).send({ asset });
     }
 
     const contentType = String(request.headers["content-type"] ?? "").toLowerCase();
@@ -106,6 +119,10 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       throw new ApiError(415, "STUDIO_ASSET_CONTENT_TYPE_UNSUPPORTED", "Envie um arquivo multipart ou um link JSON.");
     }
     const input = studioLinkCaptureSchema.parse(request.body);
+    if (idempotencyKey) {
+      const existing = await options.repository.findAssetByIdempotencyKey(scope, documentId, idempotencyKey);
+      if (existing) return reply.status(200).send({ asset: existing });
+    }
     const snapshot = await captureStudioLinkSnapshot(input.url, {
       resolver: options.resolver,
       fetcher: options.fetcher,
@@ -115,6 +132,7 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       const asset = await options.repository.createAsset({
         ...scope,
         documentId,
+        idempotencyKey,
         kind: "link_snapshot",
         displayName: snapshot.title,
         objectKey: null,
@@ -196,9 +214,10 @@ async function uploadFileAsset(
   options: RegisterStudioAssetRoutesOptions,
   scope: StudioOwnerScope,
   documentId: string,
+  idempotencyKey: string | null,
   control: UploadReceiveStorageControl,
   putTimeoutMs: number
-) {
+): Promise<{ asset: StudioAsset; replayed: boolean }> {
   let prepared: PreparedStudioAssetUpload | null = null;
   const parts = request.parts({
     limits: {
@@ -251,6 +270,10 @@ async function uploadFileAsset(
     const kind = prepared.mimeType.startsWith("audio/")
       ? "audio" as const
       : prepared.mimeType.startsWith("image/") ? "image" as const : "file" as const;
+    if (idempotencyKey) {
+      const existing = await options.repository.findAssetByIdempotencyKey(scope, documentId, idempotencyKey);
+      if (existing) return { asset: existing, replayed: true };
+    }
     const uploadLeaseMs = Math.max(putTimeoutMs + 1, options.uploadLeaseMs ?? putTimeoutMs * 2);
     let intent: StudioAssetUploadIntent;
     try {
@@ -270,11 +293,12 @@ async function uploadFileAsset(
       throw persistenceFailed();
     }
 
-    return await executeAtomicUploadOwner({
+    const asset = await executeAtomicUploadOwner({
       request,
       options,
       scope,
       documentId,
+      idempotencyKey,
       displayName,
       key,
       kind,
@@ -282,6 +306,7 @@ async function uploadFileAsset(
       intent,
       uploadLeaseMs
     }, control);
+    return { asset, replayed: false };
   } catch (error) {
     const candidate = error as { code?: unknown; statusCode?: unknown };
     if (candidate.code === "FST_REQ_FILE_TOO_LARGE" || candidate.statusCode === 413) throw payloadTooLarge();
@@ -389,6 +414,7 @@ async function executeAtomicUploadOwner(
   const assetInput = {
     ...scope,
     documentId: input.documentId,
+    idempotencyKey: input.idempotencyKey,
     kind: input.kind,
     displayName: input.displayName,
     objectKey: key,
@@ -471,6 +497,7 @@ type AtomicUploadOwnerInput = {
   options: RegisterStudioAssetRoutesOptions;
   scope: StudioOwnerScope;
   documentId: string;
+  idempotencyKey: string | null;
   displayName: string;
   key: string;
   kind: "audio" | "image" | "file";
@@ -653,6 +680,12 @@ function sanitizeFilename(filename: string) {
   const normalized = filename.normalize("NFKD").replace(/[\u0300-\u036f]/gu, "");
   const safe = normalized.replace(/[^A-Za-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 120);
   return safe || "arquivo";
+}
+
+function readAssetIdempotencyKey(request: FastifyRequest): string | null {
+  const raw = request.headers["idempotency-key"];
+  if (raw === undefined) return null;
+  return studioAssetIdempotencyKeySchema.parse(raw);
 }
 
 function requireStudioScope(request: FastifyRequest): StudioOwnerScope {

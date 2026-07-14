@@ -745,6 +745,68 @@ function repositoryContract(
       });
     });
 
+    it("lists active document assets only inside the owner and document scope", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const otherDocument = await repository.createDocument(documentInput({ bodyText: "Outro" }));
+        const first = await repository.createAsset({
+          ...scope, documentId: document.id, idempotencyKey: "11111111-1111-4111-8111-111111111111",
+          kind: "audio", displayName: "primeiro.wav", objectKey: "private/primeiro.wav",
+          sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "audio/wav", sizeBytes: 52,
+          extractionStatus: "pending", extractedText: null, extractionMetadata: {}, lastErrorCode: null,
+          attemptCount: 0, nextAttemptAt: null
+        });
+        const second = await repository.createAsset({
+          ...scope, documentId: document.id, idempotencyKey: "22222222-2222-4222-8222-222222222222",
+          kind: "file", displayName: "segundo.txt", objectKey: "private/segundo.txt",
+          sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "text/plain", sizeBytes: 7,
+          extractionStatus: "pending", extractedText: null, extractionMetadata: {}, lastErrorCode: null,
+          attemptCount: 0, nextAttemptAt: null
+        });
+        await repository.createAsset({
+          ...scope, documentId: otherDocument.id, idempotencyKey: "33333333-3333-4333-8333-333333333333",
+          kind: "file", displayName: "outro.txt", objectKey: "private/outro.txt",
+          sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "text/plain", sizeBytes: 5,
+          extractionStatus: "pending", extractedText: null, extractionMetadata: {}, lastErrorCode: null,
+          attemptCount: 0, nextAttemptAt: null
+        });
+
+        expect((await repository.listDocumentAssets(scope, document.id)).map((asset) => asset.id))
+          .toEqual([first.id, second.id].sort((left, right) => left.localeCompare(right)));
+        expect(await repository.listDocumentAssets(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" }, document.id
+        )).toEqual([]);
+      });
+    });
+
+    it("returns one asset for concurrent retries with the same owner document idempotency key", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const input = {
+          ...scope, documentId: document.id, idempotencyKey: "44444444-4444-4444-8444-444444444444",
+          kind: "link_snapshot" as const, displayName: "Estratégia", objectKey: null,
+          sourceUrl: "https://example.com/strategy", finalUrl: "https://example.com/strategy",
+          fetchedAt: "2026-07-13T12:00:00.000Z", mimeType: "text/html", sizeBytes: 80,
+          extractionStatus: "ready" as const, extractedText: "crescer com qualidade",
+          extractionMetadata: {}, lastErrorCode: null, attemptCount: 1, nextAttemptAt: null
+        };
+
+        const [left, right] = await Promise.all([
+          repository.createAsset(input),
+          repository.createAsset({ ...input, displayName: "Resposta repetida" })
+        ]);
+        expect(right.id).toBe(left.id);
+        expect(await repository.findAssetByIdempotencyKey(scope, document.id, input.idempotencyKey))
+          .toMatchObject({ id: left.id, displayName: "Estratégia" });
+        expect(await repository.findAssetByIdempotencyKey(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_b" }, document.id, input.idempotencyKey
+        )).toBeNull();
+        expect(await repository.listDocumentAssets(scope, document.id)).toHaveLength(1);
+      });
+    });
+
     it("finalizes and reconciles durable owner-scoped upload intents idempotently", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -803,6 +865,64 @@ function repositoryContract(
         expect(await repository.completeAssetUploadCleanup({
           scope, intentId: orphan.id, claimToken: claimed!.claimToken!
         })).toBe(true);
+      });
+    });
+
+    it("converges concurrent uploads with one idempotency key and schedules the losing object for cleanup", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const idempotencyKey = "55555555-5555-4555-8555-555555555555";
+        const intents = await Promise.all(["left", "right"].map((side) => repository.createAssetUploadIntent({
+          ...scope,
+          documentId: document.id,
+          objectKey: `private/${side}.txt`,
+          displayName: `${side}.txt`,
+          kind: "file",
+          mimeType: "text/plain",
+          sizeBytes: 5,
+          uploadLeaseExpiresAt: "2026-07-13T12:15:00.000Z"
+        })));
+        await Promise.all(intents.map((intent, index) => repository.attachAssetUploadSession({
+          scope,
+          intentId: intent.id,
+          uploadToken: intent.uploadToken!,
+          storageUploadId: `multipart-upload-${index}`
+        })));
+
+        const finalized = await Promise.all(intents.map((intent) => repository.finalizeAssetUpload({
+          scope,
+          intentId: intent.id,
+          uploadToken: intent.uploadToken!,
+          asset: {
+            ...scope,
+            documentId: document.id,
+            idempotencyKey,
+            kind: "file",
+            displayName: intent.displayName,
+            objectKey: intent.objectKey,
+            sourceUrl: null,
+            finalUrl: null,
+            fetchedAt: null,
+            mimeType: "text/plain",
+            sizeBytes: 5,
+            extractionStatus: "pending",
+            extractedText: null,
+            extractionMetadata: {},
+            lastErrorCode: null,
+            attemptCount: 0,
+            nextAttemptAt: null
+          }
+        })));
+
+        expect(finalized[1]!.id).toBe(finalized[0]!.id);
+        expect(await repository.listDocumentAssets(scope, document.id)).toHaveLength(1);
+        expect(await repository.listAssetUploadIntents(scope)).toEqual([]);
+        const cleanupJobs = await repository.listAssetCleanupJobs(scope);
+        expect(cleanupJobs).toHaveLength(1);
+        expect(cleanupJobs[0]).toMatchObject({ assetId: null, status: "pending" });
+        expect(cleanupJobs[0]!.objectKey).not.toBe(finalized[0]!.objectKey);
+        expect(intents.map((intent) => intent.objectKey)).toContain(cleanupJobs[0]!.objectKey);
       });
     });
 

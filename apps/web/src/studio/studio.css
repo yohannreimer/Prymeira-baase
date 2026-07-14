@@ -499,6 +499,33 @@
   padding-top: 22px;
 }
 
+.studio-document-assets {
+  display: grid;
+  gap: 12px;
+}
+
+.studio-document-assets__status,
+.studio-document-assets__error {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.studio-document-assets__error {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.studio-document-assets__error button {
+  background: transparent;
+  border: 0;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
 .studio-asset-status__heading {
   align-items: start;
   display: flex;

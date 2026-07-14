@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StudioAsset, StudioDocument } from "./studio.types";
@@ -66,6 +66,8 @@ describe("UniversalCaptureComposer", () => {
     expect(link).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("textbox", { name: "Endereço do link" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+    expect(link).toHaveFocus();
   });
 
   it("separates a failed audio upload from later transcription and retries the same document", async () => {
@@ -97,10 +99,75 @@ describe("UniversalCaptureComposer", () => {
     await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(2));
     expect(createDocument).toHaveBeenCalledTimes(1);
     expect(attachAsset.mock.calls[1]?.[0]).toBe(audioDocument.id);
+    expect(attachAsset.mock.calls[0]?.[3]).toBe(attachAsset.mock.calls[1]?.[3]);
+    expect(attachAsset.mock.calls[0]?.[3]).toMatch(/^[0-9a-f-]{36}$/u);
     expect(onCaptured).toHaveBeenCalledWith(audioDocument, expect.objectContaining({
       asset: pendingAsset,
       processing: "pending"
     }));
+  });
+
+  it("lets an attachment already started for a persisted document finish after unmount", async () => {
+    const audioDocument = { ...capturedDocument, id: "audio_detached", bodyText: "", captureMode: "audio" as const };
+    let resolveAttachment!: (asset: StudioAsset) => void;
+    let attachmentSignal: AbortSignal | undefined;
+    const attachAsset = vi.fn((_documentId, _file, _filename, _key, signal?: AbortSignal) => {
+      attachmentSignal = signal;
+      return new Promise<StudioAsset>((resolve) => { resolveAttachment = resolve; });
+    });
+    const onCaptured = vi.fn();
+    const view = render(
+      <UniversalCaptureComposer
+        createDocument={vi.fn(async () => audioDocument)}
+        attachAsset={attachAsset}
+        onCaptured={onCaptured}
+      />
+    );
+
+    await userEvent.upload(
+      screen.getByTestId("studio-audio-input"),
+      new File(["audio"], "reflexao.webm", { type: "audio/webm" })
+    );
+    await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(1));
+    view.unmount();
+
+    expect(attachmentSignal?.aborted).not.toBe(true);
+    resolveAttachment(asset({ id: "asset_detached", documentId: audioDocument.id }));
+    await Promise.resolve();
+    expect(onCaptured).not.toHaveBeenCalled();
+  });
+
+  it("acquires the microphone once and closes an obsolete stream after unmount", async () => {
+    let resolveStream!: (stream: MediaStream) => void;
+    const stop = vi.fn();
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }));
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class {
+        state = "inactive";
+        mimeType = "audio/webm";
+        addEventListener() {}
+        start() {}
+        stop() {}
+      }
+    });
+    try {
+      const view = render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+      const trigger = screen.getByRole("button", { name: "Gravar áudio" });
+      fireEvent.click(trigger);
+      fireEvent.click(trigger);
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+
+      view.unmount();
+      resolveStream({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+      await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
   });
 
   it("cancels an in-flight capture when its surface closes", async () => {
@@ -127,6 +194,7 @@ function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
     workspaceId: "workspace_1",
     ownerProfileId: "owner_1",
     documentId: "audio_1",
+    idempotencyKey: "11111111-1111-4111-8111-111111111111",
     kind: "audio",
     displayName: "reflexao.webm",
     sourceUrl: null,

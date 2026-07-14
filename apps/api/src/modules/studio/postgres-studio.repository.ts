@@ -83,6 +83,7 @@ type StudioAssetRow = {
   workspace_id: string;
   owner_profile_id: string;
   document_id: string;
+  idempotency_key: string | null;
   kind: StudioAssetKind;
   display_name: string;
   object_key: string | null;
@@ -218,6 +219,7 @@ function assetFromRow(row: StudioAssetRow): StudioAsset {
     workspaceId: row.workspace_id,
     ownerProfileId: row.owner_profile_id,
     documentId: row.document_id,
+    idempotencyKey: row.idempotency_key,
     kind: row.kind,
     displayName: row.display_name,
     objectKey: row.object_key,
@@ -736,6 +738,17 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(collectionFromRow);
     },
 
+    async listDocumentAssets(scope, documentId) {
+      const result = await db.query<StudioAssetRow>(
+        `SELECT * FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
+           AND lifecycle_status='active'
+         ORDER BY date_trunc('milliseconds',created_at) ASC,id ASC`,
+        [scope.workspaceId, scope.ownerProfileId, documentId]
+      );
+      return result.rows.map(assetFromRow);
+    },
+
     async findAsset(scope, assetId) {
       const result = await db.query<StudioAssetRow>(
         `SELECT * FROM studio_assets
@@ -758,15 +771,18 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       try {
         const result = await db.query<StudioAssetRow>(
           `INSERT INTO studio_assets
-             (id,workspace_id,owner_profile_id,document_id,kind,display_name,
+             (id,workspace_id,owner_profile_id,document_id,idempotency_key,kind,display_name,
               object_key,source_url,final_url,fetched_at,mime_type,size_bytes,
               extraction_status,extracted_text,extraction_metadata,last_error_code,
               attempt_count,next_attempt_at,claim_token,lease_expires_at,lifecycle_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22)
+           ON CONFLICT (workspace_id,owner_profile_id,document_id,idempotency_key)
+             WHERE idempotency_key IS NOT NULL
+             DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
            RETURNING *`,
           [
             generatedId("studio_asset"), input.workspaceId, input.ownerProfileId,
-            input.documentId, input.kind, input.displayName, input.objectKey,
+            input.documentId, input.idempotencyKey ?? null, input.kind, input.displayName, input.objectKey,
             input.sourceUrl, input.finalUrl, input.fetchedAt, input.mimeType,
             input.sizeBytes, input.extractionStatus, input.extractedText,
             JSON.stringify(input.extractionMetadata), input.lastErrorCode,
@@ -789,6 +805,16 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         `SELECT * FROM studio_assets
          WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
         [scope.workspaceId, scope.ownerProfileId, objectKey]
+      );
+      return result.rows[0] ? assetFromRow(result.rows[0]) : null;
+    },
+
+    async findAssetByIdempotencyKey(scope, documentId, idempotencyKey) {
+      const result = await db.query<StudioAssetRow>(
+        `SELECT * FROM studio_assets
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
+           AND idempotency_key=$4 AND lifecycle_status='active'`,
+        [scope.workspaceId, scope.ownerProfileId, documentId, idempotencyKey]
       );
       return result.rows[0] ? assetFromRow(result.rows[0]) : null;
     },
@@ -870,20 +896,34 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         }
         const asset = await client.query<StudioAssetRow>(
           `INSERT INTO studio_assets
-             (id,workspace_id,owner_profile_id,document_id,kind,display_name,object_key,source_url,
+             (id,workspace_id,owner_profile_id,document_id,idempotency_key,kind,display_name,object_key,source_url,
               final_url,fetched_at,mime_type,size_bytes,extraction_status,extracted_text,
               extraction_metadata,last_error_code,attempt_count,next_attempt_at,claim_token,
               lease_expires_at,lifecycle_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22)
+           ON CONFLICT (workspace_id,owner_profile_id,document_id,idempotency_key)
+             WHERE idempotency_key IS NOT NULL
+             DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
            RETURNING *`,
           [generatedId("studio_asset"), input.asset.workspaceId, input.asset.ownerProfileId,
-            input.asset.documentId, input.asset.kind, input.asset.displayName, input.asset.objectKey,
+            input.asset.documentId, input.asset.idempotencyKey ?? null, input.asset.kind,
+            input.asset.displayName, input.asset.objectKey,
             input.asset.sourceUrl, input.asset.finalUrl, input.asset.fetchedAt, input.asset.mimeType,
             input.asset.sizeBytes, input.asset.extractionStatus, input.asset.extractedText,
             JSON.stringify(input.asset.extractionMetadata), input.asset.lastErrorCode,
             input.asset.attemptCount, input.asset.nextAttemptAt, input.asset.claimToken ?? null,
             input.asset.leaseExpiresAt ?? null, input.asset.lifecycleStatus ?? "active"]
         );
+        if (asset.rows[0]!.object_key !== intent.object_key) {
+          await client.query(
+            `INSERT INTO studio_asset_cleanup_jobs
+               (id,workspace_id,owner_profile_id,asset_id,object_key)
+             VALUES ($1,$2,$3,NULL,$4)
+             ON CONFLICT (workspace_id,owner_profile_id,object_key) WHERE object_key IS NOT NULL
+             DO NOTHING`,
+            [generatedId("studio_asset_cleanup"), intent.workspace_id, intent.owner_profile_id, intent.object_key]
+          );
+        }
         await client.query(
           `DELETE FROM studio_asset_upload_intents
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,

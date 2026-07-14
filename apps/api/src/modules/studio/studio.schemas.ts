@@ -83,6 +83,8 @@ export const studioAssetParamsSchema = z.object({
   assetId: routeIdSchema
 }).strict();
 
+export const studioAssetIdempotencyKeySchema = z.string().trim().uuid();
+
 export const studioLinkCaptureSchema = z.object({
   url: z.url().max(2_000).refine((value) => {
     const url = new URL(value);

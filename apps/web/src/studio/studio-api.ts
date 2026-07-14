@@ -101,6 +101,7 @@ export function mapStudioAsset(raw: RawStudioAsset): StudioAsset {
     workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
     ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
     documentId: required(raw.document_id, raw.documentId, "document_id"),
+    idempotencyKey: raw.idempotency_key !== undefined ? raw.idempotency_key : raw.idempotencyKey ?? null,
     kind: raw.kind,
     displayName: required(raw.display_name, raw.displayName, "display_name"),
     sourceUrl: raw.source_url !== undefined ? raw.source_url : raw.sourceUrl ?? null,
@@ -228,6 +229,7 @@ export async function attachStudioFile(
   documentId: string,
   file: Blob,
   filename: string,
+  idempotencyKey: string,
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch
 ): Promise<StudioAsset> {
@@ -235,7 +237,7 @@ export async function attachStudioFile(
   form.append("file", file, filename);
   const response = await studioRequest<RawStudioAssetResponse>(
     `/documents/${encodeURIComponent(documentId)}/assets`,
-    { method: "POST", body: form, signal },
+    { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: form, signal },
     fetcher
   );
   return mapStudioAsset(response.asset);
@@ -244,15 +246,29 @@ export async function attachStudioFile(
 export async function attachStudioLink(
   documentId: string,
   url: string,
+  idempotencyKey: string,
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch
 ): Promise<StudioAsset> {
   const response = await studioRequest<RawStudioAssetResponse>(
     `/documents/${encodeURIComponent(documentId)}/assets`,
-    { method: "POST", body: JSON.stringify({ url }), signal },
+    { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify({ url }), signal },
     fetcher
   );
   return mapStudioAsset(response.asset);
+}
+
+export async function getStudioDocumentAssets(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioAsset[]> {
+  const response = await studioRequest<{ assets: RawStudioAsset[] }>(
+    `/documents/${encodeURIComponent(documentId)}/assets`,
+    { signal },
+    fetcher
+  );
+  return response.assets.map(mapStudioAsset);
 }
 
 export async function getStudioAsset(

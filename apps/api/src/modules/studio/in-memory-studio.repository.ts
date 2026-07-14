@@ -431,6 +431,16 @@ export function createInMemoryStudioRepository(
         .map(cloneCollection);
     },
 
+    async listDocumentAssets(scope, documentId) {
+      return assets
+        .filter((asset) => asset.workspaceId === scope.workspaceId)
+        .filter((asset) => asset.ownerProfileId === scope.ownerProfileId)
+        .filter((asset) => asset.documentId === documentId)
+        .filter((asset) => asset.lifecycleStatus === "active")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+        .map(cloneAsset);
+    },
+
     async findAsset(scope, assetId) {
       const asset = assets.find((item) =>
         item.workspaceId === scope.workspaceId
@@ -457,9 +467,18 @@ export function createInMemoryStudioRepository(
         && document.id === input.documentId
       );
       if (!documentExists) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      if (input.idempotencyKey) {
+        const existing = assets.find((asset) => asset.workspaceId === input.workspaceId
+          && asset.ownerProfileId === input.ownerProfileId
+          && asset.documentId === input.documentId
+          && asset.idempotencyKey === input.idempotencyKey
+          && asset.lifecycleStatus === "active");
+        if (existing) return cloneAsset(existing);
+      }
       const timestamp = now();
       const asset: StudioAsset = {
         ...structuredClone(input),
+        idempotencyKey: input.idempotencyKey ?? null,
         claimToken: input.claimToken ?? null,
         leaseExpiresAt: input.leaseExpiresAt ?? null,
         lifecycleStatus: input.lifecycleStatus ?? "active",
@@ -475,6 +494,15 @@ export function createInMemoryStudioRepository(
       const asset = assets.find((item) => item.workspaceId === scope.workspaceId
         && item.ownerProfileId === scope.ownerProfileId
         && item.objectKey === objectKey
+        && item.lifecycleStatus === "active");
+      return asset ? cloneAsset(asset) : null;
+    },
+
+    async findAssetByIdempotencyKey(scope, documentId, idempotencyKey) {
+      const asset = assets.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId
+        && item.documentId === documentId
+        && item.idempotencyKey === idempotencyKey
         && item.lifecycleStatus === "active");
       return asset ? cloneAsset(asset) : null;
     },
@@ -535,6 +563,30 @@ export function createInMemoryStudioRepository(
         || intent.storageSessionState !== "active" || intent.storageUploadId === null) {
         throw new Error("STUDIO_ASSET_UPLOAD_INTENT_STALE");
       }
+      const idempotent = input.asset.idempotencyKey
+        ? assets.find((asset) => asset.workspaceId === intent.workspaceId
+          && asset.ownerProfileId === intent.ownerProfileId
+          && asset.documentId === intent.documentId
+          && asset.idempotencyKey === input.asset.idempotencyKey
+          && asset.lifecycleStatus === "active")
+        : undefined;
+      if (idempotent) {
+        if (idempotent.objectKey !== intent.objectKey) {
+          const existingCleanup = assetCleanupJobs.some((job) => job.workspaceId === intent.workspaceId
+            && job.ownerProfileId === intent.ownerProfileId && job.objectKey === intent.objectKey);
+          if (!existingCleanup) {
+            const timestamp = now();
+            assetCleanupJobs.push({
+              workspaceId: intent.workspaceId, ownerProfileId: intent.ownerProfileId,
+              id: `studio_asset_cleanup_${randomUUID()}`, assetId: null, objectKey: intent.objectKey,
+              status: "pending", attemptCount: 0, nextAttemptAt: null, lastErrorCode: null,
+              claimToken: null, leaseExpiresAt: null, createdAt: timestamp, updatedAt: timestamp
+            });
+          }
+        }
+        assetUploadIntents.splice(intentIndex, 1);
+        return cloneAsset(idempotent);
+      }
       const existing = assets.find((asset) => asset.workspaceId === intent.workspaceId
         && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
         && asset.lifecycleStatus === "active");
@@ -545,6 +597,7 @@ export function createInMemoryStudioRepository(
       const timestamp = now();
       const asset: StudioAsset = {
         ...structuredClone(input.asset),
+        idempotencyKey: input.asset.idempotencyKey ?? null,
         claimToken: input.asset.claimToken ?? null,
         leaseExpiresAt: input.asset.leaseExpiresAt ?? null,
         lifecycleStatus: input.asset.lifecycleStatus ?? "active",

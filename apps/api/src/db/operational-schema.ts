@@ -864,6 +864,16 @@ const migrations: Migration[] = [{
       OR (storage_session_state='abort_pending' AND status IN ('cleanup_pending','processing','failed'))
     );
   `
+}, {
+  // Version 14 is reserved for the semantic-memory migration in the approved Studio plan.
+  version: 15,
+  name: "studio_asset_capture_idempotency",
+  sql: `
+    ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_assets_idempotency_uidx
+      ON studio_assets (workspace_id,owner_profile_id,document_id,idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

@@ -104,6 +104,7 @@ export type StudioCollectionMembership = StudioOwnerScope & {
 export type StudioAsset = StudioOwnerScope & {
   id: string;
   documentId: string;
+  idempotencyKey: string | null;
   kind: StudioAssetKind;
   displayName: string;
   objectKey: string | null;
@@ -164,8 +165,8 @@ export type StudioAssetUploadIntent = StudioOwnerScope & {
 
 export type CreateStudioAsset = Omit<
   StudioAsset,
-  "id" | "createdAt" | "updatedAt" | "claimToken" | "leaseExpiresAt" | "lifecycleStatus"
-> & Partial<Pick<StudioAsset, "claimToken" | "leaseExpiresAt" | "lifecycleStatus">>;
+  "id" | "createdAt" | "updatedAt" | "idempotencyKey" | "claimToken" | "leaseExpiresAt" | "lifecycleStatus"
+> & Partial<Pick<StudioAsset, "idempotencyKey" | "claimToken" | "leaseExpiresAt" | "lifecycleStatus">>;
 
 export type FinishStudioAssetProcessing = {
   scope: StudioOwnerScope;
@@ -236,10 +237,16 @@ export type StudioRepository = {
   addCollectionMembership(input: StudioOwnerScope & { collectionId: string; documentId: string }): Promise<StudioCollectionMembership>;
   removeCollectionMembership(scope: StudioOwnerScope, collectionId: string, documentId: string): Promise<boolean>;
   listDocumentCollections(scope: StudioOwnerScope, documentId: string): Promise<StudioCollection[]>;
+  listDocumentAssets(scope: StudioOwnerScope, documentId: string): Promise<StudioAsset[]>;
   findAsset(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   findAssetIncludingDeleting(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   createAsset(input: CreateStudioAsset): Promise<StudioAsset>;
   findAssetByObjectKey(scope: StudioOwnerScope, objectKey: string): Promise<StudioAsset | null>;
+  findAssetByIdempotencyKey(
+    scope: StudioOwnerScope,
+    documentId: string,
+    idempotencyKey: string
+  ): Promise<StudioAsset | null>;
   createAssetUploadIntent(input: Omit<StudioAssetUploadIntent,
     "id" | "status" | "assetId" | "attemptCount" | "nextAttemptAt" | "lastErrorCode"
     | "uploadToken" | "uploadLeaseExpiresAt" | "storageUploadId" | "storageSessionState"

@@ -57,7 +57,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -196,6 +196,19 @@ describe("operational schema", () => {
     expect(columns.rows.map((row) => row.column_name)).toEqual([
       "storage_session_state", "storage_upload_id"
     ]);
+  });
+
+  it("reserves migration 14 and adds owner-document asset idempotency in migration 15", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_assets' and column_name='idempotency_key'`
+    );
+    expect(columns.rows).toEqual([{ column_name: "idempotency_key" }]);
+    const versions = await db.query<{ version: number }>(
+      "select version from baase_schema_migrations where version in (14,15) order by version"
+    );
+    expect(versions.rows).toEqual([{ version: 15 }]);
   });
 
   it("rejects Studio assets that reference a document in another owner scope", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   getStudioAsset,
   getStudioAssetDownload,
@@ -49,6 +49,7 @@ export default function StudioAssetProcessingStatus({
   getDownload = getStudioAssetDownload,
   pollDelays = DEFAULT_POLL_DELAYS
 }: StudioAssetProcessingStatusProps) {
+  const headingId = useId();
   const [current, setCurrent] = useState(asset);
   const [download, setDownload] = useState<Download | null>(null);
   const [downloadError, setDownloadError] = useState(false);
@@ -61,8 +62,10 @@ export default function StudioAssetProcessingStatus({
   const pollControllerRef = useRef<AbortController | null>(null);
   const retryControllerRef = useRef<AbortController | null>(null);
   const retryingRef = useRef(false);
+  const currentRef = useRef(asset);
 
   useEffect(() => {
+    currentRef.current = asset;
     setCurrent(asset);
   }, [asset]);
 
@@ -90,13 +93,14 @@ export default function StudioAssetProcessingStatus({
     pollControllerRef.current = controller;
     setPollError(false);
     setPollExhausted(false);
-    let latest = current;
+    let latest = currentRef.current;
     void (async () => {
       if (!shouldPoll(latest)) return;
       for (const delay of pollDelays) {
         await wait(delay, controller.signal);
         latest = await getStatus(asset.id, controller.signal);
         if (controller.signal.aborted) return;
+        currentRef.current = latest;
         setCurrent(latest);
         if (!shouldPoll(latest)) return;
       }
@@ -108,9 +112,15 @@ export default function StudioAssetProcessingStatus({
       controller.abort();
       if (pollControllerRef.current === controller) pollControllerRef.current = null;
     };
-    // current is deliberately restarted through pollCycle after a manual action.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asset.id, getStatus, pollCycle, pollDelays]);
+  }, [
+    asset.id,
+    asset.extractionStatus,
+    asset.updatedAt,
+    asset.nextAttemptAt,
+    getStatus,
+    pollCycle,
+    pollDelays
+  ]);
 
   useEffect(() => () => retryControllerRef.current?.abort(), []);
 
@@ -125,6 +135,7 @@ export default function StudioAssetProcessingStatus({
     try {
       const retried = await retry(current.id, controller.signal);
       if (controller.signal.aborted) return;
+      currentRef.current = retried;
       setCurrent(retried);
       setPollCycle((cycle) => cycle + 1);
     } catch {
@@ -140,11 +151,11 @@ export default function StudioAssetProcessingStatus({
   const originalLabel = isAudio ? "Baixar áudio original" : "Baixar arquivo original";
 
   return (
-    <section className="studio-asset-status" aria-labelledby="studio-asset-status-title">
+    <section className="studio-asset-status" aria-labelledby={headingId}>
       <div className="studio-asset-status__heading">
         <div>
           <p className="mono">Material original preservado</p>
-          <h3 id="studio-asset-status-title">{current.displayName}</h3>
+          <h3 id={headingId}>{current.displayName}</h3>
         </div>
         <span data-status={current.extractionStatus}>
           {current.extractionStatus === "ready" ? "Pronto"

@@ -87,6 +87,50 @@ describe("StudioAssetProcessingStatus", () => {
     expect(screen.queryByText("Não conseguimos transcrever este áudio.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Atualizar estado" })).toBeInTheDocument();
   });
+
+  it("resets polling when a new prop moves the same asset from ready back to pending", async () => {
+    const initial = asset({
+      extractionStatus: "ready",
+      extractedText: "Transcrição antiga.",
+      updatedAt: "2026-07-13T12:01:00.000Z"
+    });
+    const pending = asset({
+      extractionStatus: "pending",
+      extractedText: null,
+      updatedAt: "2026-07-13T12:02:00.000Z"
+    });
+    const refreshed = asset({
+      extractionStatus: "ready",
+      extractedText: "Transcrição reprocessada.",
+      updatedAt: "2026-07-13T12:03:00.000Z"
+    });
+    const getStatus = vi.fn(async () => refreshed);
+    const getDownload = vi.fn(async () => ({ url: "https://private.example/audio", expiresInSeconds: 600 }));
+    const pollDelays = [0] as const;
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={initial}
+        getStatus={getStatus}
+        retry={vi.fn()}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+      />
+    );
+    expect(screen.getByText("Transcrição antiga.")).toBeInTheDocument();
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={pending}
+        getStatus={getStatus}
+        retry={vi.fn()}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+      />
+    );
+
+    expect(await screen.findByText("Transcrição reprocessada.")).toBeInTheDocument();
+    expect(getStatus).toHaveBeenCalledWith("asset_1", expect.any(AbortSignal));
+  });
 });
 
 function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
@@ -95,6 +139,7 @@ function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
     workspaceId: "workspace_1",
     ownerProfileId: "owner_1",
     documentId: "document_1",
+    idempotencyKey: "11111111-1111-4111-8111-111111111111",
     kind: "audio",
     displayName: "reflexao.wav",
     sourceUrl: null,

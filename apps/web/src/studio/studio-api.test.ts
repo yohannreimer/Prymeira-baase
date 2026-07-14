@@ -7,6 +7,7 @@ import {
   createStudioDocument,
   getStudioAsset,
   getStudioAssetDownload,
+  getStudioDocumentAssets,
   getStudioDocument,
   getStudioHome,
   listStudioCollections,
@@ -171,8 +172,14 @@ describe("Studio API client", () => {
       body_text: "Crescer com margem.",
       capture_mode: "text"
     }, controller.signal, fetcher);
-    await attachStudioFile("document_1", new Blob(["plano"], { type: "text/plain" }), "plano.txt", controller.signal, fetcher);
-    await attachStudioLink("document_1", "https://example.com/plano", controller.signal, fetcher);
+    await attachStudioFile(
+      "document_1", new Blob(["plano"], { type: "text/plain" }), "plano.txt",
+      "11111111-1111-4111-8111-111111111111", controller.signal, fetcher
+    );
+    await attachStudioLink(
+      "document_1", "https://example.com/plano",
+      "22222222-2222-4222-8222-222222222222", controller.signal, fetcher
+    );
 
     const createInit = fetcher.mock.calls[0]![1];
     expect(createInit?.signal).toBe(controller.signal);
@@ -181,11 +188,37 @@ describe("Studio API client", () => {
     const uploadInit = fetcher.mock.calls[1]![1];
     expect(uploadInit?.body).toBeInstanceOf(FormData);
     expect(new Headers(uploadInit?.headers).has("content-type")).toBe(false);
+    expect(new Headers(uploadInit?.headers).get("idempotency-key"))
+      .toBe("11111111-1111-4111-8111-111111111111");
     expect(uploadInit?.signal).toBe(controller.signal);
 
     const linkInit = fetcher.mock.calls[2]![1];
     expect(new Headers(linkInit?.headers).get("content-type")).toBe("application/json");
+    expect(new Headers(linkInit?.headers).get("idempotency-key"))
+      .toBe("22222222-2222-4222-8222-222222222222");
     expect(JSON.parse(String(linkInit?.body))).toEqual({ url: "https://example.com/plano" });
+  });
+
+  it("loads every persisted asset for a document", async () => {
+    const rawAsset = {
+      id: "asset_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
+      document_id: "document_1", idempotency_key: "33333333-3333-4333-8333-333333333333",
+      kind: "audio", display_name: "reflexao.wav", source_url: null, final_url: null,
+      mime_type: "audio/wav", size_bytes: 52, extraction_status: "ready",
+      extracted_text: "Uma direção clara.", last_error_code: null, attempt_count: 1,
+      next_attempt_at: null, created_at: "2026-07-13T12:00:00.000Z",
+      updated_at: "2026-07-13T12:01:00.000Z"
+    } as const;
+    const controller = new AbortController();
+    const fetcher = vi.fn(async () => jsonResponse({ assets: [rawAsset] }));
+
+    await expect(getStudioDocumentAssets("document_1", controller.signal, fetcher)).resolves.toEqual([
+      expect.objectContaining({ id: "asset_1", idempotencyKey: rawAsset.idempotency_key, extractedText: "Uma direção clara." })
+    ]);
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document_1/assets",
+      expect.objectContaining({ signal: controller.signal })
+    );
   });
 
   it("reads processing state, requests retry, and obtains the authorized original", async () => {

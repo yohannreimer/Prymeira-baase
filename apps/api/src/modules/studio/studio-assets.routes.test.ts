@@ -33,6 +33,87 @@ function ownerScope() {
 }
 
 describe("Studio asset routes", () => {
+  it("lists persisted assets by document without accepting caller-selected scope", async () => {
+    const fixture = await createFixture();
+    const uploaded = await upload(fixture.app, fixture.documentId, {
+      filename: "reflexao.wav", mimeType: "audio/wav", body: validWav()
+    }, ownerA, "55555555-5555-4555-8555-555555555555");
+
+    const listed = await fixture.app.inject({
+      method: "GET", url: `/studio/documents/${fixture.documentId}/assets`, headers: ownerA
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().assets).toMatchObject([{ id: uploaded.json().asset.id, kind: "audio" }]);
+    expect((await fixture.app.inject({
+      method: "GET", url: `/studio/documents/${fixture.documentId}/assets`, headers: ownerB
+    })).statusCode).toBe(404);
+    expect((await fixture.app.inject({
+      method: "GET", url: `/studio/documents/${fixture.documentId}/assets`, headers: employee
+    })).statusCode).toBe(403);
+    expect((await fixture.app.inject({
+      method: "GET", url: `/studio/documents/${fixture.documentId}/assets?owner_profile_id=owner_b`, headers: ownerA
+    })).statusCode).toBe(400);
+  });
+
+  it("reuses the same persisted asset after a lost file response", async () => {
+    const fixture = await createFixture();
+    const key = "66666666-6666-4666-8666-666666666666";
+    const first = await upload(fixture.app, fixture.documentId, {
+      filename: "plano.txt", mimeType: "text/plain", body: Buffer.from("privado")
+    }, ownerA, key);
+    const replay = await upload(fixture.app, fixture.documentId, {
+      filename: "plano.txt", mimeType: "text/plain", body: Buffer.from("privado")
+    }, ownerA, key);
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().asset.id).toBe(first.json().asset.id);
+    expect(fixture.objectStorage.keys()).toHaveLength(1);
+    expect(await fixture.repository.listDocumentAssets(ownerScope(), fixture.documentId)).toHaveLength(1);
+  });
+
+  it("converges concurrent link retries to one owner-scoped asset", async () => {
+    const fixture = await createFixture({
+      resolver: async () => ["93.184.216.34"],
+      fetcher: async () => ({
+        statusCode: 200,
+        headers: { "content-type": "text/html" },
+        body: Readable.from(Buffer.from("<html><title>Direção</title><body>Crescer com qualidade</body></html>"))
+      })
+    });
+    const request = {
+      method: "POST" as const,
+      url: `/studio/documents/${fixture.documentId}/assets`,
+      headers: { ...ownerA, "idempotency-key": "77777777-7777-4777-8777-777777777777" },
+      payload: { url: "https://example.com/plano" }
+    };
+    const [left, right] = await Promise.all([fixture.app.inject(request), fixture.app.inject(request)]);
+
+    expect([left.statusCode, right.statusCode].every((status) => status === 200 || status === 201)).toBe(true);
+    expect([left.statusCode, right.statusCode]).toContain(201);
+    expect(right.json().asset.id).toBe(left.json().asset.id);
+    expect(await fixture.repository.listDocumentAssets(ownerScope(), fixture.documentId)).toHaveLength(1);
+  });
+
+  it("rejects malformed asset idempotency keys before capture work starts", async () => {
+    let fetchCalls = 0;
+    const fixture = await createFixture({
+      fetcher: async () => {
+        fetchCalls += 1;
+        throw new Error("should not fetch");
+      }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/studio/documents/${fixture.documentId}/assets`,
+      headers: { ...ownerA, "idempotency-key": "not-a-uuid" },
+      payload: { url: "https://example.com/plano" }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(fetchCalls).toBe(0);
+  });
+
   it("exposes owner-scoped processing status and retries a preserved audio asset", async () => {
     let transcriptionCalls = 0;
     const aiProvider: AiProvider = {
@@ -1184,7 +1265,8 @@ function upload(
   app: ReturnType<typeof buildApp>,
   documentId: string,
   file: { filename: string; mimeType: string; body: Buffer },
-  headers: Record<string, string> = ownerA
+  headers: Record<string, string> = ownerA,
+  idempotencyKey?: string
 ) {
   const boundary = "----baase-studio-asset-boundary";
   const prefix = Buffer.from([
@@ -1198,7 +1280,11 @@ function upload(
   return app.inject({
     method: "POST",
     url: `/studio/documents/${documentId}/assets`,
-    headers: { ...headers, "content-type": `multipart/form-data; boundary=${boundary}` },
+    headers: {
+      ...headers,
+      ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+      "content-type": `multipart/form-data; boundary=${boundary}`
+    },
     payload: Buffer.concat([prefix, file.body, suffix])
   });
 }

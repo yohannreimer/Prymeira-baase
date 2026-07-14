@@ -14,8 +14,14 @@ export type StudioCaptureOutcome = {
 };
 
 type CreateDocument = (input: CreateStudioDocumentInput, signal?: AbortSignal) => Promise<StudioDocument>;
-type AttachAsset = (documentId: string, file: Blob, filename: string, signal?: AbortSignal) => Promise<StudioAsset>;
-type AttachLink = (documentId: string, url: string, signal?: AbortSignal) => Promise<StudioAsset>;
+type AttachAsset = (
+  documentId: string,
+  file: Blob,
+  filename: string,
+  idempotencyKey: string,
+  signal?: AbortSignal
+) => Promise<StudioAsset>;
+type AttachLink = (documentId: string, url: string, idempotencyKey: string, signal?: AbortSignal) => Promise<StudioAsset>;
 
 type UniversalCaptureComposerProps = {
   onCaptured(document: StudioDocument, outcome: StudioCaptureOutcome): void;
@@ -31,6 +37,7 @@ type CaptureInput = {
   file?: Blob;
   filename?: string;
   url?: string;
+  idempotencyKey?: string;
 };
 
 type RetryAttachment = {
@@ -94,9 +101,11 @@ export default function UniversalCaptureComposer({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
+  const linkTriggerRef = useRef<HTMLButtonElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const acquiringMicrophoneRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -114,9 +123,12 @@ export default function UniversalCaptureComposer({
     if (linkMode) linkInputRef.current?.focus();
   }, [linkMode]);
 
-  async function attachInput(document: StudioDocument, input: CaptureInput, signal: AbortSignal) {
-    if (input.file && input.filename) return attachAsset(document.id, input.file, input.filename, signal);
-    if (input.url) return attachLink(document.id, input.url, signal);
+  async function attachInput(document: StudioDocument, input: CaptureInput, signal?: AbortSignal) {
+    if ((input.file || input.url) && !input.idempotencyKey) throw new Error("STUDIO_CAPTURE_IDEMPOTENCY_KEY_MISSING");
+    if (input.file && input.filename) {
+      return attachAsset(document.id, input.file, input.filename, input.idempotencyKey!, signal);
+    }
+    if (input.url) return attachLink(document.id, input.url, input.idempotencyKey!, signal);
     return undefined;
   }
 
@@ -152,8 +164,11 @@ export default function UniversalCaptureComposer({
         body_text: input.bodyText,
         capture_mode: captureMode
       }, controller.signal);
+      if (controllerRef.current === controller) controllerRef.current = null;
 
-      const asset = await attachInput(document, input, controller.signal);
+      // Once the document exists, the bounded server-owned upload must outlive this surface.
+      // Losing the response is safe because retries reuse input.idempotencyKey.
+      const asset = await attachInput(document, input);
 
       const outcome = assetOutcome(asset, input.mode);
       if (mountedRef.current) {
@@ -194,11 +209,9 @@ export default function UniversalCaptureComposer({
     busyRef.current = true;
     setSaving(true);
     setMessage("Enviando o material novamente…");
-    const controller = new AbortController();
-    controllerRef.current = controller;
     let completed: StudioCaptureOutcome | null = null;
     try {
-      const asset = await attachInput(pending.document, pending.input, controller.signal);
+      const asset = await attachInput(pending.document, pending.input);
       completed = assetOutcome(asset, pending.input.mode);
       if (mountedRef.current) {
         clearComposer();
@@ -207,11 +220,10 @@ export default function UniversalCaptureComposer({
           : "Material enviado."));
       }
     } catch {
-      if (!controller.signal.aborted && mountedRef.current) {
+      if (mountedRef.current) {
         setMessage(uploadFailureMessage(pending.input, pending.document));
       }
     } finally {
-      if (controllerRef.current === controller) controllerRef.current = null;
       busyRef.current = false;
       if (mountedRef.current) setSaving(false);
     }
@@ -238,7 +250,13 @@ export default function UniversalCaptureComposer({
         linkInputRef.current?.focus();
         return;
       }
-      void capture({ mode: "link", bodyText: text.trim(), title: null, url });
+      void capture({
+        mode: "link",
+        bodyText: text.trim(),
+        title: null,
+        url,
+        idempotencyKey: globalThis.crypto.randomUUID()
+      });
       return;
     }
     const bodyText = text.trim();
@@ -250,7 +268,14 @@ export default function UniversalCaptureComposer({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    void capture({ mode, bodyText: text.trim(), title: file.name, file, filename: file.name });
+    void capture({
+      mode,
+      bodyText: text.trim(),
+      title: file.name,
+      file,
+      filename: file.name,
+      idempotencyKey: globalThis.crypto.randomUUID()
+    });
   }
 
   function releaseRecording() {
@@ -269,8 +294,11 @@ export default function UniversalCaptureComposer({
       audioInputRef.current?.click();
       return;
     }
+    if (acquiringMicrophoneRef.current) return;
+    acquiringMicrophoneRef.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      acquiringMicrophoneRef.current = false;
       if (!mountedRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -297,7 +325,8 @@ export default function UniversalCaptureComposer({
           bodyText: text.trim(),
           title: "Registro em áudio",
           file: audio,
-          filename: `registro-${new Date().toISOString().replaceAll(":", "-")}.${extension}`
+          filename: `registro-${new Date().toISOString().replaceAll(":", "-")}.${extension}`,
+          idempotencyKey: globalThis.crypto.randomUUID()
         });
       }, { once: true });
       recorder.addEventListener("error", () => {
@@ -308,6 +337,7 @@ export default function UniversalCaptureComposer({
       setRecording(true);
       setMessage("Gravação em andamento. Seu áudio só será enviado quando você parar.");
     } catch {
+      acquiringMicrophoneRef.current = false;
       releaseRecording();
       if (mountedRef.current) {
         setMessage("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
@@ -318,6 +348,11 @@ export default function UniversalCaptureComposer({
   function showLinkMode() {
     setLinkMode(true);
     setMessage(null);
+  }
+
+  function closeLinkMode() {
+    setLinkMode(false);
+    linkTriggerRef.current?.focus();
   }
 
   return (
@@ -346,7 +381,7 @@ export default function UniversalCaptureComposer({
             onChange={(event) => setLink(event.target.value)}
             disabled={Boolean(retryAttachment)}
           />
-          <button type="button" onClick={() => setLinkMode(false)} disabled={Boolean(retryAttachment)}>Fechar</button>
+          <button type="button" onClick={closeLinkMode} disabled={Boolean(retryAttachment)}>Fechar</button>
         </div>
       ) : null}
 
@@ -367,7 +402,7 @@ export default function UniversalCaptureComposer({
           <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || recording || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-image" />
           </button>
-          <button type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || recording || Boolean(retryAttachment)}>
+          <button ref={linkTriggerRef} type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || recording || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-link" />
           </button>
         </div>

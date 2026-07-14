@@ -76,6 +76,7 @@ export type StudioAsset = {
   workspaceId: string;
   ownerProfileId: string;
   documentId: string;
+  idempotencyKey: string | null;
   kind: StudioAssetKind;
   displayName: string;
   sourceUrl: string | null;
@@ -202,6 +203,8 @@ export type RawStudioAsset = {
   ownerProfileId?: string;
   document_id?: string;
   documentId?: string;
+  idempotency_key?: string | null;
+  idempotencyKey?: string | null;
   kind: StudioAssetKind;
   display_name?: string;
   displayName?: string;
