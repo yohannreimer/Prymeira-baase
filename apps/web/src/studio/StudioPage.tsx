@@ -50,6 +50,10 @@ export default function StudioPage() {
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
     documentHeadingRef.current?.focus();
+  }, [section, selectedDocument?.id]);
+
+  useEffect(() => {
+    if (section !== "document" || !selectedDocument) return;
     const controller = new AbortController();
     setAssetsLoading(true);
     setAssetsError(false);
@@ -61,7 +65,7 @@ export default function StudioPage() {
       if (!controller.signal.aborted) setAssetsLoading(false);
     });
     return () => controller.abort();
-  }, [assetsReloadKey, section, selectedDocument]);
+  }, [assetsReloadKey, section, selectedDocument?.id]);
 
   return (
     <section className="studio-screen screen" aria-labelledby="studio-title">

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureOperationalSchema,
   ensureOperationalSchemaThrough,
+  STUDIO_MIGRATION_LEDGER_RESERVATIONS,
   type OperationalSchemaClient,
   type OperationalSchemaPool
 } from "./operational-schema";
@@ -57,7 +58,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -198,7 +199,15 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("reserves migration 14 and adds owner-document asset idempotency in migration 15", async () => {
+  it("reserves the six approved future Studio migrations and adds capture idempotency in migration 20", async () => {
+    expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
+      14: "studio_relations_and_index_jobs",
+      15: "studio_conversations_messages_suggestions_citations",
+      16: "studio_structures",
+      17: "studio_ritual_sessions",
+      18: "studio_operation_previews_and_links",
+      19: "studio_proactivity_settings_and_signals"
+    });
     await ensureOperationalSchema(db);
     const columns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns
@@ -206,9 +215,42 @@ describe("operational schema", () => {
     );
     expect(columns.rows).toEqual([{ column_name: "idempotency_key" }]);
     const versions = await db.query<{ version: number }>(
-      "select version from baase_schema_migrations where version in (14,15) order by version"
+      "select version from baase_schema_migrations where version between 14 and 20 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 15 }]);
+    expect(versions.rows).toEqual([{ version: 20 }]);
+  });
+
+  it("enforces capture idempotency only among active assets", async () => {
+    await ensureOperationalSchema(db);
+    await db.query(
+      `insert into studio_documents
+        (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode)
+       values ('document_reuse','workspace_a','owner_a','{}'::jsonb,'private','file')`
+    );
+    const insert = (id: string, objectKey: string) => db.query(
+      `insert into studio_assets
+        (id,workspace_id,owner_profile_id,document_id,idempotency_key,kind,display_name,
+         object_key,mime_type,size_bytes)
+       values ($1,'workspace_a','owner_a','document_reuse',
+         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','file','private.txt',$2,'text/plain',7)`,
+      [id, objectKey]
+    );
+    await insert("asset_before_tombstone", "private/before.txt");
+    await db.query(
+      `update studio_assets set lifecycle_status='deleting'
+       where workspace_id='workspace_a' and owner_profile_id='owner_a' and id='asset_before_tombstone'`
+    );
+
+    await expect(insert("asset_after_tombstone", "private/after.txt")).resolves.toBeDefined();
+    const lifecycle = await db.query<{ lifecycle_status: string; total: number }>(
+      `select lifecycle_status,count(*)::int total from studio_assets
+       where workspace_id='workspace_a' and owner_profile_id='owner_a' and document_id='document_reuse'
+       group by lifecycle_status order by lifecycle_status`
+    );
+    expect(lifecycle.rows).toEqual([
+      { lifecycle_status: "active", total: 1 },
+      { lifecycle_status: "deleting", total: 1 }
+    ]);
   });
 
   it("rejects Studio assets that reference a document in another owner scope", async () => {

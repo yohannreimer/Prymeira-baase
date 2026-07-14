@@ -66,7 +66,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
     });
   });
 
@@ -156,7 +156,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const catalog = await pool.query<{ columns: number; cleanup_table: boolean; object_nullable: string }>(
         `select
           (select count(*)::int from information_schema.columns
@@ -199,7 +199,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const catalog = await pool.query<{ intent_table: boolean; intent_indexes: number }>(
         `select
           to_regclass('studio_asset_upload_intents') is not null intent_table,
@@ -234,7 +234,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const columns = await pool.query<{ column_name: string }>(
         `select column_name from information_schema.columns
          where table_schema=current_schema() and table_name='studio_asset_upload_intents'
@@ -282,7 +282,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "select version from baase_schema_migrations order by version"
       );
       expect(versions.rows.map((row) => row.version)).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20
       ]);
       const migrated = await pool.query<{
         status: string;
@@ -302,7 +302,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
-  it("reserves migration 14 and adds concurrent owner-document asset idempotency in migration 15", async () => {
+  it("reserves migrations 14 through 19 and adds concurrent active asset idempotency in migration 20", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 13);
       await pool.query(
@@ -314,9 +314,9 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       await ensureOperationalSchema(pool);
 
       const versions = await pool.query<{ version: number }>(
-        "select version from baase_schema_migrations where version in (14,15) order by version"
+        "select version from baase_schema_migrations where version between 14 and 20 order by version"
       );
-      expect(versions.rows).toEqual([{ version: 15 }]);
+      expect(versions.rows).toEqual([{ version: 20 }]);
       const insert = (id: string, objectKey: string) => pool.query(
         `insert into studio_assets
           (id,workspace_id,owner_profile_id,document_id,idempotency_key,kind,display_name,
@@ -331,6 +331,28 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       ]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+
+      const active = await pool.query<{ id: string }>(
+        `select id from studio_assets
+         where workspace_id='workspace_a' and owner_profile_id='owner_a'
+           and document_id='document_idempotent' and lifecycle_status='active'`
+      );
+      await pool.query(
+        `update studio_assets set lifecycle_status='deleting'
+         where workspace_id='workspace_a' and owner_profile_id='owner_a' and id=$1`,
+        [active.rows[0]!.id]
+      );
+      await insert("asset_idempotent_after_delete", "private/after-delete.txt");
+      const lifecycle = await pool.query<{ lifecycle_status: string; total: number }>(
+        `select lifecycle_status,count(*)::int total from studio_assets
+         where workspace_id='workspace_a' and owner_profile_id='owner_a'
+           and document_id='document_idempotent'
+         group by lifecycle_status order by lifecycle_status`
+      );
+      expect(lifecycle.rows).toEqual([
+        { lifecycle_status: "active", total: 1 },
+        { lifecycle_status: "deleting", total: 1 }
+      ]);
     });
   });
 
@@ -542,7 +564,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const upgradedConstraint = await pool.query<{ conname: string }>(
         `select conname
          from pg_constraint
@@ -587,7 +609,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const v3Catalog = await pool.query<{ archived_steps: boolean; archived_evidence: boolean; source_key: boolean; revision_snapshot: boolean; people_fks: number; active_order_index: boolean }>(
         `select
           exists (select 1 from information_schema.columns where table_schema=current_schema() and table_name='routine_steps' and column_name='archived_at') archived_steps,
@@ -623,7 +645,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const after = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+      expect(after.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
       const catalog = await pool.query<{ full_constraints: number; partial_indexes: number }>(
         `select
           (select count(*)::int from pg_constraint c join pg_namespace n on n.oid=c.connamespace

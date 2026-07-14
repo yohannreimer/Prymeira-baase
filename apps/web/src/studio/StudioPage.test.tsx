@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -112,6 +112,39 @@ describe("StudioPage", () => {
     expect(screen.getByRole("link", { name: "Baixar áudio original" })).toHaveAttribute(
       "href", "https://private.example/reflexao.wav"
     );
+  });
+
+  it("does not move focus back to the document heading when persisted assets are retried", async () => {
+    const user = userEvent.setup();
+    let assetRequests = 0;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) {
+        return jsonResponse({
+          home: {
+            recent_documents: [rawDocument], focused_documents: [], pending_review_count: 0, next_rituals: []
+          }
+        });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) {
+        assetRequests += 1;
+        if (assetRequests === 1) return jsonResponse({ error: { code: "TEMPORARY", message: "retry" } }, 503);
+        return new Promise<Response>(() => undefined);
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    const documentButtons = await screen.findAllByRole("button", { name: /Reflexão estratégica/u });
+    await user.click(documentButtons.at(-1)!);
+    await screen.findByRole("alert");
+    const persistentTarget = screen.getByRole("button", { name: "Tudo" });
+    persistentTarget.focus();
+    expect(persistentTarget).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    await waitFor(() => expect(assetRequests).toBe(2));
+    expect(persistentTarget).toHaveFocus();
   });
 });
 

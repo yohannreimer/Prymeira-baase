@@ -807,6 +807,59 @@ function repositoryContract(
       });
     });
 
+    it("allows the same capture key to create one new active asset after its predecessor is tombstoned", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const idempotencyKey = "99999999-9999-4999-8999-999999999999";
+        const createInput = (objectKey: string) => ({
+          ...scope,
+          documentId: document.id,
+          idempotencyKey,
+          kind: "file" as const,
+          displayName: "private.txt",
+          objectKey,
+          sourceUrl: null,
+          finalUrl: null,
+          fetchedAt: null,
+          mimeType: "text/plain",
+          sizeBytes: 7,
+          extractionStatus: "pending" as const,
+          extractedText: null,
+          extractionMetadata: {},
+          lastErrorCode: null,
+          attemptCount: 0,
+          nextAttemptAt: null
+        });
+        const original = await repository.createAsset(createInput("private/original.txt"));
+        await expect(repository.tombstoneAssetForCleanup(scope, original.id)).resolves.toMatchObject({
+          assetId: original.id,
+          objectKey: "private/original.txt"
+        });
+
+        const [left, right] = await Promise.all([
+          repository.createAsset(createInput("private/replacement.txt")),
+          repository.createAsset(createInput("private/replacement.txt"))
+        ]);
+
+        expect(left.id).toBe(right.id);
+        expect(left.id).not.toBe(original.id);
+        expect(left).toMatchObject({ lifecycleStatus: "active", objectKey: "private/replacement.txt" });
+        expect(await repository.findAsset(scope, original.id)).toBeNull();
+        expect(await repository.findAssetIncludingDeleting(scope, original.id)).toMatchObject({
+          lifecycleStatus: "deleting"
+        });
+        expect(await repository.findAssetByIdempotencyKey(scope, document.id, idempotencyKey))
+          .toMatchObject({ id: left.id, lifecycleStatus: "active" });
+        expect(await repository.listDocumentAssets(scope, document.id)).toMatchObject([{ id: left.id }]);
+        expect(await repository.listAssetCleanupJobs(scope)).toMatchObject([{
+          assetId: original.id,
+          objectKey: "private/original.txt",
+          status: "pending"
+        }]);
+      });
+    });
+
     it("finalizes and reconciles durable owner-scoped upload intents idempotently", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };

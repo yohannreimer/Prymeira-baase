@@ -777,7 +777,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
               attempt_count,next_attempt_at,claim_token,lease_expires_at,lifecycle_status)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22)
            ON CONFLICT (workspace_id,owner_profile_id,document_id,idempotency_key)
-             WHERE idempotency_key IS NOT NULL
+             WHERE idempotency_key IS NOT NULL AND lifecycle_status='active'
              DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
            RETURNING *`,
           [
@@ -902,7 +902,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
               lease_expires_at,lifecycle_status)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22)
            ON CONFLICT (workspace_id,owner_profile_id,document_id,idempotency_key)
-             WHERE idempotency_key IS NOT NULL
+             WHERE idempotency_key IS NOT NULL AND lifecycle_status='active'
              DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
            RETURNING *`,
           [generatedId("studio_asset"), input.asset.workspaceId, input.asset.ownerProfileId,

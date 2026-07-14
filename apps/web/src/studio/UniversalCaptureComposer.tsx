@@ -116,6 +116,8 @@ export default function UniversalCaptureComposer({
       const recorder = recorderRef.current;
       if (recorder?.state === "recording") recorder.stop();
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      recorderRef.current = null;
     };
   }, []);
 
@@ -286,8 +288,9 @@ export default function UniversalCaptureComposer({
   }
 
   async function toggleRecording() {
-    if (recorderRef.current?.state === "recording") {
-      recorderRef.current.stop();
+    const currentRecorder = recorderRef.current;
+    if (currentRecorder) {
+      if (currentRecorder.state === "recording") currentRecorder.stop();
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -330,6 +333,7 @@ export default function UniversalCaptureComposer({
         });
       }, { once: true });
       recorder.addEventListener("error", () => {
+        if (!mountedRef.current) return;
         releaseRecording();
         setMessage("Não foi possível registrar áudio desta vez.");
       }, { once: true });

@@ -15,6 +15,17 @@ type Migration = {
   sql: string;
 };
 
+// Versions 14–19 are intentionally unavailable to incidental hardening work.
+// They preserve the ordered migrations approved for Owner Studio Tasks 14, 16, 18, 20, 22, and 24.
+export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
+  14: "studio_relations_and_index_jobs",
+  15: "studio_conversations_messages_suggestions_citations",
+  16: "studio_structures",
+  17: "studio_ritual_sessions",
+  18: "studio_operation_previews_and_links",
+  19: "studio_proactivity_settings_and_signals"
+} as const);
+
 const operationalSchemaLock = [1111574853, 1869636978];
 
 const migrations: Migration[] = [{
@@ -865,14 +876,14 @@ const migrations: Migration[] = [{
     );
   `
 }, {
-  // Version 14 is reserved for the semantic-memory migration in the approved Studio plan.
-  version: 15,
+  version: 20,
   name: "studio_asset_capture_idempotency",
   sql: `
     ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
-    CREATE UNIQUE INDEX IF NOT EXISTS studio_assets_idempotency_uidx
+    DROP INDEX IF EXISTS studio_assets_idempotency_uidx;
+    CREATE UNIQUE INDEX studio_assets_idempotency_uidx
       ON studio_assets (workspace_id,owner_profile_id,document_id,idempotency_key)
-      WHERE idempotency_key IS NOT NULL;
+      WHERE idempotency_key IS NOT NULL AND lifecycle_status='active';
   `
 }];
 

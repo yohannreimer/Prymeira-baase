@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StudioAsset, StudioDocument } from "./studio.types";
@@ -170,6 +170,76 @@ describe("UniversalCaptureComposer", () => {
     }
   });
 
+  it("does not reacquire or stop twice while an inactive recorder is waiting for its delayed stop event", async () => {
+    const stopTrack = vi.fn();
+    const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream;
+    const getUserMedia = vi.fn(async () => stream);
+    const recorders: TestMediaRecorder[] = [];
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class extends TestMediaRecorder {
+        constructor(input: MediaStream) {
+          super(input);
+          recorders.push(this);
+        }
+      }
+    });
+    try {
+      render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      const stopButton = await screen.findByRole("button", { name: "Parar gravação" });
+
+      fireEvent.click(stopButton);
+      fireEvent.click(stopButton);
+
+      expect(recorders).toHaveLength(1);
+      expect(recorders[0]!.stopCalls).toBe(1);
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+      await act(async () => recorders[0]!.emit("stop"));
+      expect(await screen.findByRole("button", { name: "Gravar áudio" })).toBeInTheDocument();
+      expect(stopTrack).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  });
+
+  it("ignores a MediaRecorder error delivered after unmount", async () => {
+    const stopTrack = vi.fn();
+    const recorders: TestMediaRecorder[] = [];
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) }
+    });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class extends TestMediaRecorder {
+        constructor(input: MediaStream) {
+          super(input);
+          recorders.push(this);
+        }
+      }
+    });
+    try {
+      const view = render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await screen.findByRole("button", { name: "Parar gravação" });
+
+      view.unmount();
+      expect(stopTrack).toHaveBeenCalledTimes(1);
+      await act(async () => recorders[0]!.emit("error"));
+      expect(stopTrack).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  });
+
   it("cancels an in-flight capture when its surface closes", async () => {
     const user = userEvent.setup();
     let receivedSignal: AbortSignal | undefined;
@@ -187,6 +257,33 @@ describe("UniversalCaptureComposer", () => {
     expect(receivedSignal?.aborted).toBe(true);
   });
 });
+
+class TestMediaRecorder {
+  state: RecordingState = "inactive";
+  mimeType = "audio/webm";
+  stopCalls = 0;
+  private listeners = new Map<string, (event: { data: Blob }) => void>();
+
+  constructor(_stream: MediaStream) {}
+
+  addEventListener(type: string, listener: (event: { data: Blob }) => void) {
+    this.listeners.set(type, listener);
+  }
+
+  start() {
+    this.state = "recording";
+  }
+
+  stop() {
+    if (this.state !== "recording") throw new DOMException("Recorder is inactive", "InvalidStateError");
+    this.stopCalls += 1;
+    this.state = "inactive";
+  }
+
+  emit(type: "stop" | "error") {
+    this.listeners.get(type)?.({ data: new Blob() });
+  }
+}
 
 function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
   return {
