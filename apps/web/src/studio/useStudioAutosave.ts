@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { StudioApiError } from "./studio-api";
 import type { StudioDocument } from "./studio.types";
 
-export type AutosaveState = "idle" | "dirty" | "saving" | "saved" | "offline" | "conflict" | "error" | "storageUnavailable";
+export type AutosaveState = "idle" | "dirty" | "saving" | "saved" | "offline" | "conflict" | "error";
 
 export type StudioDocumentDraft = {
   title: string | null;
@@ -28,14 +28,38 @@ type StoredDraftRead =
   | { kind: "none" }
   | { kind: "valid"; envelope: StoredDraftEnvelope }
   | { kind: "invalid"; warning: string }
-  | { kind: "unavailable"; warning: string };
+  | { kind: "unavailable" };
 
-type QueuedDraft = StoredDraftEnvelope;
+type QueuedDraft = {
+  documentId: string;
+  envelope: StoredDraftEnvelope;
+};
+
+type AutosaveView = {
+  document: StudioDocument;
+  initialDraft: StudioDocumentDraft | null;
+  state: AutosaveState;
+  conflictDraft: StudioDocumentDraft | null;
+  currentDraft: StudioDocumentDraft | null;
+  recoveryWarning: string | null;
+  storageUnavailable: boolean;
+};
 
 const STORED_DRAFT_VERSION = 1;
+const QUARANTINE_VERSION = 1;
+const QUARANTINE_TTL_MS = 24 * 60 * 60 * 1_000;
+const blockNodeTypes = new Set([
+  "paragraph", "heading", "blockquote", "bulletList", "orderedList", "codeBlock", "horizontalRule"
+]);
+const inlineNodeTypes = new Set(["text", "hardBreak"]);
+const simpleMarkTypes = new Set(["bold", "italic", "strike", "code", "underline"]);
 
 export function studioDraftStorageKey(documentId: string) {
   return `baase:studio:draft:${documentId}`;
+}
+
+export function studioDraftQuarantineKey(documentId: string) {
+  return `baase:studio:draft-quarantine:${documentId}`;
 }
 
 function serializeDraft(draft: StudioDocumentDraft) {
@@ -50,26 +74,130 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isTipTapNode(value: unknown, root = false): value is Record<string, unknown> {
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]) {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function validNullableString(value: unknown) {
+  return value === null || typeof value === "string";
+}
+
+function validAttrs(value: unknown, allowed: Record<string, (attribute: unknown) => boolean>) {
+  if (!isRecord(value) || !hasOnlyKeys(value, Object.keys(allowed))) return false;
+  return Object.entries(value).every(([key, attribute]) => allowed[key]?.(attribute) === true);
+}
+
+function validMark(value: unknown) {
   if (!isRecord(value) || typeof value.type !== "string") return false;
-  if (root && value.type !== "doc") return false;
-  if ("text" in value && typeof value.text !== "string") return false;
-  if ("content" in value && (!Array.isArray(value.content) || !value.content.every((node) => isTipTapNode(node)))) {
-    return false;
+  if (simpleMarkTypes.has(value.type)) return hasOnlyKeys(value, ["type"]);
+  if (value.type !== "link" || !hasOnlyKeys(value, ["type", "attrs"])) return false;
+  return isRecord(value.attrs)
+    && typeof value.attrs.href === "string"
+    && value.attrs.href.length > 0
+    && validAttrs(value.attrs, {
+      href: (attribute) => typeof attribute === "string" && attribute.length > 0,
+      target: validNullableString,
+      rel: validNullableString,
+      class: validNullableString,
+      title: validNullableString
+    });
+}
+
+function validMarks(value: unknown) {
+  return value === undefined || (Array.isArray(value) && value.every(validMark));
+}
+
+function validChildren(value: unknown, allowedTypes: Set<string>) {
+  return value === undefined || (Array.isArray(value) && value.every((child) => (
+    isRecord(child) && typeof child.type === "string" && allowedTypes.has(child.type) && validTipTapNode(child)
+  )));
+}
+
+function validTipTapNode(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "doc":
+      return hasOnlyKeys(value, ["type", "content"]) && validChildren(value.content, blockNodeTypes);
+    case "paragraph":
+      return hasOnlyKeys(value, ["type", "content"]) && validChildren(value.content, inlineNodeTypes);
+    case "heading":
+      return hasOnlyKeys(value, ["type", "attrs", "content"])
+        && (value.attrs === undefined || validAttrs(value.attrs, {
+          level: (attribute) => Number.isInteger(attribute) && (attribute as number) >= 1 && (attribute as number) <= 6
+        }))
+        && validChildren(value.content, inlineNodeTypes);
+    case "text":
+      return hasOnlyKeys(value, ["type", "text", "marks"])
+        && typeof value.text === "string"
+        && value.text.length > 0
+        && validMarks(value.marks);
+    case "hardBreak":
+    case "horizontalRule":
+      return hasOnlyKeys(value, ["type"]);
+    case "blockquote":
+      return hasOnlyKeys(value, ["type", "content"])
+        && Array.isArray(value.content)
+        && value.content.length > 0
+        && validChildren(value.content, blockNodeTypes);
+    case "bulletList":
+      return hasOnlyKeys(value, ["type", "content"])
+        && Array.isArray(value.content)
+        && value.content.length > 0
+        && validChildren(value.content, new Set(["listItem"]));
+    case "orderedList":
+      return hasOnlyKeys(value, ["type", "attrs", "content"])
+        && (value.attrs === undefined || validAttrs(value.attrs, {
+          start: (attribute) => Number.isInteger(attribute) && (attribute as number) >= 1,
+          type: validNullableString
+        }))
+        && Array.isArray(value.content)
+        && value.content.length > 0
+        && validChildren(value.content, new Set(["listItem"]));
+    case "listItem": {
+      if (!hasOnlyKeys(value, ["type", "content"]) || !Array.isArray(value.content)) return false;
+      const [first, ...rest] = value.content;
+      return isRecord(first) && first.type === "paragraph" && validTipTapNode(first)
+        && rest.every((child) => isRecord(child)
+          && typeof child.type === "string"
+          && blockNodeTypes.has(child.type)
+          && validTipTapNode(child));
+    }
+    case "codeBlock":
+      return hasOnlyKeys(value, ["type", "attrs", "content"])
+        && (value.attrs === undefined || validAttrs(value.attrs, { language: validNullableString }))
+        && validChildren(value.content, new Set(["text"]));
+    default:
+      return false;
   }
-  return true;
+}
+
+function tipTapNodeText(node: Record<string, unknown>): string {
+  if (node.type === "text") return node.text as string;
+  if (node.type === "hardBreak") return "\n";
+  if (!Array.isArray(node.content)) return "";
+  const separator = node.type === "doc"
+    || node.type === "blockquote"
+    || node.type === "bulletList"
+    || node.type === "orderedList"
+    || node.type === "listItem" ? "\n" : "";
+  return node.content.map((child) => tipTapNodeText(child as Record<string, unknown>)).join(separator);
 }
 
 function parseDraft(value: unknown): StudioDocumentDraft | null {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, ["title", "bodyJson", "bodyText"])
     || (value.title !== null && typeof value.title !== "string")
     || typeof value.bodyText !== "string"
-    || !isTipTapNode(value.bodyJson, true)) return null;
+    || !validTipTapNode(value.bodyJson)
+    || value.bodyJson.type !== "doc"
+    || tipTapNodeText(value.bodyJson) !== value.bodyText) return null;
   return { title: value.title, bodyJson: value.bodyJson, bodyText: value.bodyText };
 }
 
 function parseEnvelope(value: unknown): StoredDraftEnvelope | null {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, ["version", "baseRevision", "generation", "signature", "draft"])
     || value.version !== STORED_DRAFT_VERSION
     || !Number.isInteger(value.baseRevision)
     || (value.baseRevision as number) < 1
@@ -87,17 +215,37 @@ function parseEnvelope(value: unknown): StoredDraftEnvelope | null {
   };
 }
 
-function discardInvalidDraft(storage: Storage, documentId: string, raw: string) {
-  const key = studioDraftStorageKey(documentId);
+function purgeQuarantine(storage: Storage, documentId: string) {
+  const key = studioDraftQuarantineKey(documentId);
+  const raw = storage.getItem(key);
+  if (!raw) return;
   try {
-    storage.setItem(`${key}:invalid:${Date.now()}`, raw);
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.version !== QUARANTINE_VERSION
+      || typeof parsed.expiresAt !== "number"
+      || parsed.expiresAt <= Date.now()
+      || typeof parsed.raw !== "string") storage.removeItem(key);
   } catch {
-    // Quarantine is best effort; the invalid active value must still be discarded.
+    storage.removeItem(key);
+  }
+}
+
+function quarantineInvalidDraft(storage: Storage, documentId: string, raw: string) {
+  const quarantinedAt = Date.now();
+  try {
+    storage.setItem(studioDraftQuarantineKey(documentId), JSON.stringify({
+      version: QUARANTINE_VERSION,
+      quarantinedAt,
+      expiresAt: quarantinedAt + QUARANTINE_TTL_MS,
+      raw
+    }));
+  } catch {
+    // If quarantine cannot be written, the invalid active value is still removed below.
   }
   try {
-    storage.removeItem(key);
+    storage.removeItem(studioDraftStorageKey(documentId));
   } catch {
-    // The warning remains visible even if the browser blocks cleanup.
+    // The warning remains visible even if cleanup is blocked.
   }
 }
 
@@ -106,31 +254,34 @@ function readStoredDraft(documentId: string): StoredDraftRead {
   let raw: string | null;
   try {
     storage = browserStorage();
-    raw = storage?.getItem(studioDraftStorageKey(documentId)) ?? null;
+    if (!storage) return { kind: "none" };
+    purgeQuarantine(storage, documentId);
+    raw = storage.getItem(studioDraftStorageKey(documentId));
   } catch {
-    return { kind: "unavailable", warning: "O armazenamento local está indisponível neste navegador." };
+    return { kind: "unavailable" };
   }
-  if (!raw || !storage) return { kind: "none" };
+  if (!raw) return { kind: "none" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    discardInvalidDraft(storage, documentId, raw);
-    return { kind: "invalid", warning: "Um rascunho local inválido foi descartado com segurança." };
+    quarantineInvalidDraft(storage, documentId, raw);
+    return { kind: "invalid", warning: "Um rascunho local inválido foi isolado por até 24 horas." };
   }
   const envelope = parseEnvelope(parsed);
   if (!envelope) {
-    discardInvalidDraft(storage, documentId, raw);
-    return { kind: "invalid", warning: "Um rascunho local inválido foi descartado com segurança." };
+    quarantineInvalidDraft(storage, documentId, raw);
+    return { kind: "invalid", warning: "Um rascunho local inválido foi isolado por até 24 horas." };
+  }
+  try {
+    storage.removeItem(studioDraftQuarantineKey(documentId));
+  } catch {
+    // The valid active draft remains usable even if an old quarantine cannot be purged.
   }
   return { kind: "valid", envelope };
 }
 
-function makeEnvelope(
-  draft: StudioDocumentDraft,
-  baseRevision: number,
-  generation: number
-): StoredDraftEnvelope {
+function makeEnvelope(draft: StudioDocumentDraft, baseRevision: number, generation: number): StoredDraftEnvelope {
   return {
     version: STORED_DRAFT_VERSION,
     baseRevision,
@@ -145,6 +296,7 @@ function writeStoredDraft(documentId: string, envelope: StoredDraftEnvelope) {
     const storage = browserStorage();
     if (!storage) return false;
     storage.setItem(studioDraftStorageKey(documentId), JSON.stringify(envelope));
+    storage.removeItem(studioDraftQuarantineKey(documentId));
     return true;
   } catch {
     return false;
@@ -178,12 +330,34 @@ function clearStoredDraft(documentId: string) {
   }
 }
 
-function recoveryDraft(recovery: StoredDraftRead) {
-  return recovery.kind === "valid" ? recovery.envelope.draft : null;
+function clearQuarantinedDraft(documentId: string) {
+  try {
+    const storage = browserStorage();
+    if (!storage) return false;
+    storage.removeItem(studioDraftQuarantineKey(documentId));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function recoveryWarning(recovery: StoredDraftRead) {
-  return recovery.kind === "invalid" || recovery.kind === "unavailable" ? recovery.warning : null;
+function recoveryView(sourceDocument: StudioDocument, recovery: StoredDraftRead): AutosaveView {
+  const envelope = recovery.kind === "valid" ? recovery.envelope : null;
+  const conflict = envelope !== null && envelope.baseRevision !== sourceDocument.revision;
+  return {
+    document: sourceDocument,
+    initialDraft: envelope?.draft ?? null,
+    state: conflict ? "conflict" : envelope ? "dirty" : "saved",
+    conflictDraft: conflict ? envelope?.draft ?? null : null,
+    currentDraft: envelope?.draft ?? null,
+    recoveryWarning: recovery.kind === "invalid" ? recovery.warning : null,
+    storageUnavailable: recovery.kind === "unavailable"
+  };
+}
+
+function recoveredQueue(documentId: string, revision: number, recovery: StoredDraftRead): QueuedDraft | null {
+  if (recovery.kind !== "valid" || recovery.envelope.baseRevision !== revision) return null;
+  return { documentId, envelope: recovery.envelope };
 }
 
 export function useStudioAutosave(
@@ -195,30 +369,17 @@ export function useStudioAutosave(
   const initialRecoveryRef = useRef<StoredDraftRead | null>(null);
   if (!initialRecoveryRef.current) initialRecoveryRef.current = readStoredDraft(sourceDocument.id);
   const initialRecovery = initialRecoveryRef.current;
-  const recovered = initialRecovery.kind === "valid" ? initialRecovery.envelope : null;
-  const recoveredConflicts = recovered !== null && recovered.baseRevision !== sourceDocument.revision;
-  const initiallyUnavailable = initialRecovery.kind === "unavailable";
-
-  const [document, setDocument] = useState(sourceDocument);
-  const [initialDraft, setInitialDraft] = useState<StudioDocumentDraft | null>(() => recoveryDraft(initialRecovery));
-  const [state, setState] = useState<AutosaveState>(() => (
-    initiallyUnavailable ? "storageUnavailable" : recoveredConflicts ? "conflict" : recovered ? "dirty" : "saved"
-  ));
-  const [conflictDraft, setConflictDraft] = useState<StudioDocumentDraft | null>(() => (
-    recoveredConflicts ? recovered?.draft ?? null : null
-  ));
-  const [warning, setRecoveryWarning] = useState<string | null>(() => recoveryWarning(initialRecovery));
-  const [storageUnavailable, setStorageUnavailable] = useState(initiallyUnavailable);
-  const [currentDraft, setCurrentDraft] = useState<StudioDocumentDraft | null>(() => recovered?.draft ?? null);
+  const [view, setView] = useState<AutosaveView>(() => recoveryView(sourceDocument, initialRecovery));
   const documentIdRef = useRef(sourceDocument.id);
   const revisionRef = useRef(sourceDocument.revision);
-  const generationRef = useRef(recovered?.generation ?? 0);
-  const storageUnavailableRef = useRef(initiallyUnavailable);
+  const initialEnvelope = initialRecovery.kind === "valid" ? initialRecovery.envelope : null;
+  const generationRef = useRef(initialEnvelope?.generation ?? 0);
   const saveRef = useRef(save);
-  const queuedRef = useRef<QueuedDraft | null>(null);
-  const retryRef = useRef<QueuedDraft | null>(recovered && !recoveredConflicts ? recovered : null);
+  const queuedRef = useRef<QueuedDraft | null>(recoveredQueue(sourceDocument.id, sourceDocument.revision, initialRecovery));
+  const retryRef = useRef<QueuedDraft | null>(queuedRef.current);
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
+  const initializedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const runNextRef = useRef<() => Promise<void>>(async () => undefined);
@@ -226,97 +387,102 @@ export function useStudioAutosave(
   saveRef.current = save;
 
   const markStorageUnavailable = useCallback(() => {
-    storageUnavailableRef.current = true;
-    setStorageUnavailable(true);
-    setState("storageUnavailable");
+    setView((current) => ({ ...current, storageUnavailable: true }));
   }, []);
 
   const markStorageAvailable = useCallback(() => {
-    storageUnavailableRef.current = false;
-    setStorageUnavailable(false);
+    setView((current) => ({ ...current, storageUnavailable: false }));
   }, []);
 
   const runNext = useCallback(async () => {
     if (!mountedRef.current || savingRef.current || !queuedRef.current) return;
     const item = queuedRef.current;
+    if (item.documentId !== documentIdRef.current) return;
     queuedRef.current = null;
     retryRef.current = item;
     savingRef.current = true;
     const controller = new AbortController();
     controllerRef.current = controller;
-    setState("saving");
+    setView((current) => ({ ...current, state: "saving" }));
 
     try {
-      const savedDocument = await saveRef.current(item.draft, revisionRef.current, controller.signal);
-      if (!mountedRef.current || controller.signal.aborted) return;
+      const savedDocument = await saveRef.current(
+        item.envelope.draft,
+        item.envelope.baseRevision,
+        controller.signal
+      );
+      if (!mountedRef.current || controller.signal.aborted || item.documentId !== documentIdRef.current) return;
       revisionRef.current = savedDocument.revision;
-      setDocument(savedDocument);
       retryRef.current = null;
-      setConflictDraft(null);
       const pending = queuedRef.current as QueuedDraft | null;
       let storageSucceeded: boolean;
-      if (pending) {
-        const rebased: QueuedDraft = { ...pending, baseRevision: savedDocument.revision };
+      if (pending?.documentId === item.documentId) {
+        const rebased = {
+          ...pending,
+          envelope: { ...pending.envelope, baseRevision: savedDocument.revision }
+        };
         queuedRef.current = rebased;
         retryRef.current = rebased;
-        storageSucceeded = writeStoredDraft(documentIdRef.current, rebased);
+        storageSucceeded = writeStoredDraft(item.documentId, rebased.envelope);
       } else {
-        storageSucceeded = clearMatchingStoredDraft(documentIdRef.current, item);
+        storageSucceeded = clearMatchingStoredDraft(item.documentId, item.envelope);
       }
       if (storageSucceeded) markStorageAvailable();
       else markStorageUnavailable();
-      if (!queuedRef.current) setCurrentDraft(null);
-      if (!storageUnavailableRef.current) setState(queuedRef.current ? "dirty" : "saved");
+      setView((current) => ({
+        ...current,
+        document: savedDocument,
+        conflictDraft: null,
+        currentDraft: queuedRef.current ? current.currentDraft : null,
+        state: queuedRef.current ? "dirty" : "saved"
+      }));
     } catch (error) {
-      if (!mountedRef.current || controller.signal.aborted) return;
-      const freshest = queuedRef.current ?? item;
+      if (!mountedRef.current || controller.signal.aborted || item.documentId !== documentIdRef.current) return;
+      const freshest = queuedRef.current?.documentId === item.documentId ? queuedRef.current : item;
       queuedRef.current = null;
       retryRef.current = freshest;
-      setCurrentDraft(freshest.draft);
-      if (error instanceof StudioApiError && error.status === 409) {
-        setConflictDraft(freshest.draft);
-        setState("conflict");
-      } else if (storageUnavailableRef.current) {
-        setState("storageUnavailable");
-      } else if (error instanceof TypeError) {
-        setState("offline");
-      } else {
-        setState("error");
-      }
+      setView((current) => ({
+        ...current,
+        currentDraft: freshest.envelope.draft,
+        conflictDraft: error instanceof StudioApiError && error.status === 409 ? freshest.envelope.draft : null,
+        state: error instanceof StudioApiError && error.status === 409
+          ? "conflict"
+          : error instanceof TypeError ? "offline" : "error"
+      }));
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
       savingRef.current = false;
-      if (mountedRef.current && queuedRef.current) await runNextRef.current();
+      if (mountedRef.current && queuedRef.current?.documentId === documentIdRef.current) await runNextRef.current();
     }
   }, [markStorageAvailable, markStorageUnavailable]);
   runNextRef.current = runNext;
 
+  const scheduleQueued = useCallback(() => {
+    if (!queuedRef.current || queuedRef.current.documentId !== documentIdRef.current) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      void runNextRef.current();
+    }, debounceMs);
+  }, [debounceMs]);
+
   const queueSave = useCallback((draft: StudioDocumentDraft) => {
     generationRef.current += 1;
-    const queued = makeEnvelope(draft, revisionRef.current, generationRef.current);
+    const envelope = makeEnvelope(draft, revisionRef.current, generationRef.current);
+    const queued = { documentId: documentIdRef.current, envelope };
     queuedRef.current = queued;
     retryRef.current = queued;
-    setCurrentDraft(draft);
-    const stored = writeStoredDraft(documentIdRef.current, queued);
-    if (!stored) markStorageUnavailable();
-    else {
-      markStorageAvailable();
-      setState(savingRef.current ? "saving" : "dirty");
-    }
-    setConflictDraft(null);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (!savingRef.current) {
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        void runNextRef.current();
-      }, debounceMs);
-    }
-  }, [debounceMs, markStorageAvailable, markStorageUnavailable]);
+    const stored = writeStoredDraft(documentIdRef.current, envelope);
+    if (stored) markStorageAvailable();
+    else markStorageUnavailable();
+    setView((current) => ({ ...current, currentDraft: draft, conflictDraft: null, state: savingRef.current ? "saving" : "dirty" }));
+    if (!savingRef.current) scheduleQueued();
+  }, [markStorageAvailable, markStorageUnavailable, scheduleQueued]);
 
   const retry = useCallback(async () => {
-    if (savingRef.current || !retryRef.current) return;
+    if (savingRef.current || !retryRef.current || retryRef.current.documentId !== documentIdRef.current) return;
     queuedRef.current = retryRef.current;
-    setConflictDraft(null);
+    setView((current) => ({ ...current, conflictDraft: null }));
     await runNextRef.current();
   }, []);
 
@@ -329,16 +495,16 @@ export function useStudioAutosave(
     retryRef.current = null;
     revisionRef.current = serverDocument.revision;
     generationRef.current += 1;
-    setDocument(serverDocument);
-    setCurrentDraft(null);
-    setConflictDraft(null);
-    let cleared = true;
-    if (discardLocalDraft) cleared = clearStoredDraft(documentIdRef.current);
-    if (!cleared) markStorageUnavailable();
-    else {
-      markStorageAvailable();
-      setState("saved");
-    }
+    const cleared = !discardLocalDraft || clearStoredDraft(documentIdRef.current);
+    if (cleared) markStorageAvailable();
+    else markStorageUnavailable();
+    setView((current) => ({
+      ...current,
+      document: serverDocument,
+      currentDraft: null,
+      conflictDraft: null,
+      state: "saved"
+    }));
   }, [markStorageAvailable, markStorageUnavailable]);
 
   const markConflict = useCallback((draft: StudioDocumentDraft) => {
@@ -346,14 +512,18 @@ export function useStudioAutosave(
     timerRef.current = null;
     generationRef.current += 1;
     const envelope = makeEnvelope(draft, revisionRef.current, generationRef.current);
+    const queued = { documentId: documentIdRef.current, envelope };
     queuedRef.current = null;
-    retryRef.current = envelope;
-    setCurrentDraft(draft);
-    if (!writeStoredDraft(documentIdRef.current, envelope)) markStorageUnavailable();
-    else markStorageAvailable();
-    setConflictDraft(draft);
-    setState("conflict");
+    retryRef.current = queued;
+    if (writeStoredDraft(documentIdRef.current, envelope)) markStorageAvailable();
+    else markStorageUnavailable();
+    setView((current) => ({ ...current, currentDraft: draft, conflictDraft: draft, state: "conflict" }));
   }, [markStorageAvailable, markStorageUnavailable]);
+
+  const discardRecoveryWarning = useCallback(() => {
+    if (!clearQuarantinedDraft(documentIdRef.current)) markStorageUnavailable();
+    setView((current) => ({ ...current, recoveryWarning: null }));
+  }, [markStorageUnavailable]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -365,61 +535,35 @@ export function useStudioAutosave(
   }, []);
 
   useEffect(() => {
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      scheduleQueued();
+      return;
+    }
     if (sourceDocument.id === documentIdRef.current) return;
     if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
     controllerRef.current?.abort();
+    controllerRef.current = null;
+    savingRef.current = false;
+
+    const recovery = readStoredDraft(sourceDocument.id);
+    const nextQueue = recoveredQueue(sourceDocument.id, sourceDocument.revision, recovery);
     documentIdRef.current = sourceDocument.id;
     revisionRef.current = sourceDocument.revision;
-    const nextRecovery = readStoredDraft(sourceDocument.id);
-    initialRecoveryRef.current = nextRecovery;
-    const nextEnvelope = nextRecovery.kind === "valid" ? nextRecovery.envelope : null;
-    const nextConflict = nextEnvelope !== null && nextEnvelope.baseRevision !== sourceDocument.revision;
-    const unavailable = nextRecovery.kind === "unavailable";
-    storageUnavailableRef.current = unavailable;
-    setStorageUnavailable(unavailable);
-    generationRef.current = nextEnvelope?.generation ?? 0;
-    queuedRef.current = null;
-    retryRef.current = nextEnvelope && !nextConflict ? nextEnvelope : null;
-    setDocument(sourceDocument);
-    setInitialDraft(nextEnvelope?.draft ?? null);
-    setCurrentDraft(nextEnvelope?.draft ?? null);
-    setConflictDraft(nextConflict ? nextEnvelope?.draft ?? null : null);
-    setRecoveryWarning(recoveryWarning(nextRecovery));
-    setState(unavailable ? "storageUnavailable" : nextConflict ? "conflict" : nextEnvelope ? "dirty" : "saved");
-    if (nextEnvelope && !nextConflict) {
-      queuedRef.current = nextEnvelope;
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        void runNextRef.current();
-      }, debounceMs);
-    }
-  }, [debounceMs, sourceDocument, sourceDocument.id]);
-
-  useEffect(() => {
-    if (!recovered || recoveredConflicts) return;
-    queuedRef.current = recovered;
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      void runNextRef.current();
-    }, debounceMs);
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-    // Recovery is intentionally evaluated once for this document identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceDocument.id]);
+    generationRef.current = recovery.kind === "valid" ? recovery.envelope.generation : 0;
+    queuedRef.current = nextQueue;
+    retryRef.current = nextQueue;
+    setView(recoveryView(sourceDocument, recovery));
+    scheduleQueued();
+  }, [scheduleQueued, sourceDocument.id]);
 
   return {
-    state,
-    document,
-    initialDraft,
-    conflictDraft,
-    currentDraft,
-    recoveryWarning: warning,
-    storageUnavailable,
+    ...view,
     queueSave,
     retry,
     resolveConflict,
-    markConflict
+    markConflict,
+    discardRecoveryWarning
   };
 }

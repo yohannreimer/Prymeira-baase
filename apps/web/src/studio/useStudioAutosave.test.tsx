@@ -193,7 +193,7 @@ describe("useStudioAutosave", () => {
 
     const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
 
-    expect(result.current.state).toBe("storageUnavailable");
+    expect(result.current.state).toBe("saved");
     expect(result.current.storageUnavailable).toBe(true);
   });
 
@@ -212,7 +212,7 @@ describe("useStudioAutosave", () => {
 
     act(() => result.current.queueSave(secondDraft));
 
-    expect(result.current.state).toBe("storageUnavailable");
+    expect(result.current.state).toBe("dirty");
     expect(result.current.currentDraft).toEqual(secondDraft);
   });
 
@@ -229,7 +229,7 @@ describe("useStudioAutosave", () => {
     });
     const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
     act(() => result.current.queueSave(firstDraft));
-    expect(result.current.state).toBe("storageUnavailable");
+    expect(result.current.state).toBe("dirty");
 
     installLocalStorage();
     act(() => result.current.queueSave(secondDraft));
@@ -237,6 +237,132 @@ describe("useStudioAutosave", () => {
     expect(result.current.state).toBe("dirty");
     expect(result.current.storageUnavailable).toBe(false);
     expect(readEnvelope().draft).toEqual(secondDraft);
+  });
+
+  it("keeps storage availability orthogonal when quota failure is followed by PATCH 409", async () => {
+    const storage = window.localStorage;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: storage.clear,
+        getItem: storage.getItem,
+        removeItem: storage.removeItem,
+        setItem: () => { throw new DOMException("full", "QuotaExceededError"); }
+      }
+    });
+    const save = vi.fn(async () => {
+      throw new StudioApiError(409, "STUDIO_DOCUMENT_CHANGED", "O documento mudou.");
+    });
+    const { result } = renderHook(() => useStudioAutosave(document, save));
+
+    act(() => result.current.queueSave(secondDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.storageUnavailable).toBe(true);
+    expect(result.current.conflictDraft).toEqual(secondDraft);
+  });
+
+  it.each([
+    ["unknown node", { type: "doc", content: [{ type: "secretWidget", attrs: { token: "private" } }] }, ""],
+    ["unknown mark", {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Texto", marks: [{ type: "secretMark" }] }] }]
+    }, "Texto"],
+    ["unknown attribute", {
+      type: "doc",
+      content: [{ type: "heading", attrs: { level: 2, secret: true }, content: [{ type: "text", text: "Título" }] }]
+    }, "Título"],
+    ["body text mismatch", {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Texto real" }] }]
+    }, "Texto adulterado"]
+  ])("quarantines %s and never PATCHes it", async (_label, bodyJson, bodyText) => {
+    const invalid = { title: "Inválido", bodyJson, bodyText } as StudioDocumentDraft;
+    storeEnvelope(invalid, 4);
+    const save = vi.fn();
+
+    const { result } = renderHook(() => useStudioAutosave(document, save));
+
+    expect(result.current.initialDraft).toBeNull();
+    expect(result.current.recoveryWarning).toMatch(/rascunho local.*inválido/i);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("accepts the configured StarterKit and Link structures when the text snapshot matches", () => {
+    const richDraft: StudioDocumentDraft = {
+      title: "Plano rico",
+      bodyJson: {
+        type: "doc",
+        content: [
+          {
+            type: "heading",
+            attrs: { level: 2 },
+            content: [{ type: "text", text: "Direção", marks: [{ type: "bold" }] }]
+          },
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Linha" },
+              { type: "hardBreak" },
+              {
+                type: "text",
+                text: "seguinte",
+                marks: [{
+                  type: "link",
+                  attrs: { href: "https://example.com", target: null, rel: "noopener noreferrer", class: null, title: null }
+                }]
+              }
+            ]
+          },
+          {
+            type: "bulletList",
+            content: [{
+              type: "listItem",
+              content: [{ type: "paragraph", content: [{ type: "text", text: "Item" }] }]
+            }]
+          }
+        ]
+      },
+      bodyText: "Direção\nLinha\nseguinte\nItem"
+    };
+    storeEnvelope(richDraft, 4);
+
+    const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
+
+    expect(result.current.initialDraft).toEqual(richDraft);
+    expect(result.current.recoveryWarning).toBeNull();
+  });
+
+  it("keeps only one time-bounded quarantine and purges it on the next valid draft", () => {
+    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    const firstInvalid = { title: null, bodyJson: { type: "unknown" }, bodyText: "primeiro" } as StudioDocumentDraft;
+    storeEnvelope(firstInvalid, 4);
+    const first = renderHook(() => useStudioAutosave(document, vi.fn()));
+    const quarantined = JSON.parse(window.localStorage.getItem(quarantineKey)!);
+    expect(quarantined).toMatchObject({ version: 1, raw: expect.any(String) });
+    expect(quarantined.expiresAt).toBeGreaterThan(Date.now());
+    expect([...localStorageKeys()].filter((key) => key.startsWith(quarantineKey))).toEqual([quarantineKey]);
+    first.unmount();
+
+    storeEnvelope(secondDraft, 4);
+    renderHook(() => useStudioAutosave(document, vi.fn()));
+    expect(window.localStorage.getItem(quarantineKey)).toBeNull();
+  });
+
+  it("purges an expired invalid-draft quarantine on the next read", () => {
+    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    window.localStorage.setItem(quarantineKey, JSON.stringify({
+      version: 1,
+      quarantinedAt: Date.now() - 100_000,
+      expiresAt: Date.now() - 1,
+      raw: "sensitive"
+    }));
+
+    renderHook(() => useStudioAutosave(document, vi.fn()));
+
+    expect(window.localStorage.getItem(quarantineKey)).toBeNull();
   });
 
   it("recovers the draft belonging to a newly selected document without replaying the previous one", async () => {
@@ -286,7 +412,14 @@ function storeEnvelope(value: StudioDocumentDraft, baseRevision: number) {
 }
 
 function draft(bodyText: string): StudioDocumentDraft {
-  return { title: "Plano anual", bodyJson: { type: "doc", content: [{ type: "paragraph" }] }, bodyText };
+  return {
+    title: "Plano anual",
+    bodyJson: {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: bodyText }] }]
+    },
+    bodyText
+  };
 }
 
 function makeDocument(overrides: Partial<StudioDocument> = {}): StudioDocument {
@@ -321,7 +454,13 @@ function installLocalStorage() {
       clear: () => values.clear(),
       getItem: (key: string) => values.get(key) ?? null,
       removeItem: (key: string) => values.delete(key),
-      setItem: (key: string, value: string) => values.set(key, String(value))
+      setItem: (key: string, value: string) => values.set(key, String(value)),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; }
     }
   });
+}
+
+function localStorageKeys() {
+  return Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index)!);
 }

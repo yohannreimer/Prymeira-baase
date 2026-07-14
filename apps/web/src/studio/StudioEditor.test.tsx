@@ -35,17 +35,76 @@ describe("StudioEditor", () => {
 
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
 
-    expect(screen.getByRole("status", { name: "Estado do salvamento" }))
-      .toHaveTextContent("Alterações mantidas nesta aba");
-    expect(screen.getByRole("alert")).toHaveTextContent(/mantenha esta aba aberta/i);
+    expect(screen.getByRole("status", { name: "Estado do salvamento" })).toHaveTextContent("Salvo");
+    expect(screen.getByRole("alert", { name: "Armazenamento local indisponível" }))
+      .toHaveTextContent(/mantenha esta aba aberta/i);
     expect(screen.queryByText(/salvo neste dispositivo/i)).not.toBeInTheDocument();
+  });
+
+  it("remounts the writing session by document id and only recovers or PATCHes document B", async () => {
+    const draftA = {
+      title: "Rascunho A",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Conteúdo A" }] }] },
+      bodyText: "Conteúdo A"
+    };
+    const draftB = {
+      title: "Rascunho B",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Conteúdo B" }] }] },
+      bodyText: "Conteúdo B"
+    };
+    const documentA = { ...document, id: "document_a", revision: 1, title: "Servidor A" };
+    const documentB = { ...document, id: "document_b", revision: 1, title: "Servidor B" };
+    storeDraftEnvelopeFor(documentA.id, draftA, 1);
+    storeDraftEnvelopeFor(documentB.id, draftB, 1);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method !== "PATCH") return response({}, 404);
+      const payload = JSON.parse(String(init.body));
+      const isB = String(input).endsWith(`/documents/${documentB.id}`);
+      return response({
+        document: {
+          ...rawDocument,
+          id: isB ? documentB.id : documentA.id,
+          revision: 2,
+          title: payload.title,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        }
+      });
+    });
+    const { rerender } = render(<StudioEditor document={documentA} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    rerender(<StudioEditor document={documentB} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    expect(screen.getByRole("textbox", { name: "Título do documento" })).toHaveValue("Rascunho B");
+    expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Conteúdo B");
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1));
+    const [url, init] = fetchSpy.mock.calls.find(([, request]) => request?.method === "PATCH")!;
+    expect(String(url)).toContain(documentB.id);
+    expect(JSON.parse(String(init?.body))).toMatchObject({ body_text: "Conteúdo B", expected_revision: 1 });
+    expect(String(url)).not.toContain(documentA.id);
+  });
+
+  it("lets the owner explicitly discard a bounded invalid-draft quarantine", async () => {
+    const user = userEvent.setup();
+    const invalid = { title: null, bodyJson: { type: "secretWidget" }, bodyText: "sensitive" };
+    storeDraftEnvelopeFor(document.id, invalid, document.revision);
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    const warning = await screen.findByRole("alert", { name: "Rascunho local inválido" });
+    expect(warning).toHaveTextContent(/isolado.*24 horas/i);
+    const quarantineKey = `baase:studio:draft-quarantine:${document.id}`;
+    expect(window.localStorage.getItem(quarantineKey)).not.toBeNull();
+    await user.click(within(warning).getByRole("button", { name: "Descartar rascunho inválido" }));
+
+    expect(window.localStorage.getItem(quarantineKey)).toBeNull();
+    expect(screen.queryByRole("alert", { name: "Rascunho local inválido" })).not.toBeInTheDocument();
   });
 
   it("does not overwrite newer edits when reloading the server version finishes late", async () => {
     const user = userEvent.setup();
     storeDraftEnvelope({
       title: "Rascunho em conflito",
-      bodyJson: { type: "doc", content: [{ type: "paragraph" }] },
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Rascunho" }] }] },
       bodyText: "Rascunho"
     }, 3);
     const reload = deferred<Response>();
@@ -72,7 +131,7 @@ describe("StudioEditor", () => {
     const onDocumentChange = vi.fn();
     storeDraftEnvelope({
       title: "Rascunho em conflito",
-      bodyJson: { type: "doc", content: [{ type: "paragraph" }] },
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Rascunho" }] }] },
       bodyText: "Rascunho"
     }, 3);
     const create = deferred<Response>();
@@ -307,6 +366,46 @@ describe("StudioEditor", () => {
     });
   });
 
+  it("shows storage unavailability alongside a restore conflict when quota is exhausted", async () => {
+    const user = userEvent.setup();
+    const restore = deferred<Response>();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
+      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") return restore.promise;
+      return Promise.resolve(response({}, 404));
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
+    await user.click(await screen.findByRole("button", { name: /Versão 2/u }));
+    await user.click(screen.getByRole("button", { name: "Restaurar como nova versão" }));
+    installQuotaStorage();
+    await act(async () => restore.resolve(response({
+      error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." }
+    }, 409)));
+
+    expect(await screen.findByRole("alert", { name: "Conflito de versões" })).toBeInTheDocument();
+    const storageWarning = screen.getByRole("alert", { name: "Armazenamento local indisponível" });
+    expect(storageWarning).toHaveTextContent(/esta aba é a única cópia local/i);
+    expect(storageWarning).not.toHaveTextContent(/salvo neste dispositivo/i);
+  });
+
+  it("never claims device persistence when quota and the network fail together", async () => {
+    const user = userEvent.setup();
+    installQuotaStorage();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("offline"));
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " offline");
+
+    expect(await screen.findByRole("status", { name: "Estado do salvamento" }))
+      .toHaveTextContent("Servidor indisponível");
+    expect(screen.getByRole("alert", { name: "Armazenamento local indisponível" })).toBeInTheDocument();
+    expect(screen.queryByText(/salvo neste dispositivo/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/continua apenas nesta aba/i)).toBeInTheDocument();
+  });
+
   it("keeps formatting aria-pressed in sync with TipTap transactions", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ document: { ...rawDocument, revision: 5 } }));
@@ -412,7 +511,8 @@ const document: StudioDocument = {
 
 const rawVersion = {
   id: "version_2", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
-  document_id: "document_1", version_number: 2, body_json: { type: "doc", content: [{ type: "paragraph" }] },
+  document_id: "document_1", version_number: 2,
+  body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Direção anterior preservada." }] }] },
   body_text: "Direção anterior preservada.", origin: "user", actor_profile_id: "profile_owner",
   ai_run_id: null, created_at: "2026-07-11T10:00:00.000Z"
 } as const;
@@ -455,13 +555,34 @@ function installTipTapDomGeometry() {
 }
 
 function storeDraftEnvelope(draft: { title: string | null; bodyJson: Record<string, unknown>; bodyText: string }, baseRevision: number) {
-  window.localStorage.setItem(`baase:studio:draft:${document.id}`, JSON.stringify({
+  storeDraftEnvelopeFor(document.id, draft, baseRevision);
+}
+
+function storeDraftEnvelopeFor(
+  documentId: string,
+  draft: { title: string | null; bodyJson: Record<string, unknown>; bodyText: string },
+  baseRevision: number
+) {
+  window.localStorage.setItem(`baase:studio:draft:${documentId}`, JSON.stringify({
     version: 1,
     baseRevision,
     generation: 1,
     signature: JSON.stringify(draft),
     draft
   }));
+}
+
+function installQuotaStorage() {
+  const storage = window.localStorage;
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: storage.clear,
+      getItem: storage.getItem,
+      removeItem: storage.removeItem,
+      setItem: () => { throw new DOMException("full", "QuotaExceededError"); }
+    }
+  });
 }
 
 function deferred<T>() {

@@ -118,6 +118,7 @@ export default function StudioPage() {
             <>
               <Suspense fallback={<StudioEditorSkeleton />}>
                 <StudioEditor
+                  key={selectedDocument.id}
                   document={selectedDocument}
                   focusHeadingOnMount
                   onDocumentChange={setSelectedDocument}

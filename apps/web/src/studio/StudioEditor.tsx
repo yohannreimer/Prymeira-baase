@@ -25,8 +25,7 @@ const saveLabels: Record<AutosaveState, string> = {
   saved: "Salvo",
   offline: "Salvo neste dispositivo",
   conflict: "Atenção necessária",
-  error: "Não foi possível salvar",
-  storageUnavailable: "Alterações mantidas nesta aba"
+  error: "Não foi possível salvar"
 };
 
 function documentContent(document: StudioDocument, recovered: StudioDocumentDraft | null) {
@@ -44,7 +43,11 @@ function formatVersionDate(value: string) {
   }).format(new Date(value));
 }
 
-export default function StudioEditor({
+export default function StudioEditor(props: StudioEditorProps) {
+  return <StudioEditorSession key={props.document.id} {...props} />;
+}
+
+function StudioEditorSession({
   document: sourceDocument,
   onDocumentChange,
   focusHeadingOnMount = false,
@@ -352,6 +355,9 @@ export default function StudioEditor({
   }
 
   const hasUnsavedChanges = !["idle", "saved"].includes(autosave.state);
+  const saveLabel = autosave.state === "offline" && autosave.storageUnavailable
+    ? "Servidor indisponível"
+    : saveLabels[autosave.state];
 
   function closeVersions() {
     restoreVersionsTriggerFocusRef.current = true;
@@ -390,7 +396,7 @@ export default function StudioEditor({
         <div className="studio-editor__save-line">
           <span className="studio-editor__save-status" role="status" aria-label="Estado do salvamento" data-state={autosave.state}>
             <i aria-hidden="true" className={`ph-light ${autosave.state === "saving" ? "ph-circle-notch" : autosave.state === "saved" ? "ph-check" : "ph-cloud"}`} />
-            {saveLabels[autosave.state]}
+            {saveLabel}
           </span>
           <button
             type="button"
@@ -430,19 +436,37 @@ export default function StudioEditor({
 
       <EditorContent editor={editor} className="studio-editor__canvas" />
 
-      {autosave.state === "offline" || autosave.state === "error" || autosave.state === "storageUnavailable" ? (
+      {autosave.storageUnavailable ? (
+        <div
+          className="studio-editor__notice"
+          role="alert"
+          aria-label="Armazenamento local indisponível"
+        >
+          <p>Não foi possível guardar neste dispositivo. Mantenha esta aba aberta: esta aba é a única cópia local das alterações ainda não enviadas.</p>
+          <button type="button" onClick={() => void autosave.retry()}>Tentar salvar novamente</button>
+        </div>
+      ) : null}
+
+      {autosave.state === "offline" || autosave.state === "error" ? (
         <div className="studio-editor__notice" role="alert">
           <p>{autosave.state === "offline"
-            ? "Sua escrita está guardada neste dispositivo e será enviada quando você tentar novamente."
-            : autosave.state === "storageUnavailable"
-              ? "Não foi possível guardar neste dispositivo. Suas alterações permanecem nesta aba; mantenha esta aba aberta e tente salvar novamente."
+            ? autosave.storageUnavailable
+              ? "O servidor está indisponível. Sua escrita continua apenas nesta aba até uma nova tentativa."
+              : "Sua escrita está guardada neste dispositivo e será enviada quando você tentar novamente."
               : "Sua escrita está preservada, mas o servidor não conseguiu salvá-la."}</p>
           <button type="button" onClick={() => void autosave.retry()}>Tentar salvar novamente</button>
         </div>
       ) : null}
 
-      {autosave.recoveryWarning && autosave.state !== "storageUnavailable" ? (
-        <p className="studio-editor__resolution-error" role="alert">{autosave.recoveryWarning}</p>
+      {autosave.recoveryWarning ? (
+        <div
+          className="studio-editor__resolution-error"
+          role="alert"
+          aria-label="Rascunho local inválido"
+        >
+          <p>{autosave.recoveryWarning} Você pode descartá-lo agora; caso contrário, ele será removido automaticamente.</p>
+          <button type="button" onClick={autosave.discardRecoveryWarning}>Descartar rascunho inválido</button>
+        </div>
       ) : null}
 
       {autosave.state === "conflict" ? (
