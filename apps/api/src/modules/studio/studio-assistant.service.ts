@@ -24,6 +24,16 @@ const MAX_HISTORY_CHARACTERS = 24_000;
 const MAX_DOCUMENT_CHARACTERS = 24_000;
 const MAX_MESSAGE_CHARACTERS = 20_000;
 const MAX_CITATIONS = 30;
+const MAX_NARRATIVE_BYTES = 256_000;
+const MAX_NARRATIVE_CODEPOINTS = 200_000;
+const MAX_NARRATIVE_DELTAS = 4_096;
+const MAX_PROPOSAL_BODY_BYTES = 256_000;
+const MAX_PROPOSAL_BODY_DEPTH = 32;
+const MAX_PROPOSAL_BODY_NODES = 20_000;
+const MAX_PROPOSAL_BODY_KEYS = 20_000;
+const MAX_PROPOSAL_OBJECT_KEYS = 500;
+const MAX_PROPOSAL_ARRAY_LENGTH = 2_000;
+const MAX_SUGGESTION_ENVELOPE_BYTES = 768_000;
 
 const textSuggestionEnvelopeSchema = z.object({
   facts: z.array(z.object({
@@ -118,15 +128,25 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
         documentId: input.documentId,
         content: input.message
       });
+      const effectiveDocumentId = started.conversation.documentId;
+      if (input.requestTextSuggestion && !effectiveDocumentId) {
+        throw new Error("STUDIO_SUGGESTION_DOCUMENT_REQUIRED");
+      }
       const [messages, document, context] = await Promise.all([
         options.repository.listConversationMessages(scope, started.conversation.id, MAX_HISTORY_MESSAGES),
-        input.documentId ? options.repository.findDocument(scope, input.documentId) : Promise.resolve(null),
+        effectiveDocumentId ? options.repository.findDocument(scope, effectiveDocumentId) : Promise.resolve(null),
         input.context && options.contextBuilder
           ? options.contextBuilder.buildStudioContext(scope, input.context)
           : Promise.resolve(null)
       ]);
-      if (input.documentId && !document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      if (effectiveDocumentId && !document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       assertNotAborted(input.signal);
+      const authoritativeCitations = [
+        ...(document ? [documentCitation(scope, document)] : []),
+        ...(context?.citations ?? []).map(contextCitation)
+      ];
+      if (authoritativeCitations.length > MAX_CITATIONS) throw new Error("STUDIO_ASSISTANT_OUTPUT_LIMIT");
+      const citationRegistry = createAuthoritativeCitationRegistry(authoritativeCitations);
       const history = boundHistory(messages);
       const narrative = await options.harness.runTextStream({
         workspaceId: scope.workspaceId,
@@ -152,6 +172,7 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
         conversationId: started.conversation.id,
         document,
         context,
+        citationRegistry,
         narrative
       });
     },
@@ -173,13 +194,18 @@ type StreamAssistantTurnOptions = StudioAssistantServiceOptions & {
   conversationId: string;
   document: StudioDocument | null;
   context: StudioContextSnapshot | null;
+  citationRegistry: AuthoritativeCitationRegistry;
   narrative: Awaited<ReturnType<AiHarness["runTextStream"]>>;
 };
 
 async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncIterable<StudioSseEvent> {
+  const citationRegistry = options.citationRegistry;
   const citations = deduplicateCitations((options.context?.citations ?? []).map(contextCitation));
   let finalText = "";
   let deltaText = "";
+  let narrativeBytes = 0;
+  let narrativeCodepoints = 0;
+  let deltaCount = 0;
   let providerCompleted = false;
   yield { event: "run", data: { ai_run_id: options.narrative.run.id, conversation_id: options.conversationId } };
   for (const citation of citations) yield { event: "citation", data: citationPreview(citation) };
@@ -188,16 +214,29 @@ async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncI
     for await (const event of options.narrative.events) {
       assertNotAborted(options.input.signal);
       if (event.type === "delta") {
-        deltaText = appendBounded(deltaText, event.text, 500_000);
+        deltaCount += 1;
+        const nextBytes = narrativeBytes + Buffer.byteLength(event.text, "utf8");
+        const nextCodepoints = narrativeCodepoints + countCodepoints(event.text);
+        if (deltaCount > MAX_NARRATIVE_DELTAS
+          || nextBytes > MAX_NARRATIVE_BYTES
+          || nextCodepoints > MAX_NARRATIVE_CODEPOINTS) {
+          throw new Error("STUDIO_ASSISTANT_OUTPUT_LIMIT");
+        }
+        narrativeBytes = nextBytes;
+        narrativeCodepoints = nextCodepoints;
+        deltaText += event.text;
         yield { event: "delta", data: { text: event.text } };
       } else if (event.type === "citation") {
         const external = externalCitation(options.scope, event, options.now());
         if (!options.input.allowExternalResearch) throw new Error("STUDIO_EXTERNAL_RESEARCH_NOT_ALLOWED");
-        if (!hasCitation(citations, external) && citations.length < MAX_CITATIONS) {
+        registerAuthoritativeCitation(citationRegistry, external);
+        if (!hasCitation(citations, external)) {
+          if (citations.length >= MAX_CITATIONS) throw new Error("STUDIO_ASSISTANT_OUTPUT_LIMIT");
           citations.push(external);
           yield { event: "citation", data: citationPreview(external) };
         }
       } else if (event.type === "done") {
+        assertNarrativeWithinBounds(event.text);
         finalText = event.text;
         providerCompleted = true;
       }
@@ -214,7 +253,7 @@ async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncI
     });
 
     if (options.input.requestTextSuggestion && options.document) {
-      const suggestion = await createTextSuggestion(options).catch((error: unknown) => {
+      const suggestion = await createTextSuggestion(options, citationRegistry).catch((error: unknown) => {
         if (error instanceof Error && error.message === "AI_OUTPUT_VALIDATION_FAILED") return null;
         throw error;
       });
@@ -228,10 +267,13 @@ async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncI
   }
 }
 
-async function createTextSuggestion(options: StreamAssistantTurnOptions) {
+async function createTextSuggestion(
+  options: StreamAssistantTurnOptions,
+  citationRegistry: AuthoritativeCitationRegistry
+) {
   const document = options.document!;
   assertNotAborted(options.input.signal);
-  const result = await withAbort(options.harness.runStructured({
+  const result = await options.harness.runStructured({
     workspaceId: options.scope.workspaceId,
     actorProfileId: options.scope.ownerProfileId,
     source: "owner_studio",
@@ -248,15 +290,19 @@ async function createTextSuggestion(options: StreamAssistantTurnOptions) {
       context: options.context
     },
     outputSchema: textSuggestionEnvelopeSchema,
-    schemaName: "studio_text_suggestion"
-  }), options.input.signal);
+    schemaName: "studio_text_suggestion",
+    signal: options.input.signal
+  });
   assertNotAborted(options.input.signal);
-  const payload: StudioTextSuggestionPayload = result.output;
+  validateSuggestionEnvelope(result.output);
+  const payload: StudioTextSuggestionPayload = {
+    ...result.output,
+    citations: groundStructuredCitations(result.output.citations, citationRegistry)
+  };
   const proposal: StudioTextSuggestionProposal = payload.proposal;
   if (proposal.document_id !== document.id || proposal.expected_revision !== document.revision) {
     throw new Error("AI_OUTPUT_VALIDATION_FAILED");
   }
-  assertGroundedStructuredCitations(payload.citations, document, options.context);
   const stored = await options.repository.createAssistantSuggestion({
     ...options.scope,
     documentId: document.id,
@@ -264,7 +310,7 @@ async function createTextSuggestion(options: StreamAssistantTurnOptions) {
     aiRunId: result.run.id,
     kind: "text",
     payloadJson: payload,
-    citations: payload.citations.map((citation) => structuredCitation(options.scope, citation))
+    citations: payload.citations.map((citation) => structuredCitation(options.scope, citation, citationRegistry))
   });
   return suggestionDto(stored.suggestion);
 }
@@ -273,7 +319,6 @@ function normalizeTurnInput(input: StudioAssistantTurnInput): StudioAssistantTur
   const message = input.message.replace(/\r\n?/gu, "\n").trim();
   if (!message) throw new Error("STUDIO_MESSAGE_REQUIRED");
   if (message.length > MAX_MESSAGE_CHARACTERS) throw new Error("STUDIO_MESSAGE_TOO_LONG");
-  if (input.requestTextSuggestion && !input.documentId) throw new Error("STUDIO_SUGGESTION_DOCUMENT_REQUIRED");
   return { ...input, message };
 }
 
@@ -314,7 +359,28 @@ function externalCitation(scope: StudioOwnerScope, event: Extract<AiTextStreamEv
     periodFrom: null, periodTo: null, metadata: { publishedAt: event.publishedAt, contentTrust: "untrusted_data" } };
 }
 
-function structuredCitation(scope: StudioOwnerScope, citation: StudioStructuredCitation): CreateStudioCitation {
+function documentCitation(scope: StudioOwnerScope, document: StudioDocument): CreateStudioCitation {
+  return {
+    ...scope,
+    sourceType: "studio_document",
+    sourceId: document.id,
+    url: null,
+    label: document.title ?? "Documento do Studio",
+    excerpt: document.bodyText.slice(0, 2_000),
+    observedAt: document.updatedAt,
+    periodFrom: null,
+    periodTo: null,
+    metadata: { revision: document.revision, contentTrust: "untrusted_data" }
+  };
+}
+
+function structuredCitation(
+  scope: StudioOwnerScope,
+  citation: StudioStructuredCitation,
+  registry: AuthoritativeCitationRegistry
+): CreateStudioCitation {
+  const authoritative = registry.get(citationIdentity(citation.source_type, citation.source_id, citation.url));
+  if (!authoritative) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
   return {
     ...scope,
     sourceType: citation.source_type,
@@ -325,22 +391,72 @@ function structuredCitation(scope: StudioOwnerScope, citation: StudioStructuredC
     observedAt: citation.observed_at,
     periodFrom: citation.period_from,
     periodTo: citation.period_to,
-    metadata: { structuredReview: true, contentTrust: "untrusted_data" }
+    metadata: { ...authoritative.metadata, structuredReview: true }
   };
 }
 
-function assertGroundedStructuredCitations(
-  citations: StudioStructuredCitation[],
-  document: StudioDocument,
-  context: StudioContextSnapshot | null
-) {
-  const allowed = new Set<string>([`studio_document:${document.id}`]);
-  for (const citation of context?.citations ?? []) allowed.add(`${citation.sourceType}:${citation.sourceId}`);
-  if (citations.some((citation) => !citation.source_id
-    || citation.source_type === "external_url"
-    || !allowed.has(`${citation.source_type}:${citation.source_id}`))) {
-    throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+type AuthoritativeCitationRegistry = Map<string, CreateStudioCitation | null>;
+
+function createAuthoritativeCitationRegistry(citations: CreateStudioCitation[]): AuthoritativeCitationRegistry {
+  const registry: AuthoritativeCitationRegistry = new Map();
+  for (const citation of citations) registerAuthoritativeCitation(registry, citation);
+  if ([...registry.values()].some((citation) => citation === null)) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  return registry;
+}
+
+function registerAuthoritativeCitation(registry: AuthoritativeCitationRegistry, citation: CreateStudioCitation) {
+  const key = citationIdentity(citation.sourceType, citation.sourceId, citation.url);
+  const existing = registry.get(key);
+  if (existing === undefined) {
+    registry.set(key, citation);
+    return;
   }
+  const comparable = existing && citation.sourceType === "external_url"
+    ? { ...citation, observedAt: existing.observedAt }
+    : citation;
+  if (existing === null || !sameAuthoritativeCitation(existing, comparable)) registry.set(key, null);
+}
+
+function groundStructuredCitations(
+  citations: StudioStructuredCitation[],
+  registry: AuthoritativeCitationRegistry
+): StudioStructuredCitation[] {
+  return citations.map((citation) => {
+    const authoritative = registry.get(citationIdentity(citation.source_type, citation.source_id, citation.url));
+    if (!authoritative) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    return {
+      source_type: authoritative.sourceType,
+      source_id: authoritative.sourceId,
+      url: authoritative.url,
+      label: authoritative.label,
+      excerpt: authoritative.excerpt,
+      observed_at: authoritative.observedAt,
+      period_from: authoritative.periodFrom,
+      period_to: authoritative.periodTo
+    };
+  });
+}
+
+function citationIdentity(sourceType: string, sourceId: string | null, url: string | null) {
+  if (sourceType === "external_url") {
+    if (!url) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    try { return `${sourceType}:${new URL(url).toString()}`; }
+    catch { throw new Error("AI_OUTPUT_VALIDATION_FAILED"); }
+  }
+  if (!sourceId || url) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  return `${sourceType}:${sourceId}`;
+}
+
+function sameAuthoritativeCitation(left: CreateStudioCitation, right: CreateStudioCitation) {
+  return left.sourceType === right.sourceType
+    && left.sourceId === right.sourceId
+    && left.url === right.url
+    && left.label === right.label
+    && left.excerpt === right.excerpt
+    && left.observedAt === right.observedAt
+    && left.periodFrom === right.periodFrom
+    && left.periodTo === right.periodTo
+    && JSON.stringify(left.metadata) === JSON.stringify(right.metadata);
 }
 
 function suggestionDto(suggestion: StudioSuggestion): StudioSuggestionDto {
@@ -377,13 +493,77 @@ function citationPreview(input: CreateStudioCitation): StudioCitationDto {
     periodFrom: input.periodFrom, periodTo: input.periodTo, metadata: input.metadata };
 }
 
-function appendBounded(current: string, value: string, limit: number) {
-  if (current.length >= limit) return current;
-  return current + value.slice(0, limit - current.length);
+function normalizeAssistantText(value: string) {
+  const normalized = value.replace(/\r\n?/gu, "\n").trim();
+  assertNarrativeWithinBounds(normalized);
+  return normalized;
 }
 
-function normalizeAssistantText(value: string) {
-  return value.replace(/\r\n?/gu, "\n").trim().slice(0, 500_000);
+function countCodepoints(value: string) {
+  return [...value].length;
+}
+
+function assertNarrativeWithinBounds(value: string) {
+  if (Buffer.byteLength(value, "utf8") > MAX_NARRATIVE_BYTES
+    || countCodepoints(value) > MAX_NARRATIVE_CODEPOINTS) {
+    throw new Error("STUDIO_ASSISTANT_OUTPUT_LIMIT");
+  }
+}
+
+function validateSuggestionEnvelope(payload: StudioTextSuggestionPayload) {
+  assertJsonValueWithinBounds(payload.proposal.body_json);
+  if (Buffer.byteLength(payload.proposal.body_text, "utf8") > MAX_PROPOSAL_BODY_BYTES) {
+    throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  }
+  let serialized: string;
+  try { serialized = JSON.stringify(payload); }
+  catch { throw new Error("AI_OUTPUT_VALIDATION_FAILED"); }
+  if (Buffer.byteLength(serialized, "utf8") > MAX_SUGGESTION_ENVELOPE_BYTES) {
+    throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  }
+}
+
+function assertJsonValueWithinBounds(root: unknown) {
+  const seen = new WeakSet<object>();
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  let nodes = 0;
+  let keys = 0;
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    nodes += 1;
+    if (nodes > MAX_PROPOSAL_BODY_NODES || current.depth > MAX_PROPOSAL_BODY_DEPTH) {
+      throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    }
+    const value = current.value;
+    if (value === null || typeof value === "string" || typeof value === "boolean") continue;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+      continue;
+    }
+    if (typeof value !== "object") throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    if (seen.has(value)) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    seen.add(value);
+    if (Array.isArray(value)) {
+      if (value.length > MAX_PROPOSAL_ARRAY_LENGTH) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+      for (const entry of value) stack.push({ value: entry, depth: current.depth + 1 });
+      continue;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+      throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    }
+    const entries = Object.entries(value);
+    keys += entries.length;
+    if (entries.length > MAX_PROPOSAL_OBJECT_KEYS || keys > MAX_PROPOSAL_BODY_KEYS) {
+      throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+    }
+    for (const [, entry] of entries) stack.push({ value: entry, depth: current.depth + 1 });
+  }
+  let serialized: string;
+  try { serialized = JSON.stringify(root); }
+  catch { throw new Error("AI_OUTPUT_VALIDATION_FAILED"); }
+  if (serialized === undefined || Buffer.byteLength(serialized, "utf8") > MAX_PROPOSAL_BODY_BYTES) {
+    throw new Error("AI_OUTPUT_VALIDATION_FAILED");
+  }
 }
 
 function assertNotAborted(signal?: AbortSignal) {
@@ -391,23 +571,6 @@ function assertNotAborted(signal?: AbortSignal) {
   const error = new Error("STUDIO_ASSISTANT_CANCELLED");
   error.name = "AbortError";
   throw error;
-}
-
-function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  assertNotAborted(signal);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      const error = new Error("STUDIO_ASSISTANT_CANCELLED");
-      error.name = "AbortError";
-      reject(error);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
-      (error) => { signal.removeEventListener("abort", onAbort); reject(error); }
-    );
-  });
 }
 
 function isAbortError(error: unknown, signal?: AbortSignal) {

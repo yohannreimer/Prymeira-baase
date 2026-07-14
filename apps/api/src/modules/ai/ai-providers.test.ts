@@ -161,6 +161,27 @@ describe("OpenAI provider", () => {
     expect(JSON.stringify(calls[0])).toContain("Explique o onboarding de cliente novo.");
   });
 
+  it("passes the structured abort signal to the OpenAI Responses request", async () => {
+    const requestSignals: Array<AbortSignal | undefined> = [];
+    const provider = createOpenAiProvider({
+      client: {
+        responses: {
+          create: async (_payload: unknown, requestOptions?: { signal?: AbortSignal }) => {
+            requestSignals.push(requestOptions?.signal);
+            return { output_text: JSON.stringify({ title: "Pronto" }) };
+          }
+        }
+      }
+    });
+    const controller = new AbortController();
+    await expect(provider.generateStructured({
+      taskKind: "process_draft", agentKey: "process_architect", promptKey: "agent/process-architect",
+      promptVersion: "1", model: "gpt-5.5", reasoningEffort: "medium", input: {},
+      schemaName: "process_draft", jsonSchema: { type: "object" }, signal: controller.signal
+    })).resolves.toEqual({ title: "Pronto" });
+    expect(requestSignals).toEqual([controller.signal]);
+  });
+
   it("does not add web search without explicit consent and maps streamed annotations to citations", async () => {
     const calls: unknown[] = [];
     const streams = [

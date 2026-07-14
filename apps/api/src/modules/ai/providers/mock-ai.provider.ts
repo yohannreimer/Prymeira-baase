@@ -15,6 +15,7 @@ type MockAiProviderOptions = {
 export function createMockAiProvider(options: MockAiProviderOptions = {}): AiProvider {
   return {
     async generateStructured(request) {
+      if (request.signal?.aborted) throw request.signal.reason ?? new Error("AI_STRUCTURED_CANCELLED");
       return options.structuredOutput ?? createDefaultStructuredOutput(request);
     },
 

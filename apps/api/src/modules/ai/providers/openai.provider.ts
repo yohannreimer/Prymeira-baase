@@ -41,7 +41,10 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
   return {
     async generateStructured(request) {
       const prompt = getPromptDefinition(request.promptKey, request.promptVersion);
-      const response = await client.responses.create(buildResponsesPayload(request, prompt.system, prompt.developer));
+      const response = await client.responses.create(
+        buildResponsesPayload(request, prompt.system, prompt.developer),
+        { signal: request.signal }
+      );
       if (isAsyncIterable(response)) throw new Error("OPENAI_STRUCTURED_OUTPUT_MISSING");
       return readStructuredOutput(response);
     },

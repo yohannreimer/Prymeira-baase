@@ -140,6 +140,40 @@ describe("AI harness", () => {
     });
   });
 
+  it("propagates structured cancellation to the provider and audits failure exactly once", async () => {
+    const baseRepository = createInMemoryAiRepository({ now: () => "2026-07-07T12:00:00.000Z" });
+    const updateRun = vi.fn(baseRepository.updateRun);
+    const repository = { ...baseRepository, updateRun };
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let providerSettled = false;
+    const provider = createProvider({
+      generateStructured(request) {
+        providerSignal = request.signal;
+        return new Promise((_, reject) => request.signal?.addEventListener("abort", () => {
+          providerSettled = true;
+          reject(request.signal?.reason);
+        }, { once: true }));
+      },
+      async transcribeAudio() { throw new Error("NOT_EXPECTED"); }
+    });
+    const harness = createAiHarness({ repository, provider });
+    const pending = harness.runStructured({
+      workspaceId: "workspace_a", actorProfileId: "profile_owner", source: "owner_studio",
+      inputMode: "text", taskKind: "studio_organize", agentKey: "owner_studio_companion",
+      promptKey: "agent/owner-studio-companion", promptVersion: "1", model: "gpt-5.5",
+      reasoningEffort: "medium", input: {}, outputSchema: processDraftSchema, signal: controller.signal
+    });
+
+    await vi.waitFor(() => expect(providerSignal).toBe(controller.signal));
+    controller.abort(new Error("cancel now"));
+    await expect(pending).rejects.toThrow("cancel now");
+    expect(providerSettled).toBe(true);
+    expect(updateRun).toHaveBeenCalledTimes(1);
+    expect(updateRun.mock.calls[0]?.[0]).toMatchObject({ status: "failed" });
+    expect((await baseRepository.listRuns("workspace_a", "profile_owner"))[0]).toMatchObject({ status: "failed" });
+  });
+
   it("transcribes audio through the provider and stores an audio AiRun", async () => {
     const repository = createInMemoryAiRepository({ now: () => "2026-07-07T12:00:00.000Z" });
     const harness = createAiHarness({

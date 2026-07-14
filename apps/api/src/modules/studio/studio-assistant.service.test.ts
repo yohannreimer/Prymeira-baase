@@ -5,6 +5,7 @@ import type { AiProvider, AiTextStreamRequest } from "../ai/ai.types";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import { createStudioAssistantService, type StudioSseEvent } from "./studio-assistant.service";
 import type { StudioContextBuilder } from "./studio-context-builder";
+import type { StudioTextSuggestionPayload } from "./studio.types";
 
 const owner = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
 
@@ -55,7 +56,10 @@ describe("Studio assistant service", () => {
       facts: [{ statement: "A execução foi consultada.", citation_indexes: [0] }],
       inferences: [{ confidence: "medium" }],
       gaps: [{ question: "Qual é a prioridade?" }],
-      citations: [{ source_type: "operational_metric", source_id: "dashboard:period" }],
+      citations: [{
+        source_type: "operational_metric", source_id: "dashboard:period", label: "Painel operacional",
+        excerpt: "Execução no período", observed_at: "2026-07-14T12:00:00.000Z"
+      }],
       proposal: { document_id: document.id, expected_revision: document.revision }
     });
     expect(JSON.stringify(suggestionEvent.data)).not.toContain("workspace_a");
@@ -73,6 +77,113 @@ describe("Studio assistant service", () => {
     await expect(service.acceptSuggestion(
       { workspaceId: owner.workspaceId, ownerProfileId: "owner_b" }, suggestionEvent.data.id
     )).rejects.toThrow("STUDIO_SUGGESTION_NOT_FOUND");
+  });
+
+  it("rejects missing and ambiguous structured citation identities", async () => {
+    for (const [context, missing] of [[contextBuilder(), true], [ambiguousContextBuilder(), false]] as const) {
+      const repository = createInMemoryStudioRepository();
+      const document = await createDocument(repository);
+      const output = suggestionOutput(document.id, document.revision, true);
+      if (missing) output.citations[0]!.source_id = "dashboard:missing";
+      const service = createStudioAssistantService({
+        repository,
+        harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({ structured: output }) }),
+        contextBuilder: context
+      });
+      if (missing) {
+        const iterable = await service.streamTurn(owner, {
+          conversationId: null, documentId: document.id, message: "Sugira.", allowExternalResearch: false,
+          requestTextSuggestion: true, context: { from: null, to: null, resourceTypes: ["dashboard"], personIds: [] }
+        });
+        const events = await collect(iterable);
+        expect(events.some((event) => event.event === "suggestion")).toBe(false);
+      } else {
+        await expect(service.streamTurn(owner, {
+          conversationId: null, documentId: document.id, message: "Sugira.", allowExternalResearch: false,
+          requestTextSuggestion: true, context: { from: null, to: null, resourceTypes: ["dashboard"], personIds: [] }
+        })).rejects.toThrow("AI_OUTPUT_VALIDATION_FAILED");
+      }
+    }
+  });
+
+  it("continues with the conversation-bound document and rejects a supplied mismatch", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await createDocument(repository);
+    const other = await repository.createDocument({ ...owner, title: "Outro", bodyJson: {}, bodyText: "Outro.",
+      captureMode: "text", inboxState: "pending_review", isFocused: false, status: "active" });
+    const service = createStudioAssistantService({
+      repository,
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({
+        structured: suggestionOutput(document.id, document.revision)
+      }) })
+    });
+    const first = await collect(await service.streamTurn(owner, {
+      conversationId: null, documentId: document.id, message: "Comece.", allowExternalResearch: false,
+      requestTextSuggestion: false, context: null
+    }));
+    const conversationId = (first[0] as Extract<StudioSseEvent, { event: "run" }>).data.conversation_id;
+    const continued = await collect(await service.streamTurn(owner, {
+      conversationId, documentId: null, message: "Agora organize.", allowExternalResearch: false,
+      requestTextSuggestion: true, context: null
+    }));
+    expect((continued.find((event) => event.event === "suggestion") as Extract<StudioSseEvent, { event: "suggestion" }>).data.document_id)
+      .toBe(document.id);
+    await expect(service.streamTurn(owner, {
+      conversationId, documentId: other.id, message: "Troque.", allowExternalResearch: false,
+      requestTextSuggestion: false, context: null
+    })).rejects.toThrow("STUDIO_CONVERSATION_DOCUMENT_MISMATCH");
+  });
+
+  it("rejects deep, oversized, and cyclic proposal JSON without persisting a suggestion", async () => {
+    const variants: unknown[] = [];
+    let deep: Record<string, unknown> = {};
+    const deepRoot = deep;
+    for (let index = 0; index < 40; index += 1) { const next = {}; deep.next = next; deep = next; }
+    variants.push(deepRoot, { value: "x".repeat(300_000) });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    variants.push(cyclic);
+    for (const bodyJson of variants) {
+      const repository = createInMemoryStudioRepository();
+      const document = await createDocument(repository);
+      const output = suggestionOutput(document.id, document.revision);
+      output.proposal.body_json = bodyJson as Record<string, unknown>;
+      const service = createStudioAssistantService({
+        repository,
+        harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({ structured: output }) })
+      });
+      const events = await collect(await service.streamTurn(owner, {
+        conversationId: null, documentId: document.id, message: "Organize.", allowExternalResearch: false,
+        requestTextSuggestion: true, context: null
+      }));
+      expect(events.some((event) => event.event === "suggestion")).toBe(false);
+    }
+  });
+
+  it("stops and audits an overflowing narrative before emitting its delta", async () => {
+    const repository = createInMemoryStudioRepository();
+    const aiRepository = createInMemoryAiRepository();
+    let providerClosed = false;
+    const provider: AiProvider = {
+      async generateStructured() { return {}; },
+      async *streamText() {
+        try { yield { type: "delta", text: "x".repeat(300_000) }; }
+        finally { providerClosed = true; }
+      },
+      async createEmbeddings() { return []; },
+      async transcribeAudio() { return { text: "", confidence: null, durationSeconds: null }; }
+    };
+    const service = createStudioAssistantService({ repository,
+      harness: createAiHarness({ repository: aiRepository, provider }) });
+    const iterable = await service.streamTurn(owner, {
+      conversationId: null, documentId: null, message: "Continue.", allowExternalResearch: false,
+      requestTextSuggestion: false, context: null
+    });
+    const iterator = iterable[Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.event).toBe("run");
+    await expect(iterator.next()).rejects.toThrow("STUDIO_ASSISTANT_FAILED");
+    expect(providerClosed).toBe(true);
+    expect((await aiRepository.listRuns(owner.workspaceId, owner.ownerProfileId))[0]).toMatchObject({ status: "failed" });
   });
 
   it("never authorizes external research implicitly", async () => {
@@ -185,13 +296,13 @@ function providerFor(options: { observed?: AiTextStreamRequest[]; structured?: u
   };
 }
 
-function suggestionOutput(documentId: string, revision: number, grounded = false) {
+function suggestionOutput(documentId: string, revision: number, grounded = false): StudioTextSuggestionPayload {
   return {
     facts: grounded ? [{ statement: "A execução foi consultada.", citation_indexes: [0] }] : [],
     inferences: grounded ? [{ statement: "Há espaço para foco.", basis: "Execução consultada.", confidence: "medium" }] : [],
     gaps: grounded ? [{ question: "Qual é a prioridade?", reason: "A fonte não define intenção." }] : [],
     citations: grounded ? [{ source_type: "operational_metric", source_id: "dashboard:period", url: null,
-      label: "Painel operacional", excerpt: "Execução no período", observed_at: "2026-07-14T12:00:00.000Z",
+      label: "METADADO INVENTADO", excerpt: "Trecho inventado", observed_at: "1999-01-01T00:00:00.000Z",
       period_from: "2026-07-01", period_to: "2026-07-14" }] : [],
     proposal: {
     document_id: documentId, expected_revision: revision, title: "Pensamento revisado",
@@ -207,6 +318,15 @@ function contextBuilder(): StudioContextBuilder {
       periodFrom: "2026-07-01", periodTo: "2026-07-14",
       metadata: { resourceType: "dashboard", personIds: [], contentTrust: "untrusted_data" } }]
   }; } };
+}
+
+function ambiguousContextBuilder(): StudioContextBuilder {
+  return { async buildStudioContext(scope) {
+    const base = await contextBuilder().buildStudioContext(scope, {
+      from: null, to: null, resourceTypes: ["dashboard"], personIds: []
+    });
+    return { ...base, citations: [...base.citations, { ...base.citations[0]!, excerpt: "Conflito" }] };
+  } };
 }
 
 async function collect(iterable: AsyncIterable<StudioSseEvent>) {

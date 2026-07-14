@@ -77,6 +77,7 @@ export type AiStructuredProviderRequest = {
   input: unknown;
   schemaName?: string;
   jsonSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
 };
 
 export type AiTextStreamRequest = {
@@ -146,6 +147,7 @@ export type AiStructuredRunRequest<TInput, TOutput> = {
   outputSchema: z.ZodType<TOutput>;
   schemaName?: string;
   jsonSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
 };
 
 export type AiStructuredRunResult<TOutput> = {

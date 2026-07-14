@@ -54,6 +54,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
       });
 
       try {
+        throwIfStructuredAborted(request.signal);
         const rawOutput = await options.provider.generateStructured({
           taskKind: request.taskKind,
           agentKey: request.agentKey,
@@ -63,9 +64,12 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           reasoningEffort: request.reasoningEffort,
           input: request.input,
           schemaName: request.schemaName,
-          jsonSchema: request.jsonSchema ?? buildStrictJsonSchema(request.outputSchema, request.schemaName ?? request.taskKind)
+          jsonSchema: request.jsonSchema ?? buildStrictJsonSchema(request.outputSchema, request.schemaName ?? request.taskKind),
+          signal: request.signal
         });
+        throwIfStructuredAborted(request.signal);
         const parsedOutput = request.outputSchema.parse(rawOutput);
+        throwIfStructuredAborted(request.signal);
         const completedRun = await options.repository.updateRun({
           ...run,
           status: "completed",
@@ -79,7 +83,8 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           output: parsedOutput
         };
       } catch (error) {
-        const validationErrors = readValidationErrors(error);
+        const aborted = request.signal?.aborted === true;
+        const validationErrors = aborted ? [] : readValidationErrors(error);
         await options.repository.updateRun({
           ...run,
           status: "failed",
@@ -87,6 +92,7 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           latencyMs: now() - startedAt
         });
 
+        if (aborted) throw createStructuredAbortError(request.signal);
         if (validationErrors.length > 0) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
         throw error;
       }
@@ -238,6 +244,17 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
       }
     }
   };
+}
+
+function throwIfStructuredAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw createStructuredAbortError(signal);
+}
+
+function createStructuredAbortError(signal?: AbortSignal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error("AI_STRUCTURED_CANCELLED");
+  error.name = "AbortError";
+  return error;
 }
 
 type AuditedTextStreamOptions = {
