@@ -39,6 +39,14 @@ export function createDeepgramProvider(options: CreateDeepgramProviderOptions = 
       throw new Error("DEEPGRAM_PROVIDER_STRUCTURED_GENERATION_NOT_CONFIGURED");
     },
 
+    async *streamText() {
+      throw new Error("DEEPGRAM_PROVIDER_TEXT_STREAM_NOT_CONFIGURED");
+    },
+
+    async createEmbeddings() {
+      throw new Error("DEEPGRAM_PROVIDER_EMBEDDINGS_NOT_CONFIGURED");
+    },
+
     async transcribeAudio(request) {
       const deepgramOptions = buildDeepgramOptions(request);
       const mediaClient = client.listen.v1.media;

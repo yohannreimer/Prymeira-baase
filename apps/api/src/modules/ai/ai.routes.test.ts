@@ -232,6 +232,7 @@ describe("AI routes", () => {
   it("extracts draft attachments before sending material into the AI harness", async () => {
     const providerRequests: AiStructuredProviderRequest[] = [];
     const aiProvider: AiProvider = {
+      ...createMockAiProvider(),
       async generateStructured(request) {
         providerRequests.push(request);
         return {
@@ -454,6 +455,7 @@ describe("AI routes", () => {
   it("transcribes browser audio payloads through an audio buffer", async () => {
     const providerRequests: AudioTranscriptionProviderRequest[] = [];
     const aiProvider: AiProvider = {
+      ...createMockAiProvider(),
       async generateStructured() {
         return {};
       },
@@ -494,6 +496,7 @@ describe("AI routes", () => {
   it("accepts longer browser audio payloads without failing at the HTTP body limit", async () => {
     const providerRequests: AudioTranscriptionProviderRequest[] = [];
     const aiProvider: AiProvider = {
+      ...createMockAiProvider(),
       async generateStructured() {
         return {};
       },

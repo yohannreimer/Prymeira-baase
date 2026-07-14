@@ -6,7 +6,8 @@ export type AiRunSource =
   | "process"
   | "routine"
   | "training"
-  | "proactive";
+  | "proactive"
+  | "owner_studio";
 
 export type AiInputMode = "text" | "audio" | "pdf" | "mixed";
 
@@ -24,7 +25,16 @@ export type AiTaskKind =
   | "ops_review"
   | "transcript_cleanup"
   | "classification"
-  | "proactive_suggestion";
+  | "proactive_suggestion"
+  | "studio_assist"
+  | "studio_organize"
+  | "studio_synthesize"
+  | "studio_connect"
+  | "studio_strategic_review"
+  | "studio_ritual_prepare"
+  | "studio_operational_draft"
+  | "studio_external_research"
+  | "studio_memory_embedding";
 
 export type AiRun = {
   id: string;
@@ -69,6 +79,28 @@ export type AiStructuredProviderRequest = {
   jsonSchema?: Record<string, unknown>;
 };
 
+export type AiTextStreamRequest = {
+  taskKind: AiTaskKind;
+  agentKey: string;
+  promptKey: string;
+  promptVersion: string;
+  model: string;
+  reasoningEffort: AiReasoningEffort;
+  input: unknown;
+  allowExternalResearch: boolean;
+  signal?: AbortSignal;
+};
+
+export type AiTextStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "citation"; title: string; url: string; publishedAt: string | null }
+  | { type: "done"; text: string };
+
+export type AiEmbeddingRequest = {
+  model: string;
+  inputs: string[];
+};
+
 export type AudioTranscriptionProviderRequest = {
   audioUrl?: string;
   audioBuffer?: Buffer;
@@ -93,6 +125,8 @@ export type AudioTranscriptionResult = {
 
 export type AiProvider = {
   generateStructured(request: AiStructuredProviderRequest): Promise<unknown>;
+  streamText(request: AiTextStreamRequest): AsyncIterable<AiTextStreamEvent>;
+  createEmbeddings(request: AiEmbeddingRequest): Promise<number[][]>;
   transcribeAudio(request: AudioTranscriptionProviderRequest): Promise<AudioTranscriptionResult>;
 };
 
@@ -118,6 +152,18 @@ export type AiStructuredRunResult<TOutput> = {
   output: TOutput;
 };
 
+export type AiTextStreamRunRequest = AiTextStreamRequest & {
+  workspaceId: string;
+  actorProfileId: string;
+  source: AiRunSource;
+  inputMode: AiInputMode;
+};
+
+export type AiTextStreamRunResult = {
+  run: AiRun;
+  events: AsyncIterable<AiTextStreamEvent>;
+};
+
 export type AiTranscriptionRunRequest = {
   workspaceId: string;
   actorProfileId: string;
@@ -134,5 +180,7 @@ export type AiHarness = {
   runStructured<TInput, TOutput>(
     request: AiStructuredRunRequest<TInput, TOutput>
   ): Promise<AiStructuredRunResult<TOutput>>;
+  runTextStream(request: AiTextStreamRunRequest): Promise<AiTextStreamRunResult>;
+  createEmbeddings(request: AiEmbeddingRequest): Promise<number[][]>;
   transcribeAudio(request: AiTranscriptionRunRequest): Promise<AudioTranscriptionResult>;
 };

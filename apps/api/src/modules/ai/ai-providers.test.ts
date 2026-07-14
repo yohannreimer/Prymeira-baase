@@ -83,6 +83,31 @@ describe("Mock AI provider", () => {
     expect(transcript.text).toContain("processo");
     expect(transcript.durationSeconds).toBeGreaterThan(0);
   });
+
+  it("streams deterministic text and only cites research when explicitly allowed", async () => {
+    const provider = createMockAiProvider();
+    const denied = await collect(provider.streamText(textRequest(false)));
+    const allowed = await collect(provider.streamText(textRequest(true)));
+
+    expect(denied.some((event) => event.type === "citation")).toBe(false);
+    expect(denied.at(-1)).toMatchObject({ type: "done" });
+    expect(allowed).toContainEqual({
+      type: "citation",
+      title: "Fonte pública de demonstração",
+      url: "https://example.com/pesquisa",
+      publishedAt: null
+    });
+  });
+
+  it("returns deterministic embeddings in input order", async () => {
+    const provider = createMockAiProvider();
+    const first = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"] });
+    const second = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"] });
+
+    expect(first).toEqual(second);
+    expect(first).toHaveLength(2);
+    expect(first[0]).toHaveLength(first[1]!.length);
+  });
 });
 
 describe("OpenAI provider", () => {
@@ -134,7 +159,113 @@ describe("OpenAI provider", () => {
     expect(JSON.stringify(calls[0])).toContain("arquiteto operacional");
     expect(JSON.stringify(calls[0])).toContain("Explique o onboarding de cliente novo.");
   });
+
+  it("does not add web search without explicit consent and maps streamed annotations to citations", async () => {
+    const calls: unknown[] = [];
+    const streams = [
+      asyncEvents([
+        { type: "response.output_text.delta", delta: "Sem pesquisa" },
+        { type: "response.output_text.done", text: "Sem pesquisa" },
+        { type: "response.completed" }
+      ]),
+      asyncEvents([
+        { type: "response.output_text.delta", delta: "Com fonte" },
+        {
+          type: "response.output_text.annotation.added",
+          annotation: {
+            type: "url_citation",
+            title: "Relatório público",
+            url: "https://example.com/relatorio",
+            published_at: "2026-06-01"
+          }
+        },
+        { type: "response.output_text.done", text: "Com fonte" },
+        { type: "response.completed" }
+      ])
+    ];
+    const provider = createOpenAiProvider({
+      client: {
+        responses: {
+          create: async (payload: unknown) => {
+            calls.push(payload);
+            return streams.shift()!;
+          }
+        },
+        embeddings: {
+          create: async () => ({ data: [] })
+        }
+      }
+    });
+
+    expect(await collect(provider.streamText(textRequest(false)))).toEqual([
+      { type: "delta", text: "Sem pesquisa" },
+      { type: "done", text: "Sem pesquisa" }
+    ]);
+    expect(await collect(provider.streamText(textRequest(true)))).toEqual([
+      { type: "delta", text: "Com fonte" },
+      {
+        type: "citation",
+        title: "Relatório público",
+        url: "https://example.com/relatorio",
+        publishedAt: "2026-06-01"
+      },
+      { type: "done", text: "Com fonte" }
+    ]);
+    expect(calls[0]).not.toHaveProperty("tools");
+    expect(calls[1]).toMatchObject({ tools: [{ type: "web_search" }] });
+  });
+
+  it("orders embeddings by provider index", async () => {
+    const calls: unknown[] = [];
+    const provider = createOpenAiProvider({
+      client: {
+        responses: {
+          create: async () => ({ output_text: "{}" })
+        },
+        embeddings: {
+          create: async (payload: unknown) => {
+            calls.push(payload);
+            return {
+              data: [
+                { index: 1, embedding: [0.3, 0.4] },
+                { index: 0, embedding: [0.1, 0.2] }
+              ]
+            };
+          }
+        }
+      }
+    });
+
+    await expect(provider.createEmbeddings({
+      model: "text-embedding-3-small",
+      inputs: ["um", "dois"]
+    })).resolves.toEqual([[0.1, 0.2], [0.3, 0.4]]);
+    expect(calls).toEqual([{ model: "text-embedding-3-small", input: ["um", "dois"] }]);
+  });
 });
+
+function textRequest(allowExternalResearch: boolean) {
+  return {
+    taskKind: "studio_assist" as const,
+    agentKey: "owner_studio_companion",
+    promptKey: "agent/process-architect",
+    promptVersion: "1",
+    model: "gpt-5.5",
+    reasoningEffort: "medium" as const,
+    input: { text: "Ajude a pensar." },
+    allowExternalResearch
+  };
+}
+
+async function collect<T>(events: AsyncIterable<T>) {
+  const collected: T[] = [];
+  for await (const event of events) collected.push(event);
+  return collected;
+}
+
+async function* asyncEvents(events: unknown[]) {
+  yield* events;
+}
 
 describe("Deepgram provider", () => {
   it("transcribes an audio URL with Nova-3 options and normalizes transcript metadata", async () => {

@@ -14,6 +14,7 @@ import { createInMemoryObjectStorage } from "../../storage/in-memory-object-stor
 import { createS3ObjectStorage } from "../../storage/s3-object-storage";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import type { AiProvider } from "../ai/ai.types";
+import { createMockAiProvider } from "../ai/providers/mock-ai.provider";
 import type { StudioRepository } from "./studio.types";
 import type { StudioLinkFetcher, StudioLinkResolver } from "./studio-assets.routes";
 import { createStudioUploadSemaphore } from "./studio-asset-upload";
@@ -117,6 +118,7 @@ describe("Studio asset routes", () => {
   it("exposes owner-scoped processing status and retries a preserved audio asset", async () => {
     let transcriptionCalls = 0;
     const aiProvider: AiProvider = {
+      ...createMockAiProvider(),
       async generateStructured() {
         return {};
       },

@@ -16,6 +16,14 @@ export function createDefaultAiProvider(): AiProvider {
       return structuredProvider.generateStructured(request);
     },
 
+    streamText(request) {
+      return structuredProvider.streamText(request);
+    },
+
+    createEmbeddings(request) {
+      return structuredProvider.createEmbeddings(request);
+    },
+
     transcribeAudio(request) {
       return transcriptionProvider.transcribeAudio(request);
     }

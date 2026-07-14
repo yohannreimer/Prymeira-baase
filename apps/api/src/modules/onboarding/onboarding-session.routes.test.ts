@@ -680,6 +680,7 @@ describe("onboarding session routes", () => {
     let resolveProvider: (() => void) | null = null;
     const mockProvider = createMockAiProvider();
     const aiProvider: AiProvider = {
+      ...mockProvider,
       async generateStructured(request) {
         await new Promise<void>((resolve) => {
           resolveProvider = resolve;
@@ -756,6 +757,7 @@ describe("onboarding session routes", () => {
     let resolveProvider: (() => void) | null = null;
     const mockProvider = createMockAiProvider();
     const aiProvider: AiProvider = {
+      ...mockProvider,
       async generateStructured(request) {
         await new Promise<void>((resolve) => {
           resolveProvider = resolve;
@@ -1116,6 +1118,7 @@ describe("onboarding session routes", () => {
     let resolveProvider: (() => void) | null = null;
     const mockProvider = createMockAiProvider();
     const aiProvider: AiProvider = {
+      ...mockProvider,
       async generateStructured(request) {
         await new Promise<void>((resolve) => {
           resolveProvider = resolve;
@@ -1175,6 +1178,7 @@ describe("onboarding session routes", () => {
     let resolveProvider: (() => void) | null = null;
     const mockProvider = createMockAiProvider();
     const aiProvider: AiProvider = {
+      ...mockProvider,
       async generateStructured(request) {
         await new Promise<void>((resolve) => {
           resolveProvider = resolve;
@@ -1241,6 +1245,7 @@ describe("onboarding session routes", () => {
     const providerRequests: AiStructuredProviderRequest[] = [];
     const mockProvider = createMockAiProvider();
     const aiProvider: AiProvider = {
+      ...mockProvider,
       async generateStructured(request) {
         providerRequests.push(request);
         return mockProvider.generateStructured(request);

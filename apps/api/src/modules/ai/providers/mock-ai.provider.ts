@@ -1,14 +1,45 @@
-import type { AiProvider, AiStructuredProviderRequest, AudioTranscriptionResult } from "../ai.types";
+import type {
+  AiProvider,
+  AiStructuredProviderRequest,
+  AiTextStreamEvent,
+  AudioTranscriptionResult
+} from "../ai.types";
 
 type MockAiProviderOptions = {
   structuredOutput?: unknown;
   transcript?: AudioTranscriptionResult;
+  streamEvents?: AiTextStreamEvent[];
+  embeddings?: number[][];
 };
 
 export function createMockAiProvider(options: MockAiProviderOptions = {}): AiProvider {
   return {
     async generateStructured(request) {
       return options.structuredOutput ?? createDefaultStructuredOutput(request);
+    },
+
+    async *streamText(request) {
+      if (options.streamEvents) {
+        yield* options.streamEvents;
+        return;
+      }
+
+      const text = "Vamos organizar este pensamento com calma e preservar o original.";
+      yield { type: "delta", text: "Vamos organizar este pensamento " };
+      yield { type: "delta", text: "com calma e preservar o original." };
+      if (request.allowExternalResearch) {
+        yield {
+          type: "citation",
+          title: "Fonte pública de demonstração",
+          url: "https://example.com/pesquisa",
+          publishedAt: null
+        };
+      }
+      yield { type: "done", text };
+    },
+
+    async createEmbeddings(request) {
+      return options.embeddings ?? request.inputs.map(createDeterministicEmbedding);
     },
 
     async transcribeAudio() {
@@ -19,6 +50,15 @@ export function createMockAiProvider(options: MockAiProviderOptions = {}): AiPro
       };
     }
   };
+}
+
+function createDeterministicEmbedding(input: string) {
+  const vector = [0, 0, 0, 0];
+  for (let index = 0; index < input.length; index += 1) {
+    vector[index % vector.length] = (vector[index % vector.length] ?? 0) + (input.codePointAt(index) ?? 0);
+  }
+  const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
+  return vector.map((value) => Number((value / magnitude).toFixed(8)));
 }
 
 function createDefaultStructuredOutput(request: AiStructuredProviderRequest) {
