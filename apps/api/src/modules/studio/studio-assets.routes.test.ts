@@ -1084,7 +1084,7 @@ describe("Studio asset routes", () => {
     });
     expect(response.json().asset.extractedText).toContain("Meta Crescer com margem.");
     expect(response.json().asset.extractedText).not.toContain("alert(1)");
-    expect(resolver).toHaveBeenCalledWith("example.com");
+    expect(resolver).toHaveBeenCalledWith("example.com", expect.any(AbortSignal));
     expect(fetcher).toHaveBeenCalledWith(expect.objectContaining({
       pinnedAddress: "93.184.216.34",
       url: new URL("https://example.com/start")

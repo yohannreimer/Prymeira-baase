@@ -59,7 +59,8 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
         const event = await readStreamEvent(
           rawEvent,
           request.allowExternalResearch,
-          options.citationResolver
+          options.citationResolver,
+          request.signal
         );
         if (!event) continue;
         if (event.type === "delta") yield event;
@@ -175,7 +176,8 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
 async function readStreamEvent(
   rawEvent: unknown,
   allowExternalResearch: boolean,
-  citationResolver?: StudioLinkResolver
+  citationResolver?: StudioLinkResolver,
+  signal?: AbortSignal
 ) {
   if (!rawEvent || typeof rawEvent !== "object" || !("type" in rawEvent) || typeof rawEvent.type !== "string") {
     return null;
@@ -189,7 +191,7 @@ async function readStreamEvent(
   }
   if (rawEvent.type === "response.output_text.annotation.added" && "annotation" in rawEvent) {
     const citation = readCitation(rawEvent.annotation);
-    return citation ? validateAiCitation(citation, allowExternalResearch, citationResolver) : null;
+    return citation ? validateAiCitation(citation, allowExternalResearch, citationResolver, signal) : null;
   }
   if (rawEvent.type === "response.failed") throw new Error(readResponseFailure(rawEvent, "OPENAI_TEXT_STREAM_FAILED"));
   if (rawEvent.type === "response.incomplete") throw new Error(readResponseFailure(rawEvent, "OPENAI_TEXT_STREAM_INCOMPLETE"));

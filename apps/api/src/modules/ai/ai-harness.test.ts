@@ -662,6 +662,117 @@ describe("AI harness", () => {
     })).resolves.toHaveLength(1);
   });
 
+  it("cancels citation DNS validation promptly and persists one terminal audit", async () => {
+    const repository = createInMemoryAiRepository();
+    const originalUpdate = repository.updateRun.bind(repository);
+    let updates = 0;
+    let resolverStarted = false;
+    let resolverSignal: AbortSignal | undefined;
+    const resolver = deferred<string[]>();
+    const controller = new AbortController();
+    const harness = createAiHarness({
+      repository: {
+        ...repository,
+        async updateRun(run) {
+          updates += 1;
+          return originalUpdate(run);
+        }
+      },
+      provider: createMockAiProvider({
+        streamEvents: [{
+          type: "citation", title: "Fonte", url: "https://example.com/fonte", publishedAt: null
+        }]
+      }),
+      citationResolver: (_hostname, signal) => {
+        resolverStarted = true;
+        resolverSignal = signal;
+        return resolver.promise;
+      }
+    });
+    const result = await harness.runTextStream({
+      ...streamRunRequest(), allowExternalResearch: true, signal: controller.signal
+    });
+    const iterator = result.events[Symbol.asyncIterator]();
+    const next = iterator.next();
+    await vi.waitFor(() => expect(resolverStarted).toBe(true));
+
+    controller.abort(new Error("USER_CANCELLED"));
+    await expect(withTestTimeout(next)).resolves.toEqual({ done: true, value: undefined });
+    expect(resolverSignal?.aborted).toBe(true);
+    expect(updates).toBe(1);
+    await expect(repository.findRun(
+      "workspace_a", result.run.id, "profile_owner"
+    )).resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("bounds a never-resolving citation DNS lookup and handles a late rejection", async () => {
+    const repository = createInMemoryAiRepository();
+    const originalUpdate = repository.updateRun.bind(repository);
+    let updates = 0;
+    const resolver = deferred<string[]>();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown) => unhandled.push(error);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const harness = createAiHarness({
+        repository: {
+          ...repository,
+          async updateRun(run) {
+            updates += 1;
+            return originalUpdate(run);
+          }
+        },
+        provider: createMockAiProvider({
+          streamEvents: [{
+            type: "citation", title: "Fonte", url: "https://example.com/fonte", publishedAt: null
+          }]
+        }),
+        citationResolver: () => resolver.promise,
+        citationResolverTimeoutMs: 5
+      });
+      const result = await harness.runTextStream({ ...streamRunRequest(), allowExternalResearch: true });
+
+      await expect(withTestTimeout(collect(result.events))).rejects.toThrow("AI_STREAM_CITATION_INVALID");
+      expect(updates).toBe(1);
+      resolver.reject(new Error("LATE_DNS_FAILURE"));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("returns promptly while citation DNS validation is pending", async () => {
+    const repository = createInMemoryAiRepository();
+    const resolver = deferred<string[]>();
+    let resolverStarted = false;
+    let resolverSignal: AbortSignal | undefined;
+    const harness = createAiHarness({
+      repository,
+      provider: createMockAiProvider({
+        streamEvents: [{
+          type: "citation", title: "Fonte", url: "https://example.com/fonte", publishedAt: null
+        }]
+      }),
+      citationResolver: (_hostname, signal) => {
+        resolverStarted = true;
+        resolverSignal = signal;
+        return resolver.promise;
+      }
+    });
+    const result = await harness.runTextStream({ ...streamRunRequest(), allowExternalResearch: true });
+    const iterator = result.events[Symbol.asyncIterator]();
+    const next = iterator.next();
+    await vi.waitFor(() => expect(resolverStarted).toBe(true));
+
+    await expect(withTestTimeout(iterator.return!())).resolves.toEqual({ done: true, value: undefined });
+    await expect(withTestTimeout(next)).resolves.toEqual({ done: true, value: undefined });
+    expect(resolverSignal?.aborted).toBe(true);
+    await expect(repository.findRun(
+      "workspace_a", result.run.id, "profile_owner"
+    )).resolves.toMatchObject({ status: "failed" });
+  });
+
   it("handles cyclic private input and truncates non-private Unicode summaries safely", async () => {
     const cyclic: { self?: unknown; text?: string } = { text: "segredo absoluto" };
     cyclic.self = cyclic;
@@ -715,6 +826,47 @@ describe("AI harness", () => {
     await collect(graphemeResult.events);
     await expect(graphemeRepository.findRun("workspace_a", graphemeResult.run.id)).resolves.toMatchObject({
       outputSummary: `${"a".repeat(154)}${family}👍🏽é...`
+    });
+  });
+
+  it("bounds pathological summary graphemes by code points and UTF-8 bytes", async () => {
+    const cases = [
+      `e${"\u0301".repeat(1_000)}`,
+      Array.from({ length: 400 }, () => "👩‍").join("") + "👩",
+      `${"😀".repeat(159)}👍🏽tail`
+    ];
+    for (const text of cases) {
+      const repository = createInMemoryAiRepository();
+      const harness = createAiHarness({
+        repository,
+        provider: createMockAiProvider({ streamEvents: [{ type: "done", text }] })
+      });
+      const result = await harness.runTextStream({
+        ...streamRunRequest(), source: "create_with_ai", taskKind: "process_draft"
+      });
+      await collect(result.events);
+      const summary = (await repository.findRun("workspace_a", result.run.id))?.outputSummary ?? "";
+      const graphemeCount = Array.from(
+        new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(summary)
+      ).length;
+      expect(graphemeCount).toBeLessThanOrEqual(160);
+      expect(Array.from(summary).length).toBeLessThanOrEqual(640);
+      expect(Buffer.byteLength(summary, "utf8")).toBeLessThanOrEqual(1_024);
+      expect(summary).not.toContain("�");
+    }
+
+    const privateRepository = createInMemoryAiRepository();
+    const privateHarness = createAiHarness({
+      repository: privateRepository,
+      provider: createMockAiProvider({ streamEvents: [{ type: "done", text: cases[0]! }] })
+    });
+    const privateResult = await privateHarness.runTextStream(streamRunRequest());
+    await collect(privateResult.events);
+    await expect(privateRepository.findRun(
+      "workspace_a", privateResult.run.id, "profile_owner"
+    )).resolves.toMatchObject({
+      inputSummary: "[private owner studio input]",
+      outputSummary: "[private owner studio output]"
     });
   });
 
@@ -783,4 +935,13 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function withTestTimeout<T>(promise: Promise<T>, timeoutMs = 100) {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("TEST_TIMEOUT")), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

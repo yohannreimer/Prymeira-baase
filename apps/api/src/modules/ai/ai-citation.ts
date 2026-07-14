@@ -12,7 +12,9 @@ const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:
 export async function validateAiCitation(
   event: Extract<AiTextStreamEvent, { type: "citation" }>,
   allowExternalResearch: boolean,
-  resolver?: StudioLinkResolver
+  resolver?: StudioLinkResolver,
+  signal?: AbortSignal,
+  resolverTimeoutMs?: number
 ): Promise<Extract<AiTextStreamEvent, { type: "citation" }>> {
   if (!allowExternalResearch) throw new Error("AI_STREAM_UNAUTHORIZED_CITATION");
 
@@ -26,7 +28,7 @@ export async function validateAiCitation(
 
   let url: URL;
   try {
-    url = await validateSafePublicHttpUrl(event.url, resolver);
+    url = await validateSafePublicHttpUrl(event.url, resolver, signal, resolverTimeoutMs);
   } catch {
     throw new Error("AI_STREAM_CITATION_INVALID");
   }

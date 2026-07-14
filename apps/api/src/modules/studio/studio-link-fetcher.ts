@@ -9,9 +9,10 @@ import { ApiError } from "../../http/api-error";
 const MAX_LINK_BYTES = 5 * 1024 * 1024;
 const MAX_LINK_REDIRECTS = 3;
 const LINK_TIMEOUT_MS = 10_000;
+const SAFE_URL_DNS_TIMEOUT_MS = 5_000;
 export const STUDIO_EXTRACTED_TEXT_MAX_CHARACTERS = 500_000;
 
-export type StudioLinkResolver = (hostname: string) => Promise<string[]>;
+export type StudioLinkResolver = (hostname: string, signal?: AbortSignal) => Promise<string[]>;
 
 export type StudioLinkFetchResponse = {
   statusCode: number;
@@ -50,12 +51,13 @@ export async function captureStudioLinkSnapshot(
   const now = dependencies.now ?? (() => new Date());
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("STUDIO_LINK_TIMEOUT")), LINK_TIMEOUT_MS);
+  timeout.unref?.();
   try {
     let url = readSafePublicHttpUrl(sourceUrl);
     let redirectCount = 0;
     while (true) {
       const hostname = url.hostname.replace(/^\[|\]$/gu, "");
-      const addresses = await abortable(resolver(hostname), controller.signal);
+      const addresses = await abortable(resolver(hostname, controller.signal), controller.signal);
       if (addresses.length === 0 || addresses.some((address) => !isGloballyRoutableAddress(address))) {
         throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
       }
@@ -150,15 +152,26 @@ export function readSafePublicHttpUrl(value: string) {
 
 export async function validateSafePublicHttpUrl(
   value: string,
-  resolver: StudioLinkResolver = defaultStudioLinkResolver
+  resolver: StudioLinkResolver = defaultStudioLinkResolver,
+  signal?: AbortSignal,
+  resolverTimeoutMs = SAFE_URL_DNS_TIMEOUT_MS
 ) {
   const url = readSafePublicHttpUrl(value);
   const hostname = url.hostname.replace(/^\[|\]$/gu, "");
-  const addresses = await resolver(hostname);
-  if (addresses.length === 0 || addresses.some((address) => !isGloballyRoutableAddress(address))) {
-    throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
+  const boundedSignal = createBoundedAbortSignal(signal, resolverTimeoutMs, "STUDIO_LINK_DNS_TIMEOUT");
+  try {
+    if (boundedSignal.signal.aborted) throw boundedSignal.signal.reason;
+    const addresses = await abortable(
+      resolver(hostname, boundedSignal.signal),
+      boundedSignal.signal
+    );
+    if (addresses.length === 0 || addresses.some((address) => !isGloballyRoutableAddress(address))) {
+      throw new ApiError(400, "STUDIO_LINK_TARGET_FORBIDDEN", "O link aponta para uma rede não permitida.");
+    }
+    return url;
+  } finally {
+    boundedSignal.cleanup();
   }
-  return url;
 }
 
 async function readBoundedBody(body: Readable, limit: number, signal: AbortSignal) {
@@ -183,12 +196,38 @@ async function readBoundedBody(body: Readable, limit: number, signal: AbortSigna
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = () => finish(() => reject(signal.reason));
     signal.addEventListener("abort", abort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error))
+    );
+    if (signal.aborted) abort();
   });
+}
+
+function createBoundedAbortSignal(externalSignal: AbortSignal | undefined, timeoutMs: number, code: string) {
+  const controller = new AbortController();
+  const mirrorExternalAbort = () => controller.abort(externalSignal?.reason ?? new Error(code));
+  externalSignal?.addEventListener("abort", mirrorExternalAbort, { once: true });
+  if (externalSignal?.aborted) mirrorExternalAbort();
+  const timer = setTimeout(() => controller.abort(new Error(code)), Math.max(1, timeoutMs));
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", mirrorExternalAbort);
+    }
+  };
 }
 
 function extractInertHtml(html: string) {
@@ -211,8 +250,11 @@ function decodeHtmlEntities(value: string) {
     .replace(/&#x([0-9a-f]+);/giu, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 16)));
 }
 
-async function defaultStudioLinkResolver(hostname: string) {
-  return (await lookup(hostname, { all: true, verbatim: true })).map((result) => result.address);
+async function defaultStudioLinkResolver(hostname: string, signal?: AbortSignal) {
+  if (signal?.aborted) throw signal.reason;
+  const results = await lookup(hostname, { all: true, verbatim: true });
+  if (signal?.aborted) throw signal.reason;
+  return results.map((result) => result.address);
 }
 
 async function defaultStudioLinkFetcher(input: {

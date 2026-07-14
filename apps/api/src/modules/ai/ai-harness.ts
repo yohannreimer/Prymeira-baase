@@ -23,6 +23,7 @@ type CreateAiHarnessOptions = {
   streamStartTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   citationResolver?: StudioLinkResolver;
+  citationResolverTimeoutMs?: number;
 };
 
 export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
@@ -151,6 +152,8 @@ export function createAiHarness(options: CreateAiHarnessOptions): AiHarness {
           startTimeoutMs: options.streamStartTimeoutMs ?? 30_000,
           idleTimeoutMs: options.streamIdleTimeoutMs ?? 120_000,
           citationResolver: options.citationResolver,
+          citationResolverTimeoutMs: options.citationResolverTimeoutMs,
+          operationSignal: providerAbort.signal,
           abortProvider: providerAbort.abort,
           cleanupProviderSignal: providerAbort.cleanup,
           complete: (outputSummary) => options.repository.updateRun({
@@ -243,6 +246,8 @@ type AuditedTextStreamOptions = {
   startTimeoutMs: number;
   idleTimeoutMs: number;
   citationResolver?: StudioLinkResolver;
+  citationResolverTimeoutMs?: number;
+  operationSignal: AbortSignal;
   abortProvider(reason: unknown): void;
   cleanupProviderSignal(): void;
   complete(outputSummary: string): Promise<unknown>;
@@ -394,13 +399,23 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
           return { done: true, value: undefined };
         }
 
-        const event = nextEvent.value.type === "citation"
-          ? await validateAiCitation(
-              nextEvent.value,
-              options.allowExternalResearch,
-              options.citationResolver
-            )
+        const eventOrTermination = nextEvent.value.type === "citation"
+          ? await Promise.race([
+              validateAiCitation(
+                nextEvent.value,
+                options.allowExternalResearch,
+                options.citationResolver,
+                options.operationSignal,
+                options.citationResolverTimeoutMs
+              ),
+              termination.then(() => terminatedResult)
+            ])
           : nextEvent.value;
+        if ("terminated" in eventOrTermination) {
+          await waitForTerminalAudit();
+          return { done: true, value: undefined };
+        }
+        const event = eventOrTermination;
         if (event.type === "delta") summary.append(event.text);
         if (event.type === "done") {
           summary.replace(event.text);
@@ -409,6 +424,11 @@ function createAuditedTextStream(options: AuditedTextStreamOptions): AsyncIterab
         }
         return { done: false, value: event };
       } catch (error) {
+        if (options.operationSignal.aborted && finalized) {
+          await waitForTerminalAudit();
+          await closeProviderBounded().catch(() => undefined);
+          return { done: true, value: undefined };
+        }
         options.abortProvider(error);
         let auditError: unknown;
         try {
@@ -468,7 +488,16 @@ function withUnrefTimeout<T>(promise: Promise<T>, timeoutMs: number, code: strin
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(code)), Math.max(1, timeoutMs));
     timer.unref?.();
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
   });
 }
 
@@ -496,26 +525,25 @@ function createAuditPersistenceError(cause: unknown) {
   return error;
 }
 
+// AiRun summaries are diagnostic metadata: bound readability and absolute persisted storage.
+const AI_RUN_SUMMARY_MAX_GRAPHEMES = 160;
+const AI_RUN_SUMMARY_MAX_CODE_POINTS = 640;
+const AI_RUN_SUMMARY_MAX_UTF8_BYTES = 1_024;
+
 function createBoundedSummary() {
-  const maximumSourceLength = 160;
   let value = "";
   let truncated = false;
 
   return {
     append(text: string) {
       if (truncated || !text) return;
-      const graphemes = splitGraphemes(value + text);
-      value = graphemes.slice(0, maximumSourceLength).join("");
-      truncated = graphemes.length > maximumSourceLength;
+      ({ value, truncated } = boundSummarySource(value + text));
     },
     replace(text: string) {
-      const graphemes = splitGraphemes(text);
-      value = graphemes.slice(0, maximumSourceLength).join("");
-      truncated = graphemes.length > maximumSourceLength;
+      ({ value, truncated } = boundSummarySource(text));
     },
     read() {
-      if (!truncated) return value;
-      return `${splitGraphemes(value).slice(0, 157).join("")}...`;
+      return truncated ? appendSafeEllipsis(value) : value;
     }
   };
 }
@@ -574,8 +602,42 @@ function summarizeOutput(output: unknown, source: AiTextStreamRunRequest["source
 }
 
 function summarizeText(text: string) {
-  const graphemes = splitGraphemes(text);
-  return graphemes.length > 160 ? `${graphemes.slice(0, 157).join("")}...` : text;
+  const bounded = boundSummarySource(text);
+  return bounded.truncated ? appendSafeEllipsis(bounded.value) : bounded.value;
+}
+
+function boundSummarySource(text: string) {
+  const accepted: string[] = [];
+  let codePoints = 0;
+  let utf8Bytes = 0;
+  for (const grapheme of splitGraphemes(text)) {
+    const nextCodePoints = Array.from(grapheme).length;
+    const nextBytes = Buffer.byteLength(grapheme, "utf8");
+    if (accepted.length >= AI_RUN_SUMMARY_MAX_GRAPHEMES
+      || codePoints + nextCodePoints > AI_RUN_SUMMARY_MAX_CODE_POINTS
+      || utf8Bytes + nextBytes > AI_RUN_SUMMARY_MAX_UTF8_BYTES) {
+      return { value: accepted.join(""), truncated: true };
+    }
+    accepted.push(grapheme);
+    codePoints += nextCodePoints;
+    utf8Bytes += nextBytes;
+  }
+  return { value: accepted.join(""), truncated: false };
+}
+
+function appendSafeEllipsis(value: string) {
+  const suffix = "...";
+  const graphemes = splitGraphemes(value);
+  while (!summaryWithinLimits(graphemes.join("") + suffix, graphemes.length + suffix.length)) {
+    graphemes.pop();
+  }
+  return graphemes.join("") + suffix;
+}
+
+function summaryWithinLimits(value: string, graphemeCount = splitGraphemes(value).length) {
+  return graphemeCount <= AI_RUN_SUMMARY_MAX_GRAPHEMES
+    && Array.from(value).length <= AI_RUN_SUMMARY_MAX_CODE_POINTS
+    && Buffer.byteLength(value, "utf8") <= AI_RUN_SUMMARY_MAX_UTF8_BYTES;
 }
 
 const graphemeSegmenter = typeof Intl.Segmenter === "function"
