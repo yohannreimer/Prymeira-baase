@@ -181,10 +181,20 @@ export function createInMemoryStudioRepository(
     },
 
     async createDocument(input) {
+      if (input.captureKey) {
+        const existing = documents.find((document) =>
+          document.workspaceId === input.workspaceId
+          && document.ownerProfileId === input.ownerProfileId
+          && document.captureKey === input.captureKey
+          && document.status === "active"
+        );
+        if (existing) return cloneDocument(existing);
+      }
       const timestamp = now();
       const document: StudioDocument = {
         ...structuredClone(input),
         id: `studio_document_${randomUUID()}`,
+        captureKey: input.captureKey ?? null,
         revision: 1,
         archivedAt: null,
         createdAt: timestamp,
@@ -213,6 +223,13 @@ export function createInMemoryStudioRepository(
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       const persisted = documents[index]!;
       if (persisted.revision !== expectedRevision) throw new Error("STUDIO_DOCUMENT_STALE");
+      if (input.status === "active" && input.captureKey && documents.some((document) =>
+        document.workspaceId === input.workspaceId
+        && document.ownerProfileId === input.ownerProfileId
+        && document.id !== input.id
+        && document.captureKey === input.captureKey
+        && document.status === "active"
+      )) throw new Error("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
 
       const updated: StudioDocument = {
         ...persisted,

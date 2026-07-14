@@ -209,11 +209,16 @@ describe("operational schema", () => {
       19: "studio_proactivity_settings_and_signals"
     });
     await ensureOperationalSchema(db);
-    const columns = await db.query<{ column_name: string }>(
+    const assetColumns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns
        where table_name='studio_assets' and column_name='idempotency_key'`
     );
-    expect(columns.rows).toEqual([{ column_name: "idempotency_key" }]);
+    expect(assetColumns.rows).toEqual([{ column_name: "idempotency_key" }]);
+    const documentColumns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_documents' and column_name='capture_key'`
+    );
+    expect(documentColumns.rows).toEqual([{ column_name: "capture_key" }]);
     const versions = await db.query<{ version: number }>(
       "select version from baase_schema_migrations where version between 14 and 20 order by version"
     );

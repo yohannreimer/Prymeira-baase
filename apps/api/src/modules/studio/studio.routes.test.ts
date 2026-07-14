@@ -49,6 +49,76 @@ function createApp() {
 }
 
 describe("Studio routes", () => {
+  it.each(["text", "audio", "file", "image", "link", "mixed"] as const)(
+    "creates exactly one initial document version for concurrent %s capture retries",
+    async (captureMode) => {
+      const app = createApp();
+      const captureKey = "34343434-3434-4434-8434-343434343434";
+      const request = {
+        method: "POST" as const,
+        url: "/studio/documents",
+        headers: { ...ownerA, "idempotency-key": captureKey },
+        payload: { ...documentPayload, capture_mode: captureMode }
+      };
+      const [left, right] = await Promise.all([app.inject(request), app.inject(request)]);
+
+      expect(left.statusCode).toBe(201);
+      expect(right.statusCode).toBe(201);
+      expect(right.json().document.id).toBe(left.json().document.id);
+      expect(left.json().document.captureKey).toBe(captureKey);
+      const versions = await app.inject({
+        method: "GET",
+        url: `/studio/documents/${left.json().document.id}/versions`,
+        headers: ownerA
+      });
+      expect(versions.json().versions).toHaveLength(1);
+      const listed = await app.inject({ method: "GET", url: "/studio/documents", headers: ownerA });
+      expect(listed.json().documents).toHaveLength(1);
+
+      const isolated = await app.inject({ ...request, headers: { ...ownerB, "idempotency-key": captureKey } });
+      expect(isolated.json().document.id).not.toBe(left.json().document.id);
+    }
+  );
+
+  it("rejects a malformed document capture key", async () => {
+    const response = await createApp().inject({
+      method: "POST",
+      url: "/studio/documents",
+      headers: { ...ownerA, "idempotency-key": "not-a-uuid" },
+      payload: documentPayload
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("frees an archived capture key and reports a restore collision as 409", async () => {
+    const app = createApp();
+    const captureKey = "56565656-5656-4656-8656-565656565656";
+    const create = () => app.inject({
+      method: "POST" as const,
+      url: "/studio/documents",
+      headers: { ...ownerA, "idempotency-key": captureKey },
+      payload: documentPayload
+    });
+    const original = await create();
+    const originalId = original.json().document.id as string;
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/studio/documents/${originalId}/archive`,
+      headers: ownerA
+    })).statusCode).toBe(200);
+    const replacement = await create();
+    expect(replacement.json().document.id).not.toBe(originalId);
+
+    const restore = await app.inject({
+      method: "POST",
+      url: `/studio/documents/${originalId}/restore`,
+      headers: ownerA
+    });
+    expect(restore.statusCode).toBe(409);
+    expect(restore.json().error.code).toBe("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
+  });
+
   it("allows only owners to access the private Studio", async () => {
     const app = createApp();
 

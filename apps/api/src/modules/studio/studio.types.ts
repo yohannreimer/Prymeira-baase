@@ -36,6 +36,7 @@ export type StudioDocumentQuery = {
 
 export type StudioDocument = StudioOwnerScope & {
   id: string;
+  captureKey: string | null;
   title: string | null;
   bodyJson: Record<string, unknown>;
   bodyText: string;
@@ -203,7 +204,12 @@ export type StudioService = {
   readHome(scope: StudioOwnerScope): Promise<StudioHome>;
   listDocuments(scope: StudioOwnerScope, query: StudioDocumentQuery): Promise<StudioDocumentPage>;
   getDocument(scope: StudioOwnerScope, id: string): Promise<StudioDocument>;
-  createDocument(scope: StudioOwnerScope, actorProfileId: string, input: CreateStudioDocument): Promise<StudioDocument>;
+  createDocument(
+    scope: StudioOwnerScope,
+    actorProfileId: string,
+    input: CreateStudioDocument,
+    captureKey?: string | null
+  ): Promise<StudioDocument>;
   updateDocument(scope: StudioOwnerScope, actorProfileId: string, id: string, input: UpdateStudioDocument): Promise<StudioDocument>;
   archiveDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
   restoreDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
@@ -221,7 +227,10 @@ export type StudioService = {
 export type StudioRepository = {
   listDocuments(scope: StudioOwnerScope, input: StudioDocumentQuery): Promise<StudioDocumentPage>;
   findDocument(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument | null>;
-  createDocument(input: Omit<StudioDocument, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioDocument>;
+  createDocument(input: Omit<
+    StudioDocument,
+    "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt" | "captureKey"
+  > & { captureKey?: string | null }): Promise<StudioDocument>;
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;

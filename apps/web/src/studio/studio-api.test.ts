@@ -22,6 +22,7 @@ const rawDocument = {
   id: "document_1",
   workspace_id: "workspace_a",
   owner_profile_id: "profile_owner",
+  capture_key: "45454545-4545-4454-8454-454545454545",
   title: "Plano anual",
   body_json: { type: "doc" },
   body_text: "Crescer com margem.",
@@ -73,7 +74,12 @@ describe("Studio API client", () => {
 
     await expect(getStudioHome(fetcher)).resolves.toMatchObject({
       pendingReviewCount: 2,
-      recentDocuments: [{ ownerProfileId: "profile_owner", bodyText: "Crescer com margem.", isFocused: true }],
+      recentDocuments: [{
+        ownerProfileId: "profile_owner",
+        captureKey: rawDocument.capture_key,
+        bodyText: "Crescer com margem.",
+        isFocused: true
+      }],
       nextRituals: [{ scheduledFor: "2026-07-17T13:00:00.000Z" }]
     });
     await expect(getStudioDocument("document_1", fetcher)).resolves.toMatchObject({ id: "document_1", captureMode: "text" });
@@ -170,7 +176,8 @@ describe("Studio API client", () => {
       title: null,
       body_json: { type: "doc" },
       body_text: "Crescer com margem.",
-      capture_mode: "text"
+      capture_mode: "text",
+      capture_key: rawDocument.capture_key
     }, controller.signal, fetcher);
     await attachStudioFile(
       "document_1", new Blob(["plano"], { type: "text/plain" }), "plano.txt",
@@ -183,7 +190,9 @@ describe("Studio API client", () => {
 
     const createInit = fetcher.mock.calls[0]![1];
     expect(createInit?.signal).toBe(controller.signal);
+    expect(new Headers(createInit?.headers).get("idempotency-key")).toBe(rawDocument.capture_key);
     expect(JSON.parse(String(createInit?.body))).toMatchObject({ capture_mode: "text" });
+    expect(JSON.parse(String(createInit?.body))).not.toHaveProperty("capture_key");
 
     const uploadInit = fetcher.mock.calls[1]![1];
     expect(uploadInit?.body).toBeInstanceOf(FormData);

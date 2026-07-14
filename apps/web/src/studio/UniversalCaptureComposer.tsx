@@ -32,12 +32,21 @@ type UniversalCaptureComposerProps = {
 
 type CaptureInput = {
   mode: StudioCaptureMode;
+  captureKey: string;
   bodyText: string;
   title?: string | null;
   file?: Blob;
   filename?: string;
   url?: string;
   idempotencyKey?: string;
+};
+
+type RecordingSession = {
+  recorder: MediaRecorder;
+  stream: MediaStream;
+  chunks: Blob[];
+  failed: boolean;
+  terminal: boolean;
 };
 
 type RetryAttachment = {
@@ -102,9 +111,7 @@ export default function UniversalCaptureComposer({
   const audioInputRef = useRef<HTMLInputElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
   const linkTriggerRef = useRef<HTMLButtonElement>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const recordingStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingSessionRef = useRef<RecordingSession | null>(null);
   const acquiringMicrophoneRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -113,11 +120,15 @@ export default function UniversalCaptureComposer({
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
-      const recorder = recorderRef.current;
-      if (recorder?.state === "recording") recorder.stop();
-      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-      recordingStreamRef.current = null;
-      recorderRef.current = null;
+      const session = recordingSessionRef.current;
+      if (session && !session.terminal) {
+        if (session.recorder.state === "recording") session.recorder.stop();
+        if (!session.terminal) {
+          session.terminal = true;
+          session.stream.getTracks().forEach((track) => track.stop());
+        }
+      }
+      recordingSessionRef.current = null;
     };
   }, []);
 
@@ -164,7 +175,8 @@ export default function UniversalCaptureComposer({
         title: input.title ?? null,
         body_json: editorBody(input.bodyText),
         body_text: input.bodyText,
-        capture_mode: captureMode
+        capture_mode: captureMode,
+        capture_key: input.captureKey
       }, controller.signal);
       if (controllerRef.current === controller) controllerRef.current = null;
 
@@ -182,15 +194,11 @@ export default function UniversalCaptureComposer({
       completed = { document, outcome };
     } catch {
       if (controller.signal.aborted) return;
-      if (input.file || input.url) {
-        if (mountedRef.current) {
-          setRetryAttachment({ document, input });
-          setMessage(uploadFailureMessage(input, document));
-        }
-      } else {
-        if (mountedRef.current) {
-          setMessage("Não foi possível guardar agora. Seu conteúdo continua aqui para tentar novamente.");
-        }
+      if (mountedRef.current) {
+        setRetryAttachment({ document, input });
+        setMessage(input.file || input.url
+          ? uploadFailureMessage(input, document)
+          : "Não foi possível guardar agora. Seu conteúdo continua aqui para tentar novamente.");
       }
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
@@ -254,6 +262,7 @@ export default function UniversalCaptureComposer({
       }
       void capture({
         mode: "link",
+        captureKey: globalThis.crypto.randomUUID(),
         bodyText: text.trim(),
         title: null,
         url,
@@ -263,7 +272,7 @@ export default function UniversalCaptureComposer({
     }
     const bodyText = text.trim();
     if (!bodyText) return;
-    void capture({ mode: "text", bodyText });
+    void capture({ mode: "text", bodyText, captureKey: globalThis.crypto.randomUUID() });
   }
 
   function captureSelectedFile(event: ChangeEvent<HTMLInputElement>, mode: "audio" | "file" | "image") {
@@ -272,6 +281,7 @@ export default function UniversalCaptureComposer({
     if (!file) return;
     void capture({
       mode,
+      captureKey: globalThis.crypto.randomUUID(),
       bodyText: text.trim(),
       title: file.name,
       file,
@@ -280,17 +290,22 @@ export default function UniversalCaptureComposer({
     });
   }
 
-  function releaseRecording() {
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-    recorderRef.current = null;
-    if (mountedRef.current) setRecording(false);
+  function releaseRecording(session: RecordingSession) {
+    if (session.terminal) return;
+    session.terminal = true;
+    session.stream.getTracks().forEach((track) => track.stop());
+    if (recordingSessionRef.current === session) {
+      recordingSessionRef.current = null;
+      if (mountedRef.current) setRecording(false);
+    }
   }
 
   async function toggleRecording() {
-    const currentRecorder = recorderRef.current;
-    if (currentRecorder) {
-      if (currentRecorder.state === "recording") currentRecorder.stop();
+    const currentSession = recordingSessionRef.current;
+    if (currentSession && !currentSession.terminal) {
+      if (!currentSession.failed && currentSession.recorder.state === "recording") {
+        currentSession.recorder.stop();
+      }
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -306,18 +321,18 @@ export default function UniversalCaptureComposer({
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      recordingStreamRef.current = stream;
       const recorder = new MediaRecorder(stream);
-      audioChunksRef.current = [];
-      recorderRef.current = recorder;
+      const session: RecordingSession = { recorder, stream, chunks: [], failed: false, terminal: false };
+      recordingSessionRef.current = session;
       recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size) audioChunksRef.current.push(event.data);
+        if (!session.terminal && event.data.size) session.chunks.push(event.data);
       });
       recorder.addEventListener("stop", () => {
         const type = recorder.mimeType || "audio/webm";
-        const audio = new Blob(audioChunksRef.current, { type });
-        releaseRecording();
-        if (!mountedRef.current) return;
+        const audio = new Blob(session.chunks, { type });
+        const failed = session.failed;
+        releaseRecording(session);
+        if (!mountedRef.current || failed) return;
         if (!audio.size) {
           setMessage("Não foi possível registrar áudio desta vez.");
           return;
@@ -325,6 +340,7 @@ export default function UniversalCaptureComposer({
         const extension = type.includes("mp4") ? "m4a" : "webm";
         void capture({
           mode: "audio",
+          captureKey: globalThis.crypto.randomUUID(),
           bodyText: text.trim(),
           title: "Registro em áudio",
           file: audio,
@@ -333,16 +349,18 @@ export default function UniversalCaptureComposer({
         });
       }, { once: true });
       recorder.addEventListener("error", () => {
-        if (!mountedRef.current) return;
-        releaseRecording();
-        setMessage("Não foi possível registrar áudio desta vez.");
+        if (session.terminal) return;
+        session.failed = true;
+        if (recordingSessionRef.current === session && mountedRef.current) {
+          setRecording(false);
+          setMessage("Não foi possível registrar áudio desta vez.");
+        }
       }, { once: true });
       recorder.start();
       setRecording(true);
       setMessage("Gravação em andamento. Seu áudio só será enviado quando você parar.");
     } catch {
       acquiringMicrophoneRef.current = false;
-      releaseRecording();
       if (mountedRef.current) {
         setMessage("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
       }

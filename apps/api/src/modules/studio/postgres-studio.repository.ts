@@ -33,6 +33,7 @@ type StudioDocumentRow = {
   id: string;
   workspace_id: string;
   owner_profile_id: string;
+  capture_key: string | null;
   title: string | null;
   body_json: Record<string, unknown>;
   body_text: string;
@@ -161,6 +162,7 @@ function documentFromRow(row: StudioDocumentRow): StudioDocument {
     id: row.id,
     workspaceId: row.workspace_id,
     ownerProfileId: row.owner_profile_id,
+    captureKey: row.capture_key,
     title: row.title,
     bodyJson: structuredClone(row.body_json),
     bodyText: row.body_text,
@@ -425,15 +427,19 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const search = prepareStudioSearchFields(input.title, input.bodyText);
         const result = await client.query<StudioDocumentRow>(
           `INSERT INTO studio_documents
-             (id,workspace_id,owner_profile_id,title,body_json,body_text,
+             (id,workspace_id,owner_profile_id,capture_key,title,body_json,body_text,
               search_title_folded,search_body_folded,search_tokens,search_prefix_tokens,
               capture_mode,inbox_state,is_focused,status)
-           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::text[],$10::text[],$11,$12,$13,$14)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10::text[],$11::text[],$12,$13,$14,$15)
+           ON CONFLICT (workspace_id,owner_profile_id,capture_key)
+             WHERE capture_key IS NOT NULL AND status='active'
+             DO NOTHING
            RETURNING *`,
           [
             generatedId("studio_document"),
             input.workspaceId,
             input.ownerProfileId,
+            input.captureKey ?? null,
             input.title,
             JSON.stringify(input.bodyJson),
             input.bodyText,
@@ -447,6 +453,15 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             input.status
           ]
         );
+        if (result.rows.length === 0) {
+          const existing = await client.query<StudioDocumentRow>(
+            `SELECT * FROM studio_documents
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND capture_key=$3 AND status='active'`,
+            [input.workspaceId, input.ownerProfileId, input.captureKey]
+          );
+          if (!existing.rows[0]) throw new Error("STUDIO_DOCUMENT_CAPTURE_RETRY");
+          return documentFromRow(existing.rows[0]);
+        }
         const document = documentFromRow(result.rows[0]!);
         await insertVersion(client, {
           workspaceId: document.workspaceId,
@@ -459,6 +474,12 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           aiRunId: null
         });
         return document;
+      }).catch((error: unknown) => {
+        const postgresError = error as { code?: string; constraint?: string };
+        if (postgresError.code === "23505" && postgresError.constraint === "studio_documents_capture_uidx") {
+          throw new Error("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
+        }
+        throw error;
       });
     },
 
@@ -518,6 +539,12 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           aiRunId: null
         });
         return updated;
+      }).catch((error: unknown) => {
+        const postgresError = error as { code?: string; constraint?: string };
+        if (postgresError.code === "23505" && postgresError.constraint === "studio_documents_capture_uidx") {
+          throw new Error("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
+        }
+        throw error;
       });
     },
 

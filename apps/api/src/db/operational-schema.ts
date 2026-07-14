@@ -879,6 +879,12 @@ const migrations: Migration[] = [{
   version: 20,
   name: "studio_asset_capture_idempotency",
   sql: `
+    ALTER TABLE studio_documents ADD COLUMN IF NOT EXISTS capture_key TEXT;
+    DROP INDEX IF EXISTS studio_documents_capture_uidx;
+    CREATE UNIQUE INDEX studio_documents_capture_uidx
+      ON studio_documents (workspace_id,owner_profile_id,capture_key)
+      WHERE capture_key IS NOT NULL AND status='active';
+
     ALTER TABLE studio_assets ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
     DROP INDEX IF EXISTS studio_assets_idempotency_uidx;
     CREATE UNIQUE INDEX studio_assets_idempotency_uidx

@@ -7,6 +7,13 @@ import { App } from "./App";
 const appStyles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
 const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
+function currentLocalDate() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
 const onboardingSuggestionMetadata = {
   reason: "Sugerido a partir do onboarding.",
   basedOn: ["respostas do onboarding"],
@@ -1289,6 +1296,7 @@ describe("Baase React app shell", () => {
   });
 
   it("filters the operational overview and navigates to people and existing task screens", async () => {
+    const periodEnd = currentLocalDate();
     const overview = {
       from: "2026-07-01",
       to: "2026-07-07",
@@ -1338,7 +1346,7 @@ describe("Baase React app shell", () => {
     fireEvent.change(screen.getByLabelText("Data inicial do período"), { target: { value: "2026-06-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/operational-overview?from=2026-06-01&to=2026-07-13",
+      `/api/operational-overview?from=2026-06-01&to=${periodEnd}`,
       expect.objectContaining({ headers: expect.anything() })
     ));
 
@@ -1346,7 +1354,7 @@ describe("Baase React app shell", () => {
     expect(await screen.findByRole("heading", { name: "Bruno Costa" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tarefas abertas" })).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/people/profile_bruno/operational-overview?from=2026-06-01&to=2026-07-13",
+      `/api/people/profile_bruno/operational-overview?from=2026-06-01&to=${periodEnd}`,
       expect.objectContaining({ headers: expect.anything() })
     ));
 

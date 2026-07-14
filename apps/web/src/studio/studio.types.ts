@@ -7,6 +7,7 @@ export type StudioDocument = {
   id: string;
   workspaceId: string;
   ownerProfileId: string;
+  captureKey: string | null;
   title: string | null;
   bodyJson: Record<string, unknown>;
   bodyText: string;
@@ -99,6 +100,8 @@ export type RawStudioDocument = {
   workspaceId?: string;
   owner_profile_id?: string;
   ownerProfileId?: string;
+  capture_key?: string | null;
+  captureKey?: string | null;
   title: string | null;
   body_json?: Record<string, unknown>;
   bodyJson?: Record<string, unknown>;

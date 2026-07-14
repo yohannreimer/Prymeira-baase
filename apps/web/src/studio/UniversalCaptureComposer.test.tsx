@@ -8,6 +8,7 @@ const capturedDocument: StudioDocument = {
   id: "document_1",
   workspaceId: "workspace_1",
   ownerProfileId: "owner_1",
+  captureKey: "01010101-0101-4101-8101-010101010101",
   title: null,
   bodyJson: { type: "doc" },
   bodyText: "Uma ideia que precisa amadurecer",
@@ -38,6 +39,59 @@ describe("UniversalCaptureComposer", () => {
       capture_mode: "text"
     }), expect.any(AbortSignal));
     expect(onCaptured).toHaveBeenCalledWith(capturedDocument, expect.objectContaining({ processing: "none" }));
+  });
+
+  it("reuses one document key after a committed response is lost", async () => {
+    const createDocument = vi.fn()
+      .mockRejectedValueOnce(new Error("response lost after commit"))
+      .mockResolvedValueOnce(capturedDocument);
+    const onCaptured = vi.fn();
+    render(<UniversalCaptureComposer createDocument={createDocument} onCaptured={onCaptured} />);
+
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Registre um pensamento" }),
+      "Uma captura persistida"
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Tentar guardar novamente" }));
+
+    await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(2));
+    const firstKey = createDocument.mock.calls[0]?.[0].capture_key;
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(createDocument.mock.calls[1]?.[0].capture_key).toBe(firstKey);
+    expect(onCaptured).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps document and asset keys stable and distinct across an attachment create retry", async () => {
+    const fileDocument = { ...capturedDocument, id: "file_1", captureMode: "file" as const };
+    const createDocument = vi.fn()
+      .mockRejectedValueOnce(new Error("response lost after commit"))
+      .mockResolvedValueOnce(fileDocument);
+    const attachAsset = vi.fn(async (
+      _documentId: string,
+      _file: Blob,
+      _filename: string,
+      _idempotencyKey: string,
+      _signal?: AbortSignal
+    ) => asset({ documentId: fileDocument.id, kind: "file" }));
+    render(
+      <UniversalCaptureComposer
+        createDocument={createDocument}
+        attachAsset={attachAsset}
+        onCaptured={vi.fn()}
+      />
+    );
+
+    const fileInput = document.querySelector('input[type="file"]:not([accept])') as HTMLInputElement;
+    await userEvent.upload(fileInput, new File(["plano"], "plano.txt", { type: "text/plain" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Tentar guardar novamente" }));
+
+    await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(1));
+    const firstDocumentKey = createDocument.mock.calls[0]?.[0].capture_key;
+    expect(createDocument.mock.calls[1]?.[0].capture_key).toBe(firstDocumentKey);
+    const assetKey = attachAsset.mock.calls[0]?.[3];
+    expect(assetKey).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(assetKey).not.toBe(firstDocumentKey);
   });
 
   it("offers native keyboard access to audio, file, image, and link capture", async () => {
@@ -240,6 +294,62 @@ describe("UniversalCaptureComposer", () => {
     }
   });
 
+  it("waits for the failed recorder terminal stop before acquiring a new session", async () => {
+    const firstTrackStop = vi.fn();
+    const secondTrackStop = vi.fn();
+    const streams = [
+      { getTracks: () => [{ stop: firstTrackStop }] },
+      { getTracks: () => [{ stop: secondTrackStop }] }
+    ] as unknown as MediaStream[];
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(streams[0])
+      .mockResolvedValueOnce(streams[1]);
+    const recorders: TestMediaRecorder[] = [];
+    const createDocument = vi.fn(async () => capturedDocument);
+    const attachAsset = vi.fn(async () => asset());
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class extends TestMediaRecorder {
+        constructor(input: MediaStream) {
+          super(input);
+          recorders.push(this);
+        }
+      }
+    });
+    try {
+      render(
+        <UniversalCaptureComposer
+          createDocument={createDocument}
+          attachAsset={attachAsset}
+          onCaptured={vi.fn()}
+        />
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await screen.findByRole("button", { name: "Parar gravação" });
+
+      await act(async () => recorders[0]!.emit("error"));
+      expect(screen.getByRole("button", { name: "Gravar áudio" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+      expect(firstTrackStop).not.toHaveBeenCalled();
+
+      await act(async () => recorders[0]!.emit("stop"));
+      expect(firstTrackStop).toHaveBeenCalledTimes(1);
+      expect(createDocument).not.toHaveBeenCalled();
+      expect(attachAsset).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(2));
+      expect(recorders).toHaveLength(2);
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  });
+
   it("cancels an in-flight capture when its surface closes", async () => {
     const user = userEvent.setup();
     let receivedSignal: AbortSignal | undefined;
@@ -281,6 +391,7 @@ class TestMediaRecorder {
   }
 
   emit(type: "stop" | "error") {
+    if (type === "error") this.state = "inactive";
     this.listeners.get(type)?.({ data: new Blob() });
   }
 }

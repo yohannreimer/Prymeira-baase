@@ -11,6 +11,7 @@ import {
   studioDocumentListQuerySchema,
   studioDocumentParamsSchema,
   studioEmptyRouteSchema,
+  studioAssetIdempotencyKeySchema,
   studioSearchQuerySchema
 } from "./studio.schemas";
 import type { StudioOwnerScope, StudioService } from "./studio.types";
@@ -29,6 +30,13 @@ function studioRouteError(error: unknown) {
       409,
       "STUDIO_DOCUMENT_CHANGED",
       "O documento mudou durante a operação. Atualize e tente novamente."
+    );
+  }
+  if (error.message === "STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE") {
+    return new ApiError(
+      409,
+      "STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE",
+      "Já existe uma captura ativa com esta chave."
     );
   }
   if (error.message === "STUDIO_DOCUMENT_NOT_FOUND") {
@@ -68,6 +76,12 @@ function readNoBody(request: FastifyRequest) {
   if (request.body !== undefined) studioEmptyRouteSchema.parse(request.body);
 }
 
+function readDocumentCaptureKey(request: FastifyRequest): string | null {
+  const raw = request.headers["idempotency-key"];
+  if (raw === undefined) return null;
+  return studioAssetIdempotencyKeySchema.parse(raw);
+}
+
 export async function registerStudioRoutes(app: FastifyInstance, service: StudioService) {
   app.get("/studio/home", async (request) => {
     const scope = requireStudioScope(request);
@@ -91,10 +105,12 @@ export async function registerStudioRoutes(app: FastifyInstance, service: Studio
     readNoRouteParams(request);
     readNoQuery(request);
     const body = createStudioDocumentSchema.parse(request.body);
+    const captureKey = readDocumentCaptureKey(request);
     const document = await runStudioOperation(() => service.createDocument(
       scope,
       scope.ownerProfileId,
-      body
+      body,
+      captureKey
     ));
     return reply.status(201).send({ document });
   });

@@ -101,6 +101,47 @@ function repositoryContract(
       });
     });
 
+    it("creates one active document and one initial version per owner capture key", async () => {
+      await withRepository(async (repository) => {
+        const captureKey = "12121212-1212-4212-8212-121212121212";
+        const input = { ...documentInput(), captureKey };
+        const [left, right] = await Promise.all([
+          repository.createDocument(input),
+          repository.createDocument({ ...input, bodyText: "lost response retry" })
+        ]);
+
+        expect(right.id).toBe(left.id);
+        expect(left).toMatchObject({ captureKey, status: "active" });
+        expect(await repository.listVersions(
+          { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, left.id
+        )).toHaveLength(1);
+
+        const otherOwner = await repository.createDocument({
+          ...input,
+          ownerProfileId: "owner_b"
+        });
+        expect(otherOwner.id).not.toBe(left.id);
+
+        const normalLeft = await repository.createDocument(documentInput({ bodyText: "normal left" }));
+        const normalRight = await repository.createDocument(documentInput({ bodyText: "normal right" }));
+        expect(normalRight.id).not.toBe(normalLeft.id);
+
+        const archived = await repository.updateDocument({
+          ...left,
+          status: "archived",
+          archivedAt: "2026-07-13T12:10:00.000Z"
+        }, left.revision);
+        const replacement = await repository.createDocument({ ...input, bodyText: "replacement" });
+        expect(replacement.id).not.toBe(archived.id);
+        expect(replacement).toMatchObject({ captureKey, status: "active" });
+        await expect(repository.updateDocument({
+          ...archived,
+          status: "active",
+          archivedAt: null
+        }, archived.revision)).rejects.toThrow("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
+      });
+    });
+
     it("scopes list and find by workspace and owner and paginates by status", async () => {
       await withRepository(async (repository) => {
         const activeA = await repository.createDocument(documentInput({ bodyText: "A" }));

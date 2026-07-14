@@ -129,6 +129,7 @@ export function mapStudioDocument(raw: RawStudioDocument): StudioDocument {
     id: raw.id,
     workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
     ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
+    captureKey: raw.capture_key !== undefined ? raw.capture_key : raw.captureKey ?? null,
     title: raw.title,
     bodyJson: required(raw.body_json, raw.bodyJson, "body_json"),
     bodyText: required(raw.body_text, raw.bodyText, "body_text"),
@@ -210,6 +211,8 @@ export type CreateStudioDocumentInput = {
   body_json: Record<string, unknown>;
   body_text: string;
   capture_mode: StudioCaptureMode;
+  /** Client-only operation key. It is sent as a header, never persisted from the JSON body. */
+  capture_key: string;
 };
 
 export async function createStudioDocument(
@@ -217,9 +220,11 @@ export async function createStudioDocument(
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch
 ): Promise<StudioDocument> {
+  const { capture_key: captureKey, ...body } = input;
   const response = await studioRequest<RawStudioDocumentResponse>("/documents", {
     method: "POST",
-    body: JSON.stringify(input),
+    headers: { "idempotency-key": captureKey },
+    body: JSON.stringify(body),
     signal
   }, fetcher);
   return mapStudioDocument(response.document);

@@ -114,10 +114,11 @@ export function createStudioService(
       return requireDocument(repository, scope, id);
     },
 
-    async createDocument(scope, actorProfileId, input: CreateStudioDocument) {
+    async createDocument(scope, actorProfileId, input: CreateStudioDocument, captureKey = null) {
       assertActor(scope, actorProfileId);
       return repository.createDocument({
         ...scope,
+        captureKey,
         title: input.title,
         bodyJson: structuredClone(input.body_json),
         bodyText: normalizeBodyText(input.body_text),

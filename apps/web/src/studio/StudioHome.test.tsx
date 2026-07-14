@@ -8,6 +8,7 @@ const document: StudioDocument = {
   id: "document_1",
   workspaceId: "workspace_1",
   ownerProfileId: "owner_1",
+  captureKey: null,
   title: "Escolha de posicionamento",
   bodyJson: { type: "doc" },
   bodyText: "Precisamos escolher a direção.",
