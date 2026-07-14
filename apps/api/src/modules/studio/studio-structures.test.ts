@@ -108,6 +108,41 @@ describe("Studio strategic structures", () => {
     expect(removed.json().structure).toMatchObject({ revision: 2, cadenceJson: null, nextRunAt: null });
   });
 
+  it("preserves an overdue ritual run on unrelated edits and recalculates only cadence patches", async () => {
+    let clock = "2026-07-13T12:00:00.000Z";
+    const repository = createInMemoryStudioRepository({ now: () => clock });
+    const service = createStudioService(repository, { now: () => clock });
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const document = await service.createDocument(scope, "owner_a", {
+      title: "Ritual", body_json: {}, body_text: "Original", capture_mode: "text"
+    });
+    const created = await service.createStructure(scope, "owner_a", document.id, {
+      kind: "ritual",
+      cadence_json: { frequency: "daily", local_time: "09:00", timezone: "America/Sao_Paulo" },
+      properties_json: { intention: "Revisar" }
+    });
+    const originalNextRunAt = created.nextRunAt;
+    clock = "2026-07-15T18:00:00.000Z";
+    const edited = await service.updateStructure(scope, "owner_a", created.id, {
+      expected_revision: created.revision,
+      properties_json: { intention: "Revisar com calma" }
+    });
+    expect(edited.nextRunAt).toBe(originalNextRunAt);
+
+    const changed = await service.updateStructure(scope, "owner_a", created.id, {
+      expected_revision: edited.revision,
+      cadence_json: { frequency: "daily", local_time: "10:00", timezone: "America/Sao_Paulo" }
+    });
+    expect(changed.nextRunAt).not.toBe(originalNextRunAt);
+    expect(new Date(changed.nextRunAt!).getTime()).toBeGreaterThan(new Date(clock).getTime());
+
+    const removed = await service.updateStructure(scope, "owner_a", created.id, {
+      expected_revision: changed.revision,
+      cadence_json: null
+    });
+    expect(removed).toMatchObject({ cadenceJson: null, nextRunAt: null });
+  });
+
   it("stores an optional decision date separately from its review date", async () => {
     const { app, document } = await setup();
     const response = await app.inject({

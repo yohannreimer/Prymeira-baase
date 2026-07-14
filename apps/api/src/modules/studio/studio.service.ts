@@ -381,6 +381,9 @@ export function createStudioService(
             : input.cadence_json === null ? null : studioRitualCadenceSchema.parse(input.cadence_json))
           : null;
         const horizonAt = input.horizon_at === undefined ? current.horizonAt : input.horizon_at;
+        const nextRunAt = input.cadence_json === undefined
+          ? current.nextRunAt
+          : cadenceJson ? nextRitualRun(cadenceJson, currentTimestamp(clock)) : null;
         if (current.kind === "decision" && horizonAt && typeof propertiesJson.review_date === "string"
           && horizonAt.slice(0, 10) !== propertiesJson.review_date) {
           throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
@@ -391,7 +394,7 @@ export function createStudioService(
             horizonAt,
             metricJson,
             cadenceJson,
-            nextRunAt: cadenceJson ? nextRitualRun(cadenceJson, currentTimestamp(clock)) : null,
+            nextRunAt,
             propertiesJson
           }, current.revision));
         } catch (error) {
