@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { canAccessOwnerStudio } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
@@ -62,7 +62,7 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       }
       const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
       const control = createUploadReceiveStorageControl(putTimeoutMs);
-      const ownerSettlement = uploadFileAsset(request, options, scope, documentId, control, putTimeoutMs).then(
+      const ownerSettlement = uploadFileAsset(request, reply, options, scope, documentId, control, putTimeoutMs).then(
         (asset) => ({ ok: true as const, asset }),
         (error: unknown) => ({ ok: false as const, error })
       );
@@ -173,6 +173,7 @@ async function boundedImmediateCleanup(operation: Promise<boolean>, timeoutMs: n
 
 async function uploadFileAsset(
   request: FastifyRequest,
+  reply: FastifyReply,
   options: RegisterStudioAssetRoutesOptions,
   scope: StudioOwnerScope,
   documentId: string,
@@ -189,7 +190,7 @@ async function uploadFileAsset(
       fieldSize: 1
     }
   });
-  const receiveAbort = bindMultipartReceiveAbort(request, control.signal);
+  const receiveAbort = bindMultipartReceiveAbort(request, reply, control.signal);
   try {
     let firstPart: Awaited<ReturnType<typeof parts.next>>;
     try {
@@ -268,6 +269,7 @@ async function uploadFileAsset(
     if (control.signal.aborted && !(error instanceof ApiError)) throw uploadInterruptionError(control.signal);
     throw error;
   } finally {
+    await receiveAbort.afterResponseTeardown();
     receiveAbort.unbind();
     await prepared?.cleanup();
   }
@@ -518,18 +520,40 @@ function createUploadReceiveStorageControl(timeoutMs: number): UploadReceiveStor
   return control;
 }
 
-function bindMultipartReceiveAbort(request: FastifyRequest, signal: AbortSignal): {
+function bindMultipartReceiveAbort(request: FastifyRequest, reply: FastifyReply, signal: AbortSignal): {
   setFileStream(stream: { destroy(error?: Error): unknown }): void;
+  afterResponseTeardown(): Promise<void>;
   unbind(): void;
 } {
   let fileStream: { destroy(error?: Error): unknown } | null = null;
+  let teardown: Promise<void> | null = null;
+  let resolveTeardown: (() => void) | null = null;
+  const removeResponseListeners = () => {
+    reply.raw.removeListener("finish", terminateRequest);
+    reply.raw.removeListener("close", terminateRequest);
+  };
+  const terminateRequest = () => {
+    removeResponseListeners();
+    if (!request.raw.complete && !request.raw.destroyed) request.raw.destroy();
+    resolveTeardown?.();
+    resolveTeardown = null;
+  };
   const abort = () => {
     const reason = signal.reason instanceof Error ? signal.reason : new Error("STUDIO_ASSET_UPLOAD_ABORTED");
-    if (fileStream) {
-      fileStream.destroy(reason);
+    if (teardown) {
+      fileStream?.destroy(reason);
       return;
     }
-    if (!request.raw.destroyed) request.raw.destroy(reason);
+    teardown = new Promise<void>((resolve) => {
+      resolveTeardown = resolve;
+    });
+    if (reply.raw.writableFinished || reply.raw.destroyed) {
+      terminateRequest();
+    } else {
+      reply.raw.once("finish", terminateRequest);
+      reply.raw.once("close", terminateRequest);
+    }
+    fileStream?.destroy(reason);
   };
   signal.addEventListener("abort", abort, { once: true });
   return {
@@ -537,8 +561,12 @@ function bindMultipartReceiveAbort(request: FastifyRequest, signal: AbortSignal)
       fileStream = stream;
       if (signal.aborted) abort();
     },
+    afterResponseTeardown() {
+      return teardown ?? Promise.resolve();
+    },
     unbind() {
       signal.removeEventListener("abort", abort);
+      removeResponseListeners();
     }
   };
 }

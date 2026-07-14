@@ -1,3 +1,5 @@
+import { request as createHttpRequest, type ClientRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import {
   AbortMultipartUploadCommand,
@@ -166,6 +168,79 @@ describe("Studio asset routes", () => {
     stalledBody.destroy();
   });
 
+  it("flushes a structured timeout before closing a live stalled multipart connection", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const semaphore = createStudioUploadSemaphore(1);
+    const app = buildApp({
+      studioRepository: repository,
+      studioUploadSemaphore: semaphore,
+      studioUploadPutTimeoutMs: 50,
+      studioUploadLeaseMs: 200
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const boundary = "----baase-studio-live-stalled-receive";
+    const clientErrors: NodeJS.ErrnoException[] = [];
+    let client: ClientRequest | undefined;
+    try {
+      let responseStarted = false;
+      let resolveConnectionClosed!: () => void;
+      const connectionClosed = new Promise<void>((resolve) => {
+        resolveConnectionClosed = resolve;
+      });
+      const response = await new Promise<{ statusCode: number | undefined; body: string }>((resolve, reject) => {
+        client = createHttpRequest({
+          host: "127.0.0.1",
+          port: address.port,
+          method: "POST",
+          path: `/studio/documents/${document.id}/assets`,
+          headers: {
+            ...ownerA,
+            connection: "keep-alive",
+            "content-type": `multipart/form-data; boundary=${boundary}`,
+            "transfer-encoding": "chunked"
+          }
+        }, (incoming) => {
+          responseStarted = true;
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          incoming.on("end", () => resolve({
+            statusCode: incoming.statusCode,
+            body: Buffer.concat(chunks).toString("utf8")
+          }));
+        });
+        client.on("error", (error: NodeJS.ErrnoException) => {
+          clientErrors.push(error);
+          if (!responseStarted) reject(error);
+        });
+        client.on("close", resolveConnectionClosed);
+        client.flushHeaders();
+        client.write([
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="file"; filename="stalled.txt"'
+        ].join("\r\n"));
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(response.body).error).toMatchObject({
+        code: "OBJECT_STORAGE_UNAVAILABLE",
+        details: { upload_timeout: true }
+      });
+      await connectionClosed;
+      expect(clientErrors).toEqual([]);
+      expect(client!.destroyed).toBe(true);
+      await vi.waitFor(() => {
+        const release = semaphore.tryAcquire();
+        expect(release).toBeTypeOf("function");
+        release?.();
+      });
+    } finally {
+      client?.destroy();
+      await app.close();
+    }
+  });
+
   it("rejects empty, oversized, and unsupported uploads", async () => {
     const fixture = await createFixture();
     const empty = await upload(fixture.app, fixture.documentId, {
@@ -239,10 +314,24 @@ describe("Studio asset routes", () => {
   });
 
   it("disarms the storage deadline after Complete and awaits one idempotent durable finalization", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]
+    });
     const repository = createInMemoryStudioRepository();
     const document = await repository.createDocument(documentInput());
-    const objectStorage = createInMemoryObjectStorage();
-    let releaseFinalize!: () => void;
+    const memoryStorage = createInMemoryObjectStorage();
+    const lifecycle: string[] = [];
+    const objectStorage = {
+      ...memoryStorage,
+      async completeAtomicUploadFromStream(
+        input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
+        options?: { signal?: AbortSignal }
+      ) {
+        await memoryStorage.completeAtomicUploadFromStream(input, options);
+        lifecycle.push("complete");
+      }
+    };
+    let releaseFinalize: (() => void) | undefined;
     const finalizeGate = new Promise<void>((resolve) => { releaseFinalize = resolve; });
     let finalizeStarted!: () => void;
     const started = new Promise<void>((resolve) => { finalizeStarted = resolve; });
@@ -255,6 +344,7 @@ describe("Studio asset routes", () => {
         async finalizeAssetUpload(input) {
           finalizeCalls += 1;
           captured = input;
+          lifecycle.push("finalize");
           finalizeStarted();
           await finalizeGate;
           return repository.finalizeAssetUpload(input);
@@ -264,22 +354,31 @@ describe("Studio asset routes", () => {
       studioUploadLeaseMs: 100,
       studioUploadLeaseHeartbeatMs: 5
     });
-    const pending = upload(app, document.id, {
-      filename: "slow-finalize.txt", mimeType: "text/plain", body: Buffer.from("private")
-    });
-    await started;
-    expect(objectStorage.keys()).toHaveLength(1);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    releaseFinalize();
+    let pending: ReturnType<typeof upload> | undefined;
+    try {
+      pending = upload(app, document.id, {
+        filename: "slow-finalize.txt", mimeType: "text/plain", body: Buffer.from("private")
+      });
+      await started;
+      expect(lifecycle).toEqual(["complete", "finalize"]);
+      expect(memoryStorage.keys()).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(30);
+      releaseFinalize!();
 
-    const response = await pending;
-    expect(response.statusCode).toBe(201);
-    expect(finalizeCalls).toBe(1);
-    expect(response.json().asset.objectKey).toBe(objectStorage.keys()[0]);
-    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
-    const retry = await repository.finalizeAssetUpload(captured!);
-    expect(retry.id).toBe(response.json().asset.id);
-    expect(await repository.findAssetByObjectKey(ownerScope(), retry.objectKey!)).toMatchObject({ id: retry.id });
+      const response = await pending;
+      expect(response.statusCode).toBe(201);
+      expect(finalizeCalls).toBe(1);
+      expect(memoryStorage.keys()).toHaveLength(1);
+      expect(response.json().asset.objectKey).toBe(memoryStorage.keys()[0]);
+      expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+      const retry = await repository.finalizeAssetUpload(captured!);
+      expect(retry.id).toBe(response.json().asset.id);
+      expect(await repository.findAssetByObjectKey(ownerScope(), retry.objectKey!)).toMatchObject({ id: retry.id });
+    } finally {
+      releaseFinalize?.();
+      vi.useRealTimers();
+      await pending?.catch(() => undefined);
+    }
   });
 
   it("leaves the durable pending intent when reconciliation is temporarily unavailable", async () => {
