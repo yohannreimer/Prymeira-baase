@@ -3556,15 +3556,14 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
                 <span />
               </div>
             )}>
-              <StudioPage onOpenInternalSource={(citation) => {
-                if (!citation.sourceId) return;
-                if (citation.sourceType === "task") openOperationalTask(citation.sourceId);
-                else if (citation.sourceType === "announcement") openOperationalAnnouncement(citation.sourceId);
-                else if (citation.sourceType === "people") openOperationalPerson(citation.sourceId);
-                else if (citation.sourceType === "routine") go("rotinas");
-                else if (citation.sourceType === "process") go("processos");
-                else if (citation.sourceType === "training") go("treinamentos");
-                else if (citation.sourceType === "dashboard") go("painel-dono");
+              <StudioPage onOpenInternalSource={(target) => {
+                if (target.kind === "task" && target.resourceId) openOperationalTask(target.resourceId);
+                else if (target.kind === "announcement" && target.resourceId) openOperationalAnnouncement(target.resourceId);
+                else if (target.kind === "person" && target.resourceId) openOperationalPerson(target.resourceId);
+                else if (target.kind === "routine") go("rotinas");
+                else if (target.kind === "process") go("processos");
+                else if (target.kind === "training") go("treinamentos");
+                else go("painel-dono");
               }} />
             </Suspense>
           ) : null}

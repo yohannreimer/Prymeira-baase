@@ -26,7 +26,8 @@ import type {
   StudioSearchResult,
   StudioCitation,
   StudioSuggestion,
-  StudioRelatedThought
+  StudioRelatedThought,
+  StudioInternalCitationTarget
 } from "./studio.types";
 
 export type StudioFetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -679,6 +680,35 @@ export function mapStudioCitation(raw: RawStudioCitation): StudioCitation {
     periodTo: raw.period_to !== undefined ? raw.period_to : raw.periodTo ?? null,
     metadata: raw.metadata ?? {}
   };
+}
+
+export function studioCitationInternalTarget(citation: StudioCitation): StudioInternalCitationTarget | null {
+  const sourceId = citation.sourceId?.trim();
+  if (citation.sourceType === "studio_document") {
+    return sourceId ? { kind: "studio_document", resourceId: sourceId } : null;
+  }
+  if (citation.sourceType !== "operational_resource" && citation.sourceType !== "operational_metric") return null;
+  const metadataType = typeof citation.metadata.resourceType === "string" ? citation.metadata.resourceType : null;
+  const prefixed = parsePrefixedResource(sourceId);
+  const normalizedMetadataType = metadataType === "person" ? "people" : metadataType;
+  if (normalizedMetadataType && prefixed && normalizedMetadataType !== prefixed.type) return null;
+  const rawType = metadataType ?? prefixed?.type ?? (citation.sourceType === "operational_metric" ? "dashboard" : null);
+  if (citation.sourceType === "operational_metric" && rawType !== "dashboard") return null;
+  if (citation.sourceType === "operational_resource" && rawType === "dashboard") return null;
+  const resourceId = prefixed?.id ?? sourceId;
+  if (rawType === "dashboard") return { kind: "dashboard", resourceId: sourceId || null };
+  if (rawType === "people") return resourceId ? { kind: "person", resourceId } : null;
+  if (["task", "routine", "process", "training", "announcement"].includes(rawType ?? "") && resourceId) {
+    return { kind: rawType as StudioInternalCitationTarget["kind"], resourceId };
+  }
+  return null;
+}
+
+function parsePrefixedResource(sourceId: string | undefined) {
+  if (!sourceId) return null;
+  const match = sourceId.match(/^(dashboard|task|routine|process|training|announcement|people|person):(.+)$/u);
+  if (!match?.[1] || !match[2]?.trim()) return null;
+  return { type: match[1] === "person" ? "people" : match[1], id: match[2].trim() };
 }
 
 export function mapStudioSuggestion(raw: RawStudioSuggestion): StudioSuggestion {

@@ -96,7 +96,7 @@ export type StudioAsset = {
 };
 
 export type StudioCitation = {
-  sourceType: "dashboard" | "task" | "routine" | "process" | "training" | "announcement" | "people" | "studio_document" | "external_url";
+  sourceType: "studio_document" | "studio_asset" | "operational_resource" | "operational_metric" | "external_url";
   sourceId: string | null;
   url: string | null;
   label: string;
@@ -105,6 +105,11 @@ export type StudioCitation = {
   periodFrom: string | null;
   periodTo: string | null;
   metadata: Record<string, unknown>;
+};
+
+export type StudioInternalCitationTarget = {
+  kind: "dashboard" | "task" | "routine" | "process" | "training" | "announcement" | "person" | "studio_document";
+  resourceId: string | null;
 };
 
 export type StudioSuggestionProposal = {

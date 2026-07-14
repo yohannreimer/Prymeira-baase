@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import StudioCopilot from "./StudioCopilot";
@@ -107,6 +107,7 @@ describe("StudioCopilot", () => {
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
     expect(within(card).getByRole("heading", { name: "Fatos" })).toBeInTheDocument();
+    expect(within(card).getByRole("region", { name: "Proposta" })).toBeInTheDocument();
     await user.click(within(card).getByRole("button", { name: "Editar" }));
     await user.clear(within(card).getByLabelText("Texto"));
     await user.type(within(card).getByLabelText("Texto"), "Versão editada");
@@ -155,6 +156,82 @@ describe("StudioCopilot", () => {
     window.localStorage.setItem("baase:studio:copilot-width", "9999");
     render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
     expect(screen.getByRole("complementary", { name: "Copiloto do Estúdio" })).toHaveStyle({ width: "520px" });
+  });
+
+  it("retries the same turn after a terminal stream error", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      return calls === 1
+        ? sse("event: error\ndata: {\"code\":\"STUDIO_ASSISTANT_FAILED\",\"retryable\":true}\n\n")
+        : sse("event: delta\ndata: {\"text\":\"Resposta recuperada\"}\n\nevent: done\ndata: {\"message_id\":\"message\"}\n\n");
+    });
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Tente responder");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveFocus();
+    await user.click(within(error).getByRole("button", { name: "Tentar novamente" }));
+    expect(await screen.findByText("Resposta recuperada")).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
+  it("dismisses a pending suggestion through the API and focuses its persistent decision", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      requests.push(String(input));
+      return String(input).endsWith("/assistant/turns") ? sse(suggestionStream()) : json({ suggestion: rawSuggestion(), version: null });
+    });
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Sugira");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(await screen.findByRole("button", { name: "Dispensar" }));
+    const decision = await screen.findByRole("status", { name: "" });
+    expect(decision).toHaveTextContent("Proposta dispensada");
+    await waitFor(() => expect(decision).toHaveFocus());
+    expect(requests.at(-1)).toContain("/suggestions/suggestion_1/dismiss");
+  });
+
+  it("resizes by keyboard and pointer within persisted bounds, then restores focus after collapsing", async () => {
+    const user = userEvent.setup();
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    const panel = screen.getByRole("complementary", { name: "Copiloto do Estúdio" });
+    const separator = screen.getByRole("separator", { name: "Redimensionar copiloto" });
+    separator.focus();
+    await user.keyboard("{End}");
+    expect(panel).toHaveStyle({ width: "520px" });
+    expect(window.localStorage.getItem("baase:studio:copilot-width")).toBe("520");
+    Object.defineProperty(separator, "setPointerCapture", { configurable: true, value: vi.fn() });
+    fireEvent.pointerDown(separator, { pointerId: 1, clientX: 500 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 2_000 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 2_000 });
+    expect(panel).toHaveStyle({ width: "300px" });
+    await waitFor(() => expect(window.localStorage.getItem("baase:studio:copilot-width")).toBe("300"));
+
+    await user.click(screen.getByRole("button", { name: "Recolher copiloto" }));
+    const reopen = screen.getByRole("button", { name: /pensar com a ia/i });
+    await waitFor(() => expect(reopen).toHaveFocus());
+    await user.click(reopen);
+    expect(screen.getByRole("complementary", { name: "Copiloto do Estúdio" })).toBeInTheDocument();
+  });
+
+  it("forwards internal citations from a suggestion envelope", async () => {
+    const user = userEvent.setup();
+    const open = vi.fn();
+    const suggestion = rawSuggestion();
+    (suggestion.payload_json as { citations: unknown[] }).citations = [{ source_type: "operational_resource", source_id: "routine_7", url: null,
+      label: "Rotina semanal", excerpt: "", observed_at: "2026-07-14T10:00:00.000Z", period_from: null,
+      period_to: null, metadata: { resourceType: "routine" } }];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sse(`event: suggestion\ndata: ${JSON.stringify(suggestion)}\n\nevent: done\ndata: {"message_id":"message"}\n\n`));
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} onOpenInternalSource={open} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Sugira");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(card).getByRole("button", { name: /1 fonte/i }));
+    await user.click(screen.getByRole("button", { name: /rotina semanal/i }));
+    expect(open).toHaveBeenCalledWith({ kind: "routine", resourceId: "routine_7" }, expect.objectContaining({ label: "Rotina semanal" }));
   });
 });
 

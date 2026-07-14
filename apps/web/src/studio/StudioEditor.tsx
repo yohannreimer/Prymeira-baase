@@ -6,7 +6,7 @@ import {
   listStudioDocumentVersions,
   updateStudioDocument
 } from "./studio-api";
-import type { StudioCitation, StudioDocument, StudioDocumentVersion } from "./studio.types";
+import type { StudioCitation, StudioDocument, StudioDocumentVersion, StudioInternalCitationTarget } from "./studio.types";
 import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-editor-content";
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
 import StudioCopilot from "./StudioCopilot";
@@ -18,7 +18,7 @@ type StudioEditorProps = {
   focusHeadingOnMount?: boolean;
   debounceMs?: number;
   onOpenDocument?(documentId: string): void;
-  onOpenInternalSource?(citation: StudioCitation): void;
+  onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 };
 
 const saveLabels: Record<AutosaveState, string> = {
@@ -552,9 +552,9 @@ function StudioEditorSession({
       document={autosave.document}
       selectedText={selectedText}
       onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
-      onOpenInternalSource={(citation) => {
-        if (citation.sourceType === "studio_document" && citation.sourceId) onOpenDocument?.(citation.sourceId);
-        else onOpenInternalSource?.(citation);
+      onOpenInternalSource={(target, citation) => {
+        if (target.kind === "studio_document" && target.resourceId) onOpenDocument?.(target.resourceId);
+        else onOpenInternalSource?.(target, citation);
       }}
     />
     </div>

@@ -208,6 +208,7 @@
 .studio-suggestion__reasoning p { color: var(--muted); font-size: 11.5px; margin: 4px 0; }
 .studio-suggestion__reasoning small { color: var(--faint); display: block; margin-top: 3px; }
 .studio-suggestion__preview { border-block: 1px solid var(--line); padding: 14px; }
+.studio-suggestion__proposal > h4 { color: var(--faint); font-size: 10px; letter-spacing: .06em; margin: 12px 14px 0; text-transform: uppercase; }
 .studio-suggestion__preview h4 { margin: 0 0 8px; }
 .studio-suggestion__preview p { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .studio-suggestion__edit { display: grid; gap: 10px; padding: 14px; }

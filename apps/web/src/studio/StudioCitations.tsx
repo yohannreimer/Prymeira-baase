@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { StudioCitation } from "./studio.types";
+import { studioCitationInternalTarget } from "./studio-api";
+import type { StudioCitation, StudioInternalCitationTarget } from "./studio.types";
 
 type Props = {
   citations: StudioCitation[];
-  onOpenInternal?(citation: StudioCitation): void;
+  onOpenInternal?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 };
 
 export default function StudioCitations({ citations, onOpenInternal }: Props) {
@@ -38,26 +39,39 @@ export default function StudioCitations({ citations, onOpenInternal }: Props) {
         }}><i className="ph-light ph-x" aria-hidden="true" /></button>
       </header>
       <ol>
-        {citations.map((citation, index) => <li key={`${citation.sourceType}-${citation.sourceId ?? citation.url}-${index}`}>
-          {citation.sourceType === "external_url" && citation.url ? <a href={citation.url} target="_blank" rel="noreferrer">
+        {citations.map((citation, index) => {
+          const target = studioCitationInternalTarget(citation);
+          const externalUrl = citation.sourceType === "external_url" ? safeExternalUrl(citation.url) : null;
+          return <li key={`${citation.sourceType}-${citation.sourceId ?? citation.url}-${index}`}>
+          {externalUrl ? <a href={externalUrl} target="_blank" rel="noreferrer">
             <strong>{citation.label}</strong><span>Fonte externa · abrir em nova aba</span>
-          </a> : <button type="button" onClick={() => onOpenInternal?.(citation)}>
-            <strong>{citation.label}</strong><span>{sourceLabel(citation.sourceType)}</span>
-          </button>}
+          </a> : target ? <button type="button" onClick={() => onOpenInternal?.(target, citation)}>
+            <strong>{citation.label}</strong><span>{sourceLabel(target.kind)}</span>
+          </button> : <div className="studio-citations__unavailable" aria-disabled="true">
+            <strong>{citation.label}</strong><span>Fonte sem navegação disponível</span>
+          </div>}
           {citation.excerpt ? <p>{citation.excerpt}</p> : null}
           <small>{citation.periodFrom && citation.periodTo ? `${citation.periodFrom} — ${citation.periodTo} · ` : ""}consultado em {formatDate(citation.observedAt)}</small>
-        </li>)}
+        </li>})}
       </ol>
     </aside> : null}
   </div>;
 }
 
-function sourceLabel(type: StudioCitation["sourceType"]) {
-  const labels: Partial<Record<StudioCitation["sourceType"], string>> = {
+function sourceLabel(type: StudioInternalCitationTarget["kind"]) {
+  const labels: Record<StudioInternalCitationTarget["kind"], string> = {
     dashboard: "Painel operacional", task: "Tarefa", routine: "Rotina", process: "Processo",
-    training: "Treinamento", announcement: "Comunicado", people: "Pessoa", studio_document: "Documento do Estúdio"
+    training: "Treinamento", announcement: "Comunicado", person: "Pessoa", studio_document: "Documento do Estúdio"
   };
-  return labels[type] ?? "Fonte interna";
+  return labels[type];
+}
+
+function safeExternalUrl(value: string | null) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.toString() : null;
+  } catch { return null; }
 }
 
 function formatDate(value: string) {

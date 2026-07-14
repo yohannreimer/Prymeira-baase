@@ -6,13 +6,13 @@ import {
   StudioAssistantStreamError
 } from "./studio-api";
 import StudioCitations from "./StudioCitations";
-import type { StudioCitation, StudioDocument, StudioSuggestion } from "./studio.types";
+import type { StudioCitation, StudioDocument, StudioInternalCitationTarget, StudioSuggestion } from "./studio.types";
 
 type Props = {
   document: StudioDocument;
   selectedText?: string;
   onDocumentChange(document: StudioDocument): void;
-  onOpenInternalSource?(citation: StudioCitation): void;
+  onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 };
 
 type AssistantTurn = {
@@ -42,6 +42,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const panelRef = useRef<HTMLElement>(null);
   const openTriggerRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const streamErrorRef = useRef<HTMLDivElement>(null);
   const generationRef = useRef(0);
   const turnIdRef = useRef(0);
   const activeRef = useRef<ReturnType<typeof startStudioAssistantTurn> | null>(null);
@@ -70,6 +71,14 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     setStreaming(false);
     setStreamError(null);
   }, [document.id]);
+
+  useEffect(() => {
+    if (!open) queueMicrotask(() => openTriggerRef.current?.focus());
+  }, [open]);
+
+  useEffect(() => {
+    if (streamError) streamErrorRef.current?.focus();
+  }, [streamError]);
 
   useEffect(() => {
     if (!compact || !open) {
@@ -170,6 +179,19 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     window.addEventListener("pointerup", end, { once: true });
   }
 
+  function resizeWithKeyboard(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const next = event.key === "ArrowLeft" ? width + 16
+      : event.key === "ArrowRight" ? width - 16
+        : event.key === "Home" ? MIN_WIDTH
+          : event.key === "End" ? MAX_WIDTH
+            : null;
+    if (next === null) return;
+    event.preventDefault();
+    const bounded = clampWidth(next);
+    setWidth(bounded);
+    persistWidth(bounded);
+  }
+
   if (!open) return <button ref={openTriggerRef} className="studio-copilot-open" type="button" onClick={() => setOpen(true)}>
     <i className="ph-light ph-sparkle" aria-hidden="true" /> Pensar com a IA
   </button>;
@@ -184,7 +206,9 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
       aria-modal={compact ? "true" : undefined}
       aria-label="Copiloto do Estúdio"
     >
-      {!compact ? <button className="studio-copilot__resize" type="button" aria-label="Redimensionar copiloto" onPointerDown={beginResize} /> : null}
+      {!compact ? <button className="studio-copilot__resize" type="button" role="separator" aria-orientation="vertical"
+        aria-label="Redimensionar copiloto" aria-valuemin={MIN_WIDTH} aria-valuemax={MAX_WIDTH} aria-valuenow={width}
+        onKeyDown={resizeWithKeyboard} onPointerDown={beginResize} /> : null}
       <header className="studio-copilot__header">
         <div><p className="mono">Ao seu lado</p><h2>Copiloto</h2></div>
         <button type="button" aria-label="Recolher copiloto" onClick={() => {
@@ -202,11 +226,11 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
           <p className="studio-copilot-turn__prompt">{turn.prompt}</p>
           <div className="studio-copilot-turn__answer">{turn.response || (!turn.complete ? <span className="studio-copilot__thinking">Pensando…</span> : null)}</div>
           <StudioCitations citations={turn.citations} onOpenInternal={onOpenInternalSource} />
-          {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange} /> : null}
+          {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange} onOpenInternalSource={onOpenInternalSource} /> : null}
         </article>)}
       </div>
 
-      {streamError ? <div className="studio-copilot__error" role="alert" tabIndex={-1}>
+      {streamError ? <div ref={streamErrorRef} className="studio-copilot__error" role="alert" tabIndex={-1}>
         <p>{streamError}</p><button type="button" onClick={() => retryRef.current && void send(retryRef.current)}>Tentar novamente</button>
       </div> : null}
 
@@ -227,15 +251,21 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   </>;
 }
 
-function SuggestionCard({ suggestion, onDocumentChange }: {
+function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource }: {
   suggestion: StudioSuggestion;
   onDocumentChange(document: StudioDocument): void;
+  onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(suggestion.payload.proposal.title ?? "");
   const [body, setBody] = useState(suggestion.payload.proposal.bodyText);
   const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error">("pending");
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const decisionRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    if (state === "dismissed") decisionRef.current?.focus();
+  }, [state]);
 
   async function accept() {
     if (state !== "pending" && state !== "error") return;
@@ -259,11 +289,14 @@ function SuggestionCard({ suggestion, onDocumentChange }: {
   async function dismiss() {
     if (state !== "pending" && state !== "error") return;
     setState("dismissing");
-    try { await dismissStudioSuggestion(suggestion.id); setState("dismissed"); }
+    try {
+      await dismissStudioSuggestion(suggestion.id);
+      setState("dismissed");
+    }
     catch { setState("error"); queueMicrotask(() => errorRef.current?.focus()); }
   }
 
-  if (state === "dismissed") return <p className="studio-suggestion__decision">Proposta dispensada.</p>;
+  if (state === "dismissed") return <p ref={decisionRef} className="studio-suggestion__decision" role="status" tabIndex={-1}>Proposta dispensada.</p>;
   return <section className="studio-suggestion" aria-label="Proposta revisável da IA">
     <header><p className="mono">Proposta, não alteração</p><button type="button" disabled={state !== "pending" && state !== "error"} onClick={() => setEditing((value) => !value)}>{editing ? "Ver prévia" : "Editar"}</button></header>
     <div className="studio-suggestion__reasoning">
@@ -271,11 +304,14 @@ function SuggestionCard({ suggestion, onDocumentChange }: {
       <section><h4>Inferências</h4>{suggestion.payload.inferences.length ? suggestion.payload.inferences.map((item, index) => <p key={index}>{item.statement}<small>{item.basis} · confiança {item.confidence}</small></p>) : <p>Nenhuma inferência.</p>}</section>
       <section><h4>Lacunas</h4>{suggestion.payload.gaps.length ? suggestion.payload.gaps.map((item, index) => <p key={index}>{item.question}<small>{item.reason}</small></p>) : <p>Nenhuma lacuna identificada.</p>}</section>
     </div>
+    <section className="studio-suggestion__proposal" aria-labelledby={`studio-suggestion-proposal-${suggestion.id}`}>
+      <h4 id={`studio-suggestion-proposal-${suggestion.id}`}>Proposta</h4>
     {editing ? <div className="studio-suggestion__edit">
       <label>Título<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} /></label>
       <label>Texto<textarea rows={8} value={body} onChange={(event) => setBody(event.currentTarget.value)} /></label>
     </div> : <div className="studio-suggestion__preview"><h4>{title || "Sem título"}</h4><p>{body}</p></div>}
-    <StudioCitations citations={suggestion.payload.citations} />
+    </section>
+    <StudioCitations citations={suggestion.payload.citations} onOpenInternal={onOpenInternalSource} />
     {state === "error" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta não foi aplicada. O texto original continua intacto.</p> : null}
     <footer>
       <button type="button" disabled={["accepting", "dismissing", "accepted"].includes(state)} onClick={() => void dismiss()}>{state === "dismissing" ? "Dispensando…" : "Dispensar"}</button>
