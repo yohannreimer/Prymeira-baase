@@ -346,7 +346,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     routineRepository,
     trainingRepository
   }));
-  app.register((routes) => registerStudioRoutes(routes, studioService));
+  app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,

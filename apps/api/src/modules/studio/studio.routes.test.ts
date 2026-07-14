@@ -432,6 +432,38 @@ describe("Studio routes", () => {
       headers: ownerA
     })).statusCode).toBe(404);
   });
+
+  it("returns owner-scoped related thoughts and persists only an explicit accepted relation", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+    const source = await repository.createDocument({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", title: "Crescimento", bodyJson: {},
+      bodyText: "Expandir com qualidade", captureMode: "text", inboxState: "reviewed", isFocused: false, status: "active"
+    });
+    const target = await repository.createDocument({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", title: "Capacidade", bodyJson: {},
+      bodyText: "Preparar o time", captureMode: "text", inboxState: "reviewed", isFocused: false, status: "active"
+    });
+    const app = buildApp({ studioRepository: repository, studioMemoryIndex: {
+      async indexVersion() { return true; }, async removeDocument() { return true; },
+      async findRelated() { return [{ documentId: target.id, versionId: "version", chunkIndex: 0,
+        excerpt: "Preparar o time", score: 0.8, vectorScore: 0.75, lexicalScore: 0.2,
+        recencyScore: 1, updatedAt: target.updatedAt, cursor: "cursor" }]; }
+    } });
+
+    const related = await app.inject({ method: "GET", url: `/studio/documents/${source.id}/related`, headers: ownerA });
+    expect(related.statusCode).toBe(200);
+    expect(related.json().related[0]).toMatchObject({
+      document: { id: target.id }, explanation: "Explora uma ideia próxima, mesmo usando palavras diferentes."
+    });
+    expect(await repository.listRelations({ workspaceId: "workspace_a", ownerProfileId: "owner_a" })).toEqual([]);
+
+    const accepted = await app.inject({ method: "POST", url: `/studio/documents/${source.id}/relations`, headers: ownerA,
+      payload: { target_document_id: target.id, relation_type: "related_to" } });
+    expect(accepted.statusCode).toBe(200);
+    expect((await repository.listRelations({ workspaceId: "workspace_a", ownerProfileId: "owner_a" }))).toHaveLength(1);
+    expect((await app.inject({ method: "GET", url: `/studio/documents/${source.id}/related`, headers: ownerB })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/studio/documents/${source.id}/related`, headers: manager })).statusCode).toBe(403);
+  });
 });
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)("PostgreSQL Studio routes", () => {

@@ -7,7 +7,7 @@ import StudioCollections from "./StudioCollections";
 import { getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { useStudioCollections } from "./useStudioCollections";
-import type { StudioAsset, StudioDocument } from "./studio.types";
+import type { StudioAsset, StudioCitation, StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
 
@@ -45,7 +45,7 @@ const studioNavigation: StudioNavItem[] = [
   { key: "archive", label: "Arquivo", icon: "ph-archive", title: "Arquivo", description: "Registros preservados fora da sua mesa principal.", instruction: "Documentos arquivados podem ser restaurados quando voltarem a importar." }
 ];
 
-export default function StudioPage() {
+export default function StudioPage({ onOpenInternalSource }: { onOpenInternalSource?(citation: StudioCitation): void }) {
   const [section, setSection] = useState<StudioSection>(() => sectionFromHash(window.location.hash));
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
   const [assetState, setAssetState] = useState<DocumentAssetState>({
@@ -230,6 +230,8 @@ export default function StudioPage() {
                     selectedDocumentId.current = document.id;
                     setSelectedDocument(document);
                   }}
+                  onOpenDocument={(documentId) => void openDocumentById(documentId)}
+                  onOpenInternalSource={onOpenInternalSource}
                 />
               </Suspense>
               <DocumentAssets

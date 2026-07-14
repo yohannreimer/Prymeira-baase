@@ -546,6 +546,11 @@ export type StudioRepository = {
     citations: CreateStudioCitation[];
   }): Promise<{ suggestion: StudioSuggestion; citations: StudioCitation[] }>;
   findSuggestion(scope: StudioOwnerScope, suggestionId: string): Promise<StudioSuggestion | null>;
-  acceptSuggestion(scope: StudioOwnerScope, suggestionId: string, actorProfileId: string): Promise<StudioSuggestionDecision>;
+  acceptSuggestion(
+    scope: StudioOwnerScope,
+    suggestionId: string,
+    actorProfileId: string,
+    proposalOverride?: StudioTextSuggestionProposal
+  ): Promise<StudioSuggestionDecision>;
   dismissSuggestion(scope: StudioOwnerScope, suggestionId: string): Promise<StudioSuggestionDecision>;
 };

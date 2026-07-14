@@ -89,6 +89,53 @@ describe("Studio assistant routes", () => {
     expect(repeated.json().version.id).toBe(first.json().version.id);
     expect(first.json().version.origin).toBe("accepted_ai_suggestion");
   });
+
+  it("accepts an edited preview atomically and keeps retries idempotent", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument({ workspaceId: "workspace_a", ownerProfileId: "owner_a",
+      title: "Original", bodyJson: {}, bodyText: "Original", captureMode: "text", inboxState: "pending_review",
+      isFocused: false, status: "active" });
+    const app = buildApp({ studioRepository: repository, aiProvider: provider({ facts: [], inferences: [], gaps: [], citations: [], proposal: {
+      document_id: document.id, expected_revision: 1, title: "Proposta", body_json: {}, body_text: "Proposta"
+    } }) });
+    const turn = await app.inject({ method: "POST", url: "/studio/assistant/turns", headers: ownerA,
+      payload: { document_id: document.id, message: "Sugira", request_text_suggestion: true } });
+    const suggestion = parseSse(turn.body).find((event) => event.event === "suggestion")!.data;
+    const proposal = { document_id: document.id, expected_revision: 1, title: "Minha edição",
+      body_json: { type: "doc" }, body_text: "Texto revisado por mim" };
+    const accepted = await app.inject({ method: "POST", url: `/studio/suggestions/${suggestion.id}/accept`, headers: ownerA,
+      payload: { proposal } });
+    const repeated = await app.inject({ method: "POST", url: `/studio/suggestions/${suggestion.id}/accept`, headers: ownerA,
+      payload: { proposal: { ...proposal, body_text: "Outra coisa" } } });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().version.bodyText).toBe("Texto revisado por mim");
+    expect(repeated.json().version.id).toBe(accepted.json().version.id);
+    expect(repeated.json().version.bodyText).toBe("Texto revisado por mim");
+  });
+
+  it("uses bounded selected text instead of leaking the complete document to the narrative provider", async () => {
+    let providerInput = "";
+    const scopedProvider: AiProvider = {
+      async generateStructured() { return {}; },
+      async *streamText(request) {
+        providerInput = JSON.stringify(request.input);
+        yield { type: "done", text: "Resposta" };
+      },
+      async createEmbeddings() { return []; },
+      async transcribeAudio() { return { text: "", confidence: null, durationSeconds: null }; }
+    };
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument({ workspaceId: "workspace_a", ownerProfileId: "owner_a",
+      title: "Privado", bodyJson: {}, bodyText: "SEGREDO_FORA_DA_SELECAO", captureMode: "text",
+      inboxState: "pending_review", isFocused: false, status: "active" });
+    const response = await buildApp({ studioRepository: repository, aiProvider: scopedProvider }).inject({
+      method: "POST", url: "/studio/assistant/turns", headers: ownerA,
+      payload: { document_id: document.id, message: "Analise", selected_text_context: "TRECHO_ESCOLHIDO" }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(providerInput).toContain("TRECHO_ESCOLHIDO");
+    expect(providerInput).not.toContain("SEGREDO_FORA_DA_SELECAO");
+  });
 });
 
 function provider(structured: unknown = {}): AiProvider {

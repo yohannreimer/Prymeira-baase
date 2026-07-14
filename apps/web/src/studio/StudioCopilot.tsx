@@ -1,0 +1,300 @@
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  acceptStudioSuggestion,
+  dismissStudioSuggestion,
+  startStudioAssistantTurn,
+  StudioAssistantStreamError
+} from "./studio-api";
+import StudioCitations from "./StudioCitations";
+import type { StudioCitation, StudioDocument, StudioSuggestion } from "./studio.types";
+
+type Props = {
+  document: StudioDocument;
+  selectedText?: string;
+  onDocumentChange(document: StudioDocument): void;
+  onOpenInternalSource?(citation: StudioCitation): void;
+};
+
+type AssistantTurn = {
+  id: number;
+  prompt: string;
+  response: string;
+  citations: StudioCitation[];
+  suggestion: StudioSuggestion | null;
+  complete: boolean;
+};
+
+const WIDTH_KEY = "baase:studio:copilot-width";
+const MIN_WIDTH = 300;
+const MAX_WIDTH = 520;
+
+export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource }: Props) {
+  const [open, setOpen] = useState(true);
+  const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 900px)").matches ?? false);
+  const [width, setWidth] = useState(readWidth);
+  const [prompt, setPrompt] = useState("");
+  const [allowResearch, setAllowResearch] = useState(false);
+  const [requestSuggestion, setRequestSuggestion] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [turns, setTurns] = useState<AssistantTurn[]>([]);
+  const [streaming, setStreaming] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const openTriggerRef = useRef<HTMLButtonElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const generationRef = useRef(0);
+  const turnIdRef = useRef(0);
+  const activeRef = useRef<ReturnType<typeof startStudioAssistantTurn> | null>(null);
+  const retryRef = useRef<{ message: string; research: boolean; suggestion: boolean; selection: string } | null>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 900px)");
+    if (!media) return;
+    const update = () => setCompact(media.matches);
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  useEffect(() => () => {
+    generationRef.current += 1;
+    activeRef.current?.controller.abort();
+    window.document.body.style.overflow = "";
+  }, []);
+
+  useEffect(() => {
+    generationRef.current += 1;
+    activeRef.current?.controller.abort();
+    activeRef.current = null;
+    setConversationId(null);
+    setTurns([]);
+    setStreaming(false);
+    setStreamError(null);
+  }, [document.id]);
+
+  useEffect(() => {
+    if (!compact || !open) {
+      documentBodyUnlock();
+      return;
+    }
+    const previousOverflow = window.document.body.style.overflow;
+    window.document.body.style.overflow = "hidden";
+    queueMicrotask(() => composerRef.current?.focus());
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        queueMicrotask(() => openTriggerRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), textarea:not([disabled]), input:not([disabled]), a[href]"
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && window.document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && window.document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.document.addEventListener("keydown", keydown);
+    return () => {
+      window.document.removeEventListener("keydown", keydown);
+      window.document.body.style.overflow = previousOverflow;
+    };
+  }, [compact, open]);
+
+  async function send(request = {
+    message: prompt.trim(), research: allowResearch, suggestion: requestSuggestion && !selectedText.trim(),
+    selection: selectedText.trim().slice(0, 4_000)
+  }) {
+    if (!request.message || streaming) return;
+    setPrompt("");
+    setAllowResearch(false);
+    setStreamError(null);
+    retryRef.current = request;
+    const id = ++turnIdRef.current;
+    const generation = ++generationRef.current;
+    setTurns((current) => [...current, { id, prompt: request.message, response: "", citations: [], suggestion: null, complete: false }]);
+    setStreaming(true);
+    const isCurrent = () => generationRef.current === generation;
+    const stream = startStudioAssistantTurn({
+      conversationId,
+      documentId: document.id,
+      message: request.message,
+      allowExternalResearch: request.research,
+      requestTextSuggestion: request.suggestion,
+      selectedTextContext: request.selection || null
+    }, {
+      onRun(run) { if (isCurrent()) setConversationId(run.conversationId); },
+      onDelta(text) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, response: turn.response + text })); },
+      onCitation(citation) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, citations: [...turn.citations, citation] })); },
+      onSuggestion(suggestion) { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, suggestion })); },
+      onDone() { if (isCurrent()) patchTurn(id, (turn) => ({ ...turn, complete: true })); }
+    });
+    activeRef.current = stream;
+    try {
+      await stream.finished;
+    } catch (error) {
+      if (isCurrent() && !stream.controller.signal.aborted) {
+        setStreamError(error instanceof StudioAssistantStreamError && error.code === "STUDIO_ASSISTANT_INCOMPLETE"
+          ? "A resposta foi interrompida antes de terminar. Você pode tentar novamente."
+          : "O copiloto não conseguiu concluir esta resposta. Seu documento continua salvo.");
+      }
+    } finally {
+      if (isCurrent()) { setStreaming(false); activeRef.current = null; }
+    }
+  }
+
+  function patchTurn(id: number, update: (turn: AssistantTurn) => AssistantTurn) {
+    setTurns((current) => current.map((turn) => turn.id === id ? update(turn) : turn));
+  }
+
+  function cancel() {
+    generationRef.current += 1;
+    activeRef.current?.controller.abort();
+    activeRef.current = null;
+    setStreaming(false);
+  }
+
+  function beginResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (compact) return;
+    const startX = event.clientX;
+    const startWidth = width;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const move = (moveEvent: PointerEvent) => setWidth(clampWidth(startWidth + startX - moveEvent.clientX));
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      setWidth((current) => { persistWidth(current); return current; });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+  }
+
+  if (!open) return <button ref={openTriggerRef} className="studio-copilot-open" type="button" onClick={() => setOpen(true)}>
+    <i className="ph-light ph-sparkle" aria-hidden="true" /> Pensar com a IA
+  </button>;
+
+  return <>
+    {compact ? <button className="studio-copilot__backdrop" type="button" aria-label="Fechar copiloto" onClick={() => setOpen(false)} /> : null}
+    <aside
+      ref={panelRef}
+      className="studio-copilot"
+      style={compact ? undefined : { width }}
+      role={compact ? "dialog" : "complementary"}
+      aria-modal={compact ? "true" : undefined}
+      aria-label="Copiloto do Estúdio"
+    >
+      {!compact ? <button className="studio-copilot__resize" type="button" aria-label="Redimensionar copiloto" onPointerDown={beginResize} /> : null}
+      <header className="studio-copilot__header">
+        <div><p className="mono">Ao seu lado</p><h2>Copiloto</h2></div>
+        <button type="button" aria-label="Recolher copiloto" onClick={() => {
+          setOpen(false);
+          if (compact) queueMicrotask(() => openTriggerRef.current?.focus());
+        }}><i className="ph-light ph-sidebar-simple" aria-hidden="true" /></button>
+      </header>
+
+      <div className="studio-copilot__conversation" aria-live="polite">
+        {!turns.length ? <div className="studio-copilot__welcome">
+          <p>Use este espaço para questionar, organizar ou confrontar o que você está escrevendo.</p>
+          <span>A IA propõe. Você decide o que entra.</span>
+        </div> : null}
+        {turns.map((turn) => <article className="studio-copilot-turn" key={turn.id}>
+          <p className="studio-copilot-turn__prompt">{turn.prompt}</p>
+          <div className="studio-copilot-turn__answer">{turn.response || (!turn.complete ? <span className="studio-copilot__thinking">Pensando…</span> : null)}</div>
+          <StudioCitations citations={turn.citations} onOpenInternal={onOpenInternalSource} />
+          {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange} /> : null}
+        </article>)}
+      </div>
+
+      {streamError ? <div className="studio-copilot__error" role="alert" tabIndex={-1}>
+        <p>{streamError}</p><button type="button" onClick={() => retryRef.current && void send(retryRef.current)}>Tentar novamente</button>
+      </div> : null}
+
+      <form className="studio-copilot__composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+        {selectedText.trim() ? <p className="studio-copilot__selection"><i className="ph-light ph-quotes" aria-hidden="true" /> Usando apenas o trecho selecionado ({Math.min([...selectedText].length, 4_000)} caracteres)</p> : null}
+        <label htmlFor="studio-copilot-prompt">O que você quer entender melhor?</label>
+        <textarea ref={composerRef} id="studio-copilot-prompt" rows={3} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} disabled={streaming} />
+        <div className="studio-copilot__options">
+          <label><input type="checkbox" checked={allowResearch} onChange={(event) => setAllowResearch(event.currentTarget.checked)} /> Pesquisar na internet nesta pergunta</label>
+          <label><input type="checkbox" disabled={Boolean(selectedText.trim())} checked={requestSuggestion && !selectedText.trim()} onChange={(event) => setRequestSuggestion(event.currentTarget.checked)} /> {selectedText.trim() ? "Seleção ativa: proposta de documento indisponível" : "Criar proposta revisável"}</label>
+        </div>
+        <div className="studio-copilot__actions">
+          {streaming ? <button type="button" onClick={cancel}>Parar resposta</button> : null}
+          <button className="primary" type="submit" disabled={!prompt.trim() || streaming}>Enviar</button>
+        </div>
+      </form>
+    </aside>
+  </>;
+}
+
+function SuggestionCard({ suggestion, onDocumentChange }: {
+  suggestion: StudioSuggestion;
+  onDocumentChange(document: StudioDocument): void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(suggestion.payload.proposal.title ?? "");
+  const [body, setBody] = useState(suggestion.payload.proposal.bodyText);
+  const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error">("pending");
+  const errorRef = useRef<HTMLParagraphElement>(null);
+
+  async function accept() {
+    if (state !== "pending" && state !== "error") return;
+    setState("accepting");
+    try {
+      const edited = title !== (suggestion.payload.proposal.title ?? "") || body !== suggestion.payload.proposal.bodyText;
+      const document = await acceptStudioSuggestion(suggestion.id, edited ? {
+        ...suggestion.payload.proposal,
+        title: title.trim() || null,
+        bodyText: body,
+        bodyJson: plainTextDocument(body)
+      } : suggestion.payload.proposal);
+      onDocumentChange(document);
+      setState("accepted");
+    } catch {
+      setState("error");
+      queueMicrotask(() => errorRef.current?.focus());
+    }
+  }
+
+  async function dismiss() {
+    if (state !== "pending" && state !== "error") return;
+    setState("dismissing");
+    try { await dismissStudioSuggestion(suggestion.id); setState("dismissed"); }
+    catch { setState("error"); queueMicrotask(() => errorRef.current?.focus()); }
+  }
+
+  if (state === "dismissed") return <p className="studio-suggestion__decision">Proposta dispensada.</p>;
+  return <section className="studio-suggestion" aria-label="Proposta revisável da IA">
+    <header><p className="mono">Proposta, não alteração</p><button type="button" disabled={state !== "pending" && state !== "error"} onClick={() => setEditing((value) => !value)}>{editing ? "Ver prévia" : "Editar"}</button></header>
+    <div className="studio-suggestion__reasoning">
+      <section><h4>Fatos</h4>{suggestion.payload.facts.length ? suggestion.payload.facts.map((item, index) => <p key={index}>{item.statement}</p>) : <p>Nenhum fato confirmado.</p>}</section>
+      <section><h4>Inferências</h4>{suggestion.payload.inferences.length ? suggestion.payload.inferences.map((item, index) => <p key={index}>{item.statement}<small>{item.basis} · confiança {item.confidence}</small></p>) : <p>Nenhuma inferência.</p>}</section>
+      <section><h4>Lacunas</h4>{suggestion.payload.gaps.length ? suggestion.payload.gaps.map((item, index) => <p key={index}>{item.question}<small>{item.reason}</small></p>) : <p>Nenhuma lacuna identificada.</p>}</section>
+    </div>
+    {editing ? <div className="studio-suggestion__edit">
+      <label>Título<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} /></label>
+      <label>Texto<textarea rows={8} value={body} onChange={(event) => setBody(event.currentTarget.value)} /></label>
+    </div> : <div className="studio-suggestion__preview"><h4>{title || "Sem título"}</h4><p>{body}</p></div>}
+    <StudioCitations citations={suggestion.payload.citations} />
+    {state === "error" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta não foi aplicada. O texto original continua intacto.</p> : null}
+    <footer>
+      <button type="button" disabled={["accepting", "dismissing", "accepted"].includes(state)} onClick={() => void dismiss()}>{state === "dismissing" ? "Dispensando…" : "Dispensar"}</button>
+      <button className="primary" type="button" disabled={["accepting", "dismissing", "accepted"].includes(state)} onClick={() => void accept()}>{state === "accepted" ? "Aplicada em nova versão" : state === "accepting" ? "Aplicando…" : "Aceitar como nova versão"}</button>
+    </footer>
+  </section>;
+}
+
+function plainTextDocument(text: string): Record<string, unknown> {
+  return { type: "doc", content: text.split(/\n\n+/u).map((paragraph) => ({
+    type: "paragraph",
+    content: paragraph ? [{ type: "text", text: paragraph }] : []
+  })) };
+}
+
+function readWidth() {
+  try { return clampWidth(Number(window.localStorage.getItem(WIDTH_KEY)) || 380); }
+  catch { return 380; }
+}
+function persistWidth(width: number) { try { window.localStorage.setItem(WIDTH_KEY, String(clampWidth(width))); } catch { /* optional preference */ } }
+function clampWidth(width: number) { return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(width))); }
+function documentBodyUnlock() { /* compact cleanup is owned by the effect cleanup */ }

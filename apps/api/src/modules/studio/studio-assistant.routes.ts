@@ -22,10 +22,19 @@ const turnSchema = z.object({
   message: z.string().trim().min(1).max(20_000),
   allow_external_research: z.boolean().optional().default(false),
   request_text_suggestion: z.boolean().optional().default(false),
+  selected_text_context: z.string().trim().min(1).max(4_000).nullable().optional().default(null),
   operational_context: contextSchema.nullable().optional().default(null)
 }).strict();
 const suggestionParamsSchema = z.object({ suggestionId: routeId }).strict();
 const emptySchema = z.object({}).strict();
+const suggestionProposalSchema = z.object({
+  document_id: routeId,
+  expected_revision: z.number().int().min(1),
+  title: z.string().max(500).nullable(),
+  body_json: z.record(z.string(), z.unknown()),
+  body_text: z.string().max(200_000)
+}).strict();
+const acceptSuggestionSchema = z.object({ proposal: suggestionProposalSchema.optional() }).strict();
 
 function requireStudioScope(request: FastifyRequest): StudioOwnerScope {
   const context = readRequestContext(request);
@@ -53,6 +62,7 @@ export async function registerStudioAssistantRoutes(app: FastifyInstance, servic
         message: body.message,
         allowExternalResearch: body.allow_external_research,
         requestTextSuggestion: body.request_text_suggestion,
+        selectedTextContext: body.selected_text_context,
         context: body.operational_context ? {
           from: body.operational_context.from,
           to: body.operational_context.to,
@@ -83,9 +93,9 @@ export async function registerStudioAssistantRoutes(app: FastifyInstance, servic
     const scope = requireStudioScope(request);
     const params = suggestionParamsSchema.parse(request.params);
     emptySchema.parse(request.query);
-    if (request.body !== undefined) emptySchema.parse(request.body);
+    const body = acceptSuggestionSchema.parse(request.body ?? {});
     try {
-      return await service.acceptSuggestion(scope, params.suggestionId);
+      return await service.acceptSuggestion(scope, params.suggestionId, body.proposal);
     } catch (error) {
       throw assistantRouteError(error);
     }
@@ -163,7 +173,8 @@ function assistantRouteError(error: unknown) {
   if (["STUDIO_DOCUMENT_STALE", "STUDIO_SUGGESTION_ALREADY_DECIDED", "STUDIO_CONVERSATION_DOCUMENT_MISMATCH"].includes(error.message)) {
     return new ApiError(409, error.message, "O conteúdo mudou durante a operação. Atualize e tente novamente.");
   }
-  if (["STUDIO_MESSAGE_REQUIRED", "STUDIO_MESSAGE_TOO_LONG", "STUDIO_SUGGESTION_DOCUMENT_REQUIRED"].includes(error.message)) {
+  if (["STUDIO_MESSAGE_REQUIRED", "STUDIO_MESSAGE_TOO_LONG", "STUDIO_SUGGESTION_DOCUMENT_REQUIRED",
+    "STUDIO_SELECTED_TEXT_SUGGESTION_UNSUPPORTED"].includes(error.message)) {
     return new ApiError(400, error.message, "Dados inválidos para o copiloto do Estúdio.");
   }
   if (error.message === "STUDIO_ACTOR_SCOPE_MISMATCH") return forbiddenError();

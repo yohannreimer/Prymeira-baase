@@ -23,7 +23,10 @@ import type {
   StudioDocumentVersion,
   StudioHome,
   StudioNextRitual,
-  StudioSearchResult
+  StudioSearchResult,
+  StudioCitation,
+  StudioSuggestion,
+  StudioRelatedThought
 } from "./studio.types";
 
 export type StudioFetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -480,4 +483,285 @@ export async function listStudioDocumentVersions(
     fetcher
   );
   return response.versions.map(mapStudioDocumentVersion);
+}
+
+type RawStudioCitation = {
+  source_type?: StudioCitation["sourceType"];
+  sourceType?: StudioCitation["sourceType"];
+  source_id?: string | null;
+  sourceId?: string | null;
+  url: string | null;
+  label: string;
+  excerpt: string;
+  observed_at?: string;
+  observedAt?: string;
+  period_from?: string | null;
+  periodFrom?: string | null;
+  period_to?: string | null;
+  periodTo?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+type RawStudioSuggestion = {
+  id: string;
+  document_id?: string | null;
+  documentId?: string | null;
+  conversation_id?: string | null;
+  conversationId?: string | null;
+  ai_run_id?: string;
+  aiRunId?: string;
+  kind: "text";
+  payload_json?: Record<string, unknown>;
+  payloadJson?: Record<string, unknown>;
+  status: StudioSuggestion["status"];
+  accepted_version_id?: string | null;
+  acceptedVersionId?: string | null;
+  created_at?: string;
+  createdAt?: string;
+  decided_at?: string | null;
+  decidedAt?: string | null;
+};
+
+export type StudioAssistantTurnInput = {
+  conversationId?: string | null;
+  documentId?: string | null;
+  message: string;
+  allowExternalResearch?: boolean;
+  requestTextSuggestion?: boolean;
+  selectedTextContext?: string | null;
+};
+
+export type StudioAssistantStreamHandlers = {
+  onRun?(run: { aiRunId: string; conversationId: string }): void;
+  onDelta?(text: string): void;
+  onCitation?(citation: StudioCitation): void;
+  onSuggestion?(suggestion: StudioSuggestion): void;
+  onDone?(messageId: string): void;
+};
+
+export class StudioAssistantStreamError extends Error {
+  constructor(public readonly code: string, public readonly retryable: boolean) {
+    super(code);
+    this.name = "StudioAssistantStreamError";
+  }
+}
+
+export function startStudioAssistantTurn(
+  input: StudioAssistantTurnInput,
+  handlers: StudioAssistantStreamHandlers,
+  fetcher: StudioFetcher = fetch
+) {
+  const controller = new AbortController();
+  const finished = runStudioAssistantTurn(input, handlers, controller.signal, fetcher);
+  return { controller, finished };
+}
+
+async function runStudioAssistantTurn(
+  input: StudioAssistantTurnInput,
+  handlers: StudioAssistantStreamHandlers,
+  signal: AbortSignal,
+  fetcher: StudioFetcher
+) {
+  const headers = new Headers(createBaaseHeaders("dono"));
+  headers.set("content-type", "application/json");
+  headers.set("accept", "text/event-stream");
+  const response = await fetcher("/api/studio/assistant/turns", await withConfiguredAuth({
+    method: "POST",
+    headers,
+    signal,
+    body: JSON.stringify({
+      conversation_id: input.conversationId ?? null,
+      document_id: input.documentId ?? null,
+      message: input.message,
+      allow_external_research: input.allowExternalResearch ?? false,
+      request_text_suggestion: input.requestTextSuggestion ?? false,
+      selected_text_context: input.selectedTextContext?.slice(0, 4_000) || null
+    })
+  }));
+  if (!response.ok) {
+    const payload = asRecord(parseJson(await response.text())) as StudioApiErrorPayload;
+    throw new StudioApiError(
+      response.status,
+      typeof payload.error?.code === "string" ? payload.error.code : "STUDIO_ASSISTANT_FAILED",
+      typeof payload.error?.message === "string" ? payload.error.message : "O copiloto está indisponível agora.",
+      asRecord(payload.error?.details)
+    );
+  }
+  await parseStudioSseStream(response, handlers, signal);
+}
+
+export async function parseStudioSseStream(
+  response: Response,
+  handlers: StudioAssistantStreamHandlers,
+  signal?: AbortSignal
+) {
+  if (!response.body) throw new StudioAssistantStreamError("STUDIO_ASSISTANT_EMPTY_STREAM", true);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let dataLines: string[] = [];
+  let completed = false;
+
+  const dispatch = () => {
+    if (dataLines.length === 0) {
+      eventName = "message";
+      return;
+    }
+    const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+    dataLines = [];
+    const currentEvent = eventName;
+    eventName = "message";
+    if (currentEvent === "run") handlers.onRun?.({
+      aiRunId: String(data.ai_run_id ?? data.aiRunId ?? ""),
+      conversationId: String(data.conversation_id ?? data.conversationId ?? "")
+    });
+    else if (currentEvent === "delta") handlers.onDelta?.(String(data.text ?? ""));
+    else if (currentEvent === "citation") handlers.onCitation?.(mapStudioCitation(data as RawStudioCitation));
+    else if (currentEvent === "suggestion") handlers.onSuggestion?.(mapStudioSuggestion(data as RawStudioSuggestion));
+    else if (currentEvent === "done") {
+      completed = true;
+      handlers.onDone?.(String(data.message_id ?? data.messageId ?? ""));
+    } else if (currentEvent === "error") {
+      throw new StudioAssistantStreamError(String(data.code ?? "STUDIO_ASSISTANT_FAILED"), data.retryable !== false);
+    }
+  };
+
+  const consume = (flush = false) => {
+    let boundary = buffer.indexOf("\n");
+    while (boundary >= 0) {
+      const rawLine = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 1);
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (!line) dispatch();
+      else if (!line.startsWith(":")) {
+        const separator = line.indexOf(":");
+        const field = separator < 0 ? line : line.slice(0, separator);
+        let value = separator < 0 ? "" : line.slice(separator + 1);
+        if (value.startsWith(" ")) value = value.slice(1);
+        if (field === "event") eventName = value;
+        else if (field === "data") dataLines.push(value);
+      }
+      boundary = buffer.indexOf("\n");
+    }
+    if (flush && buffer) {
+      buffer += "\n";
+      consume(false);
+    }
+  };
+
+  try {
+    while (true) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      consume();
+    }
+    buffer += decoder.decode();
+    consume(true);
+    if (dataLines.length) dispatch();
+    if (!completed) throw new StudioAssistantStreamError("STUDIO_ASSISTANT_INCOMPLETE", true);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export function mapStudioCitation(raw: RawStudioCitation): StudioCitation {
+  return {
+    sourceType: required(raw.source_type, raw.sourceType, "source_type"),
+    sourceId: raw.source_id !== undefined ? raw.source_id : raw.sourceId ?? null,
+    url: raw.url,
+    label: raw.label,
+    excerpt: raw.excerpt,
+    observedAt: required(raw.observed_at, raw.observedAt, "observed_at"),
+    periodFrom: raw.period_from !== undefined ? raw.period_from : raw.periodFrom ?? null,
+    periodTo: raw.period_to !== undefined ? raw.period_to : raw.periodTo ?? null,
+    metadata: raw.metadata ?? {}
+  };
+}
+
+export function mapStudioSuggestion(raw: RawStudioSuggestion): StudioSuggestion {
+  const payload = asRecord(raw.payload_json ?? raw.payloadJson);
+  const proposal = asRecord(payload.proposal);
+  return {
+    id: raw.id,
+    documentId: raw.document_id !== undefined ? raw.document_id : raw.documentId ?? null,
+    conversationId: raw.conversation_id !== undefined ? raw.conversation_id : raw.conversationId ?? null,
+    aiRunId: required(raw.ai_run_id, raw.aiRunId, "ai_run_id"),
+    kind: raw.kind,
+    payload: {
+      facts: Array.isArray(payload.facts) ? payload.facts.map((item) => {
+        const fact = asRecord(item);
+        return { statement: String(fact.statement ?? ""), citationIndexes: Array.isArray(fact.citation_indexes) ? fact.citation_indexes.map(Number) : [] };
+      }) : [],
+      inferences: Array.isArray(payload.inferences) ? payload.inferences.map((item) => {
+        const inference = asRecord(item);
+        return { statement: String(inference.statement ?? ""), basis: String(inference.basis ?? ""), confidence: String(inference.confidence ?? "medium") as "low" | "medium" | "high" };
+      }) : [],
+      gaps: Array.isArray(payload.gaps) ? payload.gaps.map((item) => {
+        const gap = asRecord(item);
+        return { question: String(gap.question ?? ""), reason: String(gap.reason ?? "") };
+      }) : [],
+      citations: Array.isArray(payload.citations) ? payload.citations.map((item) => mapStudioCitation(asRecord(item) as RawStudioCitation)) : [],
+      proposal: {
+        documentId: String(proposal.document_id ?? proposal.documentId ?? ""),
+        expectedRevision: Number(proposal.expected_revision ?? proposal.expectedRevision ?? 0),
+        title: typeof proposal.title === "string" ? proposal.title : null,
+        bodyJson: asRecord(proposal.body_json ?? proposal.bodyJson),
+        bodyText: String(proposal.body_text ?? proposal.bodyText ?? "")
+      }
+    },
+    status: raw.status,
+    acceptedVersionId: raw.accepted_version_id !== undefined ? raw.accepted_version_id : raw.acceptedVersionId ?? null,
+    createdAt: required(raw.created_at, raw.createdAt, "created_at"),
+    decidedAt: raw.decided_at !== undefined ? raw.decided_at : raw.decidedAt ?? null
+  };
+}
+
+export async function acceptStudioSuggestion(
+  suggestionId: string,
+  proposal?: StudioSuggestion["payload"]["proposal"],
+  signal?: AbortSignal
+): Promise<StudioDocument> {
+  const response = await studioRequest<{ version: RawStudioDocumentVersion; suggestion: RawStudioSuggestion }>(
+    `/suggestions/${encodeURIComponent(suggestionId)}/accept`,
+    { method: "POST", body: JSON.stringify({ proposal: proposal ? {
+      document_id: proposal.documentId,
+      expected_revision: proposal.expectedRevision,
+      title: proposal.title,
+      body_json: proposal.bodyJson,
+      body_text: proposal.bodyText
+    } : undefined }), signal }
+  );
+  const version = mapStudioDocumentVersion(response.version);
+  const suggestion = mapStudioSuggestion(response.suggestion);
+  const document = await getStudioDocument(suggestion.documentId!, fetch, signal);
+  if (document.revision !== version.versionNumber) return document;
+  return document;
+}
+
+export async function dismissStudioSuggestion(suggestionId: string, signal?: AbortSignal): Promise<void> {
+  await studioRequest(`/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, {
+    method: "POST", body: JSON.stringify({}), signal
+  });
+}
+
+export async function getStudioRelatedThoughts(documentId: string, signal?: AbortSignal): Promise<StudioRelatedThought[]> {
+  const response = await studioRequest<{ related: Array<{ document: RawStudioDocument; excerpt: string; explanation: string; score: number }> }>(
+    `/documents/${encodeURIComponent(documentId)}/related?limit=6`, { signal }
+  );
+  return response.related.map((item) => ({ ...item, document: mapStudioDocument(item.document) }));
+}
+
+export async function acceptStudioRelation(
+  sourceDocumentId: string,
+  targetDocumentId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  await studioRequest(`/documents/${encodeURIComponent(sourceDocumentId)}/relations`, {
+    method: "POST",
+    body: JSON.stringify({ target_document_id: targetDocumentId, relation_type: "related_to" }),
+    signal
+  });
 }

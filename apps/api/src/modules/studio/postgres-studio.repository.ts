@@ -1787,7 +1787,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows[0] ? suggestionFromRow(result.rows[0]) : null;
     },
 
-    async acceptSuggestion(scope, suggestionId, actorProfileId) {
+    async acceptSuggestion(scope, suggestionId, actorProfileId, proposalOverride) {
       if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
       return withOperationalTransaction(db, async (client) => {
         const result = await client.query<StudioSuggestionRow>(
@@ -1807,8 +1807,11 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           return { suggestion, version: versionFromRow(version.rows[0]) };
         }
         if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
-        const payload = suggestion.payloadJson.proposal;
+        const payload = proposalOverride ?? suggestion.payloadJson.proposal;
         if (!suggestion.documentId || payload.document_id !== suggestion.documentId) {
+          throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+        }
+        if (payload.expected_revision !== suggestion.payloadJson.proposal.expected_revision) {
           throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
         }
         const documentResult = await client.query<StudioDocumentRow>(

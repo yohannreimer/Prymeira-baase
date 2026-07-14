@@ -1322,7 +1322,7 @@ export function createInMemoryStudioRepository(
       return suggestion ? cloneSuggestion(suggestion) : null;
     },
 
-    async acceptSuggestion(scope, suggestionId, actorProfileId) {
+    async acceptSuggestion(scope, suggestionId, actorProfileId, proposalOverride) {
       if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
       const suggestion = suggestions.find((item) => item.workspaceId === scope.workspaceId
         && item.ownerProfileId === scope.ownerProfileId && item.id === suggestionId);
@@ -1334,7 +1334,11 @@ export function createInMemoryStudioRepository(
         return { suggestion: cloneSuggestion(suggestion), version: cloneVersion(version) };
       }
       if (suggestion.status !== "pending") throw new Error("STUDIO_SUGGESTION_ALREADY_DECIDED");
-      const payload = suggestion.payloadJson.proposal;
+      const payload = proposalOverride ?? suggestion.payloadJson.proposal;
+      if (payload.document_id !== suggestion.documentId
+        || payload.expected_revision !== suggestion.payloadJson.proposal.expected_revision) {
+        throw new Error("STUDIO_SUGGESTION_DOCUMENT_MISMATCH");
+      }
       const documentIndex = documents.findIndex((item) => item.workspaceId === scope.workspaceId
         && item.ownerProfileId === scope.ownerProfileId && item.id === payload.document_id);
       if (documentIndex < 0) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");

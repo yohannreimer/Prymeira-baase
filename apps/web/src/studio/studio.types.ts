@@ -95,6 +95,52 @@ export type StudioAsset = {
   updatedAt: string;
 };
 
+export type StudioCitation = {
+  sourceType: "dashboard" | "task" | "routine" | "process" | "training" | "announcement" | "people" | "studio_document" | "external_url";
+  sourceId: string | null;
+  url: string | null;
+  label: string;
+  excerpt: string;
+  observedAt: string;
+  periodFrom: string | null;
+  periodTo: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type StudioSuggestionProposal = {
+  documentId: string;
+  expectedRevision: number;
+  title: string | null;
+  bodyJson: Record<string, unknown>;
+  bodyText: string;
+};
+
+export type StudioSuggestion = {
+  id: string;
+  documentId: string | null;
+  conversationId: string | null;
+  aiRunId: string;
+  kind: "text";
+  payload: {
+    facts: Array<{ statement: string; citationIndexes: number[] }>;
+    inferences: Array<{ statement: string; basis: string; confidence: "low" | "medium" | "high" }>;
+    gaps: Array<{ question: string; reason: string }>;
+    citations: StudioCitation[];
+    proposal: StudioSuggestionProposal;
+  };
+  status: "pending" | "accepted" | "dismissed" | "expired";
+  acceptedVersionId: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+export type StudioRelatedThought = {
+  document: StudioDocument;
+  excerpt: string;
+  explanation: string;
+  score: number;
+};
+
 /** Wire contracts stay separate so API casing never leaks into the view model. */
 export type RawStudioDocument = {
   id: string;

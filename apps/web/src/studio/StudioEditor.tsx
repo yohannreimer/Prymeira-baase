@@ -6,15 +6,19 @@ import {
   listStudioDocumentVersions,
   updateStudioDocument
 } from "./studio-api";
-import type { StudioDocument, StudioDocumentVersion } from "./studio.types";
+import type { StudioCitation, StudioDocument, StudioDocumentVersion } from "./studio.types";
 import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-editor-content";
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
+import StudioCopilot from "./StudioCopilot";
+import RelatedThoughts from "./RelatedThoughts";
 
 type StudioEditorProps = {
   document: StudioDocument;
   onDocumentChange(document: StudioDocument): void;
   focusHeadingOnMount?: boolean;
   debounceMs?: number;
+  onOpenDocument?(documentId: string): void;
+  onOpenInternalSource?(citation: StudioCitation): void;
 };
 
 const saveLabels: Record<AutosaveState, string> = {
@@ -50,7 +54,9 @@ function StudioEditorSession({
   document: sourceDocument,
   onDocumentChange,
   focusHeadingOnMount = false,
-  debounceMs
+  debounceMs,
+  onOpenDocument,
+  onOpenInternalSource
 }: StudioEditorProps) {
   const save = useCallback((draft: StudioDocumentDraft, expectedRevision: number, signal?: AbortSignal) => (
     updateStudioDocument(sourceDocument.id, {
@@ -85,6 +91,7 @@ function StudioEditorSession({
   const [versionsState, setVersionsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [versionsReloadKey, setVersionsReloadKey] = useState(0);
   const [restoring, setRestoring] = useState(false);
+  const [selectedText, setSelectedText] = useState("");
 
   titleRef.current = title;
   sourceDocumentIdRef.current = sourceDocument.id;
@@ -107,6 +114,10 @@ function StudioEditorSession({
         bodyJson: currentEditor.getJSON(),
         bodyText: currentEditor.getText(studioEditorTextOptions)
       });
+    },
+    onSelectionUpdate({ editor: currentEditor }) {
+      const { from, to } = currentEditor.state.selection;
+      setSelectedText(from === to ? "" : currentEditor.state.doc.textBetween(from, Math.min(to, from + 4_000), "\n"));
     }
   });
 
@@ -366,6 +377,7 @@ function StudioEditorSession({
   }
 
   return (
+    <div className="studio-writing-layout">
     <article className="studio-editor" aria-labelledby="studio-document-heading">
       <h2
         className="sr-only"
@@ -533,5 +545,18 @@ function StudioEditorSession({
         </aside>
       ) : null}
     </article>
+    <aside className="studio-editor__context" aria-label="Conexões deste documento">
+      <RelatedThoughts documentId={sourceDocument.id} onOpenDocument={onOpenDocument} />
+    </aside>
+    <StudioCopilot
+      document={autosave.document}
+      selectedText={selectedText}
+      onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
+      onOpenInternalSource={(citation) => {
+        if (citation.sourceType === "studio_document" && citation.sourceId) onOpenDocument?.(citation.sourceId);
+        else onOpenInternalSource?.(citation);
+      }}
+    />
+    </div>
   );
 }

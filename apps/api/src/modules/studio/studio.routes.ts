@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { canAccessOwnerStudio } from "@prymeira/baase-shared";
+import { z } from "zod";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import {
@@ -15,11 +16,24 @@ import {
   studioSearchQuerySchema
 } from "./studio.schemas";
 import type { StudioOwnerScope, StudioService } from "./studio.types";
+import type { StudioMemoryIndex } from "./studio-memory";
+
+const studioRelatedQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(12).default(6) }).strict();
+const studioRelationBodySchema = z.object({
+  target_document_id: z.string().trim().min(1).max(200),
+  relation_type: z.enum(["related_to", "supports", "contradicts", "originated", "informs", "supersedes"]).default("related_to")
+}).strict();
 
 function requireStudioScope(request: FastifyRequest): StudioOwnerScope {
   const context = readRequestContext(request);
   if (!canAccessOwnerStudio(context.role)) throw forbiddenError();
   return { workspaceId: context.workspaceId, ownerProfileId: context.profileId };
+}
+
+function relatedExplanation(vectorScore: number, lexicalScore: number) {
+  if (lexicalScore >= 0.45) return "Compartilha termos e temas centrais com este documento.";
+  if (vectorScore >= 0.7) return "Explora uma ideia próxima, mesmo usando palavras diferentes.";
+  return "Traz um contexto que pode ampliar este raciocínio.";
 }
 
 function studioRouteError(error: unknown) {
@@ -82,13 +96,51 @@ function readDocumentCaptureKey(request: FastifyRequest): string | null {
   return studioAssetIdempotencyKeySchema.parse(raw);
 }
 
-export async function registerStudioRoutes(app: FastifyInstance, service: StudioService) {
+export async function registerStudioRoutes(app: FastifyInstance, service: StudioService, memoryIndex?: StudioMemoryIndex) {
   app.get("/studio/home", async (request) => {
     const scope = requireStudioScope(request);
     readNoRouteParams(request);
     readNoQuery(request);
     readNoBody(request);
     return { home: await runStudioOperation(() => service.readHome(scope)) };
+  });
+
+  app.get("/studio/documents/:documentId/related", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    const query = studioRelatedQuerySchema.parse(request.query);
+    readNoBody(request);
+    const source = await runStudioOperation(() => service.getDocument(scope, params.documentId));
+    if (!memoryIndex || !source.bodyText.trim()) return { related: [] };
+    const matches = await memoryIndex.findRelated(scope, {
+      documentId: source.id,
+      query: [source.title, source.bodyText].filter(Boolean).join("\n\n").slice(0, 8_000),
+      limit: query.limit
+    });
+    const related = await Promise.all(matches.map(async (match) => {
+      const document = await runStudioOperation(() => service.getDocument(scope, match.documentId));
+      return {
+        document,
+        excerpt: match.excerpt,
+        score: match.score,
+        explanation: relatedExplanation(match.vectorScore, match.lexicalScore)
+      };
+    }));
+    return { related };
+  });
+
+  app.post("/studio/documents/:documentId/relations", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    const body = studioRelationBodySchema.parse(request.body);
+    readNoQuery(request);
+    return runStudioOperation(() => service.relateDocuments(
+      scope,
+      scope.ownerProfileId,
+      params.documentId,
+      body.target_document_id,
+      body.relation_type
+    ));
   });
 
   app.get("/studio/documents", async (request) => {
