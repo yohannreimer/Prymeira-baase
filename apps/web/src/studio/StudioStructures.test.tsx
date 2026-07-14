@@ -257,6 +257,64 @@ describe("StudioStructures", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/já possui uma estrutura deste tipo/i);
   });
 
+  it("recovers an active duplicate from another tab and continues in edit mode", async () => {
+    const user = userEvent.setup();
+    let getCount = 0;
+    const existingDecision = {
+      ...baseStructure,
+      id: "decision_from_other_tab",
+      kind: "decision" as const,
+      horizonAt: null,
+      metricJson: null,
+      revision: 3,
+      propertiesJson: { decision: "Decisão criada na outra aba", context: "Contexto preservado" }
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) {
+        getCount += 1;
+        return response({ structures: getCount === 1 ? [] : [existingDecision], nextCursor: null });
+      }
+      if (url.endsWith("/api/studio/documents/document_1/structures") && init?.method === "POST") {
+        return response({ error: { code: "STUDIO_STRUCTURE_ACTIVE_DUPLICATE", message: "Já existe." } }, 409);
+      }
+      if (url.endsWith("/api/studio/structures/decision_from_other_tab") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return response({ structure: {
+          ...existingDecision,
+          revision: 4,
+          propertiesJson: payload.properties_json
+        } });
+      }
+      return response({}, 404);
+    });
+    render(<StudioStructures documentId="document_1" documentTitle="Escolha" />);
+    const trigger = await screen.findByRole("button", { name: /estruturar este pensamento/i });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Minha decisão concorrente");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/já possui uma estrutura deste tipo/i);
+
+    await user.click(screen.getByRole("button", { name: "Fechar detalhes estratégicos" }));
+    await user.click(trigger);
+    await waitFor(() => expect(
+      screen.getByRole("textbox", { name: "Decisão tomada" })
+    ).toHaveValue("Decisão criada na outra aba"));
+    const decision = screen.getByRole("textbox", { name: "Decisão tomada" });
+    expect(screen.getByRole("textbox", { name: "Contexto original" })).toHaveValue("Contexto preservado");
+    expect(screen.getByRole("button", { name: "Salvar decisão" })).toBeInTheDocument();
+
+    await user.type(decision, " revisada");
+    await user.click(screen.getByRole("button", { name: "Salvar decisão" }));
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => (
+      String(url).endsWith("/structures/decision_from_other_tab")
+      && init?.method === "PATCH"
+      && JSON.parse(String(init.body)).expected_revision === 3
+    ))).toBe(true));
+    expect(getCount).toBe(2);
+  });
+
   it("uses one document-scoped request even when the owner has ten thousand other structures", async () => {
     const otherStructures = Array.from({ length: 10_000 }, (_, index) => ({
       ...baseStructure,

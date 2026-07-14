@@ -119,7 +119,12 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
       setLoadState("ready");
     } catch (caught) {
       setError(structureErrorMessage(caught));
-      if (caught instanceof StudioApiError && caught.code === "STUDIO_STRUCTURE_CHANGED") setNeedsReload(true);
+      if (
+        caught instanceof StudioApiError
+        && (caught.code === "STUDIO_STRUCTURE_CHANGED" || caught.code === "STUDIO_STRUCTURE_ACTIVE_DUPLICATE")
+      ) {
+        setNeedsReload(true);
+      }
     } finally {
       setBusy(false);
     }
@@ -204,7 +209,7 @@ function structureErrorMessage(error: unknown) {
     return "Esta estrutura mudou em outra aba. Feche e abra os detalhes para carregar a versão mais recente.";
   }
   if (error instanceof StudioApiError && error.code === "STUDIO_STRUCTURE_ACTIVE_DUPLICATE") {
-    return "Este pensamento já possui uma estrutura deste tipo.";
+    return "Este pensamento já possui uma estrutura deste tipo, criada em outra aba. Feche e abra os detalhes para carregá-la.";
   }
   return "Não foi possível salvar a estrutura agora. O documento original não foi alterado.";
 }
