@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import { getStudioDocumentAssets } from "./studio-api";
 import type { StudioAsset, StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
+
+const StudioEditor = lazy(() => import("./StudioEditor"));
 
 type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collection" | "document";
 
@@ -32,25 +34,17 @@ const studioNavigation: StudioNavItem[] = [
 export default function StudioPage() {
   const [section, setSection] = useState<StudioSection>("home");
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
-  const [selectedCaptureOutcome, setSelectedCaptureOutcome] = useState<StudioCaptureOutcome | null>(null);
   const [selectedAssets, setSelectedAssets] = useState<StudioAsset[]>([]);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsError, setAssetsError] = useState(false);
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
-  const documentHeadingRef = useRef<HTMLHeadingElement>(null);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
   function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
     setSelectedDocument(document);
-    setSelectedCaptureOutcome(outcome ?? null);
     setSelectedAssets(outcome?.asset ? [outcome.asset] : []);
     setSection("document");
   }
-
-  useEffect(() => {
-    if (section !== "document" || !selectedDocument) return;
-    documentHeadingRef.current?.focus();
-  }, [section, selectedDocument?.id]);
 
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
@@ -94,49 +88,74 @@ export default function StudioPage() {
         </nav>
 
         <section className="studio-content" aria-label="Conteúdo da seção" aria-live="polite">
-          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : (
+          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : section === "document" && selectedDocument ? (
+            <>
+              <Suspense fallback={<StudioEditorSkeleton />}>
+                <StudioEditor
+                  document={selectedDocument}
+                  focusHeadingOnMount
+                  onDocumentChange={setSelectedDocument}
+                />
+              </Suspense>
+              <DocumentAssets
+                assets={selectedAssets}
+                loading={assetsLoading}
+                error={assetsError}
+                onRetry={() => setAssetsReloadKey((key) => key + 1)}
+              />
+            </>
+          ) : (
             <>
               <div className="studio-content__heading">
                 <p className="mono">{active.label}</p>
-                <h2
-                  className="serif"
-                  ref={section === "document" ? documentHeadingRef : undefined}
-                  tabIndex={section === "document" ? -1 : undefined}
-                >{section === "document" && selectedDocument
-                  ? selectedDocument.title || "Captura sem título"
-                  : active.title}</h2>
-                <p>{section === "document" && selectedDocument
-                  ? selectedAssets.length || selectedCaptureOutcome?.asset
-                    ? "O documento e o material original estão guardados. O estado abaixo acompanha o processamento real."
-                    : "Sua captura está guardada. O caderno completo será aberto aqui."
-                  : active.description}</p>
+                <h2 className="serif">{active.title}</h2>
+                <p>{active.description}</p>
               </div>
               <div className="studio-empty">
                 <i aria-hidden="true" className={`ph-light ${active.icon}`} />
-                <p>{section === "document" && selectedDocument
-                  ? selectedDocument.bodyText || active.instruction
-                  : active.instruction}</p>
+                <p>{active.instruction}</p>
               </div>
-              {section === "document" && selectedDocument ? (
-                <div className="studio-document-assets" aria-label="Materiais do documento">
-                  {selectedAssets.map((asset) => (
-                    <StudioAssetProcessingStatus key={asset.id} asset={asset} />
-                  ))}
-                  {assetsLoading && selectedAssets.length === 0 ? (
-                    <p className="studio-document-assets__status" role="status">Carregando materiais preservados…</p>
-                  ) : null}
-                  {assetsError ? (
-                    <div className="studio-document-assets__error" role="alert">
-                      <span>Não foi possível carregar os materiais preservados agora.</span>
-                      <button type="button" onClick={() => setAssetsReloadKey((key) => key + 1)}>Tentar novamente</button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
             </>
           )}
         </section>
       </div>
     </section>
+  );
+}
+
+function StudioEditorSkeleton() {
+  return (
+    <div className="studio-editor-skeleton" role="status" aria-label="Abrindo caderno">
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+    </div>
+  );
+}
+
+function DocumentAssets({
+  assets,
+  loading,
+  error,
+  onRetry
+}: {
+  assets: StudioAsset[];
+  loading: boolean;
+  error: boolean;
+  onRetry(): void;
+}) {
+  return (
+    <div className="studio-document-assets" aria-label="Materiais do documento">
+      {assets.map((asset) => <StudioAssetProcessingStatus key={asset.id} asset={asset} />)}
+      {loading && assets.length === 0 ? (
+        <p className="studio-document-assets__status" role="status">Carregando materiais preservados…</p>
+      ) : null}
+      {error ? (
+        <div className="studio-document-assets__error" role="alert">
+          <span>Não foi possível carregar os materiais preservados agora.</span>
+          <button type="button" onClick={onRetry}>Tentar novamente</button>
+        </div>
+      ) : null}
+    </div>
   );
 }

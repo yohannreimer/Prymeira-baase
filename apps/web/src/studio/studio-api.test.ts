@@ -15,7 +15,8 @@ import {
   listStudioDocuments,
   retryStudioAsset,
   searchStudioDocuments,
-  studioRequest
+  studioRequest,
+  updateStudioDocument
 } from "./studio-api";
 
 const rawDocument = {
@@ -206,6 +207,32 @@ describe("Studio API client", () => {
     expect(new Headers(linkInit?.headers).get("idempotency-key"))
       .toBe("22222222-2222-4222-8222-222222222222");
     expect(JSON.parse(String(linkInit?.body))).toEqual({ url: "https://example.com/plano" });
+  });
+
+  it("updates a document with optimistic revision and preserves cancellation", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async (_input: string, _init?: RequestInit) => (
+      jsonResponse({ document: { ...rawDocument, revision: 4, body_text: "Nova direção" } })
+    ));
+
+    await expect(updateStudioDocument("document / 1", {
+      expected_revision: 3,
+      title: "Plano revisado",
+      body_json: { type: "doc", content: [] },
+      body_text: "Nova direção"
+    }, controller.signal, fetcher)).resolves.toMatchObject({ revision: 4, bodyText: "Nova direção" });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document%20%2F%201",
+      expect.objectContaining({ method: "PATCH", signal: controller.signal })
+    );
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      expected_revision: 3,
+      title: "Plano revisado",
+      body_json: { type: "doc", content: [] },
+      body_text: "Nova direção"
+    });
   });
 
   it("loads every persisted asset for a document", async () => {

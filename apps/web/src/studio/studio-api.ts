@@ -318,8 +318,40 @@ export async function getStudioAssetDownload(
   };
 }
 
-export async function getStudioDocument(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioDocument> {
-  const response = await studioRequest<RawStudioDocumentResponse>(`/documents/${encodeURIComponent(documentId)}`, {}, fetcher);
+export async function getStudioDocument(
+  documentId: string,
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    { signal },
+    fetcher
+  );
+  return mapStudioDocument(response.document);
+}
+
+export type UpdateStudioDocumentInput = {
+  expected_revision: number;
+  title?: string | null;
+  body_json?: Record<string, unknown>;
+  body_text?: string;
+  capture_mode?: StudioCaptureMode;
+  inbox_state?: "pending_review" | "reviewed";
+  is_focused?: boolean;
+};
+
+export async function updateStudioDocument(
+  documentId: string,
+  input: UpdateStudioDocumentInput,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    { method: "PATCH", body: JSON.stringify(input), signal },
+    fetcher
+  );
   return mapStudioDocument(response.document);
 }
 
@@ -350,7 +382,15 @@ export async function searchStudioDocuments(query: string, limit = 20, fetcher: 
   return response.results.map(mapStudioSearchResult);
 }
 
-export async function listStudioDocumentVersions(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioDocumentVersion[]> {
-  const response = await studioRequest<RawStudioVersionsResponse>(`/documents/${encodeURIComponent(documentId)}/versions`, {}, fetcher);
+export async function listStudioDocumentVersions(
+  documentId: string,
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioDocumentVersion[]> {
+  const response = await studioRequest<RawStudioVersionsResponse>(
+    `/documents/${encodeURIComponent(documentId)}/versions`,
+    { signal },
+    fetcher
+  );
   return response.versions.map(mapStudioDocumentVersion);
 }
