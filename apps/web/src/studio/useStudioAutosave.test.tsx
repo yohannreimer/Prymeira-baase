@@ -29,7 +29,8 @@ describe("useStudioAutosave", () => {
       result.current.queueSave(secondDraft);
     });
     expect(result.current.state).toBe("dirty");
-    expect(JSON.parse(window.localStorage.getItem(studioDraftStorageKey(document.id))!)).toMatchObject(secondDraft);
+    expect(readEnvelope().draft).toEqual(secondDraft);
+    expect(readEnvelope()).toMatchObject({ version: 1, baseRevision: 4 });
 
     await act(async () => vi.advanceTimersByTimeAsync(699));
     expect(save).not.toHaveBeenCalled();
@@ -60,7 +61,7 @@ describe("useStudioAutosave", () => {
 
     expect(save).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenLastCalledWith(secondDraft, 5, expect.any(AbortSignal));
-    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+    expect(readEnvelope()).toMatchObject({ version: 1, baseRevision: 5, draft: secondDraft });
 
     await act(async () => second.resolve(saved(secondDraft, 6)));
     expect(result.current.document.revision).toBe(6);
@@ -116,7 +117,7 @@ describe("useStudioAutosave", () => {
     act(() => result.current.queueSave(secondDraft));
     await act(async () => first.resolve(saved(firstDraft, 5)));
 
-    expect(JSON.parse(window.localStorage.getItem(studioDraftStorageKey(document.id))!)).toMatchObject(secondDraft);
+    expect(readEnvelope()).toMatchObject({ version: 1, baseRevision: 5, draft: secondDraft });
     await act(async () => second.resolve(saved(secondDraft, 6)));
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
@@ -139,7 +140,7 @@ describe("useStudioAutosave", () => {
   });
 
   it("recovers and safely requeues a persisted draft after reload", async () => {
-    window.localStorage.setItem(studioDraftStorageKey(document.id), JSON.stringify(secondDraft));
+    storeEnvelope(secondDraft, 4);
     const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
 
     const { result } = renderHook(() => useStudioAutosave(document, save));
@@ -150,7 +151,139 @@ describe("useStudioAutosave", () => {
     expect(save).toHaveBeenCalledWith(secondDraft, 4, expect.any(AbortSignal));
     expect(result.current.state).toBe("saved");
   });
+
+  it("opens a recovered draft in conflict without PATCH when its base revision is stale", async () => {
+    storeEnvelope(secondDraft, 3);
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+
+    const { result } = renderHook(() => useStudioAutosave(document, save));
+
+    expect(result.current.initialDraft).toEqual(secondDraft);
+    expect(result.current.conflictDraft).toEqual(secondDraft);
+    expect(result.current.state).toBe("conflict");
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("quarantines an invalid TipTap draft with a warning and never PATCHes it", async () => {
+    const invalid = { ...secondDraft, bodyJson: { type: "paragraph", content: "not-an-array" } };
+    window.localStorage.setItem(studioDraftStorageKey(document.id), JSON.stringify({
+      version: 1,
+      baseRevision: 4,
+      generation: 1,
+      signature: JSON.stringify(invalid),
+      draft: invalid
+    }));
+    const save = vi.fn();
+
+    const { result } = renderHook(() => useStudioAutosave(document, save));
+
+    expect(result.current.initialDraft).toBeNull();
+    expect(result.current.recoveryWarning).toMatch(/rascunho local.*inválido/i);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("reports unavailable storage when reading localStorage is blocked", () => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() { throw new DOMException("blocked", "SecurityError"); }
+    });
+
+    const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
+
+    expect(result.current.state).toBe("storageUnavailable");
+    expect(result.current.storageUnavailable).toBe(true);
+  });
+
+  it("keeps the dirty draft in memory and reports quota failures truthfully", () => {
+    const storage = window.localStorage;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: storage.clear,
+        getItem: storage.getItem,
+        removeItem: storage.removeItem,
+        setItem: () => { throw new DOMException("full", "QuotaExceededError"); }
+      }
+    });
+    const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
+
+    act(() => result.current.queueSave(secondDraft));
+
+    expect(result.current.state).toBe("storageUnavailable");
+    expect(result.current.currentDraft).toEqual(secondDraft);
+  });
+
+  it("returns to normal dirty persistence when browser storage becomes available again", () => {
+    const readable = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: () => readable.clear(),
+        getItem: (key: string) => readable.get(key) ?? null,
+        removeItem: (key: string) => readable.delete(key),
+        setItem: () => { throw new DOMException("full", "QuotaExceededError"); }
+      }
+    });
+    const { result } = renderHook(() => useStudioAutosave(document, vi.fn()));
+    act(() => result.current.queueSave(firstDraft));
+    expect(result.current.state).toBe("storageUnavailable");
+
+    installLocalStorage();
+    act(() => result.current.queueSave(secondDraft));
+
+    expect(result.current.state).toBe("dirty");
+    expect(result.current.storageUnavailable).toBe(false);
+    expect(readEnvelope().draft).toEqual(secondDraft);
+  });
+
+  it("recovers the draft belonging to a newly selected document without replaying the previous one", async () => {
+    storeEnvelope(firstDraft, 4);
+    const otherDocument = makeDocument({ id: "document_2", revision: 7, title: "Outro plano" });
+    const otherDraft = draft("Rascunho do outro documento");
+    window.localStorage.setItem(studioDraftStorageKey(otherDocument.id), JSON.stringify({
+      version: 1,
+      baseRevision: 7,
+      generation: 2,
+      signature: JSON.stringify(otherDraft),
+      draft: otherDraft
+    }));
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save),
+      { initialProps: { source: document } }
+    );
+
+    rerender({ source: otherDocument });
+    expect(result.current.initialDraft).toEqual(otherDraft);
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(otherDraft, 7, expect.any(AbortSignal));
+  });
 });
+
+function readEnvelope() {
+  return JSON.parse(window.localStorage.getItem(studioDraftStorageKey(document.id))!) as {
+    version: number;
+    baseRevision: number;
+    generation: number;
+    signature: string;
+    draft: StudioDocumentDraft;
+  };
+}
+
+function storeEnvelope(value: StudioDocumentDraft, baseRevision: number) {
+  window.localStorage.setItem(studioDraftStorageKey(document.id), JSON.stringify({
+    version: 1,
+    baseRevision,
+    generation: 1,
+    signature: JSON.stringify(value),
+    draft: value
+  }));
+}
 
 function draft(bodyText: string): StudioDocumentDraft {
   return { title: "Plano anual", bodyJson: { type: "doc", content: [{ type: "paragraph" }] }, bodyText };

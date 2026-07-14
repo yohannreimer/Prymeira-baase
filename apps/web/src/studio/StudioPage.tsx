@@ -19,6 +19,13 @@ type StudioNavItem = {
   instruction: string;
 };
 
+type DocumentAssetState = {
+  documentId: string | null;
+  assets: StudioAsset[];
+  loading: boolean;
+  error: boolean;
+};
+
 const studioNavigation: StudioNavItem[] = [
   { key: "home", label: "Início", icon: "ph-house", title: "Um espaço para pensar com clareza.", description: "Registre o que importa e transforme notas em direção, no seu ritmo.", instruction: "Comece registrando uma ideia, decisão ou assunto que não pode se perder." },
   { key: "inbox", label: "Caixa de entrada", icon: "ph-tray", title: "Caixa de entrada", description: "Tudo o que você capturar chega aqui antes de ganhar um lugar definitivo.", instruction: "Novas capturas aparecerão aqui para você revisar e organizar." },
@@ -34,29 +41,48 @@ const studioNavigation: StudioNavItem[] = [
 export default function StudioPage() {
   const [section, setSection] = useState<StudioSection>("home");
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
-  const [selectedAssets, setSelectedAssets] = useState<StudioAsset[]>([]);
-  const [assetsLoading, setAssetsLoading] = useState(false);
-  const [assetsError, setAssetsError] = useState(false);
+  const [assetState, setAssetState] = useState<DocumentAssetState>({
+    documentId: null,
+    assets: [],
+    loading: false,
+    error: false
+  });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
   function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
     setSelectedDocument(document);
-    setSelectedAssets(outcome?.asset ? [outcome.asset] : []);
+    setAssetState({
+      documentId: document.id,
+      assets: outcome?.asset ? [outcome.asset] : [],
+      loading: true,
+      error: false
+    });
     setSection("document");
   }
 
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
     const controller = new AbortController();
-    setAssetsLoading(true);
-    setAssetsError(false);
-    void getStudioDocumentAssets(selectedDocument.id, controller.signal).then((assets) => {
-      if (!controller.signal.aborted) setSelectedAssets(assets);
+    const documentId = selectedDocument.id;
+    setAssetState((current) => ({
+      documentId,
+      assets: current.documentId === documentId ? current.assets : [],
+      loading: true,
+      error: false
+    }));
+    void getStudioDocumentAssets(documentId, controller.signal).then((assets) => {
+      if (!controller.signal.aborted) {
+        setAssetState((current) => current.documentId === documentId
+          ? { documentId, assets, loading: false, error: false }
+          : current);
+      }
     }).catch(() => {
-      if (!controller.signal.aborted) setAssetsError(true);
-    }).finally(() => {
-      if (!controller.signal.aborted) setAssetsLoading(false);
+      if (!controller.signal.aborted) {
+        setAssetState((current) => current.documentId === documentId
+          ? { ...current, loading: false, error: true }
+          : current);
+      }
     });
     return () => controller.abort();
   }, [assetsReloadKey, section, selectedDocument?.id]);
@@ -98,9 +124,10 @@ export default function StudioPage() {
                 />
               </Suspense>
               <DocumentAssets
-                assets={selectedAssets}
-                loading={assetsLoading}
-                error={assetsError}
+                documentTitle={selectedDocument.title || "Sem título"}
+                assets={assetState.documentId === selectedDocument.id ? assetState.assets : []}
+                loading={assetState.documentId === selectedDocument.id ? assetState.loading : true}
+                error={assetState.documentId === selectedDocument.id ? assetState.error : false}
                 onRetry={() => setAssetsReloadKey((key) => key + 1)}
               />
             </>
@@ -134,11 +161,13 @@ function StudioEditorSkeleton() {
 }
 
 function DocumentAssets({
+  documentTitle,
   assets,
   loading,
   error,
   onRetry
 }: {
+  documentTitle: string;
   assets: StudioAsset[];
   loading: boolean;
   error: boolean;
@@ -148,10 +177,18 @@ function DocumentAssets({
     <div className="studio-document-assets" aria-label="Materiais do documento">
       {assets.map((asset) => <StudioAssetProcessingStatus key={asset.id} asset={asset} />)}
       {loading && assets.length === 0 ? (
-        <p className="studio-document-assets__status" role="status">Carregando materiais preservados…</p>
+        <p
+          className="studio-document-assets__status"
+          role="status"
+          aria-label={`Carregando materiais do documento ${documentTitle}`}
+        >Carregando materiais preservados…</p>
       ) : null}
       {error ? (
-        <div className="studio-document-assets__error" role="alert">
+        <div
+          className="studio-document-assets__error"
+          role="alert"
+          aria-label={`Falha ao carregar materiais do documento ${documentTitle}`}
+        >
           <span>Não foi possível carregar os materiais preservados agora.</span>
           <button type="button" onClick={onRetry}>Tentar novamente</button>
         </div>

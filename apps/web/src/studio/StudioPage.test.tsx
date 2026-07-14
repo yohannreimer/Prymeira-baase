@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -9,6 +9,7 @@ const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"
 
 describe("StudioPage", () => {
   beforeEach(() => {
+    installLocalStorage();
     vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
   });
 
@@ -146,6 +147,46 @@ describe("StudioPage", () => {
     await waitFor(() => expect(assetRequests).toBe(2));
     expect(persistentTarget).toHaveFocus();
   });
+
+  it("never renders materials from a previous document while the next one is pending or fails", async () => {
+    const user = userEvent.setup();
+    const firstAssets = deferred<Response>();
+    const secondAssets = deferred<Response>();
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) {
+        return Promise.resolve(jsonResponse({
+          home: {
+            recent_documents: [rawDocument, rawDocumentB], focused_documents: [], pending_review_count: 0, next_rituals: []
+          }
+        }));
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return firstAssets.promise;
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}/assets`)) return secondAssets.promise;
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    render(<StudioPage />);
+
+    await user.click((await screen.findAllByRole("button", { name: /Reflexão estratégica/u })).at(-1)!);
+    expect(await screen.findByRole("status", { name: "Carregando materiais do documento Reflexão estratégica" }))
+      .toHaveTextContent("Carregando materiais preservados");
+
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    await user.click((await screen.findAllByRole("button", { name: /Plano comercial/u })).at(-1)!);
+    expect(await screen.findByRole("status", { name: "Carregando materiais do documento Plano comercial" }))
+      .toBeInTheDocument();
+
+    await act(async () => firstAssets.resolve(jsonResponse({ assets: [rawAsset] })));
+    expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Carregando materiais do documento Plano comercial" })).toBeInTheDocument();
+
+    await act(async () => secondAssets.resolve(jsonResponse({
+      error: { code: "TEMPORARY", message: "retry" }
+    }, 503)));
+    const error = await screen.findByRole("alert", { name: "Falha ao carregar materiais do documento Plano comercial" });
+    expect(error).toHaveTextContent("Não foi possível carregar os materiais preservados agora.");
+    expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
+  });
 });
 
 const rawDocument = {
@@ -166,6 +207,37 @@ const rawAsset = {
   updated_at: "2026-07-13T12:01:00.000Z"
 } as const;
 
+const rawDocumentB = {
+  ...rawDocument,
+  id: "document_plan",
+  title: "Plano comercial",
+  body_text: "Crescer com consistência.",
+  capture_mode: "text"
+} as const;
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function installLocalStorage() {
+  const values = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, String(value))
+    }
+  });
 }

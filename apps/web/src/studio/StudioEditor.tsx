@@ -1,5 +1,5 @@
 import Link from "@tiptap/extension-link";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -25,7 +25,8 @@ const saveLabels: Record<AutosaveState, string> = {
   saved: "Salvo",
   offline: "Salvo neste dispositivo",
   conflict: "Atenção necessária",
-  error: "Não foi possível salvar"
+  error: "Não foi possível salvar",
+  storageUnavailable: "Alterações mantidas nesta aba"
 };
 
 function documentContent(document: StudioDocument, recovered: StudioDocumentDraft | null) {
@@ -69,6 +70,9 @@ export default function StudioEditor({
   const restoreVersionsTriggerFocusRef = useRef(false);
   const focusVersionAfterRetryRef = useRef(false);
   const conflictCopyOperationRef = useRef<{ signature: string; key: string } | null>(null);
+  const editGenerationRef = useRef(0);
+  const asyncActionTokenRef = useRef(0);
+  const sourceDocumentIdRef = useRef(sourceDocument.id);
   const [linkFieldOpen, setLinkFieldOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
   const [resolving, setResolving] = useState<"reload" | "copy" | null>(null);
@@ -81,6 +85,7 @@ export default function StudioEditor({
   const [restoring, setRestoring] = useState(false);
 
   titleRef.current = title;
+  sourceDocumentIdRef.current = sourceDocument.id;
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -97,6 +102,7 @@ export default function StudioEditor({
       }
     },
     onUpdate({ editor: currentEditor }) {
+      editGenerationRef.current += 1;
       autosave.queueSave({
         title: titleRef.current.trim() || null,
         bodyJson: currentEditor.getJSON(),
@@ -105,14 +111,46 @@ export default function StudioEditor({
     }
   });
 
+  const toolbarState = useEditorState({
+    editor,
+    selector: ({ editor: currentEditor }) => ({
+      bold: currentEditor?.isActive("bold") ?? false,
+      italic: currentEditor?.isActive("italic") ?? false,
+      bulletList: currentEditor?.isActive("bulletList") ?? false,
+      link: currentEditor?.isActive("link") ?? false
+    })
+  });
+
   const queueCurrent = useCallback((nextTitle: string) => {
     if (!editor) return;
+    editGenerationRef.current += 1;
     autosave.queueSave({
       title: nextTitle.trim() || null,
       bodyJson: editor.getJSON(),
       bodyText: editor.getText()
     });
   }, [autosave.queueSave, editor]);
+
+  const getCurrentEditorDraft = useCallback((): StudioDocumentDraft => ({
+    title: titleRef.current.trim() || null,
+    bodyJson: editor?.getJSON() ?? autosave.currentDraft?.bodyJson ?? autosave.document.bodyJson,
+    bodyText: editor?.getText() ?? autosave.currentDraft?.bodyText ?? autosave.document.bodyText
+  }), [autosave.currentDraft, autosave.document.bodyJson, autosave.document.bodyText, editor]);
+
+  const captureEditorGeneration = useCallback(() => {
+    const draft = getCurrentEditorDraft();
+    return {
+      documentId: sourceDocumentIdRef.current,
+      generation: editGenerationRef.current,
+      signature: JSON.stringify(draft)
+    };
+  }, [getCurrentEditorDraft]);
+
+  const isCurrentEditorGeneration = useCallback((snapshot: ReturnType<typeof captureEditorGeneration>) => (
+    snapshot.documentId === sourceDocumentIdRef.current
+    && snapshot.generation === editGenerationRef.current
+    && snapshot.signature === JSON.stringify(getCurrentEditorDraft())
+  ), [getCurrentEditorDraft]);
 
   useEffect(() => {
     if (focusHeadingOnMount) headingRef.current?.focus();
@@ -195,6 +233,7 @@ export default function StudioEditor({
   }, [conflictSignature]);
 
   const applyDocument = useCallback((nextDocument: StudioDocument, discardLocalDraft = true) => {
+    editGenerationRef.current += 1;
     autosave.resolveConflict(nextDocument, discardLocalDraft);
     notifiedRevisionRef.current = nextDocument.revision;
     const nextTitle = nextDocument.title ?? "";
@@ -205,16 +244,24 @@ export default function StudioEditor({
   }, [autosave.resolveConflict, editor, onDocumentChange]);
 
   async function reloadServerVersion() {
+    const token = ++asyncActionTokenRef.current;
+    const snapshot = captureEditorGeneration();
     setResolving("reload");
     setResolutionError(null);
     const controller = new AbortController();
     try {
       const serverDocument = await getStudioDocument(sourceDocument.id, fetch, controller.signal);
+      if (!isCurrentEditorGeneration(snapshot)) {
+        if (asyncActionTokenRef.current === token) {
+          setResolutionError("A versão do servidor foi carregada, mas não foi aplicada porque você continuou editando.");
+        }
+        return;
+      }
       applyDocument(serverDocument);
     } catch {
       setResolutionError("Não foi possível buscar a versão do servidor agora.");
     } finally {
-      setResolving(null);
+      if (asyncActionTokenRef.current === token) setResolving(null);
     }
   }
 
@@ -225,6 +272,8 @@ export default function StudioEditor({
     if (conflictCopyOperationRef.current?.signature !== signature) {
       conflictCopyOperationRef.current = { signature, key: operationKey() };
     }
+    const token = ++asyncActionTokenRef.current;
+    const snapshot = captureEditorGeneration();
     setResolving("copy");
     setResolutionError(null);
     try {
@@ -235,11 +284,17 @@ export default function StudioEditor({
         capture_mode: "text",
         capture_key: conflictCopyOperationRef.current.key
       });
+      if (!isCurrentEditorGeneration(snapshot)) {
+        if (asyncActionTokenRef.current === token) {
+          setResolutionError("A cópia foi criada, mas você continuou editando; sua versão atual permanece aberta.");
+        }
+        return;
+      }
       applyDocument(copy);
     } catch {
       setResolutionError("Sua cópia continua guardada neste dispositivo. Tente novamente quando estiver online.");
     } finally {
-      setResolving(null);
+      if (asyncActionTokenRef.current === token) setResolving(null);
     }
   }
 
@@ -254,6 +309,8 @@ export default function StudioEditor({
 
   async function restoreSelectedVersion() {
     if (!selectedVersion || (autosave.state !== "saved" && autosave.state !== "idle")) return;
+    const token = ++asyncActionTokenRef.current;
+    const snapshot = captureEditorGeneration();
     setRestoring(true);
     setResolutionError(null);
     try {
@@ -262,16 +319,27 @@ export default function StudioEditor({
         body_json: selectedVersion.bodyJson,
         body_text: selectedVersion.bodyText
       });
+      if (!isCurrentEditorGeneration(snapshot)) {
+        autosave.markConflict(getCurrentEditorDraft());
+        setResolutionError("A versão foi restaurada no servidor, mas sua edição mais recente permanece aberta para você decidir como continuar.");
+        restoreVersionsTriggerFocusRef.current = true;
+        setVersionsOpen(false);
+        return;
+      }
       applyDocument(restored);
       closeVersions();
     } catch (error) {
       if (error instanceof Error && "status" in error && error.status === 409) {
-        const currentDraft = {
-          title: titleRef.current.trim() || null,
-          bodyJson: selectedVersion.bodyJson,
-          bodyText: selectedVersion.bodyText
-        };
-        setResolutionError(null);
+        const currentDraft = isCurrentEditorGeneration(snapshot)
+          ? {
+              title: titleRef.current.trim() || null,
+              bodyJson: selectedVersion.bodyJson,
+              bodyText: selectedVersion.bodyText
+            }
+          : getCurrentEditorDraft();
+        setResolutionError(isCurrentEditorGeneration(snapshot)
+          ? null
+          : "O servidor mudou durante a restauração. Sua edição mais recente foi preservada para você decidir como continuar.");
         autosave.markConflict(currentDraft);
         restoreVersionsTriggerFocusRef.current = true;
         setVersionsOpen(false);
@@ -279,7 +347,7 @@ export default function StudioEditor({
         setResolutionError("Não foi possível restaurar esta versão agora.");
       }
     } finally {
-      setRestoring(false);
+      if (asyncActionTokenRef.current === token) setRestoring(false);
     }
   }
 
@@ -339,16 +407,16 @@ export default function StudioEditor({
       </header>
 
       <div className="studio-editor__toolbar" role="toolbar" aria-label="Formatação do documento">
-        <button type="button" aria-label="Negrito" aria-pressed={editor?.isActive("bold") ?? false} onClick={() => editor?.chain().focus().toggleBold().run()}>
+        <button type="button" aria-label="Negrito" aria-pressed={toolbarState?.bold ?? false} onClick={() => editor?.chain().focus().toggleBold().run()}>
           <i aria-hidden="true" className="ph-bold ph-text-b" />
         </button>
-        <button type="button" aria-label="Itálico" aria-pressed={editor?.isActive("italic") ?? false} onClick={() => editor?.chain().focus().toggleItalic().run()}>
+        <button type="button" aria-label="Itálico" aria-pressed={toolbarState?.italic ?? false} onClick={() => editor?.chain().focus().toggleItalic().run()}>
           <i aria-hidden="true" className="ph-bold ph-text-italic" />
         </button>
-        <button type="button" aria-label="Lista com marcadores" aria-pressed={editor?.isActive("bulletList") ?? false} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
+        <button type="button" aria-label="Lista com marcadores" aria-pressed={toolbarState?.bulletList ?? false} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
           <i aria-hidden="true" className="ph-bold ph-list-bullets" />
         </button>
-        <button type="button" aria-label="Adicionar ou remover link" aria-expanded={linkFieldOpen} onClick={() => setLinkFieldOpen((open) => !open)}>
+        <button type="button" aria-label="Adicionar ou remover link" aria-expanded={linkFieldOpen} aria-pressed={toolbarState?.link ?? false} onClick={() => setLinkFieldOpen((open) => !open)}>
           <i aria-hidden="true" className="ph-bold ph-link" />
         </button>
       </div>
@@ -362,13 +430,19 @@ export default function StudioEditor({
 
       <EditorContent editor={editor} className="studio-editor__canvas" />
 
-      {autosave.state === "offline" || autosave.state === "error" ? (
+      {autosave.state === "offline" || autosave.state === "error" || autosave.state === "storageUnavailable" ? (
         <div className="studio-editor__notice" role="alert">
           <p>{autosave.state === "offline"
             ? "Sua escrita está guardada neste dispositivo e será enviada quando você tentar novamente."
-            : "Sua escrita está preservada, mas o servidor não conseguiu salvá-la."}</p>
+            : autosave.state === "storageUnavailable"
+              ? "Não foi possível guardar neste dispositivo. Suas alterações permanecem nesta aba; mantenha esta aba aberta e tente salvar novamente."
+              : "Sua escrita está preservada, mas o servidor não conseguiu salvá-la."}</p>
           <button type="button" onClick={() => void autosave.retry()}>Tentar salvar novamente</button>
         </div>
+      ) : null}
+
+      {autosave.recoveryWarning && autosave.state !== "storageUnavailable" ? (
+        <p className="studio-editor__resolution-error" role="alert">{autosave.recoveryWarning}</p>
       ) : null}
 
       {autosave.state === "conflict" ? (

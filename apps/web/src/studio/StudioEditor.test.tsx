@@ -27,6 +27,74 @@ describe("StudioEditor", () => {
     expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toBeInTheDocument();
   });
 
+  it("describes blocked local storage truthfully without claiming device persistence", () => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() { throw new DOMException("blocked", "SecurityError"); }
+    });
+
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    expect(screen.getByRole("status", { name: "Estado do salvamento" }))
+      .toHaveTextContent("Alterações mantidas nesta aba");
+    expect(screen.getByRole("alert")).toHaveTextContent(/mantenha esta aba aberta/i);
+    expect(screen.queryByText(/salvo neste dispositivo/i)).not.toBeInTheDocument();
+  });
+
+  it("does not overwrite newer edits when reloading the server version finishes late", async () => {
+    const user = userEvent.setup();
+    storeDraftEnvelope({
+      title: "Rascunho em conflito",
+      bodyJson: { type: "doc", content: [{ type: "paragraph" }] },
+      bodyText: "Rascunho"
+    }, 3);
+    const reload = deferred<Response>();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      if (String(input).endsWith(`/documents/${document.id}`)) return reload.promise;
+      return Promise.resolve(response({}, 404));
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Recarregar versão do servidor" }));
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await user.clear(title);
+    await user.type(title, "Edição feita durante a busca");
+    await act(async () => reload.resolve(response({
+      document: { ...rawDocument, revision: 8, title: "Versão do servidor" }
+    })));
+
+    expect(title).toHaveValue("Edição feita durante a busca");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/não foi aplicada.*continuou editando/i);
+  });
+
+  it("does not switch away from newer edits when creating a conflict copy finishes late", async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    storeDraftEnvelope({
+      title: "Rascunho em conflito",
+      bodyJson: { type: "doc", content: [{ type: "paragraph" }] },
+      bodyText: "Rascunho"
+    }, 3);
+    const create = deferred<Response>();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (String(input).endsWith("/documents") && init?.method === "POST") return create.promise;
+      return Promise.resolve(response({}, 404));
+    });
+    render(<StudioEditor document={document} onDocumentChange={onDocumentChange} />);
+
+    await user.click(screen.getByRole("button", { name: "Manter minha cópia como novo documento" }));
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await user.clear(title);
+    await user.type(title, "Minha edição mais recente");
+    await act(async () => create.resolve(response({
+      document: { ...rawDocument, id: "document_copy", revision: 1, title: "Rascunho em conflito (cópia)" }
+    }, 201)));
+
+    expect(title).toHaveValue("Minha edição mais recente");
+    expect(onDocumentChange).not.toHaveBeenCalledWith(expect.objectContaining({ id: "document_copy" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/cópia foi criada.*continuou editando/i);
+  });
+
   it("offers explicit, non-destructive conflict actions", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -203,6 +271,78 @@ describe("StudioEditor", () => {
     });
   });
 
+  it("preserves the newest editor draft when a restore returns 409 after another edit", async () => {
+    const user = userEvent.setup();
+    const restore = deferred<Response>();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
+      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") return restore.promise;
+      if (url.endsWith("/documents") && init?.method === "POST") {
+        return Promise.resolve(response({ document: { ...rawDocument, id: "document_current_copy", revision: 1 } }, 201));
+      }
+      return Promise.resolve(response({}, 404));
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} debounceMs={10_000} />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
+    await user.click(await screen.findByRole("button", { name: /Versão 2/u }));
+    await user.click(screen.getByRole("button", { name: "Restaurar como nova versão" }));
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    act(() => body.focus());
+    await user.keyboard("Texto escrito durante a restauração");
+    await act(async () => restore.resolve(response({
+      error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." }
+    }, 409)));
+
+    const conflict = await screen.findByRole("alert", { name: "Conflito de versões" });
+    await user.click(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" }));
+    const copyCall = await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(JSON.parse(String(copyCall[1]?.body))).toMatchObject({
+      body_text: "Texto escrito durante a restauração"
+    });
+  });
+
+  it("keeps formatting aria-pressed in sync with TipTap transactions", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ document: { ...rawDocument, revision: 5 } }));
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} debounceMs={10_000} />);
+
+    const bold = screen.getByRole("button", { name: "Negrito" });
+    const italic = screen.getByRole("button", { name: "Itálico" });
+    const link = screen.getByRole("button", { name: "Adicionar ou remover link" });
+    expect(bold).toHaveAttribute("aria-pressed", "false");
+    expect(italic).toHaveAttribute("aria-pressed", "false");
+    expect(link).toHaveAttribute("aria-pressed", "false");
+
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    act(() => body.focus());
+    await user.keyboard("Texto formatado");
+    await user.keyboard("{Control>}a{/Control}");
+    await user.click(bold);
+    expect(bold).toHaveAttribute("aria-pressed", "true");
+    await user.click(bold);
+    expect(bold).toHaveAttribute("aria-pressed", "false");
+    await user.click(italic);
+    expect(italic).toHaveAttribute("aria-pressed", "true");
+    await user.click(italic);
+    expect(italic).toHaveAttribute("aria-pressed", "false");
+
+    act(() => body.focus());
+    await user.keyboard("{Control>}a{/Control}");
+    await user.click(link);
+    await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com");
+    await user.click(screen.getByRole("button", { name: "Aplicar" }));
+    expect(link).toHaveAttribute("aria-pressed", "true");
+    await user.click(link);
+    await user.click(screen.getByRole("button", { name: "Aplicar" }));
+    expect(link).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("announces the versions drawer, manages focus, and closes with Escape", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ versions: [rawVersion] }));
@@ -312,4 +452,24 @@ function installTipTapDomGeometry() {
     configurable: true,
     value: () => ({ item: () => null, length: 0, [Symbol.iterator]: function* () {} })
   });
+}
+
+function storeDraftEnvelope(draft: { title: string | null; bodyJson: Record<string, unknown>; bodyText: string }, baseRevision: number) {
+  window.localStorage.setItem(`baase:studio:draft:${document.id}`, JSON.stringify({
+    version: 1,
+    baseRevision,
+    generation: 1,
+    signature: JSON.stringify(draft),
+    draft
+  }));
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
