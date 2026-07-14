@@ -512,6 +512,15 @@ describe("AI schema registry", () => {
         proposal
       })).toThrow();
     }
+    for (const url of ["not a url", "://"]) {
+      const candidate = {
+        ...common,
+        citations: [{ ...common.citations[0], source_type: "external_url", source_id: null, url }],
+        proposal
+      };
+      expect(() => studioOrganizeSchema.safeParse(candidate)).not.toThrow();
+      expect(studioOrganizeSchema.safeParse(candidate).success).toBe(false);
+    }
     expect(studioOrganizeSchema.parse({
       ...common,
       citations: [{
