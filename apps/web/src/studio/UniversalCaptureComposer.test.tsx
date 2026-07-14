@@ -350,6 +350,120 @@ describe("UniversalCaptureComposer", () => {
     }
   });
 
+  it("releases a granted stream when MediaRecorder construction fails and allows retry", async () => {
+    const failedTrackStop = vi.fn();
+    const retryTrackStop = vi.fn();
+    const streams = [
+      { getTracks: () => [{ stop: failedTrackStop }] },
+      { getTracks: () => [{ stop: retryTrackStop }] }
+    ] as unknown as MediaStream[];
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(streams[0])
+      .mockResolvedValueOnce(streams[1]);
+    const recorders: TestMediaRecorder[] = [];
+    let constructionCount = 0;
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class extends TestMediaRecorder {
+        constructor(input: MediaStream) {
+          super(input);
+          constructionCount += 1;
+          if (constructionCount === 1) throw new Error("unsupported recorder");
+          recorders.push(this);
+        }
+      }
+    });
+    try {
+      const view = render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("Não foi possível acessar o microfone");
+      expect(failedTrackStop).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await screen.findByRole("button", { name: "Parar gravação" });
+      expect(getUserMedia).toHaveBeenCalledTimes(2);
+      view.unmount();
+      expect(failedTrackStop).toHaveBeenCalledTimes(1);
+      expect(retryTrackStop).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  });
+
+  it("isolates a recorder whose start fails from a later successful recording", async () => {
+    const failedTrackStop = vi.fn();
+    const retryTrackStop = vi.fn();
+    const streams = [
+      { getTracks: () => [{ stop: failedTrackStop }] },
+      { getTracks: () => [{ stop: retryTrackStop }] }
+    ] as unknown as MediaStream[];
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(streams[0])
+      .mockResolvedValueOnce(streams[1]);
+    const recorders: TestMediaRecorder[] = [];
+    let constructionCount = 0;
+    const createDocument = vi.fn(async () => capturedDocument);
+    const attachAsset = vi.fn(async () => asset());
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalMediaDevices = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(globalThis, "MediaRecorder", {
+      configurable: true,
+      value: class extends TestMediaRecorder {
+        readonly shouldFailStart: boolean;
+        constructor(input: MediaStream) {
+          super(input);
+          constructionCount += 1;
+          this.shouldFailStart = constructionCount === 1;
+          recorders.push(this);
+        }
+        override start() {
+          if (this.shouldFailStart) throw new Error("start failed");
+          super.start();
+        }
+      }
+    });
+    try {
+      const view = render(
+        <UniversalCaptureComposer
+          createDocument={createDocument}
+          attachAsset={attachAsset}
+          onCaptured={vi.fn()}
+        />
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("Não foi possível acessar o microfone");
+      expect(failedTrackStop).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await screen.findByRole("button", { name: "Parar gravação" });
+      await act(async () => {
+        recorders[0]!.emit("dataavailable", new Blob(["obsolete audio"]));
+        recorders[0]!.emit("stop");
+      });
+      expect(screen.getByRole("button", { name: "Parar gravação" })).toBeInTheDocument();
+      expect(createDocument).not.toHaveBeenCalled();
+
+      await act(async () => {
+        recorders[1]!.emit("dataavailable", new Blob(["valid audio"]));
+        recorders[1]!.emit("stop");
+      });
+      await waitFor(() => expect(attachAsset).toHaveBeenCalledTimes(1));
+      expect(createDocument).toHaveBeenCalledTimes(1);
+      expect(failedTrackStop).toHaveBeenCalledTimes(1);
+      expect(retryTrackStop).toHaveBeenCalledTimes(1);
+      view.unmount();
+      expect(retryTrackStop).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  });
+
   it("cancels an in-flight capture when its surface closes", async () => {
     const user = userEvent.setup();
     let receivedSignal: AbortSignal | undefined;
@@ -390,9 +504,9 @@ class TestMediaRecorder {
     this.state = "inactive";
   }
 
-  emit(type: "stop" | "error") {
+  emit(type: "stop" | "error" | "dataavailable", data = new Blob()) {
     if (type === "error") this.state = "inactive";
-    this.listeners.get(type)?.({ data: new Blob() });
+    this.listeners.get(type)?.({ data });
   }
 }
 

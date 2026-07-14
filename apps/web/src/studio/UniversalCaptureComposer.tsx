@@ -314,20 +314,27 @@ export default function UniversalCaptureComposer({
     }
     if (acquiringMicrophoneRef.current) return;
     acquiringMicrophoneRef.current = true;
+    let grantedStream: MediaStream | null = null;
+    let setupSession: RecordingSession | null = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      grantedStream = stream;
       acquiringMicrophoneRef.current = false;
       if (!mountedRef.current) {
         stream.getTracks().forEach((track) => track.stop());
+        grantedStream = null;
         return;
       }
       const recorder = new MediaRecorder(stream);
       const session: RecordingSession = { recorder, stream, chunks: [], failed: false, terminal: false };
+      setupSession = session;
       recordingSessionRef.current = session;
+      grantedStream = null;
       recorder.addEventListener("dataavailable", (event) => {
         if (!session.terminal && event.data.size) session.chunks.push(event.data);
       });
       recorder.addEventListener("stop", () => {
+        if (session.terminal) return;
         const type = recorder.mimeType || "audio/webm";
         const audio = new Blob(session.chunks, { type });
         const failed = session.failed;
@@ -361,6 +368,8 @@ export default function UniversalCaptureComposer({
       setMessage("Gravação em andamento. Seu áudio só será enviado quando você parar.");
     } catch {
       acquiringMicrophoneRef.current = false;
+      if (setupSession) releaseRecording(setupSession);
+      else grantedStream?.getTracks().forEach((track) => track.stop());
       if (mountedRef.current) {
         setMessage("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
       }
