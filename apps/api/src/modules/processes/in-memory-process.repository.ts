@@ -13,9 +13,16 @@ export function createInMemoryProcessRepository(
   let nextMaterialId = 0;
 
   return {
-    async listProcesses(workspaceId) {
+    async listProcesses(workspaceId, filters = {}) {
       return processes
         .filter((process) => process.workspaceId === workspaceId)
+        .filter((process) => {
+          if (!filters.ids?.length && !filters.ownerProfileIds?.length) return true;
+          return Boolean(filters.ids?.includes(process.id)
+            || process.ownerProfileId && filters.ownerProfileIds?.includes(process.ownerProfileId)
+            || process.owner?.type === "person" && filters.ownerProfileIds?.includes(process.owner.personId));
+        })
+        .slice(0, filters.limit)
         .map(normalizeProcess);
     },
 

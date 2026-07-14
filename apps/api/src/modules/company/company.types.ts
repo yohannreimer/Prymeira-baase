@@ -180,7 +180,7 @@ export type AcceptTeamInviteInput = {
 };
 
 export type CompanyRepository = {
-  listAreas(workspaceId: string): Promise<Area[]>;
+  listAreas(workspaceId: string, filters?: { limit?: number }): Promise<Area[]>;
   findAreaById(workspaceId: string, areaId: string): Promise<Area | null>;
   createArea(input: Omit<Area, "id" | "sortOrder" | "createdAt" | "updatedAt">): Promise<Area>;
   updateArea(area: Area): Promise<Area>;
@@ -188,7 +188,7 @@ export type CompanyRepository = {
   listRoleTemplates(workspaceId: string): Promise<RoleTemplate[]>;
   createRoleTemplate(input: Omit<RoleTemplate, "id" | "createdAt" | "updatedAt">): Promise<RoleTemplate>;
   deleteRoleTemplate(workspaceId: string, roleTemplateId: string): Promise<void>;
-  listTeamMembers(workspaceId: string): Promise<TeamMember[]>;
+  listTeamMembers(workspaceId: string, filters?: { ids?: string[]; limit?: number }): Promise<TeamMember[]>;
   findTeamMember(workspaceId: string, personId: string): Promise<TeamMember | null>;
   findTeamMemberByClerkUserId(workspaceId: string, clerkUserId: string): Promise<TeamMember | null>;
   findTeamMemberByCustomerId(workspaceId: string, customerId: string): Promise<TeamMember | null>;

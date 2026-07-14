@@ -151,12 +151,18 @@ export type RoutineOccurrenceReconciliation = {
 };
 
 export type RoutineRepository = {
-  listRoutines(workspaceId: string): Promise<CompanyRoutine[]>;
+  listRoutines(workspaceId: string, filters?: { limit?: number }): Promise<CompanyRoutine[]>;
   findRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine | null>;
   createRoutine(input: Omit<CompanyRoutine, "id" | "createdAt" | "updatedAt">): Promise<CompanyRoutine>;
   updateRoutine(routine: CompanyRoutine): Promise<CompanyRoutine>;
   deleteRoutine(workspaceId: string, routineId: string): Promise<void>;
-  listTaskOccurrences(workspaceId: string, filters?: { dueDate?: string }): Promise<TaskOccurrence[]>;
+  listTaskOccurrences(workspaceId: string, filters?: {
+    dueDate?: string;
+    assigneeProfileIds?: string[];
+    operationalFrom?: string;
+    operationalTo?: string;
+    limit?: number;
+  }): Promise<TaskOccurrence[]>;
   findTaskOccurrence(workspaceId: string, taskId: string): Promise<TaskOccurrence | null>;
   findTaskOccurrenceForTemplate(
     workspaceId: string,

@@ -14,8 +14,8 @@ export function createInMemoryTrainingRepository(
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async listTrainings(workspaceId) {
-      return trainings.filter((training) => training.workspaceId === workspaceId);
+    async listTrainings(workspaceId, filters = {}) {
+      return trainings.filter((training) => training.workspaceId === workspaceId).slice(0, filters.limit);
     },
 
     async findTraining(workspaceId, trainingId) {

@@ -78,11 +78,23 @@ class JsonbRecordStore {
     return `${prefix}_${nextNumber}`;
   }
 
-  async list<T>(kind: string, workspaceId: string) {
+  async list<T>(kind: string, workspaceId: string, limit?: number) {
+    const params: unknown[] = [kind, workspaceId];
+    let sql = `SELECT data FROM ${tableName} WHERE kind = $1 AND workspace_id = $2 ORDER BY created_at ASC, id ASC`;
+    if (limit) { params.push(limit); sql += ` LIMIT $${params.length}`; }
     const result = await this.db.query<RecordRow<T>>(
-      `SELECT data FROM ${tableName} WHERE kind = $1 AND workspace_id = $2 ORDER BY created_at ASC, id ASC`,
-      [kind, workspaceId]
+      sql,
+      params
     );
+    return result.rows.map((row) => row.data);
+  }
+
+  async listByDataValues<T>(kind: string, workspaceId: string, field: string, values: string[], limit?: number) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(field)) throw new Error("JSONB_FIELD_INVALID");
+    const params: unknown[] = [kind, workspaceId, values];
+    let sql = `SELECT data FROM ${tableName} WHERE kind=$1 AND workspace_id=$2 AND data ->> '${field}'=ANY($3::text[]) ORDER BY created_at,id`;
+    if (limit) { params.push(limit); sql += ` LIMIT $${params.length}`; }
+    const result = await this.db.query<RecordRow<T>>(sql, params);
     return result.rows.map((row) => row.data);
   }
 
@@ -1128,8 +1140,8 @@ function sameRoutineOccurrence(left: TaskOccurrence, right: TaskOccurrence) {
 
 function createPostgresTrainingRepository(store: JsonbRecordStore): TrainingRepository {
   return {
-    listTrainings(workspaceId) {
-      return store.list<Training>("training", workspaceId);
+    async listTrainings(workspaceId, filters = {}) {
+      return store.list<Training>("training", workspaceId, filters.limit);
     },
 
     findTraining(workspaceId, trainingId) {
@@ -1217,8 +1229,8 @@ function createPostgresTrainingRepository(store: JsonbRecordStore): TrainingRepo
 
 function createPostgresAnnouncementRepository(store: JsonbRecordStore): AnnouncementRepository {
   return {
-    listAnnouncements(workspaceId) {
-      return store.list<Announcement>("announcement", workspaceId);
+    async listAnnouncements(workspaceId, filters = {}) {
+      return store.list<Announcement>("announcement", workspaceId, filters.limit);
     },
 
     findAnnouncement(workspaceId, announcementId) {
@@ -1258,10 +1270,15 @@ function createPostgresAnnouncementRepository(store: JsonbRecordStore): Announce
     },
 
     async listAnnouncementReceipts(workspaceId, filters = {}) {
-      const receipts = await store.list<AnnouncementReceipt>("announcement_receipt", workspaceId);
+      const receipts = filters.profileIds?.length
+        ? await store.listByDataValues<AnnouncementReceipt>(
+          "announcement_receipt", workspaceId, "profileId", filters.profileIds, filters.limit
+        )
+        : await store.list<AnnouncementReceipt>("announcement_receipt", workspaceId, filters.limit);
       return receipts.filter((receipt) => {
         if (filters.announcementId && receipt.announcementId !== filters.announcementId) return false;
         if (filters.profileId && receipt.profileId !== filters.profileId) return false;
+        if (filters.profileIds?.length && !filters.profileIds.includes(receipt.profileId)) return false;
         return true;
       });
     },

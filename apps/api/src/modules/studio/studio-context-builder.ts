@@ -1,11 +1,13 @@
 import { ApiError, forbiddenError } from "../../http/api-error";
 import type { AnnouncementAudience, AnnouncementRepository } from "../announcements/announcement.types";
 import type { CompanyRepository, OperationalMembership, TeamMember } from "../company/company.types";
-import { createDashboardService } from "../dashboard/dashboard.service";
+import { createDashboardService, scopeOperationalOverviewToPerson } from "../dashboard/dashboard.service";
 import type { OperationalOverview } from "../dashboard/dashboard.types";
-import type { ProcessRepository } from "../processes/process.types";
-import type { RoutineRepository } from "../routines/routine.types";
-import type { TrainingAudience, TrainingRepository } from "../trainings/training.types";
+import type { CompanyProcess, ProcessRepository } from "../processes/process.types";
+import type { CompanyRoutine, RoutineRepository, TaskOccurrence } from "../routines/routine.types";
+import type { Training, TrainingAudience, TrainingRepository } from "../trainings/training.types";
+import type { Announcement, AnnouncementReceipt } from "../announcements/announcement.types";
+import type { Area } from "../company/company.types";
 import type {
   StudioCitationInput,
   StudioContextFact,
@@ -28,6 +30,7 @@ export type StudioContextBuilderOptions = {
   maxSerializedBytes?: number;
   maxPersonIds?: number;
   maxPeriodDays?: number;
+  maxSourceRecords?: number;
   perTypeCaps?: Partial<Record<StudioOperationalResourceType, number>>;
 };
 
@@ -57,21 +60,33 @@ export function createStudioContextBuilder(
   const maxSerializedBytes = boundedInteger(options.maxSerializedBytes, 48_000, 1_024, 256_000);
   const maxPersonIds = boundedInteger(options.maxPersonIds, 10, 1, 50);
   const maxPeriodDays = boundedInteger(options.maxPeriodDays, 366, 1, 3_660);
+  const maxSourceRecords = boundedInteger(options.maxSourceRecords, 2_000, 50, 20_000);
   const caps = normalizeCaps(options.perTypeCaps);
-  const dashboard = createDashboardService(repositories, { now });
 
   return {
     async buildStudioContext(scope, request) {
       const observedAt = normalizeNow(now());
       const period = resolvePeriod(request, observedAt, maxPeriodDays);
       const resourceTypes = normalizeResourceTypes(request.resourceTypes);
-      const people = await authorizeScopeAndPeople(repositories.companyRepository, scope, request.personIds, maxPersonIds);
+      const requestedIds = Array.isArray(request.personIds)
+        ? request.personIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).map((id) => id.trim())
+        : [];
+      const peopleIds = requestedIds.length ? [...new Set([scope.ownerProfileId, ...requestedIds])] : undefined;
+      const workspacePeople = await repositories.companyRepository.listTeamMembers(scope.workspaceId, {
+        ids: peopleIds,
+        limit: peopleIds ? peopleIds.length + 1 : maxSourceRecords + 1
+      });
+      assertSourceBound("people", workspacePeople, maxSourceRecords);
+      const people = authorizeScopeAndPeople(workspacePeople, scope, request.personIds, maxPersonIds);
       const membership = ownerMembership(people.owner);
       const selectedPeople = people.selected;
       const personIds = selectedPeople.map((person) => person.id).sort();
+      const snapshot = await readOperationalSnapshot(
+        repositories, scope, resourceTypes, maxSourceRecords, workspacePeople, personIds, period
+      );
       const needsOverview = resourceTypes.has("dashboard") || resourceTypes.has("task") || resourceTypes.has("announcement");
       const overviews = needsOverview
-        ? await readOverviews(dashboard, scope, membership, period, personIds)
+        ? await readOverviews(snapshot, repositories, now, scope, membership, period, personIds)
         : [];
       const result: StudioContextSnapshot = {
         period,
@@ -89,14 +104,10 @@ export function createStudioContextBuilder(
         if (resourceType === "dashboard") appendDashboardFacts(add, overviews, personIds, period);
         if (resourceType === "task") appendTaskFacts(add, overviews);
         if (resourceType === "routine") {
-          const [routines, tasks] = await Promise.all([
-            repositories.routineRepository.listRoutines(scope.workspaceId),
-            personIds.length ? repositories.routineRepository.listTaskOccurrences(scope.workspaceId) : Promise.resolve([])
-          ]);
-          const relevantRoutineIds = new Set(tasks
+          const relevantRoutineIds = new Set(snapshot.tasks
             .filter((task) => personIds.includes(task.assigneeProfileId ?? "") && task.dueDate >= period.from && task.dueDate <= period.to)
             .flatMap((task) => task.routineId ? [task.routineId] : []));
-          routines
+          snapshot.routines
             .filter((routine) => !personIds.length
               || routine.assigneeProfileIds?.some((id) => personIds.includes(id))
               || relevantRoutineIds.has(routine.id))
@@ -110,19 +121,18 @@ export function createStudioContextBuilder(
               value: {
                 id: routine.id, title: routine.title, status: routine.status, areaId: routine.areaId,
                 frequency: routine.frequency ?? null, dueHint: routine.dueHint ?? null,
-                assigneeProfileIds: [...(routine.assigneeProfileIds ?? [])].sort(), updatedAt: routine.updatedAt
+                assigneeProfileIds: personIds.length
+                  ? (routine.assigneeProfileIds ?? []).filter((id) => personIds.includes(id)).sort()
+                  : [...(routine.assigneeProfileIds ?? [])].sort(),
+                updatedAt: routine.updatedAt
               }
             }));
         }
         if (resourceType === "process") {
-          const [processes, tasks] = await Promise.all([
-            repositories.processRepository.listProcesses(scope.workspaceId),
-            personIds.length ? repositories.routineRepository.listTaskOccurrences(scope.workspaceId) : Promise.resolve([])
-          ]);
-          const referencedProcessIds = new Set(tasks
+          const referencedProcessIds = new Set(snapshot.tasks
             .filter((task) => personIds.includes(task.assigneeProfileId ?? "") && task.dueDate >= period.from && task.dueDate <= period.to)
             .flatMap((task) => task.processId ? [task.processId] : []));
-          processes
+          snapshot.processes
             .filter((process) => !personIds.length
               || process.ownerProfileId && personIds.includes(process.ownerProfileId)
               || process.owner?.type === "person" && personIds.includes(process.owner.personId)
@@ -136,15 +146,13 @@ export function createStudioContextBuilder(
               excerpt: `Processo ${process.status}: ${process.title}`,
               value: {
                 id: process.id, title: process.title, summary: safeText(process.summary, 240), status: process.status,
-                areaId: process.areaId, owner: process.owner ?? (process.ownerProfileId
-                  ? { type: "person", personId: process.ownerProfileId } : null), publishedAt: process.publishedAt,
+                areaId: process.areaId, owner: projectedProcessOwner(process, personIds), publishedAt: process.publishedAt,
                 updatedAt: process.updatedAt
               }
             }));
         }
         if (resourceType === "training") {
-          const trainings = await repositories.trainingRepository.listTrainings(scope.workspaceId);
-          trainings
+          snapshot.trainings
             .filter((training) => !personIds.length || selectedPeople.some((person) => audienceMatches(training.audience, person)))
             .sort(byUpdatedAtThenId)
             .forEach((training) => add(resourceType, {
@@ -161,10 +169,9 @@ export function createStudioContextBuilder(
             }));
         }
         if (resourceType === "announcement") {
-          const announcements = await repositories.announcementRepository.listAnnouncements(scope.workspaceId);
           const pendingIds = new Set(overviews.flatMap((overview) =>
             overview.pendingRequiredAnnouncements.map((item) => `${item.id}:${item.profileId ?? ""}`)));
-          announcements
+          snapshot.announcements
             .filter((announcement) => !personIds.length || selectedPeople.some((person) => audienceMatches(announcement.audience, person)))
             .sort(byUpdatedAtThenId)
             .forEach((announcement) => add(resourceType, {
@@ -319,23 +326,97 @@ function appendTaskFacts(add: ReturnType<typeof createBoundedAppender>, overview
     }));
 }
 
+type OperationalSnapshot = {
+  areas: Area[];
+  people: TeamMember[];
+  routines: CompanyRoutine[];
+  tasks: TaskOccurrence[];
+  processes: CompanyProcess[];
+  trainings: Training[];
+  announcements: Announcement[];
+  receipts: AnnouncementReceipt[];
+};
+
+async function readOperationalSnapshot(
+  repositories: StudioContextRepositories,
+  scope: StudioOwnerScope,
+  resourceTypes: Set<StudioOperationalResourceType>,
+  maxSourceRecords: number,
+  people: TeamMember[],
+  personIds: string[],
+  period: { from: string; to: string }
+): Promise<OperationalSnapshot> {
+  const needsOverview = resourceTypes.has("dashboard") || resourceTypes.has("task") || resourceTypes.has("announcement");
+  const needsRoutines = needsOverview || resourceTypes.has("routine");
+  const needsTasks = needsOverview || resourceTypes.has("routine") || resourceTypes.has("process");
+  const fetchLimit = maxSourceRecords + 1;
+  const [areas, routines, tasks, trainings, announcements, receipts] = await Promise.all([
+    needsOverview ? repositories.companyRepository.listAreas(scope.workspaceId, { limit: fetchLimit }) : Promise.resolve([]),
+    needsRoutines ? repositories.routineRepository.listRoutines(scope.workspaceId, { limit: fetchLimit }) : Promise.resolve([]),
+    needsTasks ? repositories.routineRepository.listTaskOccurrences(scope.workspaceId, {
+      assigneeProfileIds: personIds.length ? personIds : undefined,
+      operationalFrom: period.from,
+      operationalTo: period.to,
+      limit: fetchLimit
+    }) : Promise.resolve([]),
+    resourceTypes.has("training") ? repositories.trainingRepository.listTrainings(scope.workspaceId, { limit: fetchLimit }) : Promise.resolve([]),
+    (needsOverview || resourceTypes.has("announcement"))
+      ? repositories.announcementRepository.listAnnouncements(scope.workspaceId, { limit: fetchLimit }) : Promise.resolve([]),
+    needsOverview ? repositories.announcementRepository.listAnnouncementReceipts(scope.workspaceId, {
+      profileIds: personIds.length ? personIds : undefined,
+      limit: fetchLimit
+    }) : Promise.resolve([])
+  ]);
+  const processIds = [...new Set(tasks.flatMap((task) => task.processId ? [task.processId] : []))];
+  const processes = resourceTypes.has("process")
+    ? await repositories.processRepository.listProcesses(scope.workspaceId, {
+      ids: personIds.length ? processIds : undefined,
+      ownerProfileIds: personIds.length ? personIds : undefined,
+      limit: fetchLimit
+    })
+    : [];
+  const snapshot = { areas, people, routines, tasks, processes, trainings, announcements, receipts };
+  for (const [name, records] of Object.entries(snapshot)) assertSourceBound(name, records, maxSourceRecords);
+  return snapshot;
+}
+
 async function readOverviews(
-  dashboard: ReturnType<typeof createDashboardService>,
+  snapshot: OperationalSnapshot,
+  repositories: StudioContextRepositories,
+  now: () => Date,
   scope: StudioOwnerScope,
   membership: OperationalMembership,
   period: { from: string; to: string },
   personIds: string[]
 ) {
-  if (!personIds.length) {
-    return [await dashboard.readOperationalOverview({ workspaceId: scope.workspaceId, membership, ...period })];
-  }
-  return Promise.all(personIds.map((profileId) => dashboard.readPersonOperationalOverview({
-    workspaceId: scope.workspaceId, membership, profileId, ...period
-  })));
+  const dashboard = createDashboardService({
+    companyRepository: {
+      ...repositories.companyRepository,
+      listAreas: async () => snapshot.areas,
+      listTeamMembers: async () => snapshot.people,
+      findTeamMember: async (_workspaceId, profileId) => snapshot.people.find((person) => person.id === profileId) ?? null
+    },
+    routineRepository: {
+      ...repositories.routineRepository,
+      listRoutines: async () => snapshot.routines,
+      listTaskOccurrences: async () => snapshot.tasks
+    },
+    processRepository: repositories.processRepository,
+    trainingRepository: repositories.trainingRepository,
+    announcementRepository: {
+      ...repositories.announcementRepository,
+      listAnnouncements: async () => snapshot.announcements,
+      listAnnouncementReceipts: async () => snapshot.receipts
+    }
+  }, { now });
+  const overview = await dashboard.readOperationalOverview({ workspaceId: scope.workspaceId, membership, ...period });
+  return personIds.length
+    ? personIds.map((profileId) => scopeOperationalOverviewToPerson(overview, profileId))
+    : [overview];
 }
 
-async function authorizeScopeAndPeople(
-  repository: CompanyRepository,
+function authorizeScopeAndPeople(
+  workspacePeople: TeamMember[],
   scope: StudioOwnerScope,
   requestedPersonIds: string[],
   maxPersonIds: number
@@ -345,7 +426,6 @@ async function authorizeScopeAndPeople(
   }
   const personIds = [...new Set(requestedPersonIds.map((id) => id.trim()))];
   if (personIds.length > maxPersonIds) throw invalid("STUDIO_CONTEXT_PEOPLE_LIMIT", "Selecione menos pessoas para esta consulta.");
-  const workspacePeople = await repository.listTeamMembers(scope.workspaceId);
   const owner = workspacePeople.find((person) => person.id === scope.ownerProfileId);
   if (!owner || owner.role !== "owner" || owner.status === "archived" || owner.status === "inactive") throw forbiddenError();
   const peopleById = new Map(workspacePeople.map((person) => [person.id, person]));
@@ -354,6 +434,12 @@ async function authorizeScopeAndPeople(
     throw new ApiError(404, "STUDIO_CONTEXT_PERSON_NOT_FOUND", "Uma das pessoas selecionadas não foi encontrada.");
   }
   return { owner, selected: selected as TeamMember[], workspacePeople };
+}
+
+function assertSourceBound(name: string, records: unknown[], maxSourceRecords: number) {
+  if (records.length > maxSourceRecords) {
+    throw new ApiError(413, "STUDIO_CONTEXT_SOURCE_LIMIT", `A fonte operacional ${name} excede o limite seguro.`);
+  }
 }
 
 function ownerMembership(owner: TeamMember): OperationalMembership {
@@ -415,6 +501,14 @@ function audienceMatches(audience: AnnouncementAudience | TrainingAudience | nul
   if (audience.type === "person") return audience.profileId === person.id;
   if (audience.type === "area") return audience.areaId === person.areaId;
   return audience.roleTemplateId === person.roleTemplateId;
+}
+
+function projectedProcessOwner(process: CompanyProcess, selectedPersonIds: string[]) {
+  const owner = process.owner ?? (process.ownerProfileId
+    ? { type: "person" as const, personId: process.ownerProfileId }
+    : null);
+  if (!owner || !selectedPersonIds.length || owner.type === "role") return owner;
+  return selectedPersonIds.includes(owner.personId) ? owner : null;
 }
 
 function byUpdatedAtThenId(left: { updatedAt: string; id: string }, right: { updatedAt: string; id: string }) {

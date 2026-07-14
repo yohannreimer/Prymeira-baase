@@ -206,32 +206,36 @@ export function createDashboardService(repositories: DashboardRepositories, opti
       if (!canManageAreaResource(input.membership, person.areaId)) throw forbiddenError();
 
       const overview = await service.readOperationalOverview(input);
-      const lateTasks = overview.lateTasks.filter((task) => task.profileId === person.id);
-      const openTasks = overview.openTasks.filter((task) => task.profileId === person.id);
-      const awaitingApprovals = overview.awaitingApprovals.filter((task) => task.profileId === person.id);
-      const pendingRequiredAnnouncements = overview.pendingRequiredAnnouncements.filter((announcement) => announcement.profileId === person.id);
-      const personTrends = overview.trends.people.filter((trend) => trend.profileId === person.id);
-
-      return {
-        ...overview,
-        metrics: {
-          lateTasks: lateTasks.length,
-          awaitingApprovals: awaitingApprovals.length,
-          pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
-        },
-        lateTasks,
-        openTasks,
-        awaitingApprovals,
-        pendingRequiredAnnouncements,
-        trends: {
-          people: personTrends,
-          areas: personTrends.map(({ profileId: _profileId, profileName: _profileName, ...trend }) => trend)
-        }
-      };
+      return scopeOperationalOverviewToPerson(overview, person.id);
     }
   };
 
   return service;
+}
+
+/** Keeps every per-person consumer on the dashboard's canonical scoping rules. */
+export function scopeOperationalOverviewToPerson(overview: OperationalOverview, profileId: string): OperationalOverview {
+  const lateTasks = overview.lateTasks.filter((task) => task.profileId === profileId);
+  const openTasks = overview.openTasks.filter((task) => task.profileId === profileId);
+  const awaitingApprovals = overview.awaitingApprovals.filter((task) => task.profileId === profileId);
+  const pendingRequiredAnnouncements = overview.pendingRequiredAnnouncements.filter((item) => item.profileId === profileId);
+  const personTrends = overview.trends.people.filter((trend) => trend.profileId === profileId);
+  return {
+    ...overview,
+    metrics: {
+      lateTasks: lateTasks.length,
+      awaitingApprovals: awaitingApprovals.length,
+      pendingRequiredAnnouncements: pendingRequiredAnnouncements.length
+    },
+    lateTasks,
+    openTasks,
+    awaitingApprovals,
+    pendingRequiredAnnouncements,
+    trends: {
+      people: personTrends,
+      areas: personTrends.map(({ profileId: _profileId, profileName: _profileName, ...trend }) => trend)
+    }
+  };
 }
 
 function taskAreaId(task: TaskOccurrence, routineById: Map<string, CompanyRoutine>) {

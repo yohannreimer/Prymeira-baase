@@ -81,7 +81,7 @@ export type CreateProcessVersionInput = {
 };
 
 export type ProcessRepository = {
-  listProcesses(workspaceId: string): Promise<CompanyProcess[]>;
+  listProcesses(workspaceId: string, filters?: { ids?: string[]; ownerProfileIds?: string[]; limit?: number }): Promise<CompanyProcess[]>;
   findProcess(workspaceId: string, processId: string): Promise<CompanyProcess | null>;
   createProcess(input: Omit<CompanyProcess, "id" | "createdAt" | "updatedAt">): Promise<CompanyProcess>;
   updateProcess(process: CompanyProcess): Promise<CompanyProcess>;

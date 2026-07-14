@@ -14,8 +14,8 @@ export function createInMemoryAnnouncementRepository(
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async listAnnouncements(workspaceId) {
-      return announcements.filter((announcement) => announcement.workspaceId === workspaceId);
+    async listAnnouncements(workspaceId, filters = {}) {
+      return announcements.filter((announcement) => announcement.workspaceId === workspaceId).slice(0, filters.limit);
     },
 
     async findAnnouncement(workspaceId, announcementId) {
@@ -65,8 +65,9 @@ export function createInMemoryAnnouncementRepository(
         if (receipt.workspaceId !== workspaceId) return false;
         if (filters.announcementId && receipt.announcementId !== filters.announcementId) return false;
         if (filters.profileId && receipt.profileId !== filters.profileId) return false;
+        if (filters.profileIds?.length && !filters.profileIds.includes(receipt.profileId)) return false;
         return true;
-      });
+      }).slice(0, filters.limit);
     },
 
     async upsertAnnouncementReceipt(input) {

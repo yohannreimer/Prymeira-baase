@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createInMemoryAnnouncementRepository } from "../announcements/in-memory-announcement.repository";
 import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryProcessRepository } from "../processes/in-memory-process.repository";
@@ -30,10 +30,40 @@ describe("StudioContextBuilder", () => {
     )).toBe(true);
     expect(JSON.stringify(context)).not.toContain("private announcement body");
     expect(JSON.stringify(context)).not.toContain("person@example.com");
+    const routineFact = context.facts.find((fact) => fact.resourceType === "routine");
+    expect(routineFact?.value).toMatchObject({ assigneeProfileIds: [fixture.personId] });
+    expect(JSON.stringify(routineFact)).not.toContain(fixture.otherPersonId);
+    expect(context.facts.find((fact) => fact.resourceType === "process")?.value).toMatchObject({ owner: null });
     expect(context.citations.every((citation) => citation.metadata.contentTrust === "untrusted_data")).toBe(true);
     expect(context.serializedBytes).toBe(Buffer.byteLength(JSON.stringify({
       period: context.period, facts: context.facts, citations: context.citations
     }), "utf8"));
+  });
+
+  it("reads one bounded bulk snapshot for ten selected people instead of N+1 overviews", async () => {
+    const fixture = await createFixture({ extraPeople: 9 });
+    const calls = {
+      people: vi.spyOn(fixture.repositories.companyRepository, "listTeamMembers"),
+      routines: vi.spyOn(fixture.repositories.routineRepository, "listRoutines"),
+      tasks: vi.spyOn(fixture.repositories.routineRepository, "listTaskOccurrences"),
+      announcements: vi.spyOn(fixture.repositories.announcementRepository, "listAnnouncements"),
+      receipts: vi.spyOn(fixture.repositories.announcementRepository, "listAnnouncementReceipts")
+    };
+    const selectedIds = [fixture.personId, ...fixture.extraPersonIds];
+    const context = await fixture.builder.buildStudioContext(fixture.scope, {
+      from: "2026-07-01", to: "2026-07-15", resourceTypes: ["dashboard", "task"], personIds: selectedIds
+    });
+
+    expect(context.facts.filter((fact) => fact.key.startsWith("dashboard.metrics."))).toHaveLength(10);
+    expect(calls.people).toHaveBeenCalledTimes(1);
+    expect(calls.routines).toHaveBeenCalledTimes(1);
+    expect(calls.tasks).toHaveBeenCalledTimes(1);
+    expect(calls.announcements).toHaveBeenCalledTimes(1);
+    expect(calls.receipts).toHaveBeenCalledTimes(1);
+    expect(calls.people).toHaveBeenCalledWith("workspace-a", expect.objectContaining({ limit: 12 }));
+    expect(calls.tasks).toHaveBeenCalledWith("workspace-a", expect.objectContaining({
+      assigneeProfileIds: [...selectedIds].sort(), limit: 2_001
+    }));
   });
 
   it("returns only requested types, applies per-type/byte caps, and stays deterministic", async () => {
@@ -53,6 +83,19 @@ describe("StudioContextBuilder", () => {
     expect(first.facts).toHaveLength(3);
     expect(first.facts.every((fact) => fact.resourceType === "people")).toBe(true);
     expect(first.serializedBytes).toBeLessThanOrEqual(4_000);
+  });
+
+  it("stops at the bounded repository fetch instead of hydrating an unbounded source", async () => {
+    const fixture = await createFixture({ extraPeople: 60 });
+    const people = vi.spyOn(fixture.repositories.companyRepository, "listTeamMembers");
+    const builder = createStudioContextBuilder(fixture.repositories, {
+      now: () => new Date("2026-07-15T15:00:00.000Z"), maxSourceRecords: 50
+    });
+    await expect(builder.buildStudioContext(fixture.scope, {
+      from: "2026-07-01", to: "2026-07-15", resourceTypes: ["people"], personIds: []
+    })).rejects.toMatchObject({ code: "STUDIO_CONTEXT_SOURCE_LIMIT" });
+    expect(people).toHaveBeenCalledOnce();
+    expect(people).toHaveBeenCalledWith("workspace-a", { ids: undefined, limit: 51 });
   });
 
   it("rejects invalid periods, cross-workspace people and non-owner scopes without leaking records", async () => {
@@ -81,23 +124,29 @@ async function createFixture(options: { extraPeople?: number } = {}) {
     workspaceId: "workspace-a", name: "Ana", email: "person@example.com", role: "employee", areaId: area.id,
     roleTemplateId: null, createdByProfileId: owner.id, status: "active"
   });
+  const other = await companyRepository.createTeamMember({
+    workspaceId: "workspace-a", name: "Bruno", email: "bruno@example.com", role: "employee", areaId: area.id,
+    roleTemplateId: null, createdByProfileId: owner.id, status: "active"
+  });
+  const extraPersonIds: string[] = [];
   for (let index = 0; index < (options.extraPeople ?? 0); index += 1) {
-    await companyRepository.createTeamMember({
+    const extra = await companyRepository.createTeamMember({
       workspaceId: "workspace-a", name: `Pessoa ${String(index).padStart(2, "0")}`, email: `p${index}@example.com`,
       role: "employee", areaId: area.id, roleTemplateId: null, createdByProfileId: owner.id, status: "active"
     });
+    extraPersonIds.push(extra.id);
   }
 
   const routineRepository = createInMemoryRoutineRepository({ now });
   const routine = await routineRepository.createRoutine({
     workspaceId: "workspace-a", areaId: area.id, title: "Revisão diária", status: "active", frequency: "daily",
-    assigneeProfileIds: [person.id], executionMode: "individual", approvalMode: "direct", evidencePolicy: "optional",
+    assigneeProfileIds: [person.id, other.id], executionMode: "individual", approvalMode: "direct", evidencePolicy: "optional",
     createdByProfileId: owner.id, taskTemplates: []
   });
   const processRepository = createInMemoryProcessRepository({ now });
   const process = await processRepository.createProcess({
     workspaceId: "workspace-a", areaId: area.id, title: "Fechamento", summary: "Resumo seguro", status: "published",
-    ownerProfileId: person.id, owner: { type: "person", personId: person.id }, materials: [],
+    ownerProfileId: other.id, owner: { type: "person", personId: other.id }, materials: [],
     currentVersion: { id: "v1", processId: "pending", workspaceId: "workspace-a", version: 1, title: "Fechamento", body: "full process body", changeNote: "", editorProfileId: owner.id, createdAt: now() },
     versions: [], createdByProfileId: owner.id, publishedAt: now(), archivedAt: null
   });
@@ -128,7 +177,7 @@ async function createFixture(options: { extraPeople?: number } = {}) {
   const scope = { workspaceId: "workspace-a", ownerProfileId: owner.id };
   const builder = createStudioContextBuilder(repositories, { now: () => new Date(now()) });
   return {
-    repositories, builder, scope, personId: person.id,
+    repositories, builder, scope, personId: person.id, otherPersonId: other.id, extraPersonIds,
     build: (request: Parameters<typeof builder.buildStudioContext>[1]) => builder.buildStudioContext(scope, request)
   };
 }

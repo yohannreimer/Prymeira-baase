@@ -14,11 +14,12 @@ export function createInMemoryCompanyRepository(
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async listAreas(workspaceId) {
+    async listAreas(workspaceId, filters = {}) {
       return areas
         .filter((area) => area.workspaceId === workspaceId)
         .filter((area) => !area.archivedAt)
-        .sort((a, b) => a.sortOrder - b.sortOrder);
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .slice(0, filters.limit);
     },
 
     async findAreaById(workspaceId, areaId) {
@@ -79,8 +80,11 @@ export function createInMemoryCompanyRepository(
       if (index >= 0) roleTemplates[index] = { ...roleTemplates[index]!, archivedAt: now(), updatedAt: now() };
     },
 
-    async listTeamMembers(workspaceId) {
-      return teamMembers.filter((member) => member.workspaceId === workspaceId && member.status !== "archived");
+    async listTeamMembers(workspaceId, filters = {}) {
+      return teamMembers
+        .filter((member) => member.workspaceId === workspaceId && member.status !== "archived")
+        .filter((member) => !filters.ids?.length || filters.ids.includes(member.id))
+        .slice(0, filters.limit);
     },
 
     async findTeamMember(workspaceId, personId) {

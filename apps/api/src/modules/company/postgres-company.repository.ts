@@ -15,8 +15,11 @@ const personSelect = `SELECT p.*, COALESCE(ARRAY(SELECT paa.area_id FROM person_
 
 export function createPostgresCompanyRepository(db: OperationalPool, inviteRepository: CompanyRepository): CompanyRepository {
   return {
-    async listAreas(workspaceId) {
-      const result = await db.query<AreaRow>("SELECT * FROM areas WHERE workspace_id = $1 AND archived_at IS NULL ORDER BY sort_order, id", [workspaceId]);
+    async listAreas(workspaceId, filters = {}) {
+      const params: unknown[] = [workspaceId];
+      let sql = "SELECT * FROM areas WHERE workspace_id = $1 AND archived_at IS NULL ORDER BY sort_order, id";
+      if (filters.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+      const result = await db.query<AreaRow>(sql, params);
       return result.rows.map(areaFromRow);
     },
     async findAreaById(workspaceId, areaId) {
@@ -72,8 +75,13 @@ export function createPostgresCompanyRepository(db: OperationalPool, inviteRepos
         await audit(client, workspaceId, "role_template", roleTemplateId, "archive");
       });
     },
-    async listTeamMembers(workspaceId) {
-      const result = await db.query<PersonRow>(`${personSelect} WHERE p.workspace_id = $1 AND p.archived_at IS NULL ORDER BY p.created_at, p.id`, [workspaceId]);
+    async listTeamMembers(workspaceId, filters = {}) {
+      const params: unknown[] = [workspaceId];
+      let sql = `${personSelect} WHERE p.workspace_id = $1 AND p.archived_at IS NULL`;
+      if (filters.ids?.length) { params.push(filters.ids); sql += ` AND p.id=ANY($${params.length}::text[])`; }
+      sql += " ORDER BY p.created_at, p.id";
+      if (filters.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+      const result = await db.query<PersonRow>(sql, params);
       return result.rows.map(personFromRow);
     },
     async findTeamMember(workspaceId, personId) {

@@ -139,7 +139,7 @@ export type AssignTrainingInput = {
 };
 
 export type TrainingRepository = {
-  listTrainings(workspaceId: string): Promise<Training[]>;
+  listTrainings(workspaceId: string, filters?: { limit?: number }): Promise<Training[]>;
   findTraining(workspaceId: string, trainingId: string): Promise<Training | null>;
   createTraining(input: Omit<Training, "id" | "createdAt" | "updatedAt">): Promise<Training>;
   updateTraining(training: Training): Promise<Training>;

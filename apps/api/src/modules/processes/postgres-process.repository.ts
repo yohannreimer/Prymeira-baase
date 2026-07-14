@@ -44,8 +44,16 @@ function ownerColumns(process: Pick<CompanyProcess, "owner" | "ownerProfileId">)
 
 export function createPostgresProcessRepository(db: OperationalPool): ProcessRepository {
   return {
-    async listProcesses(workspaceId) {
-      const result = await db.query<ProcessRow>("SELECT * FROM processes WHERE workspace_id=$1 AND archived_at IS NULL ORDER BY created_at,id", [workspaceId]);
+    async listProcesses(workspaceId, filters = {}) {
+      const params: unknown[] = [workspaceId];
+      let sql = "SELECT * FROM processes WHERE workspace_id=$1 AND archived_at IS NULL";
+      const selectors: string[] = [];
+      if (filters.ids?.length) { params.push(filters.ids); selectors.push(`id=ANY($${params.length}::text[])`); }
+      if (filters.ownerProfileIds?.length) { params.push(filters.ownerProfileIds); selectors.push(`owner_profile_id=ANY($${params.length}::text[])`); }
+      if (selectors.length) sql += ` AND (${selectors.join(" OR ")})`;
+      sql += " ORDER BY created_at,id";
+      if (filters.limit) { params.push(filters.limit); sql += ` LIMIT $${params.length}`; }
+      const result = await db.query<ProcessRow>(sql, params);
       return hydrate(db, result.rows);
     },
     async findProcess(workspaceId, processId) {

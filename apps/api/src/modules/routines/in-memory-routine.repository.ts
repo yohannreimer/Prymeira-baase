@@ -15,8 +15,8 @@ export function createInMemoryRoutineRepository(
   const now = options.now ?? (() => new Date().toISOString());
 
   return {
-    async listRoutines(workspaceId) {
-      return routines.filter((routine) => routine.workspaceId === workspaceId);
+    async listRoutines(workspaceId, filters = {}) {
+      return routines.filter((routine) => routine.workspaceId === workspaceId).slice(0, filters.limit);
     },
 
     async findRoutine(workspaceId, routineId) {
@@ -69,8 +69,16 @@ export function createInMemoryRoutineRepository(
       return tasks.filter((task) => {
         if (task.workspaceId !== workspaceId) return false;
         if (filters.dueDate && task.dueDate !== filters.dueDate) return false;
+        if (filters.assigneeProfileIds?.length && !filters.assigneeProfileIds.includes(task.assigneeProfileId ?? "")) return false;
+        if (filters.operationalFrom && filters.operationalTo) {
+          const inPeriod = (value: string) => value >= filters.operationalFrom! && value <= filters.operationalTo!;
+          const completionDate = operationalDate(task.reviewedAt ?? task.submittedAt ?? task.updatedAt);
+          const decisionDate = task.reviewedAt ? operationalDate(task.reviewedAt) : null;
+          if (!inPeriod(task.dueDate) && !(task.status === "completed" && inPeriod(completionDate))
+            && !(decisionDate && inPeriod(decisionDate))) return false;
+        }
         return true;
-      });
+      }).slice(0, filters.limit);
     },
 
     async findTaskOccurrence(workspaceId, taskId) {
@@ -186,6 +194,14 @@ export function createInMemoryRoutineRepository(
       tasks.splice(0, tasks.length, ...state.tasks);
     }
   };
+}
+
+function operationalDate(value: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date(value));
+  const read = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${read("year")}-${read("month")}-${read("day")}`;
 }
 
 function routineOccurrenceKey(task: Pick<TaskOccurrence, "routineId" | "taskTemplateId" | "assigneeProfileId">) {
