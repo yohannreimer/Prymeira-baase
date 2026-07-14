@@ -119,6 +119,53 @@ describe("Studio asset routes", () => {
     }
   });
 
+  it("times out a stalled multipart receive and releases its bounded owner after abort settlement", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const boundary = "----baase-studio-stalled-receive";
+    const prefix = Buffer.from([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="stalled.txt"',
+      "Content-Type: text/plain",
+      "",
+      "partial"
+    ].join("\r\n"));
+    let started = false;
+    const stalledBody = new Readable({
+      read() {
+        if (started) return;
+        started = true;
+        this.push(prefix);
+      }
+    });
+    const semaphore = createStudioUploadSemaphore(1);
+    const app = buildApp({
+      studioRepository: repository,
+      studioUploadSemaphore: semaphore,
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/studio/documents/${document.id}/assets`,
+      headers: { ...ownerA, "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: stalledBody
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toMatchObject({
+      code: "OBJECT_STORAGE_UNAVAILABLE",
+      details: { upload_timeout: true }
+    });
+    await vi.waitFor(() => {
+      const release = semaphore.tryAcquire();
+      expect(release).toBeTypeOf("function");
+      release?.();
+    });
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+    stalledBody.destroy();
+  });
+
   it("rejects empty, oversized, and unsupported uploads", async () => {
     const fixture = await createFixture();
     const empty = await upload(fixture.app, fixture.documentId, {
@@ -189,6 +236,50 @@ describe("Studio asset routes", () => {
     expect(response.json().asset.objectKey).toBe(objectStorage.keys()[0]);
     expect(objectStorage.keys()).toHaveLength(1);
     expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+  });
+
+  it("disarms the storage deadline after Complete and awaits one idempotent durable finalization", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const objectStorage = createInMemoryObjectStorage();
+    let releaseFinalize!: () => void;
+    const finalizeGate = new Promise<void>((resolve) => { releaseFinalize = resolve; });
+    let finalizeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { finalizeStarted = resolve; });
+    let captured: Parameters<typeof repository.finalizeAssetUpload>[0] | undefined;
+    let finalizeCalls = 0;
+    const app = buildApp({
+      objectStorage,
+      studioRepository: {
+        ...repository,
+        async finalizeAssetUpload(input) {
+          finalizeCalls += 1;
+          captured = input;
+          finalizeStarted();
+          await finalizeGate;
+          return repository.finalizeAssetUpload(input);
+        }
+      },
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100,
+      studioUploadLeaseHeartbeatMs: 5
+    });
+    const pending = upload(app, document.id, {
+      filename: "slow-finalize.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    await started;
+    expect(objectStorage.keys()).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseFinalize();
+
+    const response = await pending;
+    expect(response.statusCode).toBe(201);
+    expect(finalizeCalls).toBe(1);
+    expect(response.json().asset.objectKey).toBe(objectStorage.keys()[0]);
+    expect(await repository.listAssetUploadIntents(ownerScope())).toEqual([]);
+    const retry = await repository.finalizeAssetUpload(captured!);
+    expect(retry.id).toBe(response.json().asset.id);
+    expect(await repository.findAssetByObjectKey(ownerScope(), retry.objectKey!)).toMatchObject({ id: retry.id });
   });
 
   it("leaves the durable pending intent when reconciliation is temporarily unavailable", async () => {
@@ -310,6 +401,7 @@ describe("Studio asset routes", () => {
     let releaseBegin!: () => void;
     const beginGate = new Promise<void>((resolve) => { releaseBegin = resolve; });
     let beginCalls = 0;
+    const semaphore = createStudioUploadSemaphore(1);
     const objectStorage = {
       ...memoryStorage,
       async beginAtomicUpload(
@@ -324,7 +416,7 @@ describe("Studio asset routes", () => {
     const app = buildApp({
       studioRepository: repository,
       objectStorage,
-      studioUploadSemaphore: createStudioUploadSemaphore(1),
+      studioUploadSemaphore: semaphore,
       studioUploadPutTimeoutMs: 15,
       studioUploadLeaseMs: 100
     });
@@ -352,9 +444,11 @@ describe("Studio asset routes", () => {
         storageUploadId: expect.any(String)
       }]);
     });
-    expect((await upload(app, document.id, {
-      filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
-    })).statusCode).toBe(201);
+    await vi.waitFor(() => {
+      const release = semaphore.tryAcquire();
+      expect(release).toBeTypeOf("function");
+      release?.();
+    });
   });
 
   it("returns at the deadline while an abort-ignoring attach retains ownership until late settlement", async () => {
@@ -364,6 +458,7 @@ describe("Studio asset routes", () => {
     let releaseAttach!: () => void;
     const attachGate = new Promise<void>((resolve) => { releaseAttach = resolve; });
     let attachCalls = 0;
+    const semaphore = createStudioUploadSemaphore(1);
     const app = buildApp({
       studioRepository: {
         ...repository,
@@ -374,7 +469,7 @@ describe("Studio asset routes", () => {
         }
       },
       objectStorage: memoryStorage,
-      studioUploadSemaphore: createStudioUploadSemaphore(1),
+      studioUploadSemaphore: semaphore,
       studioUploadPutTimeoutMs: 15,
       studioUploadLeaseMs: 100
     });
@@ -398,9 +493,11 @@ describe("Studio asset routes", () => {
         storageUploadId: expect.any(String)
       }]);
     });
-    expect((await upload(app, document.id, {
-      filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
-    })).statusCode).toBe(201);
+    await vi.waitFor(() => {
+      const release = semaphore.tryAcquire();
+      expect(release).toBeTypeOf("function");
+      release?.();
+    });
   });
 
   it.each(["false", "error"] as const)(

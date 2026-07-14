@@ -60,7 +60,25 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       if (!release) {
         throw new ApiError(503, "STUDIO_ASSET_UPLOAD_BUSY", "Há muitos uploads em andamento. Tente novamente.");
       }
-      const asset = await uploadFileAsset(request, options, scope, documentId, release);
+      const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
+      const control = createUploadReceiveStorageControl(putTimeoutMs);
+      const ownerSettlement = uploadFileAsset(request, options, scope, documentId, control, putTimeoutMs).then(
+        (asset) => ({ ok: true as const, asset }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      void ownerSettlement.then(() => {
+        control.ownerSettled();
+        release();
+      }).catch((error) => {
+        request.log.error({ err: error }, "Studio upload ownership finalizer failed");
+      });
+      const outcome = await Promise.race([
+        ownerSettlement.then((owner) => ({ owner })),
+        control.responseInterrupt.then((interrupt) => ({ interrupt }))
+      ]);
+      if ("interrupt" in outcome) throw outcome.interrupt.responseError;
+      if (!outcome.owner.ok) throw outcome.owner.error;
+      const asset = outcome.owner.asset;
       return reply.status(201).send({ asset });
     }
 
@@ -158,10 +176,10 @@ async function uploadFileAsset(
   options: RegisterStudioAssetRoutesOptions,
   scope: StudioOwnerScope,
   documentId: string,
-  releaseSemaphore: () => void
+  control: UploadReceiveStorageControl,
+  putTimeoutMs: number
 ) {
   let prepared: PreparedStudioAssetUpload | null = null;
-  let ownershipTransferred = false;
   const parts = request.parts({
     limits: {
       fileSize: STUDIO_ASSET_MAX_FILE_BYTES,
@@ -171,21 +189,22 @@ async function uploadFileAsset(
       fieldSize: 1
     }
   });
-  let firstPart: Awaited<ReturnType<typeof parts.next>>;
+  const receiveAbort = bindMultipartReceiveAbort(request, control.signal);
   try {
-    firstPart = await parts.next();
-  } catch (error) {
-    releaseSemaphore();
-    throw multipartError(error);
-  }
-  const file = firstPart.value;
-  if (firstPart.done || !file || file.type !== "file" || file.fieldname !== "file") {
-    if (file?.type === "file") file.file.resume();
-    releaseSemaphore();
-    throw new ApiError(400, "STUDIO_ASSET_FILE_REQUIRED", "Use o campo file para anexar o arquivo.");
-  }
-  const displayName = sanitizeFilename(file.filename);
-  try {
+    let firstPart: Awaited<ReturnType<typeof parts.next>>;
+    try {
+      firstPart = await parts.next();
+    } catch (error) {
+      if (control.signal.aborted) throw uploadInterruptionError(control.signal);
+      throw multipartError(error);
+    }
+    const file = firstPart.value;
+    if (firstPart.done || !file || file.type !== "file" || file.fieldname !== "file") {
+      if (file?.type === "file") file.file.resume();
+      throw new ApiError(400, "STUDIO_ASSET_FILE_REQUIRED", "Use o campo file para anexar o arquivo.");
+    }
+    receiveAbort.setFileStream(file.file);
+    const displayName = sanitizeFilename(file.filename);
     prepared = await prepareStudioAssetUpload({
       file: file.file,
       declaredMimeType: file.mimetype,
@@ -193,7 +212,8 @@ async function uploadFileAsset(
     }, {
       onCleanupError(error, path) {
         request.log.error({ err: error, path }, "Studio upload temp cleanup failed");
-      }
+      },
+      signal: control.signal
     });
     try {
       const extraPart = await parts.next();
@@ -202,6 +222,7 @@ async function uploadFileAsset(
         throw multipartError(undefined);
       }
     } catch (error) {
+      if (control.signal.aborted) throw uploadInterruptionError(control.signal);
       if (error instanceof ApiError) throw error;
       throw multipartError(error);
     }
@@ -210,7 +231,6 @@ async function uploadFileAsset(
     const kind = prepared.mimeType.startsWith("audio/")
       ? "audio" as const
       : prepared.mimeType.startsWith("image/") ? "image" as const : "file" as const;
-    const putTimeoutMs = options.uploadPutTimeoutMs ?? DEFAULT_UPLOAD_PUT_TIMEOUT_MS;
     const uploadLeaseMs = Math.max(putTimeoutMs + 1, options.uploadLeaseMs ?? putTimeoutMs * 2);
     let intent: StudioAssetUploadIntent;
     try {
@@ -230,7 +250,7 @@ async function uploadFileAsset(
       throw persistenceFailed();
     }
 
-    const supervised = superviseAtomicUpload({
+    return await executeAtomicUploadOwner({
       request,
       options,
       scope,
@@ -240,74 +260,22 @@ async function uploadFileAsset(
       kind,
       prepared,
       intent,
-      putTimeoutMs,
       uploadLeaseMs
-    });
-    ownershipTransferred = true;
-    void supervised.settled.then(async () => {
-      await prepared!.cleanup();
-      releaseSemaphore();
-    }).catch((error) => {
-      request.log.error({ err: error, intentId: intent.id }, "Studio upload ownership finalizer failed");
-    });
-    return await supervised.response;
+    }, control);
   } catch (error) {
     const candidate = error as { code?: unknown; statusCode?: unknown };
     if (candidate.code === "FST_REQ_FILE_TOO_LARGE" || candidate.statusCode === 413) throw payloadTooLarge();
+    if (control.signal.aborted && !(error instanceof ApiError)) throw uploadInterruptionError(control.signal);
     throw error;
   } finally {
-    if (!ownershipTransferred) {
-      await prepared?.cleanup();
-      releaseSemaphore();
-    }
+    receiveAbort.unbind();
+    await prepared?.cleanup();
   }
-}
-
-function superviseAtomicUpload(input: AtomicUploadOwnerInput): {
-  response: Promise<StudioAsset>;
-  settled: Promise<void>;
-} {
-  const controller = new AbortController();
-  let interruptResponse!: (outcome: UploadResponseInterrupt) => void;
-  const responseInterrupt = new Promise<UploadResponseInterrupt>((resolve) => { interruptResponse = resolve; });
-  let interrupted = false;
-  const interrupt = (outcome: UploadResponseInterrupt) => {
-    if (interrupted) return;
-    interrupted = true;
-    controller.abort(outcome.reason);
-    interruptResponse(outcome);
-  };
-  const timeout = setTimeout(() => {
-    interrupt({
-      reason: new Error("STUDIO_ASSET_UPLOAD_TIMEOUT"),
-      responseError: storageUnavailable({ upload_timeout: true })
-    });
-  }, input.putTimeoutMs);
-  timeout.unref?.();
-
-  const ownerSettlement = executeAtomicUploadOwner(input, controller, interrupt).then(
-    (asset) => ({ ok: true as const, asset }),
-    (error: unknown) => ({ ok: false as const, error })
-  );
-  const settled = ownerSettlement.then(() => {
-    clearTimeout(timeout);
-  });
-  const response = Promise.race([
-    ownerSettlement.then((outcome) => ({ owner: outcome })),
-    responseInterrupt.then((outcome) => ({ interrupt: outcome }))
-  ]).then((outcome) => {
-    if ("interrupt" in outcome) throw outcome.interrupt.responseError;
-    clearTimeout(timeout);
-    if (!outcome.owner.ok) throw outcome.owner.error;
-    return outcome.owner.asset;
-  });
-  return { response, settled };
 }
 
 async function executeAtomicUploadOwner(
   input: AtomicUploadOwnerInput,
-  controller: AbortController,
-  interrupt: (outcome: UploadResponseInterrupt) => void
+  control: UploadReceiveStorageControl
 ): Promise<StudioAsset> {
   const { options, scope, intent, key, prepared, request } = input;
   let storageUploadId: string | undefined;
@@ -316,12 +284,12 @@ async function executeAtomicUploadOwner(
       key,
       contentType: prepared.mimeType,
       sizeBytes: prepared.sizeBytes
-    }, { signal: controller.signal });
+    }, { signal: control.signal });
     storageUploadId = session.uploadId;
   } catch (error) {
     await reconcileOwnerFailure(input, undefined, "Studio atomic upload creation reconciliation failed");
-    throw controller.signal.aborted
-      ? uploadInterruptionError(controller.signal)
+    throw control.signal.aborted
+      ? uploadInterruptionError(control.signal)
       : storageUnavailable();
   }
 
@@ -338,23 +306,23 @@ async function executeAtomicUploadOwner(
     attachError = error;
     request.log.error({ err: error, intentId: intent.id }, "Studio atomic upload session persistence failed");
   }
-  if (!attached || controller.signal.aborted) {
-    if (!controller.signal.aborted) controller.abort(new Error("STUDIO_ASSET_UPLOAD_SESSION_STALE"));
+  if (!attached || control.signal.aborted) {
+    if (!control.signal.aborted) control.abort(new Error("STUDIO_ASSET_UPLOAD_SESSION_STALE"));
     await abortOwnerSession(input, storageUploadId);
     await reconcileOwnerFailure(input, storageUploadId, "Studio stale atomic upload reconciliation failed");
-    if (controller.signal.reason instanceof Error
-      && controller.signal.reason.message === "STUDIO_ASSET_UPLOAD_TIMEOUT") {
+    if (control.signal.reason instanceof Error
+      && control.signal.reason.message === "STUDIO_ASSET_UPLOAD_TIMEOUT") {
       throw storageUnavailable({ upload_timeout: true });
     }
     if (attachError || !attached) throw persistenceFailed({ upload_intent_pending: true });
-    throw uploadInterruptionError(controller.signal);
+    throw uploadInterruptionError(control.signal);
   }
 
   const uploadLeaseHeartbeatMs = options.uploadLeaseHeartbeatMs
     ?? Math.max(1_000, Math.floor(input.uploadLeaseMs / 3));
   let renewalActive = false;
   const heartbeat = setInterval(() => {
-    if (renewalActive || controller.signal.aborted) return;
+    if (renewalActive) return;
     renewalActive = true;
     const currentTime = (options.now ?? (() => new Date()))();
     void options.repository.renewAssetUploadIntentLease({
@@ -364,13 +332,13 @@ async function executeAtomicUploadOwner(
       uploadLeaseExpiresAt: new Date(currentTime.getTime() + input.uploadLeaseMs).toISOString()
     }).then((renewed) => {
       if (!renewed) {
-        interrupt({
+        control.interrupt({
           reason: new Error("STUDIO_ASSET_UPLOAD_LEASE_LOST"),
           responseError: storageUnavailable({ upload_lease_lost: true })
         });
       }
     }, () => {
-      interrupt({
+      control.interrupt({
         reason: new Error("STUDIO_ASSET_UPLOAD_LEASE_RENEWAL_FAILED"),
         responseError: storageUnavailable({ upload_lease_lost: true })
       });
@@ -386,15 +354,15 @@ async function executeAtomicUploadOwner(
       uploadId: storageUploadId,
       body: studioAssetReadStream(prepared.path),
       sizeBytes: prepared.sizeBytes
-    }, { signal: controller.signal });
-    throwIfUploadAborted(controller.signal);
+    }, { signal: control.signal });
+    throwIfUploadAborted(control.signal);
+    control.storageCompleted();
   } catch (error) {
-    if (!controller.signal.aborted) controller.abort(error);
+    if (!control.signal.aborted) control.abort(error);
     await abortOwnerSession(input, storageUploadId);
     await reconcileOwnerFailure(input, storageUploadId, "Studio failed atomic upload reconciliation failed");
-    throw uploadInterruptionError(controller.signal);
-  } finally {
     clearInterval(heartbeat);
+    throw uploadInterruptionError(control.signal);
   }
 
   const assetInput = {
@@ -416,23 +384,27 @@ async function executeAtomicUploadOwner(
     nextAttemptAt: null
   };
   try {
-    return await options.repository.finalizeAssetUpload({
-      scope,
-      intentId: intent.id,
-      uploadToken: intent.uploadToken!,
-      asset: assetInput
-    });
-  } catch {
-    let reconciled: StudioAsset | null;
     try {
-      reconciled = await transitionUploadToCleanup(
-        options.repository, scope, intent, key, storageUploadId, options.now
-      );
+      return await options.repository.finalizeAssetUpload({
+        scope,
+        intentId: intent.id,
+        uploadToken: intent.uploadToken!,
+        asset: assetInput
+      });
     } catch {
-      throw persistenceFailed({ upload_intent_pending: true });
+      let reconciled: StudioAsset | null;
+      try {
+        reconciled = await transitionUploadToCleanup(
+          options.repository, scope, intent, key, storageUploadId, options.now
+        );
+      } catch {
+        throw persistenceFailed({ upload_intent_pending: true });
+      }
+      if (reconciled) return reconciled;
+      throw persistenceFailed({ cleanup_pending: true });
     }
-    if (reconciled) return reconciled;
-    throw persistenceFailed({ cleanup_pending: true });
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -483,7 +455,6 @@ type AtomicUploadOwnerInput = {
   kind: "audio" | "image" | "file";
   prepared: PreparedStudioAssetUpload;
   intent: StudioAssetUploadIntent;
-  putTimeoutMs: number;
   uploadLeaseMs: number;
 };
 
@@ -491,6 +462,86 @@ type UploadResponseInterrupt = {
   reason: Error;
   responseError: ApiError;
 };
+
+type UploadReceiveStorageControl = {
+  signal: AbortSignal;
+  responseInterrupt: Promise<UploadResponseInterrupt>;
+  abort(reason: unknown): void;
+  interrupt(outcome: UploadResponseInterrupt): boolean;
+  storageCompleted(): void;
+  ownerSettled(): void;
+};
+
+function createUploadReceiveStorageControl(timeoutMs: number): UploadReceiveStorageControl {
+  const controller = new AbortController();
+  let phase: "storage" | "completed" | "settled" = "storage";
+  let responseInterrupted = false;
+  let resolveInterrupt!: (outcome: UploadResponseInterrupt) => void;
+  const responseInterrupt = new Promise<UploadResponseInterrupt>((resolve) => {
+    resolveInterrupt = resolve;
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    control.interrupt({
+      reason: new Error("STUDIO_ASSET_UPLOAD_TIMEOUT"),
+      responseError: storageUnavailable({ upload_timeout: true })
+    });
+  }, timeoutMs);
+  timeout.unref?.();
+  const clearDeadline = () => {
+    if (!timeout) return;
+    clearTimeout(timeout);
+    timeout = undefined;
+  };
+  const control: UploadReceiveStorageControl = {
+    signal: controller.signal,
+    responseInterrupt,
+    abort(reason) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    },
+    interrupt(outcome) {
+      if (phase !== "storage" || responseInterrupted) return false;
+      responseInterrupted = true;
+      if (!controller.signal.aborted) controller.abort(outcome.reason);
+      resolveInterrupt(outcome);
+      return true;
+    },
+    storageCompleted() {
+      if (phase !== "storage") return;
+      phase = "completed";
+      clearDeadline();
+    },
+    ownerSettled() {
+      phase = "settled";
+      clearDeadline();
+    }
+  };
+  return control;
+}
+
+function bindMultipartReceiveAbort(request: FastifyRequest, signal: AbortSignal): {
+  setFileStream(stream: { destroy(error?: Error): unknown }): void;
+  unbind(): void;
+} {
+  let fileStream: { destroy(error?: Error): unknown } | null = null;
+  const abort = () => {
+    const reason = signal.reason instanceof Error ? signal.reason : new Error("STUDIO_ASSET_UPLOAD_ABORTED");
+    if (fileStream) {
+      fileStream.destroy(reason);
+      return;
+    }
+    if (!request.raw.destroyed) request.raw.destroy(reason);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  return {
+    setFileStream(stream) {
+      fileStream = stream;
+      if (signal.aborted) abort();
+    },
+    unbind() {
+      signal.removeEventListener("abort", abort);
+    }
+  };
+}
 
 function transitionUploadToCleanup(
   repository: StudioRepository,

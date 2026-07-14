@@ -43,6 +43,7 @@ export async function spoolStudioAssetUpload(
   options: {
     onCleanupError?: (error: unknown, path: string) => void;
     removeDirectory?: typeof rm;
+    signal?: AbortSignal;
   } = {}
 ) {
   const prepared = await prepareStudioAssetUpload(input, options);
@@ -58,6 +59,7 @@ export async function prepareStudioAssetUpload(
   options: {
     onCleanupError?: (error: unknown, path: string) => void;
     removeDirectory?: typeof rm;
+    signal?: AbortSignal;
   } = {}
 ): Promise<PreparedStudioAssetUpload> {
   const directory = await mkdtemp(join(tmpdir(), "baase-studio-upload-"));
@@ -91,7 +93,12 @@ export async function prepareStudioAssetUpload(
     }
   });
   try {
-    await pipeline(input.file, counter, createWriteStream(path, { flags: "wx", mode: 0o600 }));
+    await pipeline(
+      input.file,
+      counter,
+      createWriteStream(path, { flags: "wx", mode: 0o600 }),
+      { signal: options.signal }
+    );
     if (sizeBytes === 0) {
       throw new ApiError(400, "STUDIO_ASSET_FILE_EMPTY", "O arquivo não pode estar vazio.");
     }

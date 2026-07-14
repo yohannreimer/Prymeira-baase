@@ -129,6 +129,27 @@ describe("Studio bounded upload inspection", () => {
     await expect(access(capturedPath)).rejects.toThrow();
   });
 
+  it("aborts and destroys a stalled incoming spool stream", async () => {
+    let started = false;
+    const input = new Readable({
+      read() {
+        if (started) return;
+        started = true;
+        this.push("partial private text");
+      }
+    });
+    const controller = new AbortController();
+    const pending = spoolStudioAssetUpload({
+      file: input,
+      declaredMimeType: "text/plain"
+    }, async () => undefined, { signal: controller.signal });
+
+    controller.abort(new Error("receive deadline"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(input.destroyed).toBe(true);
+  });
+
   it("reports temp cleanup failure without replacing callback success or primary error", async () => {
     const cleanupErrors: unknown[] = [];
     const cleanupPaths: string[] = [];

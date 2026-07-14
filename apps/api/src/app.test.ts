@@ -35,6 +35,17 @@ function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput>
 }
 
 describe("Baase API app", () => {
+  it("bounds request receipt with a configurable two-minute default", async () => {
+    const defaultApp = buildApp();
+    const configuredApp = buildApp({ requestTimeoutMs: 45_000 });
+
+    expect((defaultApp.initialConfig as { requestTimeout?: number }).requestTimeout).toBe(120_000);
+    expect((configuredApp.initialConfig as { requestTimeout?: number }).requestTimeout).toBe(45_000);
+
+    await defaultApp.close();
+    await configuredApp.close();
+  });
+
   it("responds to health checks", async () => {
     const app = buildApp();
     const response = await app.inject({ method: "GET", url: "/health" });

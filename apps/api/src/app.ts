@@ -75,6 +75,7 @@ export type BuildAppOptions = {
   studioUploadLeaseMs?: number;
   studioUploadLeaseHeartbeatMs?: number;
   studioUploadAbortTimeoutMs?: number;
+  requestTimeoutMs?: number;
   runtimeConfig?: BaaseRuntimeConfig;
   seedDemoData?: boolean;
   now?: () => Date;
@@ -83,11 +84,13 @@ export type BuildAppOptions = {
 };
 
 const API_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+const API_REQUEST_TIMEOUT_MS = 120_000;
 
 export function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: false,
-    bodyLimit: API_BODY_LIMIT_BYTES
+    bodyLimit: API_BODY_LIMIT_BYTES,
+    requestTimeout: options.requestTimeoutMs ?? API_REQUEST_TIMEOUT_MS
   });
   const companyRepository = options.companyRepository ?? createInMemoryCompanyRepository();
   const processRepository = options.processRepository ?? createInMemoryProcessRepository({
