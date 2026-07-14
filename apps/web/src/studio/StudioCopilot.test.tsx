@@ -172,6 +172,38 @@ describe("StudioCopilot", () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
   });
 
+  it("ignores and aborts a suggestion acceptance that finishes after navigating to another document", async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const documentResponse = deferred<Response>();
+    const loadSignal: { current: AbortSignal | null } = { current: null };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/assistant/turns")) return sse(suggestionStream());
+      if (url.endsWith("/suggestions/suggestion_1/accept")) return json({ suggestion: rawSuggestion(), version: rawVersion() });
+      if (url.endsWith("/documents/document_1") && !init?.method) {
+        loadSignal.current = init?.signal as AbortSignal;
+        return documentResponse.promise;
+      }
+      return json({}, 404);
+    });
+    const { rerender } = render(<StudioCopilot document={document} onDocumentChange={onDocumentChange} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(card).getByRole("button", { name: "Aceitar como nova versão" }));
+    await waitFor(() => expect(loadSignal.current).not.toBeNull());
+
+    rerender(<StudioCopilot document={{ ...document, id: "document_2", title: "Documento atual" }} onDocumentChange={onDocumentChange} />);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Proposta revisável da IA" })).not.toBeInTheDocument());
+    expect(loadSignal.current?.aborted).toBe(true);
+    documentResponse.resolve(json({ document: { ...rawDocument(), revision: 2, title: "Resposta antiga" } }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("cancels the active turn, preserves its retry and resets research consent", async () => {
     const user = userEvent.setup();
     let controller: ReadableStreamDefaultController<Uint8Array>;

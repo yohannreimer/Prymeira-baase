@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   acceptStudioSuggestion,
   dismissStudioSuggestion,
@@ -299,7 +299,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
           {turn.status === "cancelled" ? <p className="studio-copilot-turn__status">Resposta interrompida.</p> : null}
           <StudioCitations citations={turn.citations} onOpenInternal={onOpenInternalSource} />
           {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange}
-            onOpenInternalSource={onOpenInternalSource} acceptance={suggestionAcceptance} /> : null}
+            onOpenInternalSource={onOpenInternalSource} acceptance={suggestionAcceptance} sessionDocumentId={document.id} /> : null}
         </article>)}
       </div>
 
@@ -330,11 +330,12 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   </>;
 }
 
-function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, acceptance }: {
+function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, acceptance, sessionDocumentId }: {
   suggestion: StudioSuggestion;
   onDocumentChange(document: StudioDocument): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
   acceptance?: StudioSuggestionAcceptanceGuard;
+  sessionDocumentId: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(suggestion.payload.proposal.title ?? "");
@@ -342,6 +343,16 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
   const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error" | "conflict">("pending");
   const errorRef = useRef<HTMLParagraphElement>(null);
   const decisionRef = useRef<HTMLParagraphElement>(null);
+  const decisionGenerationRef = useRef(0);
+  const decisionControllerRef = useRef<AbortController | null>(null);
+  const activeIdentityRef = useRef({ documentId: sessionDocumentId, suggestionId: suggestion.id });
+  activeIdentityRef.current = { documentId: sessionDocumentId, suggestionId: suggestion.id };
+
+  useLayoutEffect(() => () => {
+    decisionGenerationRef.current += 1;
+    decisionControllerRef.current?.abort();
+    decisionControllerRef.current = null;
+  }, [sessionDocumentId, suggestion.id]);
 
   useEffect(() => {
     if (state === "dismissed") decisionRef.current?.focus();
@@ -352,6 +363,17 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
     if (state !== "pending" && state !== "error") return;
     if (acceptance && !acceptance.canAccept) return;
     const editorSnapshot = acceptance?.capture();
+    const controller = new AbortController();
+    decisionControllerRef.current?.abort();
+    decisionControllerRef.current = controller;
+    const generation = ++decisionGenerationRef.current;
+    const identity = { documentId: sessionDocumentId, suggestionId: suggestion.id };
+    const isCurrent = () => (
+      decisionGenerationRef.current === generation
+      && !controller.signal.aborted
+      && activeIdentityRef.current.documentId === identity.documentId
+      && activeIdentityRef.current.suggestionId === identity.suggestionId
+    );
     setState("accepting");
     try {
       const edited = title !== (suggestion.payload.proposal.title ?? "") || body !== suggestion.payload.proposal.bodyText;
@@ -360,27 +382,42 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
         title: title.trim() || null,
         bodyText: body,
         bodyJson: plainTextDocument(body)
-      } : suggestion.payload.proposal);
+      } : suggestion.payload.proposal, controller.signal);
+      if (!isCurrent()) return;
       if (acceptance && editorSnapshot && !acceptance.isCurrent(editorSnapshot)) {
         acceptance.onConflict();
         setState("conflict");
         return;
       }
-      onDocumentChange(document);
       setState("accepted");
+      onDocumentChange(document);
     } catch {
-      setState("error");
+      if (isCurrent()) setState("error");
+    } finally {
+      if (isCurrent()) decisionControllerRef.current = null;
     }
   }
 
   async function dismiss() {
     if (state !== "pending" && state !== "error") return;
+    const controller = new AbortController();
+    decisionControllerRef.current?.abort();
+    decisionControllerRef.current = controller;
+    const generation = ++decisionGenerationRef.current;
+    const identity = { documentId: sessionDocumentId, suggestionId: suggestion.id };
+    const isCurrent = () => (
+      decisionGenerationRef.current === generation
+      && !controller.signal.aborted
+      && activeIdentityRef.current.documentId === identity.documentId
+      && activeIdentityRef.current.suggestionId === identity.suggestionId
+    );
     setState("dismissing");
     try {
-      await dismissStudioSuggestion(suggestion.id);
-      setState("dismissed");
+      await dismissStudioSuggestion(suggestion.id, controller.signal);
+      if (isCurrent()) setState("dismissed");
     }
-    catch { setState("error"); }
+    catch { if (isCurrent()) setState("error"); }
+    finally { if (isCurrent()) decisionControllerRef.current = null; }
   }
 
   if (state === "dismissed") return <p ref={decisionRef} className="studio-suggestion__decision" role="status" tabIndex={-1}>Proposta dispensada.</p>;
