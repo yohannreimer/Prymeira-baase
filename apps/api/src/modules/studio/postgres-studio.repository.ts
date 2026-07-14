@@ -413,8 +413,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
       const conditions = ["workspace_id=$1", "owner_profile_id=$2"];
       if (input.status) {
-        params.push(input.status);
-        conditions.push(`status=$${params.length}`);
+        conditions.push(`status='${input.status}'`);
       }
       if (input.inboxState) {
         params.push(input.inboxState);
@@ -429,13 +428,13 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       if (input.cursor) {
         const cursor = decodeCursor(input.cursor);
         params.push(cursor.updatedAt, cursor.id);
-        conditions.push(`(date_trunc('milliseconds',updated_at),id) < ($${params.length - 1}::timestamptz,$${params.length}::text)`);
+        conditions.push(`(date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz),id) < (date_bin('1 millisecond'::interval,$${params.length - 1}::timestamptz,'2000-01-01 00:00:00+00'::timestamptz),$${params.length}::text)`);
       }
       params.push(input.limit + 1);
       const result = await db.query<StudioDocumentRow>(
         `SELECT * FROM studio_documents
          WHERE ${conditions.join(" AND ")}
-         ORDER BY date_trunc('milliseconds',updated_at) DESC,id DESC
+         ORDER BY date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC
          LIMIT $${params.length}`,
         params
       );

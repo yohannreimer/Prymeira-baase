@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioCollections from "./StudioCollections";
+import { useStudioCollections } from "./useStudioCollections";
 
 const rawCollections = [
   rawCollection("collection_1", "Estratégia"),
@@ -34,9 +35,9 @@ describe("StudioCollections", () => {
 
   it("selects and filters collections, then creates, renames, and deletes without deleting documents", async () => {
     const user = userEvent.setup();
-    render(<StudioCollections onOpenDocument={vi.fn()} />);
+    render(<CollectionsHarness />);
 
-    expect(await screen.findByRole("button", { name: "Estratégia" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Estratégia" })).toHaveAttribute("aria-pressed", "true"));
     await waitFor(() => expect(requestedUrls()).toContain(
       "/api/studio/documents?status=active&limit=30&collection_id=collection_1"
     ));
@@ -66,6 +67,11 @@ describe("StudioCollections", () => {
     expect(screen.getByRole("button", { name: "Estratégia" })).toHaveAttribute("aria-pressed", "true");
   });
 });
+
+function CollectionsHarness() {
+  const store = useStudioCollections();
+  return <StudioCollections store={store} onOpenDocument={vi.fn()} />;
+}
 
 function requestedUrls() {
   return vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url));

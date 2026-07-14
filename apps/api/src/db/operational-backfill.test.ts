@@ -37,6 +37,12 @@ beforeEach(async () => {
       value === target ? [index + 1] : []
     ))
   });
+  memoryDb.public.registerFunction({
+    name: "date_bin",
+    args: [DataType.interval, DataType.timestamptz, DataType.timestamptz],
+    returns: DataType.timestamptz,
+    implementation: (_interval: unknown, value: Date) => value
+  });
   memoryDb.public.registerOperator({
     operator: "~",
     left: DataType.text,

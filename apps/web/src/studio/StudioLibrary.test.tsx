@@ -32,6 +32,35 @@ describe("StudioLibrary", () => {
     expect(await screen.findByText("Seu arquivo está livre por enquanto.")).toBeInTheDocument();
   });
 
+  it("isolates pagination state by query while an obsolete page is still pending", async () => {
+    const user = userEvent.setup();
+    const oldPage = deferred<StudioDocumentPage>();
+    const loadDocuments = vi.fn(async (query: { status: "active" | "archived"; cursor?: string }) => {
+      if (query.status === "active" && query.cursor) return oldPage.promise;
+      if (query.status === "active") return { items: [documents[0]!], nextCursor: "active_2", collectionsByDocumentId: {} };
+      if (query.cursor) return { items: [{ ...documents[1]!, status: "archived" as const }], nextCursor: null, collectionsByDocumentId: {} };
+      return { items: [{ ...documents[0]!, status: "archived" as const }], nextCursor: "archived_2", collectionsByDocumentId: {} };
+    });
+    const { rerender } = render(
+      <StudioLibrary query={{ status: "active" }} loadDocuments={loadDocuments} loadCollections={async () => []} onOpenDocument={vi.fn()} />
+    );
+    await user.click(await screen.findByRole("button", { name: "Carregar mais" }));
+
+    rerender(
+      <StudioLibrary query={{ status: "archived" }} loadDocuments={loadDocuments} loadCollections={async () => []} onOpenDocument={vi.fn()} />
+    );
+    expect(await screen.findByRole("listitem", { name: "Plano de expansão" })).toBeInTheDocument();
+    const next = screen.getByRole("button", { name: "Carregar mais" });
+    expect(next).toBeEnabled();
+
+    oldPage.resolve({ items: [documents[1]!], nextCursor: null, collectionsByDocumentId: {} });
+    await user.click(next);
+    await waitFor(() => expect(loadDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "archived", cursor: "archived_2" }), expect.any(AbortSignal)
+    ));
+    expect(screen.queryByRole("listitem", { name: "Decisão de margem" })).toBeInTheDocument();
+  });
+
   it("reviews inbox documents and keeps collection membership unique under repeated clicks", async () => {
     const user = userEvent.setup();
     const updateDocument = vi.fn(async (_id: string, input: { expected_revision: number }) => ({
@@ -147,6 +176,34 @@ describe("StudioLibrary", () => {
     await user.click(await screen.findByRole("button", { name: "Restaurar" }));
     await waitFor(() => expect(restoreDocument).toHaveBeenCalledWith("document_1", expect.any(AbortSignal)));
     expect(screen.getByRole("status")).toHaveTextContent("restaurado");
+  });
+
+  it("restores a failed archived item at its exact index and focus target", async () => {
+    const user = userEvent.setup();
+    const archived = [documents[0]!, documents[1]!, document("document_3", "Plano de caixa")]
+      .map((item) => ({ ...item, status: "archived" as const, archivedAt: "2026-07-13" }));
+    const failure = deferred<StudioDocument>();
+    render(
+      <StudioLibrary
+        query={{ status: "archived" }}
+        loadDocuments={async () => ({ items: archived, nextCursor: null, collectionsByDocumentId: {} })}
+        loadCollections={async () => []}
+        restoreDocument={() => failure.promise}
+        onOpenDocument={vi.fn()}
+      />
+    );
+    const middle = await screen.findByRole("listitem", { name: "Decisão de margem" });
+    await user.click(within(middle).getByRole("button", { name: "Restaurar" }));
+    failure.reject(new Error("offline"));
+
+    await screen.findByText(/Não foi possível restaurar/u);
+    const titles = screen.getAllByRole("listitem").map((row) => within(row).getByRole("button", { name: /corpo privado/u }).textContent);
+    expect(titles).toEqual([
+      expect.stringContaining("Plano de expansão"),
+      expect.stringContaining("Decisão de margem"),
+      expect.stringContaining("Plano de caixa")
+    ]);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Decisão de margem/u })).toHaveFocus());
   });
 
   it("uses roving focus for document navigation", async () => {

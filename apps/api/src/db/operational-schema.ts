@@ -891,6 +891,23 @@ const migrations: Migration[] = [{
       ON studio_assets (workspace_id,owner_profile_id,document_id,idempotency_key)
       WHERE idempotency_key IS NOT NULL AND lifecycle_status='active';
   `
+}, {
+  version: 21,
+  name: "studio_library_cursor_indexes",
+  sql: `
+    CREATE INDEX studio_documents_active_library_cursor_idx
+      ON studio_documents
+        (workspace_id,owner_profile_id,date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC)
+      WHERE status='active';
+    CREATE INDEX studio_documents_active_inbox_cursor_idx
+      ON studio_documents
+        (workspace_id,owner_profile_id,inbox_state,date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC)
+      WHERE status='active';
+    CREATE INDEX studio_documents_archived_library_cursor_idx
+      ON studio_documents
+        (workspace_id,owner_profile_id,date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC)
+      WHERE status='archived';
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

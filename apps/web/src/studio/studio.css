@@ -431,6 +431,59 @@
   margin: 10px 0 0;
 }
 
+.studio-document-open-error {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  margin: clamp(34px, 8vw, 86px) auto;
+  max-width: 520px;
+}
+
+.studio-document-open-error > i {
+  color: var(--faint);
+  font-size: 28px;
+  margin-bottom: 18px;
+}
+
+.studio-document-open-error h2 {
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.05;
+  margin: 0 0 12px;
+}
+
+.studio-document-open-error p {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.studio-document-open-error > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.studio-document-open-error button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  min-height: 40px;
+  padding: 8px 13px;
+}
+
+.studio-document-open-error button:first-child {
+  background: var(--accent-bg);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+
+.studio-document-open-error button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .studio-collections {
   margin-top: 32px;
 }
@@ -1611,7 +1664,8 @@
   .studio-library-switch button,
   .studio-search-result,
   .studio-collections__create button,
-  .studio-collections__item button {
+  .studio-collections__item button,
+  .studio-document-open-error button {
     min-height: 44px;
   }
 }

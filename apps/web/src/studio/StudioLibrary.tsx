@@ -19,6 +19,7 @@ export type StudioLibraryQuery = {
 type StudioLibraryProps = {
   query: StudioLibraryQuery;
   onOpenDocument(document: StudioDocument): void;
+  collections?: StudioCollection[];
   loadDocuments?: (query: { status: StudioDocumentStatus; limit: number; cursor?: string; inbox_state?: "pending_review" | "reviewed"; collection_id?: string }, signal: AbortSignal) => Promise<StudioDocumentPage>;
   loadCollections?: (signal: AbortSignal) => Promise<StudioCollection[]>;
   updateDocument?: typeof defaultUpdateDocument;
@@ -36,6 +37,7 @@ const dateFormatter = new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: 
 export default function StudioLibrary({
   query,
   onOpenDocument,
+  collections: sharedCollections,
   loadDocuments = defaultLoadDocuments,
   loadCollections = defaultLoadCollections,
   updateDocument = defaultUpdateDocument,
@@ -45,7 +47,7 @@ export default function StudioLibrary({
   removeMembership = removeStudioDocumentFromCollection
 }: StudioLibraryProps) {
   const [documents, setDocuments] = useState<StudioDocument[]>([]);
-  const [collections, setCollections] = useState<StudioCollection[]>([]);
+  const [loadedCollections, setLoadedCollections] = useState<StudioCollection[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -64,22 +66,26 @@ export default function StudioLibrary({
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const emptyRef = useRef<HTMLDivElement | null>(null);
   const queryKey = `${query.status}:${query.inbox_state ?? "all"}:${query.collection_id ?? "all"}`;
+  const queryGeneration = useRef(0);
+  const collections = sharedCollections ?? loadedCollections;
 
   useEffect(() => {
+    const generation = ++queryGeneration.current;
     const controller = new AbortController();
     setLoading(true);
+    setLoadingMore(false);
     setLoadError(false);
     setDocuments([]);
     setCursor(null);
     setActiveIndex(0);
     void loadDocuments({ status: query.status, limit: PAGE_SIZE, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal).then((page) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || queryGeneration.current !== generation) return;
       setDocuments(uniqueDocuments(page.items));
       hydrateMemberships(page.collectionsByDocumentId, false);
       setCursor(page.nextCursor);
       setLoading(false);
     }).catch((error: unknown) => {
-      if (controller.signal.aborted || isAbortError(error)) return;
+      if (controller.signal.aborted || queryGeneration.current !== generation || isAbortError(error)) return;
       setLoadError(true);
       setLoading(false);
     });
@@ -87,12 +93,13 @@ export default function StudioLibrary({
   }, [loadDocuments, query.collection_id, query.inbox_state, query.status, queryKey]);
 
   useEffect(() => {
+    if (sharedCollections) return;
     const controller = new AbortController();
     void loadCollections(controller.signal).then((items) => {
-      if (!controller.signal.aborted) setCollections(items);
+      if (!controller.signal.aborted) setLoadedCollections(items);
     }).catch(() => undefined);
     return () => controller.abort();
-  }, [loadCollections]);
+  }, [loadCollections, sharedCollections]);
 
   useEffect(() => () => {
     operationControllers.current.forEach((controller) => controller.abort());
@@ -120,18 +127,19 @@ export default function StudioLibrary({
 
   async function loadNextPage() {
     if (!cursor || loadingMore) return;
+    const generation = queryGeneration.current;
     const controller = trackController(operationControllers.current);
     setLoadingMore(true);
     try {
       const page = await loadDocuments({ status: query.status, limit: PAGE_SIZE, cursor, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal);
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || queryGeneration.current !== generation) return;
       setDocuments((current) => uniqueDocuments([...current, ...page.items]));
       hydrateMemberships(page.collectionsByDocumentId, true);
       setCursor(page.nextCursor);
     } catch (error) {
-      if (!controller.signal.aborted && !isAbortError(error)) setLiveMessage("Não foi possível carregar mais registros.");
+      if (!controller.signal.aborted && queryGeneration.current === generation && !isAbortError(error)) setLiveMessage("Não foi possível carregar mais registros.");
     } finally {
-      if (!controller.signal.aborted) setLoadingMore(false);
+      if (queryGeneration.current === generation) setLoadingMore(false);
       operationControllers.current.delete(controller);
     }
   }
@@ -168,14 +176,14 @@ export default function StudioLibrary({
   }
 
   async function restore(document: StudioDocument) {
-    removeOptimistically(document);
+    const rollback = removeOptimistically(document);
     const controller = trackController(operationControllers.current);
     try {
       await restoreDocument(document.id, controller.signal);
       if (!controller.signal.aborted) setLiveMessage(`${document.title || "Documento"} restaurado.`);
     } catch (error) {
       if (!controller.signal.aborted && !isAbortError(error)) {
-        setDocuments((current) => uniqueDocuments([...current, document]));
+        restoreRollback(rollback);
         setLiveMessage(`Não foi possível restaurar ${document.title || "o documento"}.`);
       }
     } finally {

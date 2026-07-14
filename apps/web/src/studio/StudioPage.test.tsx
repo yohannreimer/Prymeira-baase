@@ -87,6 +87,81 @@ describe("StudioPage", () => {
     expect(window.location.hash).toBe(`#estudio/document/${rawDocument.id}`);
   });
 
+  it("treats malformed or unknown document hashes as a safe home route", () => {
+    window.history.replaceState(null, "", "/#estudio/document/%E0%A4%A");
+    const { unmount } = render(<StudioPage />);
+    expect(screen.getByRole("button", { name: "Início" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Um espaço para pensar com clareza." })).toBeInTheDocument();
+    unmount();
+
+    window.history.replaceState(null, "", "/#estudio/document/known/extra");
+    render(<StudioPage />);
+    expect(screen.getByRole("button", { name: "Início" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("clears document A immediately while document B is pending and ignores B after leaving its route", async () => {
+    const documentB = deferred<Response>();
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return Promise.resolve(jsonResponse({ document: rawDocument }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}`)) return documentB.promise;
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+    expect(await screen.findByRole("heading", { name: "Reflexão estratégica" })).toBeInTheDocument();
+
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocumentB.id}`);
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(screen.queryByRole("heading", { name: "Reflexão estratégica" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Abrindo caderno" })).toBeInTheDocument();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Início" }));
+    await act(async () => documentB.resolve(jsonResponse({ document: rawDocumentB })));
+    expect(screen.getByRole("heading", { name: "Um espaço para pensar com clareza." })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Plano comercial" })).not.toBeInTheDocument();
+  });
+
+  it.each([404, 403])("keeps an unavailable document route recoverable for status %s", async (status) => {
+    vi.mocked(globalThis.fetch).mockImplementation(async () => jsonResponse({
+      error: { code: status === 403 ? "STUDIO_OWNER_SCOPE_DENIED" : "STUDIO_DOCUMENT_NOT_FOUND", message: "private" }
+    }, status));
+    window.history.replaceState(null, "", "/#estudio/document/missing");
+    render(<StudioPage />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Este registro não está disponível");
+    const back = screen.getByRole("button", { name: "Voltar para Tudo" });
+    expect(back).toHaveFocus();
+    await userEvent.setup().click(back);
+    expect(screen.getByRole("heading", { name: "Tudo" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#estudio/all");
+  });
+
+  it("offers retry for a temporary document loading failure", async () => {
+    let attempts = 0;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/documents/temporary")) {
+        attempts += 1;
+        return attempts === 1
+          ? jsonResponse({ error: { code: "TEMPORARY", message: "try again" } }, 503)
+          : jsonResponse({ document: rawDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", "/#estudio/document/temporary");
+    render(<StudioPage />);
+
+    const retry = await screen.findByRole("button", { name: "Tentar novamente" });
+    expect(retry).toHaveFocus();
+    await userEvent.setup().click(retry);
+    expect(await screen.findByRole("heading", { name: "Reflexão estratégica" })).toBeInTheDocument();
+    expect(attempts).toBe(2);
+  });
+
   it("sweeps expired draft quarantines for other documents when Studio opens", async () => {
     const expiredKey = "baase:studio:draft:another-document:quarantine";
     const retainedKey = "baase:studio:draft:retained-document:quarantine";
@@ -167,6 +242,65 @@ describe("StudioPage", () => {
     expect(vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url))).toContain(
       "/api/studio/documents?status=archived&limit=30"
     );
+  });
+
+  it("shares one collection source across management, filters, and library checkboxes", async () => {
+    const user = userEvent.setup();
+    let collectionReads = 0;
+    let collectionName = "Estratégia";
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/studio/home")) {
+        return jsonResponse({ home: { recent_documents: [], focused_documents: [], pending_review_count: 0, next_rituals: [] } });
+      }
+      if (url === "/api/studio/collections" && method === "GET") {
+        collectionReads += 1;
+        return jsonResponse({ collections: [rawCollection(collectionName)] });
+      }
+      if (url === "/api/studio/collections/collection_1" && method === "PATCH") {
+        collectionName = JSON.parse(String(init?.body)).name;
+        return jsonResponse({ collection: rawCollection(collectionName) });
+      }
+      if (url === "/api/studio/collections/collection_1" && method === "DELETE") {
+        return jsonResponse({ collection: rawCollection(collectionName) });
+      }
+      if (url.includes("/api/studio/documents?")) {
+        return jsonResponse({
+          documents: [rawDocument],
+          next_cursor: null,
+          collections_by_document_id: { [rawDocument.id]: [rawCollection(collectionName)] }
+        });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    const row = await screen.findByRole("listitem", { name: "Reflexão estratégica" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    expect(within(row).getByRole("checkbox", { name: "Estratégia" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Coleções" }));
+    await user.click(await screen.findByRole("button", { name: "Renomear Estratégia" }));
+    const name = screen.getByRole("textbox", { name: "Nome de Estratégia" });
+    await user.clear(name);
+    await user.type(name, "Horizonte");
+    await user.click(screen.getByRole("button", { name: "Salvar" }));
+    expect(await screen.findByRole("button", { name: "Horizonte" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    const updatedRow = await screen.findByRole("listitem", { name: "Reflexão estratégica" });
+    await user.click(within(updatedRow).getByRole("button", { name: "Organizar em coleções" }));
+    expect(within(updatedRow).getByRole("checkbox", { name: "Horizonte" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Coleções" }));
+    await user.click(await screen.findByRole("button", { name: "Excluir Horizonte" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Horizonte" })).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    const withoutCollection = await screen.findByRole("listitem", { name: "Reflexão estratégica" });
+    expect(within(withoutCollection).queryByRole("button", { name: "Organizar em coleções" })).not.toBeInTheDocument();
+    expect(collectionReads).toBe(1);
   });
 
   it("opens a recent document with persisted assets, transcript, original, and focused heading", async () => {
@@ -305,6 +439,13 @@ const rawDocumentB = {
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function rawCollection(name: string) {
+  return {
+    id: "collection_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", name,
+    created_at: "2026-07-13T12:00:00.000Z", updated_at: "2026-07-13T12:00:00.000Z"
+  };
 }
 
 function deferred<T>() {

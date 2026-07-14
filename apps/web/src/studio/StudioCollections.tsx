@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
 import StudioLibrary from "./StudioLibrary";
-import { createStudioCollection, deleteStudioCollection, listStudioCollections, renameStudioCollection } from "./studio-api";
 import type { StudioCollection, StudioDocument } from "./studio.types";
+import type { StudioCollectionsStore } from "./useStudioCollections";
 
-export default function StudioCollections({ onOpenDocument }: { onOpenDocument(document: StudioDocument): void }) {
-  const [collections, setCollections] = useState<StudioCollection[]>([]);
+export default function StudioCollections({
+  onOpenDocument,
+  store
+}: {
+  onOpenDocument(document: StudioDocument): void;
+  store: StudioCollectionsStore;
+}) {
+  const { collections } = store;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -13,22 +19,21 @@ export default function StudioCollections({ onOpenDocument }: { onOpenDocument(d
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void listStudioCollections(fetch, controller.signal).then((items) => {
-      if (controller.signal.aborted) return;
-      setCollections(items);
-      setSelectedId((current) => current ?? items[0]?.id ?? null);
-    }).catch(() => { if (!controller.signal.aborted) setStatus("Não foi possível carregar as coleções."); });
-    return () => controller.abort();
-  }, []);
+    setSelectedId((current) => current && collections.some((item) => item.id === current)
+      ? current
+      : collections[0]?.id ?? null);
+  }, [collections]);
 
   async function create() {
     const trimmed = name.trim();
     if (!trimmed || busyAction) return;
     setBusyAction("create");
     try {
-      const created = await createStudioCollection(trimmed);
-      setCollections((current) => [...current, created]);
+      const created = await store.create(trimmed);
+      if (!created) {
+        setStatus("Não foi possível criar a coleção.");
+        return;
+      }
       setSelectedId(created.id);
       setName("");
       setStatus("Coleção criada.");
@@ -44,8 +49,11 @@ export default function StudioCollections({ onOpenDocument }: { onOpenDocument(d
     if (!trimmed || busyAction) return;
     setBusyAction(`rename:${collection.id}`);
     try {
-      const updated = await renameStudioCollection(collection.id, trimmed);
-      setCollections((current) => current.map((item) => item.id === updated.id ? updated : item));
+      const updated = await store.rename(collection, trimmed);
+      if (!updated) {
+        setStatus("Não foi possível renomear a coleção.");
+        return;
+      }
       setEditingId(null);
       setStatus("Coleção renomeada.");
     } catch {
@@ -59,10 +67,13 @@ export default function StudioCollections({ onOpenDocument }: { onOpenDocument(d
     if (busyAction) return;
     setBusyAction(`delete:${collection.id}`);
     try {
-      await deleteStudioCollection(collection.id);
-      const next = collections.filter((item) => item.id !== collection.id);
-      setCollections(next);
-      setSelectedId((selected) => selected === collection.id ? next[0]?.id ?? null : selected);
+      const wasSelected = selectedId === collection.id;
+      const removed = await store.remove(collection);
+      if (!removed) {
+        if (wasSelected) setSelectedId(collection.id);
+        setStatus("Não foi possível excluir a coleção.");
+        return;
+      }
       setStatus("Coleção excluída. Os documentos continuam preservados.");
     } catch {
       setStatus("Não foi possível excluir a coleção.");
@@ -79,7 +90,7 @@ export default function StudioCollections({ onOpenDocument }: { onOpenDocument(d
         <input id="studio-new-collection" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Estratégia 2027" />
         <button type="submit" disabled={!name.trim() || busyAction !== null}>{busyAction === "create" ? "Criando…" : "Criar"}</button>
       </form>
-      {collections.length ? (
+      {store.loading ? <p className="studio-library-opening" role="status">Carregando coleções…</p> : collections.length ? (
         <div className="studio-collections__layout">
           <div className="studio-collections__list" role="list" aria-label="Coleções">
             {collections.map((collection) => (
@@ -100,9 +111,9 @@ export default function StudioCollections({ onOpenDocument }: { onOpenDocument(d
               </div>
             ))}
           </div>
-          {selectedId ? <StudioLibrary query={{ status: "active", collection_id: selectedId }} onOpenDocument={onOpenDocument} /> : null}
+          {selectedId ? <StudioLibrary collections={collections} query={{ status: "active", collection_id: selectedId }} onOpenDocument={onOpenDocument} /> : null}
         </div>
-      ) : <p className="studio-home__invitation">Crie uma coleção para reunir registros sem duplicá-los.</p>}
+      ) : <p className="studio-home__invitation">{store.loadError ? "Não foi possível carregar as coleções." : "Crie uma coleção para reunir registros sem duplicá-los."}</p>}
     </section>
   );
 }

@@ -1,11 +1,12 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
-import { getStudioDocument, getStudioDocumentAssets } from "./studio-api";
+import { getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
+import { useStudioCollections } from "./useStudioCollections";
 import type { StudioAsset, StudioDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
@@ -30,6 +31,8 @@ type DocumentAssetState = {
   error: boolean;
 };
 
+type DocumentOpenError = { kind: "unavailable" | "temporary"; documentId: string };
+
 const studioNavigation: StudioNavItem[] = [
   { key: "home", label: "Início", icon: "ph-house", title: "Um espaço para pensar com clareza.", description: "Registre o que importa e transforme notas em direção, no seu ritmo.", instruction: "Comece registrando uma ideia, decisão ou assunto que não pode se perder." },
   { key: "inbox", label: "Entrada", icon: "ph-tray", title: "Entrada", description: "Tudo o que você capturar chega aqui antes de ganhar um lugar definitivo.", instruction: "Novas capturas aparecerão aqui para você revisar e organizar." },
@@ -52,10 +55,12 @@ export default function StudioPage() {
     error: false
   });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
-  const [openingSearchResult, setOpeningSearchResult] = useState(false);
-  const [searchOpenError, setSearchOpenError] = useState(false);
+  const [documentOpenError, setDocumentOpenError] = useState<DocumentOpenError | null>(null);
   const searchOpenController = useRef<AbortController | null>(null);
+  const documentRequestGeneration = useRef(0);
   const selectedDocumentId = useRef<string | null>(null);
+  const documentErrorActionRef = useRef<HTMLButtonElement | null>(null);
+  const collectionStore = useStudioCollections();
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
   useEffect(() => {
@@ -63,6 +68,15 @@ export default function StudioPage() {
   }, []);
 
   function openDocument(document: StudioDocument, outcome?: StudioCaptureOutcome, syncHistory = true) {
+    documentRequestGeneration.current += 1;
+    searchOpenController.current?.abort();
+    searchOpenController.current = null;
+    setDocumentOpenError(null);
+    showDocument(document, outcome);
+    if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(document.id)}`);
+  }
+
+  function showDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
     selectedDocumentId.current = document.id;
     setSelectedDocument(document);
     setAssetState({
@@ -72,10 +86,11 @@ export default function StudioPage() {
       error: false
     });
     setSection("document");
-    if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(document.id)}`);
   }
 
   function navigateSection(next: Exclude<StudioSection, "document">) {
+    cancelDocumentOpen();
+    setDocumentOpenError(null);
     setSection(next);
     window.history.pushState(null, "", `#estudio/${next}`);
   }
@@ -84,27 +99,57 @@ export default function StudioPage() {
     searchOpenController.current?.abort();
     const controller = new AbortController();
     searchOpenController.current = controller;
-    setOpeningSearchResult(true);
-    setSearchOpenError(false);
+    const generation = ++documentRequestGeneration.current;
+    selectedDocumentId.current = null;
+    setSelectedDocument(null);
+    setAssetState({ documentId: null, assets: [], loading: false, error: false });
+    setSection("document");
+    setDocumentOpenError(null);
+    if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(documentId)}`);
     try {
-      openDocument(await getStudioDocument(documentId, fetch, controller.signal), undefined, syncHistory);
+      const document = await getStudioDocument(documentId, fetch, controller.signal);
+      if (!isCurrentDocumentRequest(controller, generation, documentId)) return;
+      showDocument(document);
     } catch (error) {
-      if (!controller.signal.aborted) setSearchOpenError(true);
+      if (isCurrentDocumentRequest(controller, generation, documentId)) {
+        const status = studioErrorStatus(error);
+        const unavailable = status === 403 || status === 404;
+        setDocumentOpenError({ kind: unavailable ? "unavailable" : "temporary", documentId });
+      }
     } finally {
-      if (!controller.signal.aborted) setOpeningSearchResult(false);
-      if (searchOpenController.current === controller) searchOpenController.current = null;
+      if (searchOpenController.current === controller && documentRequestGeneration.current === generation) {
+        searchOpenController.current = null;
+      }
     }
+  }
+
+  function isCurrentDocumentRequest(controller: AbortController, generation: number, documentId: string) {
+    const route = parseStudioHash(window.location.hash);
+    return !controller.signal.aborted
+      && searchOpenController.current === controller
+      && documentRequestGeneration.current === generation
+      && route.section === "document"
+      && route.documentId === documentId;
+  }
+
+  function cancelDocumentOpen() {
+    documentRequestGeneration.current += 1;
+    searchOpenController.current?.abort();
+    searchOpenController.current = null;
   }
 
   useEffect(() => () => searchOpenController.current?.abort(), []);
 
   useEffect(() => {
     function restoreInternalRoute() {
-      const next = sectionFromHash(window.location.hash);
-      setSection(next);
-      if (next === "document") {
-        const documentId = documentIdFromHash(window.location.hash);
-        if (documentId && documentId !== selectedDocumentId.current) void openDocumentById(documentId, false);
+      const route = parseStudioHash(window.location.hash);
+      if (route.section === "document") {
+        if (route.documentId !== selectedDocumentId.current) void openDocumentById(route.documentId, false);
+        else setSection("document");
+      } else {
+        cancelDocumentOpen();
+        setDocumentOpenError(null);
+        setSection(route.section);
       }
     }
     restoreInternalRoute();
@@ -115,6 +160,11 @@ export default function StudioPage() {
       window.removeEventListener("hashchange", restoreInternalRoute);
     };
   }, []);
+
+  useEffect(() => {
+    if (!documentOpenError) return;
+    documentErrorActionRef.current?.focus();
+  }, [documentOpenError]);
 
   useEffect(() => {
     if (section !== "document" || !selectedDocument) return;
@@ -169,8 +219,8 @@ export default function StudioPage() {
         </nav>
 
         <section className="studio-content" aria-label="Conteúdo da seção" aria-live="polite">
-          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : section === "document" && selectedDocument ? (
-            <>
+          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : section === "document" ? (
+            selectedDocument ? <>
               <Suspense fallback={<StudioEditorSkeleton />}>
                 <StudioEditor
                   key={selectedDocument.id}
@@ -189,29 +239,34 @@ export default function StudioPage() {
                 error={assetState.documentId === selectedDocument.id ? assetState.error : false}
                 onRetry={() => setAssetsReloadKey((key) => key + 1)}
               />
-            </>
+            </> : documentOpenError ? (
+              <DocumentOpenFailure
+                error={documentOpenError}
+                actionRef={documentErrorActionRef}
+                onBack={() => navigateSection("all")}
+                onRetry={() => void openDocumentById(documentOpenError.documentId, false)}
+              />
+            ) : <StudioEditorSkeleton />
           ) : section === "inbox" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} />
             </>
           ) : section === "all" ? (
             <>
               <StudioSectionHeading item={active} />
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
-              {openingSearchResult ? <p className="studio-library-opening" role="status">Abrindo registro…</p> : null}
-              {searchOpenError ? <p className="studio-library-opening" role="alert">Não foi possível abrir este registro agora.</p> : null}
-              <StudioLibrary query={{ status: "active" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} />
             </>
           ) : section === "collections" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioCollections onOpenDocument={openDocument} />
+              <StudioCollections store={collectionStore} onOpenDocument={openDocument} />
             </>
           ) : section === "archive" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary query={{ status: "archived" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} />
             </>
           ) : (
             <>
@@ -229,14 +284,35 @@ export default function StudioPage() {
 }
 
 function sectionFromHash(hash: string): StudioSection {
-  const route = hash.replace(/^#estudio\/?/u, "").split("/")[0];
-  if (route === "document") return "document";
-  return studioNavigation.some((item) => item.key === route) ? route as StudioSection : "home";
+  return parseStudioHash(hash).section;
 }
 
-function documentIdFromHash(hash: string) {
-  const match = hash.match(/^#estudio\/document\/([^/]+)$/u);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
+type StudioRoute =
+  | { section: Exclude<StudioSection, "document"> }
+  | { section: "document"; documentId: string };
+
+function parseStudioHash(hash: string): StudioRoute {
+  if (hash === "#estudio" || hash === "#estudio/" || hash === "#estudio/home") return { section: "home" };
+  const documentMatch = hash.match(/^#estudio\/document\/([^/]+)$/u);
+  if (documentMatch?.[1]) {
+    try {
+      const documentId = decodeURIComponent(documentMatch[1]);
+      if (documentId && !documentId.includes("/")) return { section: "document", documentId };
+    } catch {
+      return { section: "home" };
+    }
+  }
+  const sectionMatch = hash.match(/^#estudio\/([^/]+)$/u);
+  const section = sectionMatch?.[1];
+  return studioNavigation.some((item) => item.key === section)
+    ? { section: section as Exclude<StudioSection, "document"> }
+    : { section: "home" };
+}
+
+function studioErrorStatus(error: unknown) {
+  if (error instanceof StudioApiError) return error.status;
+  if (error && typeof error === "object" && "status" in error && typeof error.status === "number") return error.status;
+  return null;
 }
 
 function StudioSectionHeading({ item }: { item: StudioNavItem }) {
@@ -255,6 +331,32 @@ function StudioEditorSkeleton() {
       <span aria-hidden="true" />
       <span aria-hidden="true" />
       <span aria-hidden="true" />
+    </div>
+  );
+}
+
+function DocumentOpenFailure({
+  error,
+  actionRef,
+  onBack,
+  onRetry
+}: {
+  error: DocumentOpenError;
+  actionRef: RefObject<HTMLButtonElement | null>;
+  onBack(): void;
+  onRetry(): void;
+}) {
+  return (
+    <div className="studio-document-open-error" role="alert">
+      <i aria-hidden="true" className="ph-light ph-file-x" />
+      <h2 className="serif">{error.kind === "unavailable" ? "Este registro não está disponível." : "Não foi possível abrir este registro."}</h2>
+      <p>{error.kind === "unavailable"
+        ? "Ele pode ter sido removido, arquivado ou pertencer a outro espaço privado."
+        : "Sua biblioteca continua segura. Tente novamente quando a conexão estiver estável."}</p>
+      <div>
+        {error.kind === "temporary" ? <button ref={actionRef} type="button" onClick={onRetry}>Tentar novamente</button> : null}
+        <button ref={error.kind === "unavailable" ? actionRef : undefined} type="button" onClick={onBack}>Voltar para Tudo</button>
+      </div>
     </div>
   );
 }

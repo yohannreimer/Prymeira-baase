@@ -1,5 +1,7 @@
 import { DataType, newDb } from "pg-mem";
 import type { Pool } from "pg";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureOperationalSchema,
@@ -34,6 +36,12 @@ beforeEach(() => {
       value === target ? [index + 1] : []
     ))
   });
+  memoryDb.public.registerFunction({
+    name: "date_bin",
+    args: [DataType.interval, DataType.timestamptz, DataType.timestamptz],
+    returns: DataType.timestamptz,
+    implementation: (_interval: unknown, value: Date) => value
+  });
   memoryDb.public.registerOperator({
     operator: "~",
     left: DataType.text,
@@ -58,7 +66,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -199,7 +207,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("reserves the six approved future Studio migrations and adds capture idempotency in migration 20", async () => {
+  it("reserves the six approved future Studio migrations and applies additive migrations 20 and 21", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -220,9 +228,25 @@ describe("operational schema", () => {
     );
     expect(documentColumns.rows).toEqual([{ column_name: "capture_key" }]);
     const versions = await db.query<{ version: number }>(
-      "select version from baase_schema_migrations where version between 14 and 20 order by version"
+      "select version from baase_schema_migrations where version between 14 and 21 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 20 }]);
+    expect(versions.rows).toEqual([{ version: 20 }, { version: 21 }]);
+  });
+
+  it("matches Studio library cursor queries to immutable owner-scoped indexes", () => {
+    const schema = readFileSync(resolve(process.cwd(), "src/db/operational-schema.ts"), "utf8");
+    const repository = readFileSync(resolve(process.cwd(), "src/modules/studio/postgres-studio.repository.ts"), "utf8");
+    const cursorExpression = "date_bin('1 millisecond'::interval,updated_at,'2000-01-01 00:00:00+00'::timestamptz)";
+
+    expect(schema).toContain('version: 21');
+    expect(schema).toContain('name: "studio_library_cursor_indexes"');
+    expect(schema).toContain(`studio_documents_active_library_cursor_idx`);
+    expect(schema).toContain(`studio_documents_active_inbox_cursor_idx`);
+    expect(schema).toContain(`studio_documents_archived_library_cursor_idx`);
+    expect(schema).toContain(cursorExpression);
+    expect(repository).toContain(`ORDER BY ${cursorExpression} DESC,id DESC`);
+    expect(repository).toContain(`(${cursorExpression},id) <`);
+    expect(schema).toContain("UNIQUE (workspace_id, owner_profile_id, collection_id, document_id)");
   });
 
   it("enforces capture idempotency only among active assets", async () => {
