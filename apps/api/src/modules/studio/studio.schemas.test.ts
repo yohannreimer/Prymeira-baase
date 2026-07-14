@@ -113,9 +113,9 @@ describe("Studio schemas", () => {
 
   it("selects and parses properties for every structure kind", () => {
     const goal = studioStructurePropertiesSchema("goal").parse({
-      metric: { label: "Receita", current: 100, target: 200 }
+      desired_outcome: "Dobrar a receita"
     });
-    expect(goal.metric?.target).toBe(200);
+    expect(goal.desired_outcome).toBe("Dobrar a receita");
     expect(studioStructurePropertiesSchema("decision").parse({ decision: "Contratar" }))
       .toMatchObject({ decision: "Contratar" });
     expect(studioStructurePropertiesSchema("plan").parse({ direction: "Expandir" }))

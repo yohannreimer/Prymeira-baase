@@ -2,6 +2,7 @@ import { searchStudioDocuments } from "./studio-search";
 import type {
   CreateStudioCollection,
   CreateStudioDocument,
+  CreateStudioStructure,
   StudioCollection,
   StudioDocument,
   StudioDocumentQuery,
@@ -9,9 +10,16 @@ import type {
   StudioOwnerScope,
   StudioRepository,
   StudioService,
+  StudioStructure,
+  StudioRitualCadence,
   UpdateStudioCollection,
   UpdateStudioDocument
 } from "./studio.types";
+import {
+  studioGoalMetricSchema,
+  studioRitualCadenceSchema,
+  studioStructurePropertiesSchema
+} from "./studio.schemas";
 
 type StudioServiceOptions = {
   now?: () => string;
@@ -19,6 +27,7 @@ type StudioServiceOptions = {
 
 const HOME_DOCUMENT_LIMIT = 10;
 const DESIRED_STATE_UPDATE_ATTEMPTS = 3;
+const STRUCTURE_UPDATE_ATTEMPTS = 3;
 
 function assertActor(scope: StudioOwnerScope, actorProfileId: string) {
   if (actorProfileId !== scope.ownerProfileId) throw new Error("STUDIO_ACTOR_SCOPE_MISMATCH");
@@ -40,6 +49,87 @@ function currentTimestamp(clock: () => string) {
   const timestamp = new Date(value);
   if (Number.isNaN(timestamp.getTime())) throw new Error("STUDIO_CLOCK_INVALID");
   return timestamp.toISOString();
+}
+
+function assertStructure(structure: StudioStructure): StudioStructure {
+  try {
+    studioStructurePropertiesSchema(structure.kind).parse(structure.propertiesJson);
+    if (structure.kind === "goal") {
+      if (structure.metricJson !== null) studioGoalMetricSchema.parse(structure.metricJson);
+      if (structure.cadenceJson !== null || structure.nextRunAt !== null) throw new Error();
+    } else if (structure.kind === "ritual") {
+      if (structure.metricJson !== null || structure.cadenceJson === null) throw new Error();
+      studioRitualCadenceSchema.parse(structure.cadenceJson);
+      if (structure.nextRunAt === null) throw new Error();
+    } else if (structure.metricJson !== null || structure.cadenceJson !== null || structure.nextRunAt !== null) {
+      throw new Error();
+    }
+    return structure;
+  } catch {
+    throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+  }
+}
+
+function zonedParts(at: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+  }).formatToParts(at);
+  const read = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: read("year"), month: read("month"), day: read("day"), hour: read("hour"), minute: read("minute") };
+}
+
+function localToUtc(parts: { year: number; month: number; day: number; hour: number; minute: number }, timezone: string) {
+  const desired = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  let candidate = desired;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = zonedParts(new Date(candidate), timezone);
+    const represented = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+    candidate += desired - represented;
+  }
+  const exact = zonedParts(new Date(candidate), timezone);
+  return Object.entries(parts).every(([key, value]) => exact[key as keyof typeof exact] === value)
+    ? new Date(candidate)
+    : null;
+}
+
+function nextRitualRun(cadence: StudioRitualCadence, afterIso: string) {
+  const after = new Date(afterIso);
+  const local = zonedParts(after, cadence.timezone);
+  const [hour, minute] = cadence.local_time.split(":").map(Number) as [number, number];
+  const base = new Date(Date.UTC(local.year, local.month - 1, local.day));
+  for (let offset = 0; offset <= 370; offset += 1) {
+    const calendar = new Date(base.getTime() + offset * 86_400_000);
+    const year = calendar.getUTCFullYear();
+    const month = calendar.getUTCMonth() + 1;
+    const day = calendar.getUTCDate();
+    const weekday = calendar.getUTCDay();
+    const scheduled = cadence.frequency === "daily"
+      || (cadence.frequency === "weekly" && cadence.weekdays!.includes(weekday))
+      || (cadence.frequency === "monthly" && cadence.month_day === day);
+    if (!scheduled) continue;
+    const candidate = localToUtc({ year, month, day, hour, minute }, cadence.timezone);
+    if (candidate && candidate.getTime() > after.getTime()) return candidate.toISOString();
+  }
+  throw new Error("STUDIO_RITUAL_NEXT_RUN_UNAVAILABLE");
+}
+
+function normalizeStructureInput(kind: StudioStructure["kind"], input: CreateStudioStructure) {
+  if (kind !== "goal" && input.metric_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+  if (kind !== "ritual" && input.cadence_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+  if (kind === "ritual" && input.cadence_json == null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+  const propertiesJson = studioStructurePropertiesSchema(kind).parse(input.properties_json) as Record<string, unknown>;
+  const metricJson = kind === "goal" && input.metric_json != null
+    ? studioGoalMetricSchema.parse(input.metric_json)
+    : null;
+  const cadenceJson = kind === "ritual"
+    ? studioRitualCadenceSchema.parse(input.cadence_json)
+    : null;
+  if (kind === "decision" && input.horizon_at && typeof propertiesJson.review_date === "string"
+    && input.horizon_at.slice(0, 10) !== propertiesJson.review_date) {
+    throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+  }
+  return { propertiesJson, metricJson, cadenceJson };
 }
 
 async function requireDocument(
@@ -247,6 +337,86 @@ export function createStudioService(
         relationType,
         createdByProfileId: actorProfileId
       });
+    },
+
+    async createStructure(scope, actorProfileId, documentId, input) {
+      assertActor(scope, actorProfileId);
+      await requireDocument(repository, scope, documentId);
+      const normalized = normalizeStructureInput(input.kind, input);
+      const timestamp = currentTimestamp(clock);
+      return assertStructure(await repository.createStructure({
+        ...scope,
+        documentId,
+        kind: input.kind,
+        lifecycleStatus: "active",
+        horizonAt: input.horizon_at ?? null,
+        metricJson: normalized.metricJson,
+        cadenceJson: normalized.cadenceJson,
+        nextRunAt: normalized.cadenceJson ? nextRitualRun(normalized.cadenceJson, timestamp) : null,
+        propertiesJson: normalized.propertiesJson
+      }));
+    },
+
+    async updateStructure(scope, actorProfileId, structureId, input) {
+      assertActor(scope, actorProfileId);
+      for (let attempt = 0; attempt < STRUCTURE_UPDATE_ATTEMPTS; attempt += 1) {
+        const current = await repository.findStructure(scope, structureId);
+        if (!current) throw new Error("STUDIO_STRUCTURE_NOT_FOUND");
+        assertStructure(current);
+        if (input.expected_revision !== current.revision) throw new Error("STUDIO_STRUCTURE_STALE");
+        if (current.kind !== "goal" && input.metric_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+        if (current.kind !== "ritual" && input.cadence_json != null) throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+        const propertiesJson = input.properties_json === undefined
+          ? current.propertiesJson
+          : studioStructurePropertiesSchema(current.kind).parse(input.properties_json) as Record<string, unknown>;
+        const metricJson = current.kind === "goal"
+          ? (input.metric_json === undefined ? current.metricJson : input.metric_json === null ? null : studioGoalMetricSchema.parse(input.metric_json))
+          : null;
+        const cadenceJson = current.kind === "ritual"
+          ? (input.cadence_json === undefined ? current.cadenceJson : studioRitualCadenceSchema.parse(input.cadence_json))
+          : null;
+        const horizonAt = input.horizon_at === undefined ? current.horizonAt : input.horizon_at;
+        if (current.kind === "decision" && horizonAt && typeof propertiesJson.review_date === "string"
+          && horizonAt.slice(0, 10) !== propertiesJson.review_date) {
+          throw new Error("STUDIO_STRUCTURE_DATA_INVALID");
+        }
+        try {
+          return assertStructure(await repository.updateStructure({
+            ...current,
+            horizonAt,
+            metricJson,
+            cadenceJson,
+            nextRunAt: cadenceJson ? nextRitualRun(cadenceJson, currentTimestamp(clock)) : null,
+            propertiesJson
+          }, current.revision));
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "STUDIO_STRUCTURE_STALE") throw error;
+        }
+      }
+      throw new Error("STUDIO_STRUCTURE_STALE");
+    },
+
+    async archiveStructure(scope, actorProfileId, structureId) {
+      assertActor(scope, actorProfileId);
+      for (let attempt = 0; attempt < STRUCTURE_UPDATE_ATTEMPTS; attempt += 1) {
+        const current = await repository.findStructure(scope, structureId);
+        if (!current) throw new Error("STUDIO_STRUCTURE_NOT_FOUND");
+        assertStructure(current);
+        if (current.lifecycleStatus === "archived") return current;
+        try {
+          return assertStructure(await repository.updateStructure({
+            ...current, lifecycleStatus: "archived", archivedAt: currentTimestamp(clock)
+          }, current.revision));
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "STUDIO_STRUCTURE_STALE") throw error;
+        }
+      }
+      throw new Error("STUDIO_STRUCTURE_STALE");
+    },
+
+    async listStructures(scope, query) {
+      const page = await repository.listStructures(scope, query);
+      return { ...page, items: page.items.map(assertStructure) };
     }
   };
 }

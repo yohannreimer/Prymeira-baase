@@ -18,6 +18,7 @@ import type {
   StudioMessage,
   StudioSuggestion,
   StudioCitation,
+  StudioStructure,
   CreateStudioCitation,
   StudioRepository,
   StudioOwnerScope,
@@ -137,6 +138,15 @@ type StudioCitationRow = {
   source_id: string | null; url: string | null; label: string; excerpt: string;
   observed_at: string | Date; period_from: string | Date | null; period_to: string | Date | null;
   metadata: Record<string, unknown>; created_at: string | Date;
+};
+
+type StudioStructureRow = {
+  id: string; workspace_id: string; owner_profile_id: string; document_id: string;
+  kind: StudioStructure["kind"]; lifecycle_status: StudioStructure["lifecycleStatus"];
+  revision: number; horizon_at: string | Date | null;
+  metric_json: StudioStructure["metricJson"]; cadence_json: StudioStructure["cadenceJson"];
+  next_run_at: string | Date | null; properties_json: Record<string, unknown>;
+  created_at: string | Date; updated_at: string | Date; archived_at: string | Date | null;
 };
 
 type StudioAssetRow = {
@@ -332,6 +342,36 @@ function citationFromRow(row: StudioCitationRow): StudioCitation {
     observedAt: iso(row.observed_at), periodFrom: row.period_from ? iso(row.period_from).slice(0, 10) : null,
     periodTo: row.period_to ? iso(row.period_to).slice(0, 10) : null,
     metadata: structuredClone(row.metadata), createdAt: iso(row.created_at) };
+}
+
+function structureFromRow(row: StudioStructureRow): StudioStructure {
+  return {
+    id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
+    documentId: row.document_id, kind: row.kind, lifecycleStatus: row.lifecycle_status,
+    revision: row.revision, horizonAt: row.horizon_at ? iso(row.horizon_at) : null,
+    metricJson: row.metric_json === null ? null : structuredClone(row.metric_json),
+    cadenceJson: row.cadence_json === null ? null : structuredClone(row.cadence_json),
+    nextRunAt: row.next_run_at ? iso(row.next_run_at) : null,
+    propertiesJson: structuredClone(row.properties_json), createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at), archivedAt: row.archived_at ? iso(row.archived_at) : null
+  };
+}
+
+function encodeStructureCursor(structure: StudioStructure) {
+  return Buffer.from(JSON.stringify({ createdAt: structure.createdAt, id: structure.id })).toString("base64url");
+}
+
+function decodeStructureCursor(cursor: string) {
+  try {
+    if (!cursor || !/^[A-Za-z0-9_-]+$/u.test(cursor)) throw new Error();
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error();
+    const value = JSON.parse(decoded.toString("utf8")) as { createdAt?: unknown; id?: unknown };
+    if (Object.keys(value).length !== 2 || typeof value.createdAt !== "string" || typeof value.id !== "string") throw new Error();
+    const timestamp = new Date(value.createdAt);
+    if (timestamp.toISOString() !== value.createdAt || !value.id) throw new Error();
+    return { createdAt: value.createdAt, id: value.id };
+  } catch { throw new Error("STUDIO_STRUCTURE_CURSOR_INVALID"); }
 }
 
 function assetFromRow(row: StudioAssetRow): StudioAsset {
@@ -744,6 +784,91 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, documentId]
       );
       return result.rows.map(versionFromRow);
+    },
+
+    async findStructure(scope, structureId) {
+      const result = await db.query<StudioStructureRow>(
+        `SELECT * FROM studio_structures WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, structureId]
+      );
+      return result.rows[0] ? structureFromRow(result.rows[0]) : null;
+    },
+
+    async createStructure(input) {
+      try {
+        const result = await db.query<StudioStructureRow>(
+          `INSERT INTO studio_structures
+             (id,workspace_id,owner_profile_id,document_id,kind,lifecycle_status,
+              horizon_at,metric_json,cadence_json,next_run_at,properties_json)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11::jsonb) RETURNING *`,
+          [generatedId("studio_structure"), input.workspaceId, input.ownerProfileId, input.documentId,
+            input.kind, input.lifecycleStatus, input.horizonAt,
+            input.metricJson === null ? null : JSON.stringify(input.metricJson),
+            input.cadenceJson === null ? null : JSON.stringify(input.cadenceJson),
+            input.nextRunAt, JSON.stringify(input.propertiesJson)]
+        );
+        return structureFromRow(result.rows[0]!);
+      } catch (error) {
+        const candidate = error as { code?: string; constraint?: string };
+        if (candidate.code === "23505" && candidate.constraint === "studio_structures_active_kind_uidx") {
+          throw new Error("STUDIO_STRUCTURE_ACTIVE_DUPLICATE");
+        }
+        if (candidate.code === "23503") throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        throw error;
+      }
+    },
+
+    async updateStructure(input, expectedRevision) {
+      try {
+        const result = await db.query<StudioStructureRow>(
+          `UPDATE studio_structures SET lifecycle_status=$4,horizon_at=$5,metric_json=$6::jsonb,
+             cadence_json=$7::jsonb,next_run_at=$8,properties_json=$9::jsonb,
+             archived_at=$10,revision=revision+1,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$11 RETURNING *`,
+          [input.workspaceId, input.ownerProfileId, input.id, input.lifecycleStatus,
+            input.horizonAt, input.metricJson === null ? null : JSON.stringify(input.metricJson),
+            input.cadenceJson === null ? null : JSON.stringify(input.cadenceJson),
+            input.nextRunAt, JSON.stringify(input.propertiesJson), input.archivedAt, expectedRevision]
+        );
+        if (!result.rows[0]) {
+          const exists = await db.query<{ id: string }>(
+            `SELECT id FROM studio_structures WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+            [input.workspaceId, input.ownerProfileId, input.id]
+          );
+          throw new Error(exists.rows[0] ? "STUDIO_STRUCTURE_STALE" : "STUDIO_STRUCTURE_NOT_FOUND");
+        }
+        return structureFromRow(result.rows[0]);
+      } catch (error) {
+        const candidate = error as { code?: string; constraint?: string };
+        if (candidate.code === "23505" && candidate.constraint === "studio_structures_active_kind_uidx") {
+          throw new Error("STUDIO_STRUCTURE_ACTIVE_DUPLICATE");
+        }
+        throw error;
+      }
+    },
+
+    async listStructures(scope, input) {
+      const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
+      const conditions = ["workspace_id=$1", "owner_profile_id=$2"];
+      if (input.kind) { params.push(input.kind); conditions.push(`kind=$${params.length}`); }
+      if (input.lifecycleStatus) { params.push(input.lifecycleStatus); conditions.push(`lifecycle_status=$${params.length}`); }
+      if (input.cursor) {
+        const cursor = decodeStructureCursor(input.cursor);
+        params.push(cursor.createdAt, cursor.id);
+        conditions.push(`(date_bin('1 millisecond'::interval,created_at,'2000-01-01 00:00:00+00'::timestamptz),id)
+          < (date_bin('1 millisecond'::interval,$${params.length - 1}::timestamptz,'2000-01-01 00:00:00+00'::timestamptz),$${params.length}::text)`);
+      }
+      params.push(input.limit + 1);
+      const result = await db.query<StudioStructureRow>(
+        `SELECT * FROM studio_structures WHERE ${conditions.join(" AND ")}
+         ORDER BY date_bin('1 millisecond'::interval,created_at,'2000-01-01 00:00:00+00'::timestamptz) DESC,id DESC
+         LIMIT $${params.length}`,
+        params
+      );
+      const rows = result.rows.map(structureFromRow);
+      const items = rows.slice(0, input.limit);
+      return { items, nextCursor: rows.length > items.length && items.length
+        ? encodeStructureCursor(items[items.length - 1]!) : null };
     },
 
     async appendVersion(input) {

@@ -15,8 +15,9 @@ type Migration = {
   sql: string;
 };
 
-// Versions 15–19 remain unavailable to incidental hardening work. Version 14 is now the
-// implemented memory migration; the ledger preserves the rest of the approved Studio order.
+// Versions 14–16 are implemented in the approved Studio order. Versions 17–19 remain
+// unavailable to incidental hardening work so upcoming ritual/operations/proactivity state
+// can land additively without renumbering released migrations.
 export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   14: "studio_relations_and_index_jobs",
   15: "studio_conversations_messages_suggestions_citations",
@@ -1084,6 +1085,54 @@ const migrations: Migration[] = [{
     CREATE INDEX studio_citations_suggestion_idx
       ON studio_citations (workspace_id,owner_profile_id,suggestion_id,created_at,id)
       WHERE suggestion_id IS NOT NULL;
+  `
+}, {
+  version: 16,
+  name: "studio_structures",
+  sql: `
+    CREATE TABLE studio_structures (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('goal','decision','plan','ritual')),
+      lifecycle_status TEXT NOT NULL DEFAULT 'active'
+        CHECK (lifecycle_status IN ('active','archived')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+      horizon_at TIMESTAMPTZ,
+      metric_json JSONB,
+      cadence_json JSONB,
+      next_run_at TIMESTAMPTZ,
+      properties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      archived_at TIMESTAMPTZ,
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      CHECK (
+        (lifecycle_status='active' AND archived_at IS NULL)
+        OR (lifecycle_status='archived' AND archived_at IS NOT NULL)
+      ),
+      CHECK (
+        (kind='goal' AND cadence_json IS NULL AND next_run_at IS NULL)
+        OR (kind='ritual' AND metric_json IS NULL AND cadence_json IS NOT NULL AND next_run_at IS NOT NULL)
+        OR (kind IN ('decision','plan') AND metric_json IS NULL AND cadence_json IS NULL AND next_run_at IS NULL)
+      )
+    );
+
+    CREATE UNIQUE INDEX studio_structures_active_kind_uidx
+      ON studio_structures (workspace_id,owner_profile_id,document_id,kind)
+      WHERE lifecycle_status='active';
+    CREATE INDEX studio_structures_owner_cursor_idx
+      ON studio_structures (workspace_id,owner_profile_id,created_at DESC,id DESC);
+    CREATE INDEX studio_structures_owner_kind_cursor_idx
+      ON studio_structures (workspace_id,owner_profile_id,kind,lifecycle_status,created_at DESC,id DESC);
+    CREATE INDEX studio_structures_owner_lifecycle_cursor_idx
+      ON studio_structures (workspace_id,owner_profile_id,lifecycle_status,created_at DESC,id DESC);
+    CREATE INDEX studio_structures_next_run_idx
+      ON studio_structures (workspace_id,owner_profile_id,next_run_at,id)
+      WHERE kind='ritual' AND lifecycle_status='active' AND next_run_at IS NOT NULL;
   `
 }, {
   version: 20,

@@ -13,6 +13,7 @@ import type {
   StudioMessage,
   StudioSuggestion,
   StudioCitation,
+  StudioStructure,
   CreateStudioCitation,
   StudioRepository
 } from "./studio.types";
@@ -68,6 +69,7 @@ function cloneConversation(value: StudioConversation) { return structuredClone(v
 function cloneMessage(value: StudioMessage) { return structuredClone(value); }
 function cloneSuggestion(value: StudioSuggestion) { return structuredClone(value); }
 function cloneCitation(value: StudioCitation) { return structuredClone(value); }
+function cloneStructure(value: StudioStructure) { return structuredClone(value); }
 
 function normalizeTimestamp(value: unknown) {
   if (typeof value !== "string") throw new Error("STUDIO_CLOCK_INVALID");
@@ -137,6 +139,7 @@ export function createInMemoryStudioRepository(
   const messages: StudioMessage[] = [];
   const suggestions: StudioSuggestion[] = [];
   const citations: StudioCitation[] = [];
+  const structures: StudioStructure[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
 
@@ -351,6 +354,86 @@ export function createInMemoryStudioRepository(
         .filter((version) => version.documentId === documentId)
         .sort((left, right) => left.versionNumber - right.versionNumber || left.id.localeCompare(right.id))
         .map(cloneVersion);
+    },
+
+    async findStructure(scope, structureId) {
+      const structure = structures.find((item) => item.workspaceId === scope.workspaceId
+        && item.ownerProfileId === scope.ownerProfileId && item.id === structureId);
+      return structure ? cloneStructure(structure) : null;
+    },
+
+    async createStructure(input) {
+      const documentExists = documents.some((document) => document.workspaceId === input.workspaceId
+        && document.ownerProfileId === input.ownerProfileId && document.id === input.documentId);
+      if (!documentExists) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      if (structures.some((structure) => structure.workspaceId === input.workspaceId
+        && structure.ownerProfileId === input.ownerProfileId && structure.documentId === input.documentId
+        && structure.kind === input.kind && structure.lifecycleStatus === "active")) {
+        throw new Error("STUDIO_STRUCTURE_ACTIVE_DUPLICATE");
+      }
+      const timestamp = now();
+      const structure: StudioStructure = {
+        ...structuredClone(input), id: `studio_structure_${randomUUID()}`, revision: 1,
+        createdAt: timestamp, updatedAt: timestamp, archivedAt: null
+      };
+      structures.push(structure);
+      return cloneStructure(structure);
+    },
+
+    async updateStructure(input, expectedRevision) {
+      const index = structures.findIndex((structure) => structure.workspaceId === input.workspaceId
+        && structure.ownerProfileId === input.ownerProfileId && structure.id === input.id);
+      if (index < 0) throw new Error("STUDIO_STRUCTURE_NOT_FOUND");
+      const persisted = structures[index]!;
+      if (persisted.revision !== expectedRevision) throw new Error("STUDIO_STRUCTURE_STALE");
+      if (input.lifecycleStatus === "active" && structures.some((structure) => structure.workspaceId === input.workspaceId
+        && structure.ownerProfileId === input.ownerProfileId && structure.id !== input.id
+        && structure.documentId === input.documentId && structure.kind === input.kind
+        && structure.lifecycleStatus === "active")) throw new Error("STUDIO_STRUCTURE_ACTIVE_DUPLICATE");
+      const updated: StudioStructure = {
+        ...persisted,
+        lifecycleStatus: input.lifecycleStatus,
+        horizonAt: input.horizonAt,
+        metricJson: structuredClone(input.metricJson),
+        cadenceJson: structuredClone(input.cadenceJson),
+        nextRunAt: input.nextRunAt,
+        propertiesJson: structuredClone(input.propertiesJson),
+        archivedAt: input.archivedAt,
+        revision: persisted.revision + 1,
+        createdAt: persisted.createdAt, updatedAt: nextTimestamp(now, persisted.updatedAt)
+      };
+      structures[index] = updated;
+      return cloneStructure(updated);
+    },
+
+    async listStructures(scope, input) {
+      let cursor: { createdAt: string; id: string } | null = null;
+      if (input.cursor) {
+        try {
+          const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length !== 2
+            || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string" || !parsed.id
+            || new Date(parsed.createdAt).toISOString() !== parsed.createdAt
+            || Buffer.from(JSON.stringify(parsed)).toString("base64url") !== input.cursor) throw new Error();
+          cursor = { createdAt: parsed.createdAt, id: parsed.id };
+        } catch { throw new Error("STUDIO_STRUCTURE_CURSOR_INVALID"); }
+      }
+      const appliedCursor: { createdAt: string; id: string } | null = cursor;
+      const matches = structures.filter((structure) => structure.workspaceId === scope.workspaceId
+        && structure.ownerProfileId === scope.ownerProfileId)
+        .filter((structure) => !input.kind || structure.kind === input.kind)
+        .filter((structure) => !input.lifecycleStatus || structure.lifecycleStatus === input.lifecycleStatus)
+        .filter((structure) => !appliedCursor || structure.createdAt < appliedCursor.createdAt
+          || (structure.createdAt === appliedCursor.createdAt && structure.id < appliedCursor.id))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+      const page = matches.slice(0, input.limit);
+      const last = page[page.length - 1];
+      return {
+        items: page.map(cloneStructure),
+        nextCursor: matches.length > page.length && last
+          ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString("base64url")
+          : null
+      };
     },
 
     async appendVersion(input) {

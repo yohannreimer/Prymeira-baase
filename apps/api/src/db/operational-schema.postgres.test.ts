@@ -424,7 +424,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
-  it("applies migrations 14 and 15, reserves 16 through 19, and adds concurrent active asset idempotency in migration 20", async () => {
+  it("applies migrations 14 through 16, reserves 17 through 19, and adds concurrent active asset idempotency in migration 20", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 13);
       await pool.query(
@@ -438,7 +438,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const versions = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations where version between 14 and 21 order by version"
       );
-      expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 20 }, { version: 21 }]);
+      expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 16 }, { version: 20 }, { version: 21 }]);
       const cursorIndexes = await pool.query<{ indexname: string; indexdef: string }>(
         `select indexname,indexdef from pg_indexes
          where schemaname=current_schema()

@@ -13,7 +13,11 @@ import {
   studioDocumentParamsSchema,
   studioEmptyRouteSchema,
   studioAssetIdempotencyKeySchema,
-  studioSearchQuerySchema
+  studioSearchQuerySchema,
+  createStudioStructureSchema,
+  patchStudioStructureSchema,
+  studioStructureParamsSchema,
+  studioStructureListQuerySchema
 } from "./studio.schemas";
 import type { StudioOwnerScope, StudioService } from "./studio.types";
 import type { StudioMemoryIndex } from "./studio-memory";
@@ -56,6 +60,15 @@ function studioRouteError(error: unknown) {
   if (error.message === "STUDIO_DOCUMENT_NOT_FOUND") {
     return new ApiError(404, "STUDIO_DOCUMENT_NOT_FOUND", "Documento do Studio não encontrado.");
   }
+  if (error.message === "STUDIO_STRUCTURE_NOT_FOUND") {
+    return new ApiError(404, "STUDIO_STRUCTURE_NOT_FOUND", "Estrutura do Studio não encontrada.");
+  }
+  if (error.message === "STUDIO_STRUCTURE_STALE") {
+    return new ApiError(409, "STUDIO_STRUCTURE_CHANGED", "A estrutura mudou. Atualize e tente novamente.");
+  }
+  if (error.message === "STUDIO_STRUCTURE_ACTIVE_DUPLICATE") {
+    return new ApiError(409, "STUDIO_STRUCTURE_ACTIVE_DUPLICATE", "Já existe uma estrutura ativa deste tipo para o documento.");
+  }
   if (["STUDIO_COLLECTION_NOT_FOUND", "STUDIO_COLLECTION_MEMBERSHIP_NOT_FOUND"].includes(error.message)) {
     return new ApiError(404, "STUDIO_COLLECTION_NOT_FOUND", "Coleção do Studio não encontrada.");
   }
@@ -63,7 +76,10 @@ function studioRouteError(error: unknown) {
   if ([
     "STUDIO_COLLECTION_NAME_REQUIRED",
     "STUDIO_COLLECTION_NAME_TOO_LONG",
-    "STUDIO_DOCUMENT_CURSOR_INVALID"
+    "STUDIO_DOCUMENT_CURSOR_INVALID",
+    "STUDIO_STRUCTURE_CURSOR_INVALID",
+    "STUDIO_STRUCTURE_DATA_INVALID",
+    "STUDIO_RITUAL_NEXT_RUN_UNAVAILABLE"
   ].includes(error.message)) {
     return new ApiError(400, error.message, "Dados inválidos para esta operação do Studio.");
   }
@@ -156,6 +172,48 @@ export async function registerStudioRoutes(app: FastifyInstance, service: Studio
       collectionId: query.collection_id
     }));
     return { documents: page.items, nextCursor: page.nextCursor, collectionsByDocumentId: page.collectionsByDocumentId };
+  });
+
+  app.get("/studio/structures", async (request) => {
+    const scope = requireStudioScope(request);
+    readNoRouteParams(request);
+    const query = studioStructureListQuerySchema.parse(request.query);
+    readNoBody(request);
+    const page = await runStudioOperation(() => service.listStructures(scope, {
+      kind: query.kind, lifecycleStatus: query.lifecycle_status, cursor: query.cursor, limit: query.limit
+    }));
+    return { structures: page.items, nextCursor: page.nextCursor };
+  });
+
+  app.post("/studio/documents/:documentId/structures", async (request, reply) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    const body = createStudioStructureSchema.parse(request.body);
+    const structure = await runStudioOperation(() => service.createStructure(
+      scope, scope.ownerProfileId, params.documentId, body
+    ));
+    return reply.status(201).send({ structure });
+  });
+
+  app.patch("/studio/structures/:structureId", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioStructureParamsSchema.parse(request.params);
+    readNoQuery(request);
+    const body = patchStudioStructureSchema.parse(request.body);
+    return { structure: await runStudioOperation(() => service.updateStructure(
+      scope, scope.ownerProfileId, params.structureId, body
+    )) };
+  });
+
+  app.delete("/studio/structures/:structureId", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioStructureParamsSchema.parse(request.params);
+    readNoQuery(request);
+    readNoBody(request);
+    return { structure: await runStudioOperation(() => service.archiveStructure(
+      scope, scope.ownerProfileId, params.structureId
+    )) };
   });
 
   app.post("/studio/documents", async (request, reply) => {

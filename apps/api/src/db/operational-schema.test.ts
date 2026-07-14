@@ -68,7 +68,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -130,6 +130,29 @@ describe("operational schema", () => {
     expect(migrationSql).toContain("create index studio_documents_owner_search_prefix_idx");
     expect(migrationSql).toContain("using gin");
     expect(migrationSql).toContain("search_tokens");
+  });
+
+  it("keeps owner-filtered Studio structure lifecycle, cursor, and next-run indexes in migration 16", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() { client.release(); }
+        };
+      }
+    };
+    await ensureOperationalSchema(observedPool);
+    const sql = statements.join("\n").toLowerCase();
+    expect(sql).toContain("create unique index studio_structures_active_kind_uidx");
+    expect(sql).toContain("create index studio_structures_owner_cursor_idx");
+    expect(sql).toContain("create index studio_structures_owner_kind_cursor_idx");
+    expect(sql).toContain("create index studio_structures_owner_lifecycle_cursor_idx");
+    expect(sql).toContain("create index studio_structures_next_run_idx");
   });
 
   it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {
@@ -209,7 +232,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio migrations 14 and 15, reserves 16 through 19, and keeps additive migrations 20 and 21", async () => {
+  it("applies Studio migrations 14 through 16, reserves 17 through 19, and keeps additive migrations 20 and 21", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -232,7 +255,14 @@ describe("operational schema", () => {
     const versions = await db.query<{ version: number }>(
       "select version from baase_schema_migrations where version between 14 and 21 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 20 }, { version: 21 }]);
+    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 16 }, { version: 20 }, { version: 21 }]);
+    const structureColumns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_name='studio_structures'
+       and column_name in ('revision','horizon_at','metric_json','cadence_json','next_run_at','properties_json')`
+    );
+    expect(structureColumns.rows.map((row) => row.column_name).sort()).toEqual([
+      "cadence_json", "horizon_at", "metric_json", "next_run_at", "properties_json", "revision"
+    ]);
     const studioTables = await db.query<{ table_name: string }>(
       `select distinct table_name from information_schema.tables
        where table_name in ('studio_relations','studio_index_jobs') order by table_name`

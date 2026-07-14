@@ -3,7 +3,8 @@ import type { StudioStructureKind } from "./studio.types";
 
 const editorJsonSchema = z.record(z.string(), z.unknown());
 const titleSchema = z.string().trim().min(1).max(240);
-const structureTextSchema = z.string().min(1);
+const structureTextSchema = z.string().trim().min(1).max(10_000);
+const structureTextListSchema = z.array(structureTextSchema).max(100);
 
 export const studioCaptureModeSchema = z.enum(["text", "audio", "file", "image", "link", "mixed"]);
 
@@ -96,40 +97,82 @@ export const studioLinkCaptureSchema = z.object({
   }, "Only credential-free HTTP and HTTPS links are supported.")
 }).strict();
 
-const metricSchema = z.object({
-  label: structureTextSchema,
-  current: z.number(),
-  target: z.number(),
-  unit: structureTextSchema.optional()
-}).strict();
+export const studioGoalMetricSchema = z.object({
+  label: z.string().trim().min(1).max(120),
+  unit: z.string().trim().min(1).max(40),
+  baseline: z.number().finite(),
+  current: z.number().finite(),
+  target: z.number().finite(),
+  direction: z.enum(["increase", "decrease"])
+}).strict().superRefine((metric, context) => {
+  if (metric.direction === "increase" && metric.target <= metric.baseline) {
+    context.addIssue({ code: "custom", message: "An increasing goal target must exceed its baseline.", path: ["target"] });
+  }
+  if (metric.direction === "decrease" && metric.target >= metric.baseline) {
+    context.addIssue({ code: "custom", message: "A decreasing goal target must be below its baseline.", path: ["target"] });
+  }
+});
+
+const isoTimestampSchema = z.string().datetime({ offset: true }).transform((value) => new Date(value).toISOString());
+const dateOnlySchema = z.string().date();
+
+function isIanaTimezone(value: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const studioRitualCadenceSchema = z.object({
+  frequency: z.enum(["daily", "weekly", "monthly"]),
+  local_time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u),
+  timezone: z.string().trim().min(1).max(100).refine(isIanaTimezone, "Invalid IANA timezone."),
+  weekdays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+  month_day: z.number().int().min(1).max(31).optional()
+}).strict().superRefine((cadence, context) => {
+  if (cadence.frequency === "weekly" && (!cadence.weekdays?.length || new Set(cadence.weekdays).size !== cadence.weekdays.length)) {
+    context.addIssue({ code: "custom", message: "Weekly cadence needs unique weekdays.", path: ["weekdays"] });
+  }
+  if (cadence.frequency !== "weekly" && cadence.weekdays !== undefined) {
+    context.addIssue({ code: "custom", message: "Weekdays only apply to weekly cadence.", path: ["weekdays"] });
+  }
+  if (cadence.frequency === "monthly" && cadence.month_day === undefined) {
+    context.addIssue({ code: "custom", message: "Monthly cadence needs a month day.", path: ["month_day"] });
+  }
+  if (cadence.frequency !== "monthly" && cadence.month_day !== undefined) {
+    context.addIssue({ code: "custom", message: "Month day only applies to monthly cadence.", path: ["month_day"] });
+  }
+});
 
 const goalPropertiesSchema = z.object({
   desired_outcome: structureTextSchema.optional(),
   reason: structureTextSchema.optional(),
-  metric: metricSchema.optional(),
-  progress_evidence: z.array(structureTextSchema).optional()
+  progress_evidence: structureTextListSchema.optional()
 }).strict();
 
 const decisionPropertiesSchema = z.object({
   decision: structureTextSchema.optional(),
   context: structureTextSchema.optional(),
-  alternatives: z.array(structureTextSchema).optional(),
+  alternatives: structureTextListSchema.optional(),
   reason: structureTextSchema.optional(),
   hypothesis_or_risk: structureTextSchema.optional(),
-  learnings: structureTextSchema.optional()
+  learnings: structureTextSchema.optional(),
+  review_date: dateOnlySchema.optional()
 }).strict();
 
 const planPropertiesSchema = z.object({
   direction: structureTextSchema.optional(),
-  hypotheses: z.array(structureTextSchema).optional(),
-  fronts: z.array(structureTextSchema).optional(),
-  milestones: z.array(structureTextSchema).optional()
+  hypotheses: structureTextListSchema.optional(),
+  fronts: structureTextListSchema.optional(),
+  milestones: structureTextListSchema.optional()
 }).strict();
 
 const ritualPropertiesSchema = z.object({
   intention: structureTextSchema.optional(),
-  guide_questions: z.array(structureTextSchema).optional(),
-  allowed_internal_sources: z.array(structureTextSchema).optional(),
+  guide_questions: structureTextListSchema.optional(),
+  allowed_internal_sources: structureTextListSchema.optional(),
   allow_external_research: z.boolean().optional(),
   summary_format: structureTextSchema.optional()
 }).strict();
@@ -146,3 +189,42 @@ export function studioStructurePropertiesSchema<Kind extends StudioStructureKind
 ): (typeof structurePropertiesSchemas)[Kind] {
   return structurePropertiesSchemas[kind];
 }
+
+const structureBase = {
+  horizon_at: isoTimestampSchema.nullable().optional(),
+  properties_json: z.record(z.string(), z.unknown())
+};
+
+export const createStudioStructureSchema = z.discriminatedUnion("kind", [
+  z.object({ ...structureBase, kind: z.literal("goal"), metric_json: studioGoalMetricSchema.nullable().optional(), cadence_json: z.null().optional() }).strict(),
+  z.object({ ...structureBase, kind: z.literal("decision"), metric_json: z.null().optional(), cadence_json: z.null().optional() }).strict(),
+  z.object({ ...structureBase, kind: z.literal("plan"), metric_json: z.null().optional(), cadence_json: z.null().optional() }).strict(),
+  z.object({ ...structureBase, kind: z.literal("ritual"), metric_json: z.null().optional(), cadence_json: studioRitualCadenceSchema }).strict()
+]).superRefine((input, context) => {
+  const result = studioStructurePropertiesSchema(input.kind).safeParse(input.properties_json);
+  if (!result.success) result.error.issues.forEach((issue) => context.addIssue({ ...issue, path: ["properties_json", ...issue.path] }));
+  if (input.kind === "decision") {
+    const reviewDate = (input.properties_json as { review_date?: string }).review_date;
+    if (input.horizon_at && reviewDate && input.horizon_at.slice(0, 10) !== reviewDate) {
+      context.addIssue({ code: "custom", message: "Decision horizon and review date must agree.", path: ["horizon_at"] });
+    }
+  }
+});
+
+export const patchStudioStructureSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  horizon_at: isoTimestampSchema.nullable().optional(),
+  metric_json: studioGoalMetricSchema.nullable().optional(),
+  cadence_json: studioRitualCadenceSchema.nullable().optional(),
+  properties_json: z.record(z.string(), z.unknown()).optional()
+}).strict().refine((input) => Object.keys(input).some((key) => key !== "expected_revision"), {
+  message: "At least one mutable structure field is required."
+});
+
+export const studioStructureParamsSchema = z.object({ structureId: routeIdSchema }).strict();
+export const studioStructureListQuerySchema = z.object({
+  kind: z.enum(["goal", "decision", "plan", "ritual"]).optional(),
+  lifecycle_status: z.enum(["active", "archived"]).optional(),
+  cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  limit: routeLimitSchema.default(50)
+}).strict();

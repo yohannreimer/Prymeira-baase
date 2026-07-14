@@ -2,6 +2,22 @@ export type StudioOwnerScope = { workspaceId: string; ownerProfileId: string };
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
 export type StudioDocumentStatus = "active" | "archived";
 export type StudioStructureKind = "goal" | "decision" | "plan" | "ritual";
+export type StudioStructureLifecycleStatus = "active" | "archived";
+export type StudioGoalMetric = {
+  label: string;
+  unit: string;
+  baseline: number;
+  current: number;
+  target: number;
+  direction: "increase" | "decrease";
+};
+export type StudioRitualCadence = {
+  frequency: "daily" | "weekly" | "monthly";
+  local_time: string;
+  timezone: string;
+  weekdays?: number[];
+  month_day?: number;
+};
 export type StudioSuggestionStatus = "pending" | "accepted" | "dismissed" | "expired";
 export type StudioMessageRole = "user" | "assistant";
 export type StudioMessageStatus = "complete";
@@ -206,6 +222,47 @@ export type StudioDocumentVersion = StudioOwnerScope & {
   createdAt: string;
 };
 
+export type StudioStructure = StudioOwnerScope & {
+  id: string;
+  documentId: string;
+  kind: StudioStructureKind;
+  lifecycleStatus: StudioStructureLifecycleStatus;
+  revision: number;
+  horizonAt: string | null;
+  metricJson: StudioGoalMetric | null;
+  cadenceJson: StudioRitualCadence | null;
+  nextRunAt: string | null;
+  propertiesJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+};
+
+export type CreateStudioStructure = {
+  kind: StudioStructureKind;
+  horizon_at?: string | null;
+  metric_json?: StudioGoalMetric | null;
+  cadence_json?: StudioRitualCadence | null;
+  properties_json: Record<string, unknown>;
+};
+
+export type UpdateStudioStructure = {
+  expected_revision: number;
+  horizon_at?: string | null;
+  metric_json?: StudioGoalMetric | null;
+  cadence_json?: StudioRitualCadence | null;
+  properties_json?: Record<string, unknown>;
+};
+
+export type StudioStructureQuery = {
+  kind?: StudioStructureKind;
+  lifecycleStatus?: StudioStructureLifecycleStatus;
+  cursor?: string;
+  limit: number;
+};
+
+export type StudioStructurePage = { items: StudioStructure[]; nextCursor: string | null };
+
 export type StudioRelation = StudioOwnerScope & {
   id: string;
   sourceDocumentId: string;
@@ -398,6 +455,10 @@ export type StudioService = {
     targetDocumentId: string,
     relationType: StudioRelationType
   ): Promise<StudioRelation>;
+  createStructure(scope: StudioOwnerScope, actorProfileId: string, documentId: string, input: CreateStudioStructure): Promise<StudioStructure>;
+  updateStructure(scope: StudioOwnerScope, actorProfileId: string, structureId: string, input: UpdateStudioStructure): Promise<StudioStructure>;
+  archiveStructure(scope: StudioOwnerScope, actorProfileId: string, structureId: string): Promise<StudioStructure>;
+  listStructures(scope: StudioOwnerScope, query: StudioStructureQuery): Promise<StudioStructurePage>;
 };
 
 export type StudioRepository = {
@@ -409,6 +470,10 @@ export type StudioRepository = {
   > & { captureKey?: string | null }): Promise<StudioDocument>;
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
+  findStructure(scope: StudioOwnerScope, structureId: string): Promise<StudioStructure | null>;
+  createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;
+  updateStructure(input: StudioStructure, expectedRevision: number): Promise<StudioStructure>;
+  listStructures(scope: StudioOwnerScope, query: StudioStructureQuery): Promise<StudioStructurePage>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;
   searchDocuments(scope: StudioOwnerScope, input: StudioLexicalSearchQuery): Promise<StudioSearchDocument[]>;
   listRecentDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;

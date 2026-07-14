@@ -1087,6 +1087,47 @@ function repositoryContract(
         expect(await repository.listAssetUploadIntents(scope)).toEqual([]);
       });
     });
+
+    it("keeps strategic structures owner-scoped, concurrent-safe, optimistic, and filterable", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const input: Parameters<StudioRepository["createStructure"]>[0] = {
+          ...scope, documentId: document.id, kind: "goal", lifecycleStatus: "active",
+          horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
+          propertiesJson: { desired_outcome: "Referência" }
+        };
+        const attempts = await Promise.allSettled([
+          repository.createStructure(input), repository.createStructure(input)
+        ]);
+        const successes = attempts.filter((attempt) => attempt.status === "fulfilled");
+        expect(successes).toHaveLength(1);
+        expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(1);
+        const created = successes[0]!.value;
+        expect(await repository.findStructure({ ...scope, ownerProfileId: "owner_b" }, created.id)).toBeNull();
+        await expect(repository.updateStructure({ ...created, horizonAt: "2026-12-31T12:00:00.000Z" }, 0))
+          .rejects.toThrow("STUDIO_STRUCTURE_STALE");
+        const updated = await repository.updateStructure({ ...created, horizonAt: "2026-12-31T12:00:00.000Z" }, 1);
+        const archived = await repository.updateStructure({
+          ...updated, lifecycleStatus: "archived", archivedAt: "2026-07-14T12:00:00.000Z"
+        }, 2);
+        expect(archived).toMatchObject({ revision: 3, lifecycleStatus: "archived" });
+        const recreated = await repository.createStructure(input);
+        expect((await repository.listStructures(scope, { kind: "goal", lifecycleStatus: "active", limit: 1 })).items)
+          .toEqual([recreated]);
+
+        for (let index = 0; index < 2; index += 1) {
+          const another = await repository.createDocument(documentInput({ bodyText: `Goal ${index}` }));
+          await repository.createStructure({ ...input, documentId: another.id });
+        }
+        const firstPage = await repository.listStructures(scope, { kind: "goal", lifecycleStatus: "active", limit: 2 });
+        expect(firstPage.nextCursor).not.toBeNull();
+        const secondPage = await repository.listStructures(scope, {
+          kind: "goal", lifecycleStatus: "active", limit: 2, cursor: firstPage.nextCursor!
+        });
+        expect(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size).toBe(3);
+      });
+    });
   });
 }
 
