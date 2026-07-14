@@ -62,6 +62,13 @@ export default function StudioEditor({
   const titleRef = useRef(title);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const notifiedRevisionRef = useRef(sourceDocument.revision);
+  const versionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const versionsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const firstVersionButtonRef = useRef<HTMLButtonElement>(null);
+  const versionsRetryButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreVersionsTriggerFocusRef = useRef(false);
+  const focusVersionAfterRetryRef = useRef(false);
+  const conflictCopyOperationRef = useRef<{ signature: string; key: string } | null>(null);
   const [linkFieldOpen, setLinkFieldOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
   const [resolving, setResolving] = useState<"reload" | "copy" | null>(null);
@@ -70,6 +77,7 @@ export default function StudioEditor({
   const [versions, setVersions] = useState<StudioDocumentVersion[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<StudioDocumentVersion | null>(null);
   const [versionsState, setVersionsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [versionsReloadKey, setVersionsReloadKey] = useState(0);
   const [restoring, setRestoring] = useState(false);
 
   titleRef.current = title;
@@ -141,7 +149,50 @@ export default function StudioEditor({
       if (!controller.signal.aborted) setVersionsState("error");
     });
     return () => controller.abort();
-  }, [sourceDocument.id, versionsOpen]);
+  }, [sourceDocument.id, versionsOpen, versionsReloadKey]);
+
+  useEffect(() => {
+    if (!versionsOpen) {
+      if (restoreVersionsTriggerFocusRef.current) {
+        restoreVersionsTriggerFocusRef.current = false;
+        versionsTriggerRef.current?.focus();
+      }
+      return;
+    }
+    versionsHeadingRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      restoreVersionsTriggerFocusRef.current = true;
+      setVersionsOpen(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [versionsOpen]);
+
+  useEffect(() => {
+    if (!focusVersionAfterRetryRef.current) return;
+    if (versionsState === "ready") {
+      focusVersionAfterRetryRef.current = false;
+      firstVersionButtonRef.current?.focus();
+    } else if (versionsState === "error") {
+      versionsRetryButtonRef.current?.focus();
+    }
+  }, [versionsState]);
+
+  const conflictSignature = autosave.state === "conflict" && autosave.conflictDraft
+    ? `${sourceDocument.id}:${JSON.stringify(autosave.conflictDraft)}`
+    : null;
+
+  useEffect(() => {
+    if (!conflictSignature) {
+      conflictCopyOperationRef.current = null;
+      return;
+    }
+    if (conflictCopyOperationRef.current?.signature !== conflictSignature) {
+      conflictCopyOperationRef.current = { signature: conflictSignature, key: operationKey() };
+    }
+  }, [conflictSignature]);
 
   const applyDocument = useCallback((nextDocument: StudioDocument, discardLocalDraft = true) => {
     autosave.resolveConflict(nextDocument, discardLocalDraft);
@@ -170,6 +221,10 @@ export default function StudioEditor({
   async function keepLocalCopy() {
     const local = autosave.conflictDraft;
     if (!local) return;
+    const signature = `${sourceDocument.id}:${JSON.stringify(local)}`;
+    if (conflictCopyOperationRef.current?.signature !== signature) {
+      conflictCopyOperationRef.current = { signature, key: operationKey() };
+    }
     setResolving("copy");
     setResolutionError(null);
     try {
@@ -178,7 +233,7 @@ export default function StudioEditor({
         body_json: local.bodyJson,
         body_text: local.bodyText,
         capture_mode: "text",
-        capture_key: operationKey()
+        capture_key: conflictCopyOperationRef.current.key
       });
       applyDocument(copy);
     } catch {
@@ -210,15 +265,35 @@ export default function StudioEditor({
       applyDocument(restored);
       setVersionsOpen(false);
     } catch (error) {
-      setResolutionError(error instanceof Error && "status" in error && error.status === 409
-        ? "O documento mudou enquanto o histórico estava aberto. Recarregue a versão do servidor."
-        : "Não foi possível restaurar esta versão agora.");
+      if (error instanceof Error && "status" in error && error.status === 409) {
+        const currentDraft = {
+          title: titleRef.current.trim() || null,
+          bodyJson: editor?.getJSON() ?? autosave.document.bodyJson,
+          bodyText: editor?.getText() ?? autosave.document.bodyText
+        };
+        setResolutionError(null);
+        autosave.markConflict(currentDraft);
+        restoreVersionsTriggerFocusRef.current = true;
+        setVersionsOpen(false);
+      } else {
+        setResolutionError("Não foi possível restaurar esta versão agora.");
+      }
     } finally {
       setRestoring(false);
     }
   }
 
   const hasUnsavedChanges = !["idle", "saved"].includes(autosave.state);
+
+  function closeVersions() {
+    restoreVersionsTriggerFocusRef.current = true;
+    setVersionsOpen(false);
+  }
+
+  function retryVersions() {
+    focusVersionAfterRetryRef.current = true;
+    setVersionsReloadKey((key) => key + 1);
+  }
 
   return (
     <article className="studio-editor" aria-labelledby="studio-document-heading">
@@ -249,7 +324,14 @@ export default function StudioEditor({
             <i aria-hidden="true" className={`ph-light ${autosave.state === "saving" ? "ph-circle-notch" : autosave.state === "saved" ? "ph-check" : "ph-cloud"}`} />
             {saveLabels[autosave.state]}
           </span>
-          <button type="button" className="studio-editor__history-trigger" onClick={() => setVersionsOpen(true)}>
+          <button
+            type="button"
+            className="studio-editor__history-trigger"
+            ref={versionsTriggerRef}
+            aria-expanded={versionsOpen}
+            aria-controls="studio-version-history"
+            onClick={() => setVersionsOpen(true)}
+          >
             <i aria-hidden="true" className="ph-light ph-clock-counter-clockwise" />
             Ver histórico de versões
           </button>
@@ -290,7 +372,7 @@ export default function StudioEditor({
       ) : null}
 
       {autosave.state === "conflict" ? (
-        <div className="studio-editor__notice studio-editor__notice--conflict" role="alert">
+        <div className="studio-editor__notice studio-editor__notice--conflict" role="alert" aria-label="Conflito de versões">
           <div>
             <strong>Há uma versão mais recente no servidor.</strong>
             <p>Escolha qual caminho seguir. Sua cópia local não será sobrescrita sem confirmação.</p>
@@ -304,15 +386,20 @@ export default function StudioEditor({
       {resolutionError ? <p className="studio-editor__resolution-error" role="alert">{resolutionError}</p> : null}
 
       {versionsOpen ? (
-        <aside className="studio-versions" role="region" aria-label="Histórico de versões">
+        <aside id="studio-version-history" className="studio-versions" role="region" aria-label="Histórico de versões">
           <header>
-            <div><p className="mono">Histórico</p><h3>Versões preservadas</h3></div>
-            <button type="button" aria-label="Fechar histórico de versões" onClick={() => setVersionsOpen(false)}>
+            <div><p className="mono">Histórico</p><h3 ref={versionsHeadingRef} tabIndex={-1}>Versões preservadas</h3></div>
+            <button type="button" aria-label="Fechar histórico de versões" onClick={closeVersions}>
               <i aria-hidden="true" className="ph-light ph-x" />
             </button>
           </header>
           {versionsState === "loading" ? <p role="status">Carregando versões…</p> : null}
-          {versionsState === "error" ? <p role="alert">Não foi possível carregar o histórico.</p> : null}
+          {versionsState === "error" ? (
+            <div className="studio-versions__error" role="alert">
+              <p>Não foi possível carregar o histórico.</p>
+              <button ref={versionsRetryButtonRef} type="button" onClick={retryVersions}>Tentar carregar versões novamente</button>
+            </div>
+          ) : null}
           {versionsState === "ready" ? (
             <div className="studio-versions__body">
               <div className="studio-versions__list" aria-label="Versões disponíveis">
@@ -320,6 +407,7 @@ export default function StudioEditor({
                   <button
                     type="button"
                     key={version.id}
+                    ref={version === versions[0] ? firstVersionButtonRef : undefined}
                     aria-current={selectedVersion?.id === version.id ? "true" : undefined}
                     onClick={() => setSelectedVersion(version)}
                   >

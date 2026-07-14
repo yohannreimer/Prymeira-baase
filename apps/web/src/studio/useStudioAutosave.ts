@@ -179,6 +179,17 @@ export function useStudioAutosave(
     if (discardLocalDraft) clearStoredDraft(documentIdRef.current);
   }, []);
 
+  const markConflict = useCallback((draft: StudioDocumentDraft) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    const serialized = serializeDraft(draft);
+    queuedRef.current = null;
+    retryRef.current = { draft, serialized };
+    writeStoredDraft(documentIdRef.current, serialized);
+    setConflictDraft(draft);
+    setState("conflict");
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -215,6 +226,7 @@ export function useStudioAutosave(
     conflictDraft,
     queueSave,
     retry,
-    resolveConflict
+    resolveConflict,
+    markConflict
   };
 }

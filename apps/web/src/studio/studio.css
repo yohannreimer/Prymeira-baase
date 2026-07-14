@@ -971,6 +971,31 @@
   margin-top: 8px;
 }
 
+.studio-versions__error {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  padding-top: 14px;
+}
+
+.studio-versions__error p {
+  margin: 0;
+}
+
+.studio-versions__error button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 650;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
 .studio-editor-skeleton {
   display: grid;
   gap: 14px;
@@ -1076,6 +1101,42 @@
 
   .studio-versions__list button {
     flex: 0 0 auto;
+  }
+
+  .studio-editor__toolbar button,
+  .studio-versions header > button {
+    height: 44px;
+    min-height: 44px;
+    min-width: 44px;
+    width: 44px;
+  }
+
+  .studio-editor__history-trigger,
+  .studio-editor__link-field button,
+  .studio-editor__notice button,
+  .studio-versions__list button,
+  .studio-versions__preview > button,
+  .studio-versions__error button {
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse) {
+  .studio-editor__toolbar button,
+  .studio-versions header > button {
+    height: 44px;
+    min-height: 44px;
+    min-width: 44px;
+    width: 44px;
+  }
+
+  .studio-editor__history-trigger,
+  .studio-editor__link-field button,
+  .studio-editor__notice button,
+  .studio-versions__list button,
+  .studio-versions__preview > button,
+  .studio-versions__error button {
+    min-height: 44px;
   }
 }
 

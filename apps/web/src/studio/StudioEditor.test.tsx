@@ -1,8 +1,12 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioDocument } from "./studio.types";
 import StudioEditor from "./StudioEditor";
+
+const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
 describe("StudioEditor", () => {
   beforeEach(() => {
@@ -47,7 +51,7 @@ describe("StudioEditor", () => {
     const onDocumentChange = vi.fn();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
+      if (url.includes("/documents/") && init?.method === "PATCH") {
         return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
       }
       if (url.endsWith("/documents") && init?.method === "POST") {
@@ -71,6 +75,47 @@ describe("StudioEditor", () => {
     const patchCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH");
     expect(patchCalls.length).toBeGreaterThan(0);
     expect(patchCalls.every(([, init]) => JSON.parse(String(init?.body)).expected_revision === 4)).toBe(true);
+  });
+
+  it("reuses the same capture key when a committed conflict copy response is lost", async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    let copyAttempts = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/documents/") && init?.method === "PATCH") {
+        return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
+      }
+      if (url.endsWith("/documents") && init?.method === "POST") {
+        copyAttempts += 1;
+        if (copyAttempts === 1) throw new TypeError("response lost after commit");
+        return response({ document: { ...rawDocument, id: "document_committed_copy", revision: 1 } }, 201);
+      }
+      return response({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    const { rerender } = render(<StudioEditor document={document} onDocumentChange={onDocumentChange} debounceMs={0} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " revisado");
+    const keepCopy = await screen.findByRole("button", { name: "Manter minha cópia como novo documento" });
+    await user.click(keepCopy);
+    expect(await screen.findByText(/continua guardada neste dispositivo/u)).toBeInTheDocument();
+    await user.click(keepCopy);
+
+    await waitFor(() => expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ id: "document_committed_copy" })));
+    const createCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(createCalls).toHaveLength(2);
+    expect(new Headers(createCalls[0]?.[1]?.headers).get("idempotency-key")).toBeTruthy();
+    expect(new Headers(createCalls[1]?.[1]?.headers).get("idempotency-key"))
+      .toBe(new Headers(createCalls[0]?.[1]?.headers).get("idempotency-key"));
+
+    const copiedDocument = onDocumentChange.mock.calls.at(-1)?.[0] as StudioDocument;
+    rerender(<StudioEditor document={copiedDocument} onDocumentChange={onDocumentChange} debounceMs={0} />);
+    await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " novamente");
+    await user.click(await screen.findByRole("button", { name: "Manter minha cópia como novo documento" }));
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(3));
+    const changedConflictCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(new Headers(changedConflictCalls[2]?.[1]?.headers).get("idempotency-key"))
+      .not.toBe(new Headers(changedConflictCalls[1]?.[1]?.headers).get("idempotency-key"));
   });
 
   it("persists TipTap JSON and its text snapshot together", async () => {
@@ -119,6 +164,76 @@ describe("StudioEditor", () => {
       expected_revision: 4,
       body_text: "Direção anterior preservada."
     });
+  });
+
+  it("turns a restore 409 into the same explicit conflict recovery flow", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
+      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
+        return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
+      }
+      return response({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
+    await user.click(await screen.findByRole("button", { name: /Versão 2/u }));
+    await user.click(screen.getByRole("button", { name: "Restaurar como nova versão" }));
+
+    const conflict = await screen.findByRole("alert", { name: "Conflito de versões" });
+    expect(within(conflict).getByRole("button", { name: "Recarregar versão do servidor" })).toBeInTheDocument();
+    expect(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" })).toBeInTheDocument();
+  });
+
+  it("announces the versions drawer, manages focus, and closes with Escape", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ versions: [rawVersion] }));
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    const trigger = screen.getByRole("button", { name: "Ver histórico de versões" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAttribute("aria-controls", "studio-version-history");
+    await user.click(trigger);
+
+    const drawer = await screen.findByRole("region", { name: "Histórico de versões" });
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(drawer).toHaveAttribute("id", "studio-version-history");
+    expect(within(drawer).getByRole("heading", { name: "Versões preservadas" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Histórico de versões" })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("retries a failed versions load without closing the drawer and restores useful focus", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (!String(input).endsWith("/versions")) return response({}, 404);
+      attempts += 1;
+      if (attempts === 1) return response({ error: { code: "TEMPORARY", message: "Falhou." } }, 503);
+      return response({ versions: [rawVersion] });
+    });
+    render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
+    const drawer = await screen.findByRole("region", { name: "Histórico de versões" });
+    const retry = await within(drawer).findByRole("button", { name: "Tentar carregar versões novamente" });
+    await user.click(retry);
+
+    const version = await within(drawer).findByRole("button", { name: /Versão 2/u });
+    expect(attempts).toBe(2);
+    expect(drawer).toBeInTheDocument();
+    expect(version).toHaveFocus();
+  });
+
+  it("provides coarse-pointer touch targets without enlarging the desktop controls", () => {
+    expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-height: 44px/);
+    expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-width: 44px/);
+    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__toolbar button[\s\S]*min-height: 44px/);
   });
 });
 
