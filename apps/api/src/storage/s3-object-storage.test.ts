@@ -3,7 +3,9 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  GetBucketLifecycleConfigurationCommand,
   HeadBucketCommand,
+  ListPartsCommand,
   UploadPartCommand
 } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +20,110 @@ const config = {
 };
 
 describe("S3 atomic multipart uploads", () => {
+  it.each([
+    ["Studio prefix", { Rules: [{
+      Status: "Enabled",
+      Filter: { Prefix: "workspaces/" },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }],
+    ["whole bucket", { Rules: [{
+      Status: "Enabled",
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }],
+    ["AND prefix without restrictive filters", { Rules: [{
+      Status: "Enabled",
+      Filter: { And: { Prefix: "workspaces/" } },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }]
+  ])("accepts an enabled one-day lifecycle rule covering the %s", async (_label, lifecycle) => {
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof GetBucketLifecycleConfigurationCommand) return lifecycle;
+        throw new Error("unexpected command");
+      })
+    };
+    await expect(createS3ObjectStorage(config, client).ensureReady()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["missing", {}],
+    ["disabled", { Rules: [{
+      Status: "Disabled", Filter: { Prefix: "workspaces/" },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }],
+    ["wrong prefix", { Rules: [{
+      Status: "Enabled", Filter: { Prefix: "other/" },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }],
+    ["too long", { Rules: [{
+      Status: "Enabled", Filter: { Prefix: "workspaces/" },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 2 }
+    }] }],
+    ["tag restricted", { Rules: [{
+      Status: "Enabled", Filter: { Tag: { Key: "cleanup", Value: "yes" } },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    }] }]
+  ])("rejects a %s multipart lifecycle policy", async (_label, lifecycle) => {
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof GetBucketLifecycleConfigurationCommand) return lifecycle;
+        throw new Error("unexpected command");
+      })
+    };
+    await expect(createS3ObjectStorage(config, client).ensureReady())
+      .rejects.toThrow("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED");
+  });
+
+  it("rejects lifecycle inspection access errors without mutating the bucket", async () => {
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof GetBucketLifecycleConfigurationCommand) {
+          throw Object.assign(new Error("access denied"), { name: "AccessDenied" });
+        }
+        throw new Error("unexpected command");
+      })
+    };
+    await expect(createS3ObjectStorage(config, client).ensureReady())
+      .rejects.toThrow("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED");
+    expect(client.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports multipart sessions active from ListParts and inactive from NoSuchUpload", async () => {
+    let active = true;
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (!(command instanceof ListPartsCommand)) throw new Error("unexpected command");
+        if (active) return { Parts: [{ PartNumber: 1, ETag: "etag" }] };
+        throw Object.assign(new Error("gone"), { name: "NoSuchUpload" });
+      })
+    };
+    const storage = createS3ObjectStorage(config, client);
+    await expect(storage.inspectAtomicUpload({ key: "workspaces/a", uploadId: "upload-1" }))
+      .resolves.toEqual({ active: true });
+    active = false;
+    await expect(storage.inspectAtomicUpload({ key: "workspaces/a", uploadId: "upload-1" }))
+      .resolves.toEqual({ active: false });
+  });
+
+  it("supports repeated abort and inspection while a late part keeps the session active", async () => {
+    let inspection = 0;
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof AbortMultipartUploadCommand) return {};
+        if (command instanceof ListPartsCommand && ++inspection === 1) return { Parts: [{ PartNumber: 1 }] };
+        if (command instanceof ListPartsCommand) throw Object.assign(new Error("gone"), { name: "NoSuchUpload" });
+        throw new Error("unexpected command");
+      })
+    };
+    const storage = createS3ObjectStorage(config, client);
+    await storage.abortAtomicUpload({ key: "workspaces/a", uploadId: "upload-late" });
+    await expect(storage.inspectAtomicUpload({ key: "workspaces/a", uploadId: "upload-late" }))
+      .resolves.toEqual({ active: true });
+    await storage.abortAtomicUpload({ key: "workspaces/a", uploadId: "upload-late" });
+    await expect(storage.inspectAtomicUpload({ key: "workspaces/a", uploadId: "upload-late" }))
+      .resolves.toEqual({ active: false });
+  });
+
   it("uploads ordered five-MiB parts and publishes only with CompleteMultipartUpload", async () => {
     const commands: unknown[] = [];
     let part = 0;

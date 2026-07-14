@@ -76,6 +76,7 @@ describe("ObjectStorage private reads", () => {
 
   it("keeps atomic upload sessions hidden until explicit completion", async () => {
     const storage = createInMemoryObjectStorage();
+    await expect(storage.ensureReady()).resolves.toBeUndefined();
     const session = await storage.beginAtomicUpload({
       key: "private/atomic",
       contentType: "text/plain",
@@ -83,6 +84,10 @@ describe("ObjectStorage private reads", () => {
     });
     expect(storage.keys()).toEqual([]);
     expect(storage.atomicUploadIds()).toEqual([session.uploadId]);
+    await expect(storage.inspectAtomicUpload({
+      key: "private/atomic",
+      uploadId: session.uploadId
+    })).resolves.toEqual({ active: true });
     await storage.completeAtomicUploadFromStream({
       key: "private/atomic",
       uploadId: session.uploadId,
@@ -91,6 +96,10 @@ describe("ObjectStorage private reads", () => {
     });
     expect(storage.keys()).toEqual(["private/atomic"]);
     expect(storage.atomicUploadIds()).toEqual([]);
+    await expect(storage.inspectAtomicUpload({
+      key: "private/atomic",
+      uploadId: session.uploadId
+    })).resolves.toEqual({ active: false });
   });
 
   it("never publishes a late atomic stream after the session is aborted", async () => {

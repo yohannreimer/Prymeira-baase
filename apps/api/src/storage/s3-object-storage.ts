@@ -4,10 +4,12 @@ import {
   CreateBucketCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  GetBucketLifecycleConfigurationCommand,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
   S3Client,
+  ListPartsCommand,
   UploadPartCommand
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -43,6 +45,42 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig, clientOverr
   const client = clientOverride ?? (sdkClient as unknown as S3ClientLike);
 
   return {
+    async ensureReady() {
+      try {
+        const response = await client.send(new GetBucketLifecycleConfigurationCommand({
+          Bucket: config.bucket
+        })) as { Rules?: Array<{
+          Status?: string;
+          Prefix?: string;
+          Filter?: {
+            Prefix?: string;
+            Tag?: unknown;
+            ObjectSizeGreaterThan?: number;
+            ObjectSizeLessThan?: number;
+            And?: {
+              Prefix?: string;
+              Tags?: unknown[];
+              ObjectSizeGreaterThan?: number;
+              ObjectSizeLessThan?: number;
+            };
+          };
+          AbortIncompleteMultipartUpload?: { DaysAfterInitiation?: number };
+        }> };
+        const safe = response.Rules?.some((rule) => {
+          if (rule.Status !== "Enabled") return false;
+          const days = rule.AbortIncompleteMultipartUpload?.DaysAfterInitiation;
+          if (typeof days !== "number" || days > 1) return false;
+          const prefix = unrestrictedLifecyclePrefix(rule);
+          return prefix !== null && "workspaces/".startsWith(prefix);
+        });
+        if (!safe) throw multipartLifecycleRequired();
+      } catch (error) {
+        if (error instanceof Error && error.message === "STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED") {
+          throw error;
+        }
+        throw multipartLifecycleRequired(error);
+      }
+    },
     async put(input, options) {
       const unbind = bindAbortToBody(input.body, options?.signal);
       try {
@@ -121,6 +159,22 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig, clientOverr
         throw error;
       }
       throwIfAborted(options?.signal);
+    },
+    async inspectAtomicUpload(input, options) {
+      throwIfAborted(options?.signal);
+      try {
+        await client.send(new ListPartsCommand({
+          Bucket: config.bucket,
+          Key: input.key,
+          UploadId: input.uploadId,
+          MaxParts: 1
+        }), { abortSignal: options?.signal });
+        throwIfAborted(options?.signal);
+        return { active: true };
+      } catch (error) {
+        if (isNoSuchUpload(error)) return { active: false };
+        throw error;
+      }
     },
     async get(key, options) {
       const response = await client.send(
@@ -238,4 +292,40 @@ function isNoSuchUpload(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as { name?: string; Code?: string; code?: string };
   return candidate.name === "NoSuchUpload" || candidate.Code === "NoSuchUpload" || candidate.code === "NoSuchUpload";
+}
+
+function multipartLifecycleRequired(cause?: unknown): Error {
+  const error = new Error("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED");
+  if (cause !== undefined) (error as Error & { cause?: unknown }).cause = cause;
+  return error;
+}
+
+function unrestrictedLifecyclePrefix(rule: {
+  Prefix?: string;
+  Filter?: {
+    Prefix?: string;
+    Tag?: unknown;
+    ObjectSizeGreaterThan?: number;
+    ObjectSizeLessThan?: number;
+    And?: {
+      Prefix?: string;
+      Tags?: unknown[];
+      ObjectSizeGreaterThan?: number;
+      ObjectSizeLessThan?: number;
+    };
+  };
+}): string | null {
+  if (rule.Prefix !== undefined) return rule.Prefix;
+  if (!rule.Filter) return "";
+  if (rule.Filter.Tag !== undefined
+    || rule.Filter.ObjectSizeGreaterThan !== undefined
+    || rule.Filter.ObjectSizeLessThan !== undefined) return null;
+  if (rule.Filter.And) {
+    const and = rule.Filter.And;
+    if ((and.Tags?.length ?? 0) > 0
+      || and.ObjectSizeGreaterThan !== undefined
+      || and.ObjectSizeLessThan !== undefined) return null;
+    return and.Prefix ?? "";
+  }
+  return rule.Filter.Prefix ?? "";
 }

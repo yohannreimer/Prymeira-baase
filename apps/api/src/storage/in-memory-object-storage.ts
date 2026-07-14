@@ -7,6 +7,7 @@ export type InMemoryObjectStorage = ObjectStorage & {
   failNextPut(error: Error): void;
   failNextDelete(error: Error): void;
   failNextAtomicAbort(error: Error): void;
+  keepNextAtomicAbortActive(): void;
   keys(): string[];
   atomicUploadIds(): string[];
 };
@@ -21,8 +22,10 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
   let nextPutError: Error | null = null;
   let nextDeleteError: Error | null = null;
   let nextAtomicAbortError: Error | null = null;
+  let keepNextAbortActive = false;
 
   return {
+    async ensureReady() {},
     async put(input: PutObjectInput, options) {
       throwIfAborted(options?.signal);
       if (nextPutError) {
@@ -87,8 +90,17 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
         nextAtomicAbortError = null;
         throw error;
       }
+      if (keepNextAbortActive) {
+        keepNextAbortActive = false;
+        return;
+      }
       const session = atomicUploads.get(input.uploadId);
       if (session?.key === input.key) atomicUploads.delete(input.uploadId);
+    },
+    async inspectAtomicUpload(input, options) {
+      throwIfAborted(options?.signal);
+      const session = atomicUploads.get(input.uploadId);
+      return { active: session?.key === input.key };
     },
     async get(key, options) {
       if (options?.signal?.aborted) throw options.signal.reason ?? new Error("ABORTED");
@@ -126,6 +138,9 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
     },
     failNextAtomicAbort(error) {
       nextAtomicAbortError = error;
+    },
+    keepNextAtomicAbortActive() {
+      keepNextAbortActive = true;
     },
     keys() {
       return [...objects.keys()].sort();

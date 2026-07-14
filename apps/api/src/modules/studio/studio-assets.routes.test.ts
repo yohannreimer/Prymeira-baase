@@ -1,7 +1,15 @@
 import { Readable } from "node:stream";
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  HeadBucketCommand,
+  UploadPartCommand
+} from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "../../app";
 import { createInMemoryObjectStorage } from "../../storage/in-memory-object-storage";
+import { createS3ObjectStorage } from "../../storage/s3-object-storage";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import type { StudioRepository } from "./studio.types";
 import type { StudioLinkFetcher, StudioLinkResolver } from "./studio-assets.routes";
@@ -104,7 +112,7 @@ describe("Studio asset routes", () => {
       const response = await upload(app, document.id, {
         filename: "notes.txt", mimeType: "text/plain", body: Buffer.from("private")
       });
-      expect(response.statusCode).toBe(429);
+      expect(response.statusCode).toBe(503);
       expect(response.json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
     } finally {
       release();
@@ -295,6 +303,106 @@ describe("Studio asset routes", () => {
     });
   });
 
+  it("returns at the deadline while an abort-ignoring begin retains ownership until late settlement", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+    const document = await repository.createDocument(documentInput());
+    const memoryStorage = createInMemoryObjectStorage();
+    let releaseBegin!: () => void;
+    const beginGate = new Promise<void>((resolve) => { releaseBegin = resolve; });
+    let beginCalls = 0;
+    const objectStorage = {
+      ...memoryStorage,
+      async beginAtomicUpload(
+        input: Parameters<typeof memoryStorage.beginAtomicUpload>[0],
+        options?: { signal?: AbortSignal }
+      ) {
+        beginCalls += 1;
+        if (beginCalls === 1) await beginGate;
+        return memoryStorage.beginAtomicUpload(input, beginCalls === 1 ? undefined : options);
+      }
+    };
+    const app = buildApp({
+      studioRepository: repository,
+      objectStorage,
+      studioUploadSemaphore: createStudioUploadSemaphore(1),
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100
+    });
+
+    const response = await upload(app, document.id, {
+      filename: "stalled-begin.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.details).toEqual({ upload_timeout: true });
+    expect((await upload(app, document.id, {
+      filename: "busy.txt", mimeType: "text/plain", body: Buffer.from("private")
+    })).json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
+    expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+      status: "uploading",
+      storageSessionState: "creating",
+      storageUploadId: null
+    }]);
+
+    releaseBegin();
+    await vi.waitFor(async () => {
+      expect(memoryStorage.atomicUploadIds()).toEqual([]);
+      expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+        status: "cleanup_pending",
+        storageSessionState: "abort_pending",
+        storageUploadId: expect.any(String)
+      }]);
+    });
+    expect((await upload(app, document.id, {
+      filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
+    })).statusCode).toBe(201);
+  });
+
+  it("returns at the deadline while an abort-ignoring attach retains ownership until late settlement", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+    const document = await repository.createDocument(documentInput());
+    const memoryStorage = createInMemoryObjectStorage();
+    let releaseAttach!: () => void;
+    const attachGate = new Promise<void>((resolve) => { releaseAttach = resolve; });
+    let attachCalls = 0;
+    const app = buildApp({
+      studioRepository: {
+        ...repository,
+        async attachAssetUploadSession(input) {
+          attachCalls += 1;
+          if (attachCalls === 1) await attachGate;
+          return repository.attachAssetUploadSession(input);
+        }
+      },
+      objectStorage: memoryStorage,
+      studioUploadSemaphore: createStudioUploadSemaphore(1),
+      studioUploadPutTimeoutMs: 15,
+      studioUploadLeaseMs: 100
+    });
+
+    const response = await upload(app, document.id, {
+      filename: "stalled-attach.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.details).toEqual({ upload_timeout: true });
+    expect((await upload(app, document.id, {
+      filename: "busy.txt", mimeType: "text/plain", body: Buffer.from("private")
+    })).json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
+    expect(memoryStorage.atomicUploadIds()).toHaveLength(1);
+
+    releaseAttach();
+    await vi.waitFor(async () => {
+      expect(memoryStorage.atomicUploadIds()).toEqual([]);
+      expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+        status: "cleanup_pending",
+        storageSessionState: "abort_pending",
+        storageUploadId: expect.any(String)
+      }]);
+    });
+    expect((await upload(app, document.id, {
+      filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
+    })).statusCode).toBe(201);
+  });
+
   it.each(["false", "error"] as const)(
     "aborts immediately when multipart lease renewal returns %s",
     async (renewalFailure) => {
@@ -338,14 +446,19 @@ describe("Studio asset routes", () => {
       });
       expect(abortObserved).toBe(true);
       expect(memoryStorage.keys()).toEqual([]);
-      expect(memoryStorage.atomicUploadIds()).toEqual([]);
+      expect(memoryStorage.atomicUploadIds()).toHaveLength(1);
       expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
-        status: "cleanup_pending",
-        storageSessionState: "abort_pending"
+        status: "uploading",
+        storageSessionState: "active"
       }]);
       releasePart();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(memoryStorage.keys()).toEqual([]);
+      await vi.waitFor(async () => {
+        expect(memoryStorage.atomicUploadIds()).toEqual([]);
+        expect(await repository.listAssetUploadIntents(ownerScope())).toMatchObject([{
+          status: "cleanup_pending",
+          storageSessionState: "abort_pending"
+        }]);
+      });
     }
   );
 
@@ -358,6 +471,7 @@ describe("Studio asset routes", () => {
     const memoryStorage = createInMemoryObjectStorage();
     let abortObserved = false;
     let completionCalls = 0;
+    let lateBody = "";
     const objectStorage = {
       ...memoryStorage,
       async completeAtomicUploadFromStream(
@@ -368,8 +482,9 @@ describe("Studio asset routes", () => {
         if (completionCalls > 1) return memoryStorage.completeAtomicUploadFromStream(input, options);
         options?.signal?.addEventListener("abort", () => { abortObserved = true; }, { once: true });
         await putGate;
-        input.body.destroy();
-        await memoryStorage.completeAtomicUploadFromStream({ ...input, body: Readable.from("private") });
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.body) chunks.push(Buffer.from(chunk));
+        lateBody = Buffer.concat(chunks).toString("utf8");
       }
     };
     const app = buildApp({
@@ -393,12 +508,91 @@ describe("Studio asset routes", () => {
     const next = await upload(app, document.id, {
       filename: "next.txt", mimeType: "text/plain", body: Buffer.from("private")
     });
-    expect(next.statusCode).toBe(201);
+    expect(next.statusCode).toBe(503);
+    expect(next.json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
+    releasePut();
+    await vi.waitFor(async () => {
+      const released = await upload(app, document.id, {
+        filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
+      });
+      expect(released.statusCode).toBe(201);
+    });
     const publishedKeys = [...memoryStorage.keys()];
     expect(publishedKeys).toHaveLength(1);
-    releasePut();
-    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(memoryStorage.keys()).toEqual(publishedKeys);
+    expect(lateBody).toBe("private");
+  });
+
+  it("bounds ignored multipart part buffers and owners to configured concurrency", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument(documentInput());
+    const pendingParts = new Map<number, Buffer>();
+    const partResolvers = new Map<number, (value: { ETag: string }) => void>();
+    let uploadNumber = 0;
+    let stallParts = true;
+    const commands: unknown[] = [];
+    const client = {
+      send: vi.fn((command: unknown) => {
+        commands.push(command);
+        if (command instanceof HeadBucketCommand) return Promise.resolve({});
+        if (command instanceof CreateMultipartUploadCommand) {
+          return Promise.resolve({ UploadId: `upload-${++uploadNumber}` });
+        }
+        if (command instanceof UploadPartCommand) {
+          if (!stallParts) return Promise.resolve({ ETag: "released-etag" });
+          const id = Number(command.input.UploadId?.split("-").at(-1));
+          pendingParts.set(id, command.input.Body as Buffer);
+          return new Promise<{ ETag: string }>((resolve) => {
+            partResolvers.set(id, (value) => {
+              pendingParts.delete(id);
+              resolve(value);
+            });
+          });
+        }
+        if (command instanceof AbortMultipartUploadCommand) return Promise.resolve({});
+        if (command instanceof CompleteMultipartUploadCommand) return Promise.resolve({});
+        return Promise.reject(new Error("unexpected command"));
+      })
+    };
+    const objectStorage = createS3ObjectStorage({
+      region: "us-east-1",
+      bucket: "private",
+      accessKeyId: "test",
+      secretAccessKey: "test",
+      forcePathStyle: true
+    }, client);
+    const app = buildApp({
+      studioRepository: repository,
+      objectStorage,
+      studioUploadSemaphore: createStudioUploadSemaphore(2),
+      studioUploadPutTimeoutMs: 2_000,
+      studioUploadLeaseMs: 4_000
+    });
+    const body = Buffer.alloc(5 * 1024 * 1024, 0x61);
+    const first = upload(app, document.id, { filename: "first.txt", mimeType: "text/plain", body });
+    const second = upload(app, document.id, { filename: "second.txt", mimeType: "text/plain", body });
+    await vi.waitFor(() => expect(pendingParts.size).toBe(2));
+    expect([...pendingParts.values()].every((part) => part.length <= 5 * 1024 * 1024)).toBe(true);
+    expect((await first).statusCode).toBe(503);
+    expect((await second).statusCode).toBe(503);
+    const busy = await upload(app, document.id, {
+      filename: "third.txt", mimeType: "text/plain", body: Buffer.from("private")
+    });
+    expect(busy.statusCode).toBe(503);
+    expect(busy.json().error.code).toBe("STUDIO_ASSET_UPLOAD_BUSY");
+
+    partResolvers.get(1)!({ ETag: "etag-1" });
+    partResolvers.get(2)!({ ETag: "etag-2" });
+    await vi.waitFor(() => expect(pendingParts.size).toBe(0));
+    expect(commands.some((command) => command instanceof CompleteMultipartUploadCommand)).toBe(false);
+    stallParts = false;
+    await vi.waitFor(async () => {
+      const released = await upload(app, document.id, {
+        filename: "released.txt", mimeType: "text/plain", body: Buffer.from("private")
+      });
+      expect(released.statusCode).toBe(201);
+    });
+    expect(commands.filter((command) => command instanceof CompleteMultipartUploadCommand)).toHaveLength(1);
   });
 
   it("deletes the private object only after an owner-scoped asset lookup", async () => {

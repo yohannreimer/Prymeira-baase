@@ -14,6 +14,13 @@ export type StudioUploadSemaphore = {
   tryAcquire(): (() => void) | null;
 };
 
+export type PreparedStudioAssetUpload = {
+  path: string;
+  sizeBytes: number;
+  mimeType: string;
+  cleanup(): Promise<void>;
+};
+
 export function createStudioUploadSemaphore(maxConcurrent = 2): StudioUploadSemaphore {
   let active = 0;
   return {
@@ -38,9 +45,38 @@ export async function spoolStudioAssetUpload(
     removeDirectory?: typeof rm;
   } = {}
 ) {
+  const prepared = await prepareStudioAssetUpload(input, options);
+  try {
+    return await run({ path: prepared.path, sizeBytes: prepared.sizeBytes, mimeType: prepared.mimeType });
+  } finally {
+    await prepared.cleanup();
+  }
+}
+
+export async function prepareStudioAssetUpload(
+  input: { file: NodeJS.ReadableStream; declaredMimeType: string; isTruncated?: () => boolean },
+  options: {
+    onCleanupError?: (error: unknown, path: string) => void;
+    removeDirectory?: typeof rm;
+  } = {}
+): Promise<PreparedStudioAssetUpload> {
   const directory = await mkdtemp(join(tmpdir(), "baase-studio-upload-"));
   const path = join(directory, "private-upload");
   let sizeBytes = 0;
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    try {
+      await (options.removeDirectory ?? rm)(directory, { recursive: true, force: true });
+    } catch (error) {
+      try {
+        options.onCleanupError?.(error, directory);
+      } catch {
+        // Reporting must never replace the upload's primary success or failure.
+      }
+    }
+  };
   const counter = new Transform({
     transform(chunk: Buffer | string, _encoding, callback) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -65,17 +101,10 @@ export async function spoolStudioAssetUpload(
       });
     }
     const inspected = await inspectStudioUploadFile(path, input.declaredMimeType);
-    return await run({ path, sizeBytes, mimeType: inspected.mimeType });
-  } finally {
-    try {
-      await (options.removeDirectory ?? rm)(directory, { recursive: true, force: true });
-    } catch (error) {
-      try {
-        options.onCleanupError?.(error, directory);
-      } catch {
-        // Reporting must never replace the upload's primary success or failure.
-      }
-    }
+    return { path, sizeBytes, mimeType: inspected.mimeType, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
   }
 }
 

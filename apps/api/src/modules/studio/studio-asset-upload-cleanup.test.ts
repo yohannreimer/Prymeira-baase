@@ -97,6 +97,38 @@ describe("Studio durable upload intent cleanup", () => {
     expect(fixture.storage.atomicUploadIds()).toEqual([]);
   });
 
+  it("retains the multipart id until abort is verified inactive", async () => {
+    let clock = "2026-07-13T12:00:00.000Z";
+    const fixture = await createFixture(() => clock);
+    const session = await fixture.storage.beginAtomicUpload({
+      key: fixture.intent.objectKey,
+      contentType: fixture.intent.mimeType,
+      sizeBytes: fixture.intent.sizeBytes
+    });
+    await fixture.repository.attachAssetUploadSession({
+      scope,
+      intentId: fixture.intent.id,
+      uploadToken: fixture.intent.uploadToken!,
+      storageUploadId: session.uploadId
+    });
+    await reconcile(fixture.repository, fixture.intent, clock, session.uploadId);
+    fixture.storage.keepNextAtomicAbortActive();
+
+    await expect(fixture.processor.processNext())
+      .rejects.toThrow("STUDIO_ASSET_UPLOAD_ABORT_UNCONFIRMED");
+    expect(fixture.storage.atomicUploadIds()).toEqual([session.uploadId]);
+    expect(await fixture.repository.listAssetUploadIntents(scope)).toMatchObject([{
+      status: "failed",
+      storageUploadId: session.uploadId,
+      storageSessionState: "abort_pending"
+    }]);
+
+    clock = "2026-07-13T12:01:00.000Z";
+    await fixture.processor.processNext();
+    expect(fixture.storage.atomicUploadIds()).toEqual([]);
+    expect(await fixture.repository.listAssetUploadIntents(scope)).toEqual([]);
+  });
+
   it("resolves a pending intent without deletion when its active asset already exists", async () => {
     let clock = "2026-07-13T12:00:00.000Z";
     const fixture = await createFixture(() => clock);

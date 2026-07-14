@@ -28,6 +28,12 @@ export function createStudioAssetUploadCleanupProcessor(options: {
             uploadId: intent.storageUploadId
           }, { signal });
           throwIfAborted(signal);
+          const session = await options.objectStorage.inspectAtomicUpload({
+            key: intent.objectKey,
+            uploadId: intent.storageUploadId
+          }, { signal });
+          if (session.active) throw new Error("STUDIO_ASSET_UPLOAD_ABORT_UNCONFIRMED");
+          throwIfAborted(signal);
         }
         await options.objectStorage.delete(intent.objectKey, { signal });
         throwIfAborted(signal);

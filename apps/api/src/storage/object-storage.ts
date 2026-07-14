@@ -26,6 +26,7 @@ export type AbortAtomicUploadInput = {
 };
 
 export type ObjectStorage = {
+  ensureReady(): Promise<void>;
   put(input: PutObjectInput, options?: { signal?: AbortSignal }): Promise<void>;
   beginAtomicUpload(input: AtomicUploadInput, options?: { signal?: AbortSignal }): Promise<{ uploadId: string }>;
   completeAtomicUploadFromStream(
@@ -33,6 +34,7 @@ export type ObjectStorage = {
     options?: { signal?: AbortSignal }
   ): Promise<void>;
   abortAtomicUpload(input: AbortAtomicUploadInput, options?: { signal?: AbortSignal }): Promise<void>;
+  inspectAtomicUpload(input: AbortAtomicUploadInput, options?: { signal?: AbortSignal }): Promise<{ active: boolean }>;
   get(key: string, options?: { signal?: AbortSignal }): Promise<{
     body: Readable;
     contentType: string | null;

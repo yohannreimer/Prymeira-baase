@@ -100,6 +100,23 @@ describe("runtime config", () => {
     expect(config.warnings).toContain("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");
   });
 
+  it("does not allow production to fall back to memory before the S3 lifecycle startup check", () => {
+    const config = readRuntimeConfig({
+      BAASE_RUNTIME_MODE: "production",
+      BAASE_AUTH_MODE: "account",
+      PRYMEIRA_ACCOUNT_API_URL: "https://hub.prymeiradigital.com.br/api",
+      DATABASE_URL: "postgres://baase:baase@localhost:5432/baase",
+      BAASE_OPERATIONAL_STORE: "relational",
+      OPENAI_API_KEY: "sk-test",
+      DEEPGRAM_API_KEY: "dg-test"
+    });
+    expect(config.objectStorage).toEqual({ provider: "memory", s3: null });
+    expect(config.ok).toBe(false);
+    expect(config.warnings).toContain(
+      "S3_BUCKET, S3_ACCESS_KEY e S3_SECRET_KEY são obrigatórios para arquivos em produção."
+    );
+  });
+
   it("reads a path-style S3-compatible configuration for MinIO", () => {
     const config = readRuntimeConfig({
       S3_ENDPOINT: "http://prymeira_baase_minio:9000",

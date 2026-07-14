@@ -2,6 +2,7 @@ import type { BaaseOperationalStore } from "./config/runtime";
 import { createConfiguredPostgresRepositoryBundle, ensurePostgresSchema } from "./db/postgres";
 import { ensureOperationalSchema } from "./db/operational-schema";
 import type { OperationalPool } from "./db/operational-repository-support";
+import type { ObjectStorage } from "./storage/object-storage";
 
 type PostgresRuntimeDependencies<Repositories> = {
   ensurePostgresSchema(pool: OperationalPool): Promise<void>;
@@ -16,6 +17,10 @@ const defaultDependencies: PostgresRuntimeDependencies<DefaultRepositoryBundle> 
   ensureOperationalSchema,
   createRepositoryBundle: createConfiguredPostgresRepositoryBundle
 };
+
+export async function ensureObjectStorageReady(objectStorage: ObjectStorage): Promise<void> {
+  await objectStorage.ensureReady();
+}
 
 export function initializePostgresRuntime(
   pool: OperationalPool,

@@ -2,7 +2,8 @@ import "dotenv/config";
 import { buildApp } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
 import { createPostgresPool } from "./db/postgres";
-import { initializePostgresRuntime } from "./server-initialization";
+import { ensureObjectStorageReady, initializePostgresRuntime } from "./server-initialization";
+import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
 import { createS3ObjectStorage } from "./storage/s3-object-storage";
 import { startStudioAssetMaintenance } from "./modules/studio/studio-asset-maintenance-runner";
 
@@ -10,6 +11,11 @@ const port = Number(process.env.PORT ?? 3090);
 const host = process.env.HOST ?? "0.0.0.0";
 const databaseUrl = process.env.DATABASE_URL;
 const runtimeConfig = readRuntimeConfig(process.env);
+const objectStorage = runtimeConfig.objectStorage.s3
+  ? createS3ObjectStorage(runtimeConfig.objectStorage.s3)
+  : createInMemoryObjectStorage();
+
+await ensureObjectStorageReady(objectStorage);
 
 const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
 const repositoryBundle = pool
@@ -20,12 +26,12 @@ const app = repositoryBundle
   ? buildApp({
       ...repositoryBundle,
       runtimeConfig,
-      objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
+      objectStorage
     })
   : buildApp({
       seedDemoData: runtimeConfig.demoSeedEnabled,
       runtimeConfig,
-      objectStorage: runtimeConfig.objectStorage.s3 ? createS3ObjectStorage(runtimeConfig.objectStorage.s3) : undefined
+      objectStorage
     });
 let maintenanceRunner: ReturnType<typeof startStudioAssetMaintenance> | null = null;
 

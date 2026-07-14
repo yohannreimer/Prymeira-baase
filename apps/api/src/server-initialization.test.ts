@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
 import type { OperationalPool } from "./db/operational-repository-support";
-import { initializePostgresRuntime } from "./server-initialization";
+import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
+import { ensureObjectStorageReady, initializePostgresRuntime } from "./server-initialization";
 
 const pool = {} as OperationalPool;
 
 describe("PostgreSQL server initialization", () => {
+  it("verifies object storage before startup can continue", async () => {
+    const events: string[] = [];
+    const storage = {
+      ...createInMemoryObjectStorage(),
+      async ensureReady() { events.push("storage-ready"); }
+    };
+    await ensureObjectStorageReady(storage);
+    events.push("listen");
+    expect(events).toEqual(["storage-ready", "listen"]);
+  });
+
+  it("stops startup when multipart lifecycle readiness fails", async () => {
+    const storage = {
+      ...createInMemoryObjectStorage(),
+      async ensureReady() { throw new Error("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED"); }
+    };
+    await expect(ensureObjectStorageReady(storage))
+      .rejects.toThrow("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED");
+  });
+
   for (const operationalStore of ["jsonb", "relational"] as const) {
     it(`initializes operational tables before creating the ${operationalStore} repository bundle`, async () => {
       const events: string[] = [];
