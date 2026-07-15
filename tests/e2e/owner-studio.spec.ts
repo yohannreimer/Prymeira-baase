@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
 
 const apiBaseUrl = "http://127.0.0.1:3090";
 const ownerA = actor("owner", "profile_owner");
@@ -139,58 +139,77 @@ test.describe("Owner Studio release acceptance", () => {
     expect(ritual.id).toBeTruthy();
   });
 
-  test("7. idempotent routine creation: edited preview creates exactly one operational routine", async ({ request }) => {
-    const title = `Rotina originada no Estúdio ${Date.now()}`;
-    const document = await createDocument(request, ownerA, `Decisão estratégica ${Date.now()}`, "Criar uma revisão operacional semanal.");
-    const turn = await api(request, ownerA, "/studio/assistant/turns", {
-      method: "POST",
-      data: { document_id: document.id, message: "Prepare uma proposta revisável.", request_text_suggestion: true }
-    });
-    expect(turn.status()).toBe(200);
-    const suggestion = sse(await turn.text(), "suggestion");
-    expect(suggestion).toBeTruthy();
-    const draft = {
-      resource_type: "routine",
-      payload: {
-        title: "Título antes da revisão",
-        area_id: null,
-        frequency: "weekly",
-        weekdays: ["mon"],
-        due_hint: "Primeira atividade da manhã",
-        assignee_profile_ids: [],
-        execution_mode: "shared",
-        approval_mode: "direct",
-        evidence_policy: "optional",
-        task_templates: [{
-          title: "Revisar decisões abertas",
-          process_id: null,
-          assignee_profile_id: null,
-          due_hint: null,
-          approval_mode: "direct",
-          evidence_policy: "optional"
-        }]
+  test("7. idempotent task creation: edited UI preview survives a lost response and creates exactly one task", async ({ page, request }, testInfo) => {
+    const marker = uniqueTestMarker(testInfo);
+    const title = `Tarefa originada no Estúdio ${marker}`;
+    const dueDay = 20 + ((testInfo.repeatEachIndex + testInfo.retry) % 8);
+    const dueDate = `2026-07-${String(dueDay).padStart(2, "0")}`;
+    const document = await createDocument(
+      request,
+      ownerA,
+      `Decisão estratégica ${marker}`,
+      "Criar um próximo passo operacional revisável."
+    );
+    const confirmationKeys: string[] = [];
+    let confirmationRequests = 0;
+    let committedResponseStatus: number | undefined;
+
+    await page.route("**/api/studio/suggestions/*/operation-confirm", async (route) => {
+      confirmationRequests += 1;
+      confirmationKeys.push(route.request().headers()["idempotency-key"] ?? "");
+      if (confirmationRequests === 1) {
+        const committedResponse = await route.fetch();
+        committedResponseStatus = committedResponse.status();
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "E2E_LOST_CONFIRMATION_RESPONSE",
+              message: "A criação foi processada, mas a resposta não chegou ao cliente."
+            }
+          })
+        });
+        return;
       }
-    };
-    const previewResponse = await api(request, ownerA, `/studio/suggestions/${suggestion.id}/operation-preview`, {
-      method: "POST", data: draft
+      await route.continue();
     });
-    expect(previewResponse.status()).toBe(201);
-    const preview = (await previewResponse.json()).preview;
-    expect(preview.status).toBe("preview");
-    const edited = { ...draft, payload: { ...draft.payload, title } };
-    const idempotencyKey = "4be66569-9968-4f8d-8652-91cf2e005b51";
-    const confirmation = {
-      method: "POST" as const,
-      headers: { "idempotency-key": idempotencyKey },
-      data: { preview_id: preview.id, draft: edited }
-    };
-    const first = await api(request, ownerA, `/studio/suggestions/${suggestion.id}/operation-confirm`, confirmation);
-    const repeated = await api(request, ownerA, `/studio/suggestions/${suggestion.id}/operation-confirm`, confirmation);
-    expect(first.status()).toBe(201);
-    expect(repeated.status()).toBe(200);
-    expect((await repeated.json()).link.id).toBe((await first.json()).link.id);
-    const routines = (await (await api(request, ownerA, "/routines")).json()).routines;
-    expect(routines.filter((routine: { title: string }) => routine.title === title)).toHaveLength(1);
+
+    await page.goto(`/#estudio/document/${encodeURIComponent(document.id)}`);
+    await expect(page.getByRole("heading", { name: document.title })).toBeVisible();
+    await page.getByLabel("O que você quer entender melhor?").fill("Prepare uma proposta revisável para este próximo passo.");
+    await page.getByRole("checkbox", { name: "Criar proposta revisável" }).check();
+    await page.getByRole("button", { name: "Enviar", exact: true }).click();
+
+    const suggestion = page.getByRole("region", { name: "Proposta revisável da IA" });
+    await expect(suggestion).toBeVisible();
+    await suggestion.getByRole("button", { name: "Levar para a operação" }).click();
+
+    const preview = suggestion.getByRole("region", { name: "Prévia operacional" });
+    await expect(preview).toBeVisible();
+    await preview.getByLabel("Título", { exact: true }).fill(title);
+    await preview.getByLabel("Data de vencimento").fill(dueDate);
+    await preview.getByRole("button", { name: "Confirmar e criar 1 registro" }).click();
+
+    await expect(preview.getByRole("alert")).toContainText("A criação não foi confirmada");
+    await preview.getByRole("button", { name: "Tentar confirmação novamente" }).dblclick();
+
+    const created = suggestion.getByRole("region", { name: "Recurso criado" });
+    await expect(created).toContainText(title);
+    expect(committedResponseStatus).toBe(201);
+    expect(confirmationRequests).toBe(2);
+    expect(confirmationKeys).toHaveLength(2);
+    expect(confirmationKeys[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(confirmationKeys[1]).toBe(confirmationKeys[0]);
+
+    await created.getByRole("button", { name: "Abrir tarefa" }).click();
+    const taskDetails = page.getByRole("dialog", { name: "Detalhes da tarefa" });
+    await expect(taskDetails.getByRole("heading", { name: title })).toBeVisible();
+
+    const todayResponse = await api(request, ownerA, `/today?date=${dueDate}`);
+    expect(todayResponse.status()).toBe(200);
+    const today = await todayResponse.json();
+    expect(today.tasks.filter((task: { title: string }) => task.title === title)).toHaveLength(1);
   });
 
   test("8. cross-owner and role isolation: another owner, manager and employee cannot discover the Studio", async ({ page, request }) => {
@@ -273,11 +292,14 @@ async function createDocument(request: APIRequestContext, actorHeaders: Record<s
   return (await response.json()).document as { id: string; title: string; revision: number };
 }
 
-function sse(body: string, eventName: string) {
-  const frame = body.split("\n\n").find((candidate) => candidate.startsWith(`event: ${eventName}\n`));
-  if (!frame) return null;
-  const data = frame.split("\n").find((line) => line.startsWith("data: "));
-  return data ? JSON.parse(data.slice("data: ".length)) : null;
+function uniqueTestMarker(testInfo: TestInfo) {
+  return [
+    testInfo.project.name,
+    `repeat-${testInfo.repeatEachIndex}`,
+    `retry-${testInfo.retry}`,
+    `worker-${testInfo.workerIndex}`,
+    crypto.randomUUID()
+  ].join("-");
 }
 
 function wavFixture() {
