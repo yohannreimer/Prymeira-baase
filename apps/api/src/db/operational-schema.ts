@@ -24,7 +24,8 @@ export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   17: "studio_ritual_sessions",
   18: "studio_operation_previews_and_links",
   19: "studio_proactivity_settings_and_signals",
-  23: "studio_owner_portability_and_erasure"
+  23: "studio_owner_portability_and_erasure",
+  25: "studio_operation_preview_strict_durable_identity"
 } as const);
 
 const operationalSchemaLock = [1111574853, 1869636978];
@@ -1463,6 +1464,28 @@ const migrations: Migration[] = [{
       CHECK (
         status='confirming'
         OR (status='confirmed' AND intended_resource_id=result_resource_id)
+        OR (status IN ('preview','expired') AND intended_resource_id IS NULL)
+      );
+  `
+}, {
+  version: 25,
+  name: "studio_operation_preview_strict_durable_identity",
+  sql: `
+    UPDATE studio_operation_previews
+       SET intended_resource_id=result_resource_id
+     WHERE status='confirmed'
+       AND result_resource_id IS NOT NULL
+       AND intended_resource_id IS NULL;
+
+    ALTER TABLE studio_operation_previews
+      DROP CONSTRAINT IF EXISTS studio_operation_previews_intended_resource_state_ck;
+    ALTER TABLE studio_operation_previews
+      ADD CONSTRAINT studio_operation_previews_intended_resource_state_ck
+      CHECK (
+        status='confirming'
+        OR (status='confirmed'
+          AND intended_resource_id IS NOT NULL
+          AND intended_resource_id=result_resource_id)
         OR (status IN ('preview','expired') AND intended_resource_id IS NULL)
       );
   `

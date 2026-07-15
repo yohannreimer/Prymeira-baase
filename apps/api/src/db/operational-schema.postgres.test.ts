@@ -99,7 +99,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
-  it("upgrades released Studio operation migration 18 through additive durable identity migration 24", async () => {
+  it("upgrades migration 24 through strict durable identity migration 25", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 18);
       const before = await pool.query<{ column_name: string }>(
@@ -123,6 +123,12 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
 
       await ensureOperationalSchemaThrough(pool, 24);
       await ensureOperationalSchemaThrough(pool, 24);
+      await expect(pool.query(
+        "update studio_operation_previews set intended_resource_id=NULL where id='preview_confirmed'"
+      )).resolves.toBeDefined();
+
+      await ensureOperationalSchemaThrough(pool, 25);
+      await ensureOperationalSchemaThrough(pool, 25);
       const after = await pool.query<{ intended_resource_id: string | null }>(
         "select intended_resource_id from studio_operation_previews where id='preview_confirmed'"
       );
@@ -135,6 +141,9 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       expect(constraint.rows).toEqual([{ conname: "studio_operation_previews_intended_resource_state_ck" }]);
       await expect(pool.query(
         "update studio_operation_previews set intended_resource_id='task_wrong' where id='preview_confirmed'"
+      )).rejects.toThrow();
+      await expect(pool.query(
+        "update studio_operation_previews set intended_resource_id=NULL where id='preview_confirmed'"
       )).rejects.toThrow();
     });
   });

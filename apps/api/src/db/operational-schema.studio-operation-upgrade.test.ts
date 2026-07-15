@@ -52,16 +52,21 @@ beforeEach(() => {
 afterEach(async () => db.end());
 
 describe("Studio operation durable-identity upgrade", () => {
-  it("keeps released migration 18 byte-stable and moves durable identity to migration 24", () => {
+  it("keeps released migrations 18 and 24 byte-stable and moves strict identity validation to migration 25", () => {
     const source = readFileSync(resolve(process.cwd(), "src/db/operational-schema.ts"), "utf8");
-    const migration18 = source.slice(source.indexOf("  version: 18,"), source.indexOf("  version: 20,"));
-    const migration24 = source.slice(source.indexOf("  version: 24,"));
+    const migration18 = source.slice(source.indexOf("  version: 18,"), source.indexOf("  version: 19,"));
+    const migration24Start = source.indexOf("  version: 24,");
+    const migration24 = source.slice(migration24Start, source.indexOf("\n  `", migration24Start) + 4);
+    const migration25 = source.slice(source.indexOf("  version: 25,"));
 
     expect(createHash("sha256").update(migration18).digest("hex"))
       .toBe("81439de3b0b47b0778054a561016836ccdb2d123250836860bf706daea9378df");
+    expect(createHash("sha256").update(migration24).digest("hex"))
+      .toBe("721e427b270bf70fc9c3d37ac49510eabb864b51ddd7ea25a6cc0738856bf6a2");
     expect(migration18).not.toContain("intended_resource_id");
     expect(migration24).toContain("ADD COLUMN IF NOT EXISTS intended_resource_id TEXT");
     expect(migration24).toContain("studio_operation_previews_intended_resource_state_ck");
+    expect(migration25).toContain("intended_resource_id IS NOT NULL");
   });
 
   it("upgrades old migration 18 rows additively, backfills confirmed identity, and fences legacy confirming work", async () => {
@@ -71,7 +76,14 @@ describe("Studio operation durable-identity upgrade", () => {
     await seedOldPreviewRows(db);
 
     await ensureOperationalSchemaThrough(db, 24);
-    await ensureOperationalSchemaThrough(db, 24);
+    await db.query(`ALTER TABLE studio_operation_previews
+      DROP CONSTRAINT studio_operation_previews_intended_resource_state_ck`);
+    await expect(db.query(
+      "update studio_operation_previews set intended_resource_id=NULL where id='preview_confirmed'"
+    )).resolves.toBeDefined();
+
+    await ensureOperationalSchemaThrough(db, 25);
+    await ensureOperationalSchemaThrough(db, 25);
 
     const rows = await db.query<{ id: string; intended_resource_id: string | null; result_resource_id: string | null }>(
       `select id,intended_resource_id,result_resource_id
@@ -85,6 +97,9 @@ describe("Studio operation durable-identity upgrade", () => {
     ]);
     await expect(db.query(
       "update studio_operation_previews set intended_resource_id='task_wrong' where id='preview_confirmed'"
+    )).rejects.toThrow();
+    await expect(db.query(
+      "update studio_operation_previews set intended_resource_id=NULL where id='preview_confirmed'"
     )).rejects.toThrow();
     await expect(db.query(
       "update studio_operation_previews set intended_resource_id='task_wrong' where id='preview_open'"

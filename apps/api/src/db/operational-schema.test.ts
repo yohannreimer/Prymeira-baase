@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -263,6 +263,7 @@ describe("operational schema", () => {
     expect(sql).toContain("intended_resource_id text");
     expect(sql).toContain("result_resource_id text");
     expect(sql).toContain("intended_resource_id=result_resource_id");
+    expect(sql).toContain("intended_resource_id is not null");
     expect(sql).toContain("claim_token text");
     expect(sql).toContain("create unique index studio_operation_previews_idempotency_uidx");
     expect(sql).toContain("unique (workspace_id,owner_profile_id,preview_id)");
@@ -346,7 +347,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 24", async () => {
+  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 25", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -354,7 +355,8 @@ describe("operational schema", () => {
       17: "studio_ritual_sessions",
       18: "studio_operation_previews_and_links",
       19: "studio_proactivity_settings_and_signals",
-      23: "studio_owner_portability_and_erasure"
+      23: "studio_owner_portability_and_erasure",
+      25: "studio_operation_preview_strict_durable_identity"
     });
     await ensureOperationalSchema(db);
     const assetColumns = await db.query<{ column_name: string }>(
