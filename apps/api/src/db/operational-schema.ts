@@ -1202,7 +1202,6 @@ const migrations: Migration[] = [{
         CHECK (status IN ('preview','confirming','confirmed','expired')),
       expires_at TIMESTAMPTZ NOT NULL,
       idempotency_key TEXT,
-      intended_resource_id TEXT,
       result_resource_id TEXT,
       claim_token TEXT,
       claim_lease_expires_at TIMESTAMPTZ,
@@ -1219,17 +1218,13 @@ const migrations: Migration[] = [{
       CHECK (expires_at > created_at),
       CHECK (
         (status='preview' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
-          AND intended_resource_id IS NULL AND result_resource_id IS NULL
-          AND claim_token IS NULL AND confirmed_at IS NULL)
+          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
         OR (status='confirming' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
-          AND intended_resource_id IS NOT NULL AND result_resource_id IS NULL
-          AND claim_token IS NOT NULL AND confirmed_at IS NULL)
+          AND result_resource_id IS NULL AND claim_token IS NOT NULL AND confirmed_at IS NULL)
         OR (status='confirmed' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
-          AND intended_resource_id=result_resource_id AND result_resource_id IS NOT NULL
-          AND claim_token IS NULL AND confirmed_at IS NOT NULL)
+          AND result_resource_id IS NOT NULL AND claim_token IS NULL AND confirmed_at IS NOT NULL)
         OR (status='expired' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
-          AND intended_resource_id IS NULL AND result_resource_id IS NULL
-          AND claim_token IS NULL AND confirmed_at IS NULL)
+          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
       )
     );
 
@@ -1330,6 +1325,34 @@ const migrations: Migration[] = [{
       ADD CONSTRAINT studio_ritual_sessions_synthesis_output_state_ck
         CHECK (synthesis_json IS NULL OR (status='completed' AND synthesis_ai_run_id IS NOT NULL
           AND synthesis_token IS NULL AND synthesis_failure_code IS NULL));
+  `
+}, {
+  version: 24,
+  name: "studio_operation_preview_durable_identity",
+  sql: `
+    ALTER TABLE studio_operation_previews
+      ADD COLUMN IF NOT EXISTS intended_resource_id TEXT;
+
+    UPDATE studio_operation_previews
+       SET intended_resource_id=result_resource_id
+     WHERE status='confirmed'
+       AND result_resource_id IS NOT NULL
+       AND intended_resource_id IS NULL;
+
+    UPDATE studio_operation_previews
+       SET intended_resource_id=NULL
+     WHERE status IN ('preview','expired')
+       AND intended_resource_id IS NOT NULL;
+
+    ALTER TABLE studio_operation_previews
+      DROP CONSTRAINT IF EXISTS studio_operation_previews_intended_resource_state_ck;
+    ALTER TABLE studio_operation_previews
+      ADD CONSTRAINT studio_operation_previews_intended_resource_state_ck
+      CHECK (
+        status='confirming'
+        OR (status='confirmed' AND intended_resource_id=result_resource_id)
+        OR (status IN ('preview','expired') AND intended_resource_id IS NULL)
+      );
   `
 }];
 

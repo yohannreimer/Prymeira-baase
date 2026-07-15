@@ -51,6 +51,46 @@ async function createMigrationLedger(pool: Pool) {
 }
 
 describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
+  it("upgrades released Studio operation migration 18 through additive durable identity migration 24", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 18);
+      const before = await pool.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_schema=current_schema() and table_name='studio_operation_previews'
+           and column_name='intended_resource_id'`
+      );
+      expect(before.rows).toEqual([]);
+      await pool.query(`insert into studio_documents
+        (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode)
+        values ('document_a','workspace_a','owner_a','{}'::jsonb,'','text')`);
+      await pool.query(`insert into studio_suggestions
+        (id,workspace_id,owner_profile_id,document_id,ai_run_id,kind,payload_json,status)
+        values ('suggestion_a','workspace_a','owner_a','document_a','run_a','text','{}'::jsonb,'pending')`);
+      await pool.query(`insert into studio_operation_previews
+        (id,workspace_id,owner_profile_id,source_suggestion_id,source_document_id,resource_type,payload_json,
+         confirmed_payload_json,status,expires_at,idempotency_key,result_resource_id,confirmed_at)
+        values ('preview_confirmed','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,
+         '{}'::jsonb,'confirmed','2027-07-15T12:00:00Z','33333333-3333-4333-8333-333333333333',
+         'task_existing',now())`);
+
+      await ensureOperationalSchemaThrough(pool, 24);
+      await ensureOperationalSchemaThrough(pool, 24);
+      const after = await pool.query<{ intended_resource_id: string | null }>(
+        "select intended_resource_id from studio_operation_previews where id='preview_confirmed'"
+      );
+      expect(after.rows).toEqual([{ intended_resource_id: "task_existing" }]);
+      const constraint = await pool.query<{ conname: string }>(
+        `select conname from pg_constraint
+         where conrelid='studio_operation_previews'::regclass
+           and conname='studio_operation_previews_intended_resource_state_ck'`
+      );
+      expect(constraint.rows).toEqual([{ conname: "studio_operation_previews_intended_resource_state_ck" }]);
+      await expect(pool.query(
+        "update studio_operation_previews set intended_resource_id='task_wrong' where id='preview_confirmed'"
+      )).rejects.toThrow();
+    });
+  });
+
   it("upgrades the released migration 17 ritual table through additive migration 22", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 17);
