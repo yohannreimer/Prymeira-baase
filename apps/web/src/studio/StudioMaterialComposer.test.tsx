@@ -69,6 +69,44 @@ describe("StudioMaterialComposer", () => {
     expect(onAttached).toHaveBeenCalledWith(attached);
   });
 
+  it("keeps competing material actions disabled during a real recording and releases them after stop", async () => {
+    const user = userEvent.setup();
+    const trackStop = vi.fn();
+    const recorder = installRecordingHarness(trackStop);
+    const attachFile = vi.fn(async (
+      _documentId: string,
+      _file: Blob,
+      _filename: string,
+      _idempotencyKey: string
+    ) => asset({ kind: "audio" }));
+    try {
+      renderComposer({ attachFile });
+
+      await user.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      const stop = await screen.findByRole("button", { name: "Parar gravação" });
+      expect(stop).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Adicionar imagem" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Capturar link" })).toBeDisabled();
+
+      recorder.emit("dataavailable", new Blob(["audio"], { type: "audio/webm" }));
+      await user.click(stop);
+
+      await waitFor(() => expect(attachFile).toHaveBeenCalledOnce());
+      expect(attachFile.mock.calls[0]?.[0]).toBe("document_1");
+      expect(attachFile.mock.calls[0]?.[1]).toBeInstanceOf(Blob);
+      expect(attachFile.mock.calls[0]?.[2]).toMatch(/\.webm$/u);
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Adicionar imagem" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Capturar link" })).toBeEnabled();
+      });
+      expect(trackStop).toHaveBeenCalledOnce();
+    } finally {
+      restoreRecordingHarness();
+    }
+  });
+
   it("captures a public HTTP(S) link and reports the attached asset", async () => {
     const user = userEvent.setup();
     const attached = asset({ id: "asset_link", kind: "link_snapshot", displayName: "Referência" });
@@ -144,6 +182,199 @@ describe("StudioMaterialComposer", () => {
     expect(onAttached).toHaveBeenCalledWith(attached);
   });
 
+  it("isolates an in-flight upload when the open document changes", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    const attachFile = vi.fn(() => request.promise);
+    const onAttachedA = vi.fn();
+    const onAttachedB = vi.fn();
+    const view = render(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={onAttachedA}
+      />
+    );
+
+    await user.upload(
+      screen.getByTestId("studio-material-file-input"),
+      new File(["A"], "a.txt", { type: "text/plain" })
+    );
+    expect(attachFile).toHaveBeenCalledWith(
+      "document_A",
+      expect.any(Blob),
+      "a.txt",
+      expect.any(String)
+    );
+
+    view.rerender(
+      <StudioMaterialComposer
+        documentId="document_B"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={onAttachedB}
+      />
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeEnabled();
+
+    await act(async () => request.resolve(asset({ documentId: "document_A" })));
+    expect(onAttachedA).not.toHaveBeenCalled();
+    expect(onAttachedB).not.toHaveBeenCalled();
+    expect(attachFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a failed attempt when the open document changes instead of retrying it in the new document", async () => {
+    const user = userEvent.setup();
+    const attachFile = vi.fn().mockRejectedValue(new Error("offline"));
+    const view = render(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={vi.fn()}
+      />
+    );
+
+    await user.upload(
+      screen.getByTestId("studio-material-file-input"),
+      new File(["A"], "a.txt", { type: "text/plain" })
+    );
+    await screen.findByRole("button", { name: "Tentar novamente" });
+
+    view.rerender(
+      <StudioMaterialComposer
+        documentId="document_B"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Tentar novamente" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeEnabled();
+    expect(attachFile).toHaveBeenCalledTimes(1);
+    expect(attachFile.mock.calls[0]?.[0]).toBe("document_A");
+  });
+
+  it("uses the latest callback when props update within the same document session", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    const attachFile = vi.fn(() => request.promise);
+    const previousCallback = vi.fn();
+    const latestCallback = vi.fn();
+    const view = render(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={previousCallback}
+      />
+    );
+
+    await user.upload(
+      screen.getByTestId("studio-material-file-input"),
+      new File(["A"], "a.txt", { type: "text/plain" })
+    );
+    view.rerender(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={attachFile}
+        attachLink={vi.fn()}
+        onAttached={latestCallback}
+      />
+    );
+    await act(async () => request.resolve(asset({ documentId: "document_A" })));
+
+    expect(previousCallback).not.toHaveBeenCalled();
+    expect(latestCallback).toHaveBeenCalledOnce();
+  });
+
+  it("uses the latest attachment API when retrying within the same document session", async () => {
+    const user = userEvent.setup();
+    const initialAttach = vi.fn(async (
+      _documentId: string,
+      _file: Blob,
+      _filename: string,
+      _idempotencyKey: string
+    ) => Promise.reject(new Error("offline")));
+    const latestAttach = vi.fn(async (
+      _documentId: string,
+      _file: Blob,
+      _filename: string,
+      _idempotencyKey: string
+    ) => asset({ documentId: "document_A" }));
+    const onAttached = vi.fn();
+    const view = render(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={initialAttach}
+        attachLink={vi.fn()}
+        onAttached={onAttached}
+      />
+    );
+
+    const file = new File(["A"], "a.txt", { type: "text/plain" });
+    await user.upload(screen.getByTestId("studio-material-file-input"), file);
+    await screen.findByRole("button", { name: "Tentar novamente" });
+    const firstKey = initialAttach.mock.calls[0]?.[3];
+
+    view.rerender(
+      <StudioMaterialComposer
+        documentId="document_A"
+        attachFile={latestAttach}
+        attachLink={vi.fn()}
+        onAttached={onAttached}
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "Tentar novamente" }));
+
+    await waitFor(() => expect(latestAttach).toHaveBeenCalledOnce());
+    expect(initialAttach).toHaveBeenCalledOnce();
+    expect(latestAttach).toHaveBeenCalledWith("document_A", file, "a.txt", firstKey);
+    expect(onAttached).toHaveBeenCalledOnce();
+  });
+
+  it("terminates an old document recording and ignores its late recorder events", async () => {
+    const user = userEvent.setup();
+    const trackStop = vi.fn();
+    const recorder = installRecordingHarness(trackStop);
+    const attachFile = vi.fn();
+    try {
+      const view = render(
+        <StudioMaterialComposer
+          documentId="document_A"
+          attachFile={attachFile}
+          attachLink={vi.fn()}
+          onAttached={vi.fn()}
+        />
+      );
+      await user.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      await screen.findByRole("button", { name: "Parar gravação" });
+
+      view.rerender(
+        <StudioMaterialComposer
+          documentId="document_B"
+          attachFile={attachFile}
+          attachLink={vi.fn()}
+          onAttached={vi.fn()}
+        />
+      );
+      expect(trackStop).toHaveBeenCalledOnce();
+      expect(screen.getByRole("button", { name: "Gravar áudio" })).toBeEnabled();
+
+      recorder.emit("dataavailable", new Blob(["late"], { type: "audio/webm" }));
+      recorder.emit("stop");
+      await Promise.resolve();
+      expect(attachFile).not.toHaveBeenCalled();
+    } finally {
+      restoreRecordingHarness();
+    }
+  });
+
   it("discards only the failed local material and its status", async () => {
     const user = userEvent.setup();
     const attachFile = vi.fn().mockRejectedValue(new Error("upload unavailable"));
@@ -165,14 +396,30 @@ describe("StudioMaterialComposer", () => {
       new File(["plano"], "plano.txt", { type: "text/plain" })
     );
     await screen.findByRole("alert");
+    expect(screen.getByRole("group", { name: "Recuperar material" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Descartar" }));
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Tentar novamente" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toHaveFocus();
     expect(screen.getByRole("textbox", { name: "Título externo" })).toHaveValue("Rascunho preservado");
     expect(attachFile).toHaveBeenCalledTimes(1);
     expect(onAttached).not.toHaveBeenCalled();
+  });
+
+  it("restores focus to link capture after discarding its failed material", async () => {
+    const user = userEvent.setup();
+    renderComposer({ attachLink: vi.fn().mockRejectedValue(new Error("offline")) });
+    const trigger = screen.getByRole("button", { name: "Capturar link" });
+
+    await user.click(trigger);
+    await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com");
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "Descartar" }));
+
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("starts only one request when activated twice while busy", async () => {
@@ -195,12 +442,13 @@ describe("StudioMaterialComposer", () => {
   it("does not disable typing outside the composer during an upload", async () => {
     const user = userEvent.setup();
     const request = deferred<StudioAsset>();
+    const attachFile = vi.fn(() => request.promise);
     render(
       <>
         <textarea aria-label="Documento aberto" />
         <StudioMaterialComposer
           documentId="document_1"
-          attachFile={vi.fn(() => request.promise)}
+          attachFile={attachFile}
           attachLink={vi.fn()}
           onAttached={vi.fn()}
         />
@@ -211,6 +459,7 @@ describe("StudioMaterialComposer", () => {
       screen.getByTestId("studio-material-file-input"),
       new File(["plano"], "plano.txt", { type: "text/plain" })
     );
+    expect(attachFile).toHaveBeenCalledOnce();
     const editor = screen.getByRole("textbox", { name: "Documento aberto" });
     expect(editor).toBeEnabled();
     await user.type(editor, "Continuo escrevendo");
@@ -222,13 +471,14 @@ describe("StudioMaterialComposer", () => {
   it("does not disable typing outside the composer while capturing a link", async () => {
     const user = userEvent.setup();
     const request = deferred<StudioAsset>();
+    const attachLink = vi.fn(() => request.promise);
     render(
       <>
         <textarea aria-label="Documento aberto" />
         <StudioMaterialComposer
           documentId="document_1"
           attachFile={vi.fn()}
-          attachLink={vi.fn(() => request.promise)}
+          attachLink={attachLink}
           onAttached={vi.fn()}
         />
       </>
@@ -237,10 +487,14 @@ describe("StudioMaterialComposer", () => {
     await user.click(screen.getByRole("button", { name: "Capturar link" }));
     await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com");
     await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+    expect(attachLink).toHaveBeenCalledOnce();
     const editor = screen.getByRole("textbox", { name: "Documento aberto" });
     expect(editor).toBeEnabled();
     await user.type(editor, "Texto externo");
     expect(editor).toHaveValue("Texto externo");
+
+    request.resolve(asset({ kind: "link_snapshot" }));
+    await screen.findByText("Material adicionado.");
   });
 
   it("validates public HTTP(S) links and restores focus when link mode closes", async () => {
@@ -262,6 +516,53 @@ describe("StudioMaterialComposer", () => {
     expect(attachLink).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["canonicalized loopback", "http://127.1/admin"],
+    ["integer loopback", "http://2130706433/admin"],
+    ["hex loopback", "http://0x7f000001/admin"],
+    ["private IPv4", "http://192.168.1.8/admin"],
+    ["IPv6 loopback", "http://[::1]/admin"],
+    ["IPv6 unique local", "http://[fd00::1]/admin"],
+    ["IPv6 link-local", "http://[fe80::1]/admin"],
+    ["IPv6 documentation CIDR", "http://[2001:db8::1]/admin"],
+    ["credentials", "https://user:secret@example.com/private"],
+    ["uppercase localhost", "http://LOCALHOST/admin"],
+    ["uppercase local suffix", "http://SERVICE.INTERNAL/admin"],
+    ["local suffix", "http://printer.local/admin"],
+    ["one trailing dot", "https://example.com./private"],
+    ["multiple trailing dots", "https://example.com../private"]
+  ])("rejects %s before calling the link API", async (_label, unsafeUrl) => {
+    const user = userEvent.setup();
+    const attachLink = vi.fn();
+    renderComposer({ attachLink });
+
+    await user.click(screen.getByRole("button", { name: "Capturar link" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Endereço do link" }), {
+      target: { value: unsafeUrl }
+    });
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("URL pública HTTP ou HTTPS");
+    expect(attachLink).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["public IPv6 outside documentation CIDR", "https://[2001:db80::1]/resource"],
+    ["uppercase public hostname", "HTTPS://EXAMPLE.COM/Resource"]
+  ])("accepts %s", async (_label, publicUrl) => {
+    const user = userEvent.setup();
+    const attachLink = vi.fn(async () => asset({ kind: "link_snapshot" }));
+    renderComposer({ attachLink });
+
+    await user.click(screen.getByRole("button", { name: "Capturar link" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Endereço do link" }), {
+      target: { value: publicUrl }
+    });
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+
+    await waitFor(() => expect(attachLink).toHaveBeenCalledOnce());
+  });
+
   it("exposes progress, failures, and recovery controls accessibly", async () => {
     const user = userEvent.setup();
     const request = deferred<StudioAsset>();
@@ -272,7 +573,11 @@ describe("StudioMaterialComposer", () => {
       screen.getByTestId("studio-material-file-input"),
       new File(["plano"], "plano.txt", { type: "text/plain" })
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Adicionando material");
+    const status = screen.getByRole("status");
+    const actionGroup = screen.getByRole("group", { name: "Adicionar material" });
+    expect(status).toHaveTextContent("Adicionando material");
+    expect(actionGroup).toHaveAttribute("aria-busy", "true");
+    expect(status.closest('[aria-busy="true"]')).toBeNull();
     await act(async () => request.reject(new Error("offline")));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("não foi adicionado");
@@ -346,4 +651,75 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+let originalMediaDevices: PropertyDescriptor | undefined;
+let originalMediaRecorder: PropertyDescriptor | undefined;
+
+function installRecordingHarness(trackStop: ReturnType<typeof vi.fn>) {
+  originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+  originalMediaRecorder = Object.getOwnPropertyDescriptor(globalThis, "MediaRecorder");
+  let currentRecorder: TestMediaRecorder | null = null;
+  const stream = { getTracks: () => [{ stop: trackStop }] } as unknown as MediaStream;
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(async () => stream) }
+  });
+  Object.defineProperty(globalThis, "MediaRecorder", {
+    configurable: true,
+    value: class extends TestMediaRecorder {
+      constructor(input: MediaStream) {
+        super(input);
+        currentRecorder = this;
+      }
+    }
+  });
+  return {
+    emit(type: "dataavailable" | "stop", data = new Blob()) {
+      if (!currentRecorder) throw new Error("Recorder not started");
+      currentRecorder.emit(type, data);
+    }
+  };
+}
+
+function restoreRecordingHarness() {
+  if (originalMediaDevices) {
+    Object.defineProperty(navigator, "mediaDevices", originalMediaDevices);
+  } else {
+    Reflect.deleteProperty(navigator, "mediaDevices");
+  }
+  if (originalMediaRecorder) {
+    Object.defineProperty(globalThis, "MediaRecorder", originalMediaRecorder);
+  } else {
+    Reflect.deleteProperty(globalThis, "MediaRecorder");
+  }
+  originalMediaDevices = undefined;
+  originalMediaRecorder = undefined;
+}
+
+class TestMediaRecorder {
+  state: RecordingState = "inactive";
+  mimeType = "audio/webm";
+  private listeners = new Map<string, Array<(event: { data: Blob }) => void>>();
+
+  constructor(_stream: MediaStream) {}
+
+  addEventListener(type: string, listener: (event: { data: Blob }) => void) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  start() {
+    this.state = "recording";
+  }
+
+  stop() {
+    this.state = "inactive";
+    this.emit("stop");
+  }
+
+  emit(type: string, data = new Blob()) {
+    for (const listener of this.listeners.get(type) ?? []) listener({ data });
+  }
 }

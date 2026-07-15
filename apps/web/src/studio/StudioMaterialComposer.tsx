@@ -20,11 +20,12 @@ export type StudioMaterialComposerProps = {
 type PendingMaterial =
   | {
     kind: "audio" | "file" | "image";
+    documentId: string;
     file: Blob;
     filename: string;
     idempotencyKey: string;
   }
-  | { kind: "link"; url: string; idempotencyKey: string };
+  | { kind: "link"; documentId: string; url: string; idempotencyKey: string };
 
 type ComposerMessage = { kind: "status" | "error"; text: string };
 
@@ -48,21 +49,56 @@ function isPrivateIpv4(hostname: string) {
     || first >= 224;
 }
 
+function parseIpv6Address(hostname: string): bigint | null {
+  if (!hostname.includes(":")) return null;
+  let normalized = hostname.toLowerCase();
+  if (normalized.includes("%")) return null;
+  const ipv4Match = normalized.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/u);
+  if (ipv4Match) {
+    const parts = ipv4Match[1]!.split(".").map(Number);
+    if (parts.length !== 4 || parts.some((part) => part > 255)) return null;
+    const high = ((parts[0] ?? 0) << 8) | (parts[1] ?? 0);
+    const low = ((parts[2] ?? 0) << 8) | (parts[3] ?? 0);
+    normalized = `${normalized.slice(0, -ipv4Match[1]!.length)}${high.toString(16)}:${low.toString(16)}`;
+  }
+
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves[1] ? halves[1].split(":") : [];
+  const omitted = 8 - head.length - tail.length;
+  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) return null;
+  const groups = [...head, ...Array.from({ length: omitted }, () => "0"), ...tail];
+  if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/u.test(group))) return null;
+  return groups.reduce((address, group) => (address << 16n) | BigInt(`0x${group}`), 0n);
+}
+
+const blockedIpv6Networks = [
+  ["::", 96],
+  ["::ffff:0:0", 96],
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001::", 32],
+  ["2001:2::", 48],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["3fff::", 20],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8]
+] as const;
+
 function isPrivateIpv6(hostname: string) {
   if (!hostname.includes(":")) return false;
-  const normalized = hostname.toLowerCase();
-  return normalized.includes("%")
-    || normalized === "::"
-    || normalized === "::1"
-    || /^f[cd]/u.test(normalized)
-    || /^fe[89ab]/u.test(normalized)
-    || normalized.startsWith("ff")
-    || normalized.startsWith("2001:db8")
-    || normalized.startsWith("2001:0:")
-    || normalized.startsWith("2002:")
-    || normalized.startsWith("64:ff9b:")
-    || normalized.startsWith("::ffff:")
-    || /^::(?:\d{1,3}\.){3}\d{1,3}$/u.test(normalized);
+  const address = parseIpv6Address(hostname);
+  if (address === null) return true;
+  return blockedIpv6Networks.some(([networkValue, prefixLength]) => {
+    const network = parseIpv6Address(networkValue);
+    if (network === null) return true;
+    const shift = 128n - BigInt(prefixLength);
+    return (address >> shift) === (network >> shift);
+  });
 }
 
 function readPublicHttpUrl(value: string) {
@@ -73,10 +109,8 @@ function readPublicHttpUrl(value: string) {
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
       return null;
     }
-    const hostname = url.hostname
-      .replace(/^\[|\]$/gu, "")
-      .replace(/\.$/u, "")
-      .toLowerCase();
+    if (url.hostname.endsWith(".")) return null;
+    const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
     if (!hostname
       || hostname === "localhost"
       || hostname.endsWith(".localhost")
@@ -93,12 +127,27 @@ function readPublicHttpUrl(value: string) {
   }
 }
 
-export default function StudioMaterialComposer({
+type StudioMaterialComposerSessionProps = Required<
+  Pick<StudioMaterialComposerProps, "attachFile" | "attachLink">
+> & Omit<StudioMaterialComposerProps, "attachFile" | "attachLink">;
+
+export default function StudioMaterialComposer(props: StudioMaterialComposerProps) {
+  return (
+    <StudioMaterialComposerSession
+      key={props.documentId}
+      {...props}
+      attachFile={props.attachFile ?? attachStudioFile}
+      attachLink={props.attachLink ?? attachStudioLink}
+    />
+  );
+}
+
+function StudioMaterialComposerSession({
   documentId,
   onAttached,
-  attachFile = attachStudioFile,
-  attachLink = attachStudioLink
-}: StudioMaterialComposerProps) {
+  attachFile,
+  attachLink
+}: StudioMaterialComposerSessionProps) {
   const [busy, setBusy] = useState(false);
   const [audioActive, setAudioActive] = useState(false);
   const [linkMode, setLinkMode] = useState(false);
@@ -111,9 +160,19 @@ export default function StudioMaterialComposer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const fileTriggerRef = useRef<HTMLButtonElement>(null);
+  const imageTriggerRef = useRef<HTMLButtonElement>(null);
   const linkTriggerRef = useRef<HTMLButtonElement>(null);
   const restoreLinkFocusRef = useRef(false);
+  const restoreMaterialFocusRef = useRef<PendingMaterial["kind"] | null>(null);
+  const attachFileRef = useRef(attachFile);
+  const attachLinkRef = useRef(attachLink);
+  const onAttachedRef = useRef(onAttached);
   const actionsLabelId = useId();
+  attachFileRef.current = attachFile;
+  attachLinkRef.current = attachLink;
+  onAttachedRef.current = onAttached;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -133,6 +192,18 @@ export default function StudioMaterialComposer({
     }
   }, [linkMode]);
 
+  useEffect(() => {
+    if (pendingMaterial || !restoreMaterialFocusRef.current) return;
+    const origin = restoreMaterialFocusRef.current;
+    restoreMaterialFocusRef.current = null;
+    if (origin === "file") fileTriggerRef.current?.focus();
+    else if (origin === "image") imageTriggerRef.current?.focus();
+    else if (origin === "link") linkTriggerRef.current?.focus();
+    else actionsRef.current
+      ?.querySelector<HTMLButtonElement>('button[aria-pressed]')
+      ?.focus();
+  }, [pendingMaterial]);
+
   async function submitMaterial(material: PendingMaterial) {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -146,9 +217,9 @@ export default function StudioMaterialComposer({
     let attached: StudioAsset | null = null;
     try {
       attached = material.kind === "link"
-        ? await attachLink(documentId, material.url, material.idempotencyKey)
-        : await attachFile(
-          documentId,
+        ? await attachLinkRef.current(material.documentId, material.url, material.idempotencyKey)
+        : await attachFileRef.current(
+          material.documentId,
           material.file,
           material.filename,
           material.idempotencyKey
@@ -176,7 +247,7 @@ export default function StudioMaterialComposer({
       if (mountedRef.current) setBusy(false);
     }
 
-    if (attached && mountedRef.current) onAttached(attached);
+    if (attached && mountedRef.current) onAttachedRef.current(attached);
   }
 
   function captureSelectedFile(
@@ -188,6 +259,7 @@ export default function StudioMaterialComposer({
     if (!file || busyRef.current || pendingMaterial) return;
     void submitMaterial({
       kind,
+      documentId,
       file,
       filename: file.name,
       idempotencyKey: globalThis.crypto.randomUUID()
@@ -198,6 +270,7 @@ export default function StudioMaterialComposer({
     if (busyRef.current || pendingMaterial) return;
     void submitMaterial({
       kind: "audio",
+      documentId,
       file: blob,
       filename,
       idempotencyKey: globalThis.crypto.randomUUID()
@@ -218,6 +291,7 @@ export default function StudioMaterialComposer({
     }
     void submitMaterial({
       kind: "link",
+      documentId,
       url,
       idempotencyKey: globalThis.crypto.randomUUID()
     });
@@ -236,6 +310,7 @@ export default function StudioMaterialComposer({
 
   function discardFailedMaterial() {
     if (busyRef.current || !failed || !pendingMaterial) return;
+    restoreMaterialFocusRef.current = pendingMaterial.kind;
     if (pendingMaterial.kind === "link") setLink("");
     setPendingMaterial(null);
     setFailed(false);
@@ -253,9 +328,14 @@ export default function StudioMaterialComposer({
   const competingActionUnavailable = unavailable || audioActive;
 
   return (
-    <section aria-labelledby={actionsLabelId} aria-busy={busy}>
+    <section aria-labelledby={actionsLabelId}>
       <p id={actionsLabelId}>Adicionar material</p>
-      <div role="group" aria-labelledby={actionsLabelId}>
+      <div
+        ref={actionsRef}
+        role="group"
+        aria-labelledby={actionsLabelId}
+        aria-busy={busy}
+      >
         <StudioAudioRecorder
           variant="label"
           inputTestId="studio-material-audio-input"
@@ -265,6 +345,7 @@ export default function StudioMaterialComposer({
           onActiveChange={setAudioActive}
         />
         <button
+          ref={fileTriggerRef}
           type="button"
           disabled={competingActionUnavailable}
           onClick={() => fileInputRef.current?.click()}
@@ -273,6 +354,7 @@ export default function StudioMaterialComposer({
           <span>Adicionar arquivo</span>
         </button>
         <button
+          ref={imageTriggerRef}
           type="button"
           disabled={competingActionUnavailable}
           onClick={() => imageInputRef.current?.click()}
@@ -349,7 +431,7 @@ export default function StudioMaterialComposer({
       ) : null}
 
       {failed && pendingMaterial ? (
-        <div aria-label="Recuperar material">
+        <div role="group" aria-label="Recuperar material">
           <button
             type="button"
             disabled={busy}
