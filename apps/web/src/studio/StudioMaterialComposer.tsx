@@ -28,6 +28,8 @@ type PendingMaterial =
   | { kind: "link"; documentId: string; url: string; idempotencyKey: string };
 
 type ComposerMessage = { kind: "status" | "error"; text: string };
+type MaterialOrigin = PendingMaterial["kind"];
+type TerminalFocusIntent = { kind: "origin"; origin: MaterialOrigin } | { kind: "recovery" };
 
 function isPrivateIpv4(hostname: string) {
   if (!/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(hostname)) return false;
@@ -174,6 +176,7 @@ function StudioMaterialComposerSession({
   const [message, setMessage] = useState<ComposerMessage | null>(null);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
+  const composerRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
@@ -181,8 +184,11 @@ function StudioMaterialComposerSession({
   const fileTriggerRef = useRef<HTMLButtonElement>(null);
   const imageTriggerRef = useRef<HTMLButtonElement>(null);
   const linkTriggerRef = useRef<HTMLButtonElement>(null);
+  const recoveryActionRef = useRef<HTMLButtonElement>(null);
   const restoreLinkFocusRef = useRef(false);
   const restoreMaterialFocusRef = useRef<PendingMaterial["kind"] | null>(null);
+  const operationFocusRef = useRef<{ origin: MaterialOrigin; initialFocus: Element | null } | null>(null);
+  const terminalFocusIntentRef = useRef<TerminalFocusIntent | null>(null);
   const attachFileRef = useRef(attachFile);
   const attachLinkRef = useRef(attachLink);
   const onAttachedRef = useRef(onAttached);
@@ -221,9 +227,36 @@ function StudioMaterialComposerSession({
       ?.focus();
   }, [pendingMaterial]);
 
+  useEffect(() => {
+    const intent = terminalFocusIntentRef.current;
+    if (!intent || busy) return;
+    terminalFocusIntentRef.current = null;
+    if (!shouldManageTerminalFocus()) return;
+    if (intent.kind === "recovery") {
+      if (failed) recoveryActionRef.current?.focus();
+      return;
+    }
+    focusOrigin(intent.origin);
+  }, [busy, failed, linkMode, pendingMaterial]);
+
+  function shouldManageTerminalFocus() {
+    const active = document.activeElement;
+    return !active || active === document.body || Boolean(composerRef.current?.contains(active));
+  }
+
+  function focusOrigin(origin: MaterialOrigin) {
+    if (origin === "file") fileTriggerRef.current?.focus();
+    else if (origin === "image") imageTriggerRef.current?.focus();
+    else if (origin === "link") linkTriggerRef.current?.focus();
+    else actionsRef.current
+      ?.querySelector<HTMLButtonElement>('button[aria-pressed]')
+      ?.focus();
+  }
+
   async function submitMaterial(material: PendingMaterial) {
     if (busyRef.current) return;
     busyRef.current = true;
+    operationFocusRef.current = { origin: material.kind, initialFocus: document.activeElement };
     if (mountedRef.current) {
       setBusy(true);
       setFailed(false);
@@ -242,17 +275,20 @@ function StudioMaterialComposerSession({
           material.idempotencyKey
         );
       if (mountedRef.current) {
+        if (shouldManageTerminalFocus()) {
+          terminalFocusIntentRef.current = { kind: "origin", origin: material.kind };
+        }
         setPendingMaterial(null);
         setFailed(false);
         setMessage({ kind: "status", text: "Material adicionado." });
         if (material.kind === "link") {
           setLink("");
-          restoreLinkFocusRef.current = true;
           setLinkMode(false);
         }
       }
     } catch {
       if (mountedRef.current) {
+        if (shouldManageTerminalFocus()) terminalFocusIntentRef.current = { kind: "recovery" };
         setFailed(true);
         setMessage({
           kind: "error",
@@ -260,6 +296,7 @@ function StudioMaterialComposerSession({
         });
       }
     } finally {
+      operationFocusRef.current = null;
       busyRef.current = false;
       if (mountedRef.current) setBusy(false);
     }
@@ -345,7 +382,7 @@ function StudioMaterialComposerSession({
   const competingActionUnavailable = unavailable || audioActive;
 
   return (
-    <section className="studio-material-composer" aria-labelledby={actionsLabelId}>
+    <section ref={composerRef} className="studio-material-composer" aria-labelledby={actionsLabelId}>
       <p className="studio-material-composer__label" id={actionsLabelId}>
         Adicionar material
       </p>
@@ -478,6 +515,7 @@ function StudioMaterialComposerSession({
           aria-label="Recuperar material"
         >
           <button
+            ref={recoveryActionRef}
             className="studio-material-composer__recovery-action studio-material-composer__recovery-action--primary"
             type="button"
             disabled={busy}

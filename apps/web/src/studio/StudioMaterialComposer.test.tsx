@@ -491,6 +491,34 @@ describe("StudioMaterialComposer", () => {
     expect(editor).toHaveValue("Continuo escrevendo");
 
     await act(async () => request.resolve(asset()));
+    expect(editor).toHaveFocus();
+  });
+
+  it("keeps external editor focus when a file upload fails", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    render(
+      <>
+        <textarea aria-label="Documento aberto" />
+        <StudioMaterialComposer
+          documentId="document_1"
+          attachFile={vi.fn(() => request.promise)}
+          attachLink={vi.fn()}
+          onAttached={vi.fn()}
+        />
+      </>
+    );
+
+    await user.upload(
+      screen.getByTestId("studio-material-file-input"),
+      new File(["plano"], "plano.txt", { type: "text/plain" })
+    );
+    const editor = screen.getByRole("textbox", { name: "Documento aberto" });
+    await user.type(editor, "Ainda escrevendo");
+    await act(async () => request.reject(new Error("offline")));
+
+    expect(await screen.findByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+    expect(editor).toHaveFocus();
   });
 
   it("does not disable typing outside the composer while capturing a link", async () => {
@@ -520,6 +548,84 @@ describe("StudioMaterialComposer", () => {
 
     request.resolve(asset({ kind: "link_snapshot" }));
     await screen.findByText("Material adicionado.");
+    expect(editor).toHaveFocus();
+  });
+
+  it("keeps external editor focus when link capture fails", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    render(
+      <>
+        <textarea aria-label="Documento aberto" />
+        <StudioMaterialComposer
+          documentId="document_1"
+          attachFile={vi.fn()}
+          attachLink={vi.fn(() => request.promise)}
+          onAttached={vi.fn()}
+        />
+      </>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Capturar link" }));
+    await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com");
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+    const editor = screen.getByRole("textbox", { name: "Documento aberto" });
+    await user.type(editor, "Continuo no editor");
+    await act(async () => request.reject(new Error("offline")));
+
+    expect(await screen.findByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+    expect(editor).toHaveFocus();
+  });
+
+  it.each([
+    ["file", "studio-material-file-input", "Adicionar arquivo", "material.txt", "text/plain"],
+    ["image", "studio-material-image-input", "Adicionar imagem", "quadro.png", "image/png"],
+    ["audio", "studio-material-audio-input", "Gravar áudio", "reflexao.webm", "audio/webm"]
+  ])("restores the %s origin after success when focus was lost", async (
+    kind,
+    inputTestId,
+    triggerName,
+    filename,
+    mimeType
+  ) => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    renderComposer({ attachFile: vi.fn(() => request.promise) });
+
+    await user.upload(
+      screen.getByTestId(inputTestId),
+      new File([kind], filename, { type: mimeType })
+    );
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.body).toHaveFocus();
+    await act(async () => request.resolve(asset({ kind: kind as StudioAsset["kind"] })));
+
+    expect(screen.getByRole("button", { name: triggerName })).toHaveFocus();
+  });
+
+  it.each([
+    ["file", "studio-material-file-input", "material.txt", "text/plain"],
+    ["image", "studio-material-image-input", "quadro.png", "image/png"],
+    ["audio", "studio-material-audio-input", "reflexao.webm", "audio/webm"]
+  ])("focuses recovery after a failed %s operation when focus was lost", async (
+    _kind,
+    inputTestId,
+    filename,
+    mimeType
+  ) => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    renderComposer({ attachFile: vi.fn(() => request.promise) });
+
+    await user.upload(
+      screen.getByTestId(inputTestId),
+      new File(["material"], filename, { type: mimeType })
+    );
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.body).toHaveFocus();
+    await act(async () => request.reject(new Error("offline")));
+
+    expect(await screen.findByRole("button", { name: "Tentar novamente" })).toHaveFocus();
   });
 
   it("validates public HTTP(S) links and restores focus when link mode closes", async () => {
@@ -622,12 +728,14 @@ describe("StudioMaterialComposer", () => {
     const request = deferred<StudioAsset>();
     const attachFile = vi.fn(() => request.promise);
     const onAttached = vi.fn();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
     const view = renderComposer({ attachFile, onAttached });
 
     fireEvent.change(screen.getByTestId("studio-material-file-input"), {
       target: { files: [new File(["plano"], "plano.txt", { type: "text/plain" })] }
     });
     expect(attachFile).toHaveBeenCalledOnce();
+    focus.mockClear();
     view.unmount();
     await act(async () => request.resolve(asset()));
 
@@ -635,6 +743,8 @@ describe("StudioMaterialComposer", () => {
     expect(onAttached).toHaveBeenCalledWith(expect.objectContaining({ documentId: "document_1" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
   });
 });
 
