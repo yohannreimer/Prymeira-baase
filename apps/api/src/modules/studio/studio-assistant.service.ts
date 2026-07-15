@@ -112,6 +112,7 @@ export type StudioAssistantTurnInput = {
 };
 
 export type StudioAssistantService = {
+  assertAiAvailable(): void;
   streamTurn(scope: StudioOwnerScope, input: StudioAssistantTurnInput): Promise<AsyncIterable<StudioSseEvent>>;
   acceptSuggestion(
     scope: StudioOwnerScope,
@@ -125,6 +126,7 @@ type StudioAssistantServiceOptions = {
   repository: StudioRepository;
   harness: AiHarness;
   model: string;
+  aiAvailable?: boolean;
   contextBuilder?: StudioContextBuilder;
   now?: () => Date;
   requestLimiter?: StudioOwnerRequestLimiter;
@@ -137,6 +139,10 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
   const telemetry = safeStudioTelemetrySink(options.telemetry);
 
   return {
+    assertAiAvailable() {
+      if (options.aiAvailable === false) throw new Error("AI_PROVIDER_UNAVAILABLE");
+    },
+
     async streamTurn(scope, rawInput) {
       requestLimiter.take(scope);
       const input = normalizeTurnInput(rawInput);

@@ -22,7 +22,7 @@ export function createDefaultAiProvider(options: CreateDefaultAiProviderOptions 
     : createMockAiProvider();
 
   if (options.mode === "production" && options.studioEnabled && !openAiApiKey) {
-    return createUnavailableAiProvider(transcriptionProvider);
+    return createUnavailableAiProvider();
   }
 
   return {

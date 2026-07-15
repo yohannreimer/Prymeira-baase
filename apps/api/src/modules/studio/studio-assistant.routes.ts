@@ -62,6 +62,11 @@ export async function registerStudioAssistantRoutes(
     emptySchema.parse(request.params);
     emptySchema.parse(request.query);
     const body = turnSchema.parse(request.body);
+    try {
+      service.assertAiAvailable();
+    } catch (error) {
+      throw assistantRouteError(error);
+    }
     const controller = new AbortController();
     const abort = () => {
       if (!controller.signal.aborted) controller.abort(new Error("STUDIO_ASSISTANT_CANCELLED"));
@@ -261,6 +266,9 @@ function publicStreamErrorCode(error: unknown) {
 
 function assistantRouteError(error: unknown) {
   if (!(error instanceof Error)) return error;
+  if (error.message === "AI_PROVIDER_UNAVAILABLE") {
+    return new ApiError(503, "AI_PROVIDER_UNAVAILABLE", "A inteligência artificial do Estúdio está indisponível no momento.");
+  }
   if (error.message === "STUDIO_OWNER_RATE_LIMITED") {
     return new ApiError(429, error.message, "Aguarde um pouco antes de iniciar outra conversa no Estúdio.");
   }

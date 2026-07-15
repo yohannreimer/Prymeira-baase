@@ -31,7 +31,10 @@ export function buildStudioReadiness(input: StudioReadinessInput): StudioReadine
   }
 
   const ai = input.aiAvailable ? ready() : unavailable("AI_PROVIDER_UNAVAILABLE");
-  const vector = !input.runtimeConfig.studio.vectorConfigured
+  const embeddings = ai;
+  const vector = embeddings.status !== "ready"
+    ? unavailable("STUDIO_EMBEDDINGS_UNAVAILABLE")
+    : !input.runtimeConfig.studio.vectorConfigured
     ? unavailable("STUDIO_VECTOR_NOT_CONFIGURED")
     : input.hasPersistentVectorIndex
       ? ready()
@@ -39,7 +42,7 @@ export function buildStudioReadiness(input: StudioReadinessInput): StudioReadine
 
   return {
     ai,
-    embeddings: ai,
+    embeddings,
     vector,
     maintenance: input.maintenanceAvailable ? ready() : unavailable("STUDIO_MAINTENANCE_UNAVAILABLE")
   };

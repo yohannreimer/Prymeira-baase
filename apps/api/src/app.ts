@@ -158,6 +158,10 @@ export function buildApp(options: BuildAppOptions = {}) {
   const onboardingRepository = options.onboardingRepository ?? createInMemoryOnboardingRepository();
   const aiRepository = options.aiRepository ?? createInMemoryAiRepository();
   const openAiApiKey = process.env.OPENAI_API_KEY;
+  const studioAiUnavailable = runtimeConfig.mode === "production"
+    && runtimeConfig.studio.enabled
+    && !options.aiProvider
+    && !openAiApiKey;
   const aiProvider = options.aiProvider ?? createDefaultAiProvider({
     mode: runtimeConfig.mode,
     studioEnabled: runtimeConfig.studio.enabled,
@@ -207,6 +211,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     repository: studioRepository,
     harness: aiHarness,
     model: runtimeConfig.studio.aiModel,
+    aiAvailable: !studioAiUnavailable,
     contextBuilder: studioContextBuilder,
     now: options.now
   });

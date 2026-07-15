@@ -16,7 +16,7 @@ describe("Studio readiness", () => {
     expect(readiness).toEqual({
       ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
       embeddings: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
-      vector: { status: "unavailable", code: "STUDIO_VECTOR_INDEX_UNAVAILABLE" },
+      vector: { status: "unavailable", code: "STUDIO_EMBEDDINGS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }
     });
     expect(JSON.stringify(readiness)).not.toContain("private");

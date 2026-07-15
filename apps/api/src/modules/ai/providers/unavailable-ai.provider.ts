@@ -1,17 +1,12 @@
-import type {
-  AiProvider,
-  AiTextStreamRequest,
-  AudioTranscriptionProviderRequest,
-  AudioTranscriptionResult
-} from "../ai.types";
+import type { AiProvider } from "../ai.types";
 
-export function createUnavailableAiProvider(transcriptionProvider: Pick<AiProvider, "transcribeAudio">): AiProvider {
+export function createUnavailableAiProvider(): AiProvider {
   return {
     async generateStructured() {
       throw new Error("AI_PROVIDER_UNAVAILABLE");
     },
 
-    async *streamText(_request: AiTextStreamRequest) {
+    async *streamText() {
       throw new Error("AI_PROVIDER_UNAVAILABLE");
     },
 
@@ -19,8 +14,8 @@ export function createUnavailableAiProvider(transcriptionProvider: Pick<AiProvid
       throw new Error("AI_PROVIDER_UNAVAILABLE");
     },
 
-    transcribeAudio(request: AudioTranscriptionProviderRequest): Promise<AudioTranscriptionResult> {
-      return transcriptionProvider.transcribeAudio(request);
+    async transcribeAudio() {
+      throw new Error("AI_PROVIDER_UNAVAILABLE");
     }
   };
 }

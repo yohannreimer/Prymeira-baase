@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import { readRuntimeConfig } from "../../config/runtime";
 import type { AiProvider } from "../ai/ai.types";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 
@@ -9,6 +10,27 @@ const manager = { ...ownerA, "x-baase-role": "manager", "x-baase-profile-id": "m
 const employee = { ...ownerA, "x-baase-role": "employee", "x-baase-profile-id": "employee_a" };
 
 describe("Studio assistant routes", () => {
+  it("returns safe HTTP 503 before opening SSE when production Studio AI is unavailable", async () => {
+    const response = await buildApp({
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "production",
+        BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true"
+      })
+    }).inject({
+      method: "POST", url: "/studio/assistant/turns", headers: ownerA,
+      payload: { message: "Não exponha o stream." }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["content-type"]).not.toContain("text/event-stream");
+    expect(response.json().error).toEqual({
+      code: "AI_PROVIDER_UNAVAILABLE",
+      message: "A inteligência artificial do Estúdio está indisponível no momento.",
+      details: {}
+    });
+  });
+
   it("streams framed SSE with non-buffering headers and persists before done", async () => {
     const app = buildApp({ studioRepository: createInMemoryStudioRepository(), aiProvider: provider() });
     const response = await app.inject({

@@ -97,7 +97,7 @@ describe("Studio routes", () => {
     expect(response.json()).toEqual({
       ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
       embeddings: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
-      vector: { status: "unavailable", code: "STUDIO_VECTOR_NOT_CONFIGURED" },
+      vector: { status: "unavailable", code: "STUDIO_EMBEDDINGS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }
     });
   });

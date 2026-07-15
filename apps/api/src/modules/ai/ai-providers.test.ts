@@ -130,6 +130,8 @@ describe("Default AI provider", () => {
       model: "text-embedding-3-small", inputs: ["conteúdo privado"], dimensions: 1536
     })).rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
     await expect(collect(provider.streamText(textRequest(false)))).rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
+    await expect(provider.transcribeAudio({ audioBuffer: Buffer.from("private audio") }))
+      .rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
   });
 });
 
