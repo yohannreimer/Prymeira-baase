@@ -535,6 +535,7 @@ function DocumentAssets({
         <StudioAssetProcessingStatus
           key={asset.id}
           asset={asset}
+          onAssetChange={onAttached}
           onInsertTranscript={onInsertTranscript}
         />
       ))}

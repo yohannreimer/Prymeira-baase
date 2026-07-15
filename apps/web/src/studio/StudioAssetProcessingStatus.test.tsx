@@ -6,20 +6,23 @@ import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 
 describe("StudioAssetProcessingStatus", () => {
   it("follows a preserved audio asset through failure, real retry, and transcription", async () => {
-    const pending = asset({ extractionStatus: "pending" });
+    const pending = asset({ extractionStatus: "pending", updatedAt: "2026-07-13T12:01:00.000Z" });
     const failed = asset({
       extractionStatus: "failed",
       attemptCount: 1,
       lastErrorCode: "STUDIO_ASSET_PROCESSING_FAILED",
-      nextAttemptAt: null
+      nextAttemptAt: null,
+      updatedAt: "2026-07-13T12:02:00.000Z"
     });
+    const retried = asset({ extractionStatus: "pending", updatedAt: "2026-07-13T12:03:00.000Z" });
     const ready = asset({
       extractionStatus: "ready",
       extractedText: "Escolher uma direção com calma.",
-      attemptCount: 1
+      attemptCount: 1,
+      updatedAt: "2026-07-13T12:04:00.000Z"
     });
     const getStatus = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(ready);
-    const retry = vi.fn(async () => pending);
+    const retry = vi.fn(async () => retried);
     const getDownload = vi.fn(async () => ({ url: "https://private.example/audio", expiresInSeconds: 600 }));
 
     render(
@@ -132,6 +135,89 @@ describe("StudioAssetProcessingStatus", () => {
     expect(getStatus).toHaveBeenCalledWith("asset_1", expect.any(AbortSignal));
   });
 
+  it("propagates a polled asset once and does not regress when an older prop arrives", async () => {
+    const pendingT1 = asset({
+      extractionStatus: "pending",
+      updatedAt: "2026-07-13T12:01:00.000Z"
+    });
+    const processingT2 = asset({
+      extractionStatus: "processing",
+      updatedAt: "2026-07-13T12:02:00.000Z"
+    });
+    const readyT3 = asset({
+      extractionStatus: "ready",
+      extractedText: "Versão mais recente.",
+      updatedAt: "2026-07-13T12:03:00.000Z"
+    });
+    const never = new Promise<StudioAsset>(() => undefined);
+    const getStatus = vi.fn()
+      .mockResolvedValueOnce(readyT3)
+      .mockReturnValueOnce(never);
+    const onAssetChange = vi.fn();
+    const getDownload = vi.fn(async () => ({ url: "https://private.example/audio", expiresInSeconds: 600 }));
+    const pollDelays = [0] as const;
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={pendingT1}
+        getStatus={getStatus}
+        retry={vi.fn()}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+        onAssetChange={onAssetChange}
+        onInsertTranscript={() => true}
+      />
+    );
+
+    expect(await screen.findByText("Versão mais recente.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adicionar transcrição ao documento" })).toBeInTheDocument();
+    expect(onAssetChange).toHaveBeenCalledTimes(1);
+    expect(onAssetChange).toHaveBeenCalledWith(readyT3);
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={processingT2}
+        getStatus={getStatus}
+        retry={vi.fn()}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+        onAssetChange={onAssetChange}
+        onInsertTranscript={() => true}
+      />
+    );
+
+    expect(screen.getByText("Versão mais recente.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adicionar transcrição ao documento" })).toBeInTheDocument();
+    expect(onAssetChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates the fresh asset returned by an explicit processing retry", async () => {
+    const failed = asset({
+      extractionStatus: "failed",
+      updatedAt: "2026-07-13T12:01:00.000Z"
+    });
+    const ready = asset({
+      extractionStatus: "ready",
+      extractedText: "Recuperado.",
+      updatedAt: "2026-07-13T12:02:00.000Z"
+    });
+    const onAssetChange = vi.fn();
+    render(
+      <StudioAssetProcessingStatus
+        asset={failed}
+        getStatus={vi.fn()}
+        retry={vi.fn(async () => ready)}
+        getDownload={vi.fn(async () => ({ url: "https://private.example/audio", expiresInSeconds: 600 }))}
+        onAssetChange={onAssetChange}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Tentar transcrição novamente" }));
+
+    expect(await screen.findByText("Recuperado.")).toBeInTheDocument();
+    expect(onAssetChange).toHaveBeenCalledTimes(1);
+    expect(onAssetChange).toHaveBeenCalledWith(ready);
+  });
+
   it("offers transcript insertion only for ready audio with non-empty text and a callback", () => {
     const onInsertTranscript = vi.fn(() => true);
     const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
@@ -144,16 +230,16 @@ describe("StudioAssetProcessingStatus", () => {
     );
     expect(screen.getByRole("button", { name: "Adicionar transcrição ao documento" })).toBeInTheDocument();
 
-    for (const hiddenAsset of [
+    for (const [index, hiddenAsset] of [
       asset({ extractionStatus: "pending", extractedText: "Texto" }),
       asset({ extractionStatus: "processing", extractedText: "Texto" }),
       asset({ extractionStatus: "failed", extractedText: "Texto" }),
       asset({ kind: "file", extractionStatus: "ready", extractedText: "Texto" }),
       asset({ extractionStatus: "ready", extractedText: "  \n " })
-    ]) {
+    ].entries()) {
       view.rerender(
         <StudioAssetProcessingStatus
-          asset={hiddenAsset}
+          asset={{ ...hiddenAsset, updatedAt: `2026-07-13T12:0${index + 1}:00.000Z` }}
           onInsertTranscript={onInsertTranscript}
           getDownload={getDownload}
         />
@@ -268,7 +354,11 @@ describe("StudioAssetProcessingStatus", () => {
     const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
     const view = render(
       <StudioAssetProcessingStatus
-        asset={asset({ extractionStatus: "ready", extractedText: "Transcrição antiga" })}
+        asset={asset({
+          extractionStatus: "ready",
+          extractedText: "Transcrição antiga",
+          updatedAt: "2026-07-13T12:01:00.000Z"
+        })}
         onInsertTranscript={onInsertTranscript}
         getDownload={getDownload}
       />
@@ -277,7 +367,11 @@ describe("StudioAssetProcessingStatus", () => {
 
     view.rerender(
       <StudioAssetProcessingStatus
-        asset={asset({ extractionStatus: "processing", extractedText: "Transcrição antiga" })}
+        asset={asset({
+          extractionStatus: "processing",
+          extractedText: "Transcrição antiga",
+          updatedAt: "2026-07-13T12:02:00.000Z"
+        })}
         onInsertTranscript={onInsertTranscript}
         getDownload={getDownload}
       />
@@ -286,7 +380,11 @@ describe("StudioAssetProcessingStatus", () => {
 
     view.rerender(
       <StudioAssetProcessingStatus
-        asset={asset({ extractionStatus: "ready", extractedText: "Transcrição nova" })}
+        asset={asset({
+          extractionStatus: "ready",
+          extractedText: "Transcrição nova",
+          updatedAt: "2026-07-13T12:03:00.000Z"
+        })}
         onInsertTranscript={onInsertTranscript}
         getDownload={getDownload}
       />

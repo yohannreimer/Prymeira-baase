@@ -10,6 +10,7 @@ type Download = { url: string; expiresInSeconds: number };
 
 type StudioAssetProcessingStatusProps = {
   asset: StudioAsset;
+  onAssetChange?: (asset: StudioAsset) => void;
   onInsertTranscript?: (text: string) => boolean | Promise<boolean>;
   getStatus?: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
   retry?: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
@@ -43,8 +44,25 @@ function wait(delay: number, signal: AbortSignal) {
   });
 }
 
+function validTimestamp(value: string | null | undefined) {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function freshestAsset(current: StudioAsset, incoming: StudioAsset) {
+  if (current.id !== incoming.id) return incoming;
+  const currentUpdatedAt = validTimestamp(current.updatedAt);
+  const incomingUpdatedAt = validTimestamp(incoming.updatedAt);
+  if (incomingUpdatedAt !== null && (currentUpdatedAt === null || incomingUpdatedAt > currentUpdatedAt)) {
+    return incoming;
+  }
+  return current;
+}
+
 export default function StudioAssetProcessingStatus({
   asset,
+  onAssetChange,
   onInsertTranscript,
   getStatus = getStudioAsset,
   retry = retryStudioAsset,
@@ -68,6 +86,7 @@ export default function StudioAssetProcessingStatus({
   const insertingRef = useRef(false);
   const insertionGenerationRef = useRef(0);
   const insertionCallbackRef = useRef(onInsertTranscript);
+  const assetChangeCallbackRef = useRef(onAssetChange);
   const currentRef = useRef(asset);
 
   function resetInsertion() {
@@ -76,20 +95,28 @@ export default function StudioAssetProcessingStatus({
     setInsertionState("idle");
   }
 
-  function adoptCurrent(next: StudioAsset) {
+  function adoptCurrent(next: StudioAsset, notifyParent = false) {
     const previous = currentRef.current;
-    if (previous.id !== next.id
-      || previous.extractionStatus !== next.extractionStatus
-      || previous.extractedText !== next.extractedText) {
+    const adopted = freshestAsset(previous, next);
+    if (adopted === previous) return previous;
+    if (previous.id !== adopted.id
+      || previous.extractionStatus !== adopted.extractionStatus
+      || previous.extractedText !== adopted.extractedText) {
       resetInsertion();
     }
-    currentRef.current = next;
-    setCurrent(next);
+    currentRef.current = adopted;
+    setCurrent(adopted);
+    if (notifyParent) assetChangeCallbackRef.current?.(adopted);
+    return adopted;
   }
 
   useEffect(() => {
     adoptCurrent(asset);
   }, [asset]);
+
+  useEffect(() => {
+    assetChangeCallbackRef.current = onAssetChange;
+  }, [onAssetChange]);
 
   useEffect(() => {
     if (insertionCallbackRef.current === onInsertTranscript) return;
@@ -126,9 +153,9 @@ export default function StudioAssetProcessingStatus({
       if (!shouldPoll(latest)) return;
       for (const delay of pollDelays) {
         await wait(delay, controller.signal);
-        latest = await getStatus(asset.id, controller.signal);
+        const refreshed = await getStatus(asset.id, controller.signal);
         if (controller.signal.aborted) return;
-        adoptCurrent(latest);
+        latest = adoptCurrent(refreshed, true);
         if (!shouldPoll(latest)) return;
       }
       if (!controller.signal.aborted) setPollExhausted(true);
@@ -166,7 +193,7 @@ export default function StudioAssetProcessingStatus({
     try {
       const retried = await retry(current.id, controller.signal);
       if (controller.signal.aborted) return;
-      adoptCurrent(retried);
+      adoptCurrent(retried, true);
       setPollCycle((cycle) => cycle + 1);
     } catch {
       if (!controller.signal.aborted) setRetryError(true);
