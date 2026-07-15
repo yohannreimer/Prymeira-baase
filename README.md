@@ -3,13 +3,18 @@
 ## Evidências anexadas
 
 Os anexos de evidência são enviados pelo adaptador S3 compatível já usado pela
-API; em produção, o backend é o MinIO configurado para o Baase. Configure os
-seguintes valores no ambiente (não registre credenciais reais no repositório):
+API; em produção, o backend é o MinIO configurado para o Baase. Na stack oficial,
+o operador define apenas estas credenciais do storage no ambiente (não registre
+valores reais no repositório):
 
-- `S3_ENDPOINT`: use `http://minio:9000` na rede interna da stack.
-- `BAASE_MINIO_ACCESS_KEY` (repasse-o como `S3_ACCESS_KEY`): chave de acesso.
-- `BAASE_MINIO_SECRET_KEY` (repasse-o como `S3_SECRET_KEY`): chave secreta.
-- `S3_BUCKET`: bucket que armazena os anexos.
+- `BAASE_MINIO_ACCESS_KEY`: usuário do MinIO.
+- `BAASE_MINIO_SECRET_KEY`: senha do MinIO.
+
+O compose mapeia essas credenciais internamente para `MINIO_ROOT_USER` e
+`MINIO_ROOT_PASSWORD` no MinIO e para `S3_ACCESS_KEY` e `S3_SECRET_KEY` na API e
+no bootstrap. Ele também fixa `S3_ENDPOINT=http://minio:9000`, região
+`us-east-1`, bucket `prymeira-baase` e path-style habilitado; esses valores não
+são inputs externos da stack.
 
 No deploy de produção, o serviço one-shot `prymeira_baase_minio_bootstrap` executa
 `storage:bootstrap`. O comando idempotente cria o bucket quando ele não existe,

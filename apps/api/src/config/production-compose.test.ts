@@ -5,6 +5,15 @@ import { describe, expect, it } from "vitest";
 const composePath = fileURLToPath(
   new URL("../../../../docker-compose.prod.yml", import.meta.url)
 );
+const productionEnvExamplePath = fileURLToPath(
+  new URL("../../../../.env.production.example", import.meta.url)
+);
+const readmePath = fileURLToPath(
+  new URL("../../../../README.md", import.meta.url)
+);
+const migrationRunbookPath = fileURLToPath(
+  new URL("../../../../docs/deployment-operational-migration.md", import.meta.url)
+);
 const storageEndpoint = "S3_ENDPOINT: http://minio:9000";
 const legacyEndpoint = "http://prymeira_" + "baase_minio:9000";
 const webForbiddenStorageKeys = [
@@ -112,5 +121,32 @@ describe("production compose object storage contract", () => {
 
     expect(() => expectStorageContract(compose.replace(minio, publicMinio))).toThrow();
     expect(() => expectStorageContract(compose.replace(web, webWithSecret))).toThrow();
+  });
+});
+
+describe("production stack operator configuration contract", () => {
+  it("exposes only BAASE_MINIO credentials as operator-managed storage inputs", () => {
+    const envExample = readFileSync(productionEnvExamplePath, "utf8");
+    const readme = readFileSync(readmePath, "utf8");
+    const migrationRunbook = readFileSync(migrationRunbookPath, "utf8");
+    const operatorDocs = [readme, migrationRunbook];
+
+    expect(envExample).not.toMatch(/^S3_[A-Z0-9_]*=/m);
+    expect(envExample).toMatch(/^BAASE_MINIO_ACCESS_KEY=.+$/m);
+    expect(envExample).toMatch(/^BAASE_MINIO_SECRET_KEY=.+$/m);
+    expect(readme).toContain("o operador define apenas estas credenciais");
+    expect(readme).toMatch(/esses valores não\s+são inputs externos da stack/);
+    expect(migrationRunbook).toContain(
+      "Nao defina as variaveis `S3_*` externamente"
+    );
+
+    for (const documentation of operatorDocs) {
+      expect(documentation).toContain("BAASE_MINIO_ACCESS_KEY");
+      expect(documentation).toContain("BAASE_MINIO_SECRET_KEY");
+      expect(documentation).not.toMatch(/^(?:[-*] )?`?S3_[A-Z0-9_]+`?(?:=|:)/m);
+      expect(documentation).not.toMatch(
+        /\b(?:configure|configurar|preencha|defina)\s+`S3_[A-Z0-9_]+`/i
+      );
+    }
   });
 });
