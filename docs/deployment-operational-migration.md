@@ -6,8 +6,10 @@ Este procedimento move a leitura operacional de `baase_records` para as tabelas 
 
 1. Confirme que a stack possui os volumes externos `prymeira_baase_postgres_data` e `prymeira_baase_minio_data`.
 2. Deixe `BAASE_OPERATIONAL_STORE=jsonb` no arquivo de ambiente da stack durante a primeira publicacao do codigo novo.
-3. Preencha `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` e `S3_FORCE_PATH_STYLE=true` para o MinIO interno.
+3. Preencha `S3_ENDPOINT=http://minio:9000`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` e `S3_FORCE_PATH_STYLE=true` para o MinIO interno.
 4. Faca o deploy da stack normalmente no Portainer. O servico da API cria as tabelas de schema quando o modo relacional for ativado, mas o comando abaixo tambem e idempotente.
+
+O Swarm inicia API, MinIO e bootstrap em paralelo e nao respeita `depends_on` como garantia de ordenacao. O job one-shot `prymeira_baase_minio_bootstrap` executa o comando idempotente `storage:bootstrap`: cria o bucket apenas se estiver ausente, preserva regras de lifecycle alheias, garante o aborto de uploads multipart incompletos sob `workspaces/` em um dia e termina depois de verificar o contrato. A API aguarda a prontidao por ate 30 tentativas e continua fail-closed se o storage nao ficar pronto.
 
 ## Backup e Ensaio
 
@@ -38,7 +40,8 @@ jq '.sourceCounts, .targetCounts, .orphanReferences, .reconciled' operational-re
 
 4. So prossiga se o relatorio estiver reconciliado e os orfaos estiverem compreendidos.
 5. Altere apenas `BAASE_OPERATIONAL_STORE=relational` no ambiente da stack e atualize-a no Portainer.
-6. Verifique `https://baase.prymeiradigital.com.br/api/readiness`, crie uma area de teste, um processo com responsavel e um material de arquivo, e depois arquive a area usando o dialogo de impacto.
+6. Nos checks do rollout, confirme que a task `prymeira_baase_minio_bootstrap` terminou com sucesso, que a API esta `Running` e que `/api/me` retorna `200` para uma sessao autenticada ou `401` sem sessao, nunca `502`.
+7. Verifique `https://baase.prymeiradigital.com.br/api/readiness`, crie uma area de teste, um processo com responsavel e um material de arquivo, e depois arquive a area usando o dialogo de impacto.
 
 ## Rollback
 
@@ -52,10 +55,10 @@ Atualize a stack. Nao apague as tabelas relacionais, o volume `prymeira_baase_po
 
 ## Variaveis da Stack
 
-O compose usa `prymeira_baase_minio` apenas na rede interna `prymeira_baase_internal`; o bucket nao recebe rota publica do Traefik. A API recebe:
+O compose publica o alias DNS `minio` apenas na rede interna `prymeira_baase_internal`; o bucket nao recebe rota publica do Traefik. API e bootstrap recebem:
 
 ```env
-S3_ENDPOINT=http://prymeira_baase_minio:9000
+S3_ENDPOINT=http://minio:9000
 S3_REGION=us-east-1
 S3_BUCKET=prymeira-baase
 S3_ACCESS_KEY=${BAASE_MINIO_ACCESS_KEY}
@@ -69,3 +72,5 @@ Crie os volumes externos uma unica vez no node manager antes do deploy caso aind
 docker volume create prymeira_baase_postgres_data
 docker volume create prymeira_baase_minio_data
 ```
+
+O volume `prymeira_baase_minio_data` contem os objetos persistidos. Nunca o apague durante deploy, rollback ou uma nova tentativa do bootstrap.
