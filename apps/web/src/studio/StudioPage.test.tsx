@@ -42,7 +42,7 @@ describe("mergeAssets", () => {
     expect(mergeAssets([current], [incoming])).toEqual([current]);
   });
 
-  it("preserves the current asset when either updated timestamp is invalid or absent", () => {
+  it("preserves a valid current timestamp from invalid incoming values and repairs an invalid current", () => {
     const current = studioAssetWith({ id: "asset_same", displayName: "current" });
     const invalid = studioAssetWith({ id: "asset_same", displayName: "invalid", updatedAt: "not-a-date" });
     const absent = studioAssetWith({
@@ -55,7 +55,17 @@ describe("mergeAssets", () => {
 
     const invalidCurrent = studioAssetWith({ id: "asset_same", displayName: "invalid current", updatedAt: "not-a-date" });
     const validIncoming = studioAssetWith({ id: "asset_same", displayName: "valid incoming", updatedAt: "2026-07-15T18:00:00.000Z" });
-    expect(mergeAssets([invalidCurrent], [validIncoming])).toEqual([invalidCurrent]);
+    expect(mergeAssets([invalidCurrent], [validIncoming])).toEqual([validIncoming]);
+  });
+
+  it("keeps the valid version across duplicate entries within one incoming list", () => {
+    const invalidFirst = studioAssetWith({ id: "asset_same", displayName: "invalid first", updatedAt: "not-a-date" });
+    const validSecond = studioAssetWith({ id: "asset_same", displayName: "valid second", updatedAt: "2026-07-15T18:00:00.000Z" });
+    const validFirst = studioAssetWith({ id: "asset_same", displayName: "valid first", updatedAt: "2026-07-15T19:00:00.000Z" });
+    const invalidSecond = studioAssetWith({ id: "asset_same", displayName: "invalid second", updatedAt: "not-a-date" });
+
+    expect(mergeAssets([], [invalidFirst, validSecond])).toEqual([validSecond]);
+    expect(mergeAssets([], [validFirst, invalidSecond])).toEqual([validFirst]);
   });
 
   it("orders valid creation instants before invalid values with stable ties and one entry per id", () => {
@@ -612,6 +622,45 @@ describe("StudioPage", () => {
 
     expect(await screen.findByRole("heading", { name: "retornado-a.pdf" })).toBeInTheDocument();
     expect(aAssetLists).toBe(2);
+  });
+
+  it("ignores a server-owned upload callback after the entire StudioPage unmounts", async () => {
+    const user = userEvent.setup();
+    const upload = deferred<Response>();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let uploadRequests = 0;
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return Promise.resolve(jsonResponse({ document: rawDocument }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+        uploadRequests += 1;
+        return upload.promise;
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    const view = render(<StudioPage />);
+
+    await screen.findByRole("heading", { name: "Reflexão estratégica" });
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["late"], "apos-unmount.pdf", { type: "application/pdf" }));
+    expect(uploadRequests).toBe(1);
+    view.unmount();
+    const fetchCallsAfterUnmount = vi.mocked(globalThis.fetch).mock.calls.length;
+    const errorsAfterUnmount = consoleError.mock.calls.length;
+
+    await act(async () => upload.resolve(jsonResponse({ asset: rawAssetWith({
+      id: "asset_after_page_unmount",
+      kind: "file",
+      display_name: "apos-unmount.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-15T15:00:00.000Z",
+      updated_at: "2026-07-15T15:00:00.000Z"
+    }) }, 201)));
+
+    expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(fetchCallsAfterUnmount);
+    expect(consoleError.mock.calls).toHaveLength(errorsAfterUnmount);
+    expect(screen.queryByRole("heading", { name: "apos-unmount.pdf" })).not.toBeInTheDocument();
   });
 
   it("merges a late initial list with a newly attached material for the same document", async () => {

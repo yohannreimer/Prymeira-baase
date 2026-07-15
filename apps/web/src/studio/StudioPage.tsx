@@ -50,7 +50,7 @@ function retainFreshestAsset(byId: Map<string, StudioAsset>, asset: StudioAsset)
   }
   const knownUpdatedAt = validTimestamp(known.updatedAt);
   const incomingUpdatedAt = validTimestamp(asset.updatedAt);
-  if (knownUpdatedAt !== null && incomingUpdatedAt !== null && incomingUpdatedAt > knownUpdatedAt) {
+  if (incomingUpdatedAt !== null && (knownUpdatedAt === null || incomingUpdatedAt > knownUpdatedAt)) {
     byId.set(asset.id, asset);
   }
 }
@@ -99,6 +99,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   });
   const [assetsReloadKey, setAssetsReloadKey] = useState(0);
   const [documentOpenError, setDocumentOpenError] = useState<DocumentOpenError | null>(null);
+  const pageMountedRef = useRef(true);
   const searchOpenController = useRef<AbortController | null>(null);
   const documentRequestGeneration = useRef(0);
   const selectedDocumentId = useRef<string | null>(null);
@@ -106,6 +107,13 @@ export default function StudioPage({ onOpenInternalSource }: {
   const navigationRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const collectionStore = useStudioCollections();
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
+
+  useEffect(() => {
+    pageMountedRef.current = true;
+    return () => {
+      pageMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     sweepExpiredStudioDraftQuarantines();
@@ -262,6 +270,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   }, [assetsReloadKey, section, selectedDocument?.id]);
 
   function attachDocumentAsset(asset: StudioAsset) {
+    if (!pageMountedRef.current) return;
     if (selectedDocumentId.current !== asset.documentId) return;
     setAssetState((current) => current.documentId === asset.documentId
       ? { ...current, assets: mergeAssets(current.assets, [asset]) }
