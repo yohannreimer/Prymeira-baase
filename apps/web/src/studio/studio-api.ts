@@ -785,7 +785,7 @@ export async function startStudioRitualSession(
 ): Promise<StudioRitualSession> {
   const response = await studioRequest<RawStudioRitualSessionResponse>(
     `/rituals/${encodeURIComponent(ritualId)}/sessions`,
-    { method: "POST", signal },
+    { method: "POST", body: JSON.stringify({}), signal },
     fetcher
   );
   return mapStudioRitualSession(response.session);

@@ -34,3 +34,19 @@ Calmo, sofisticado e confiável. A interface deve reduzir ansiedade operacional,
 ## Accessibility & Inclusion
 
 Controles devem ser operáveis por teclado, possuir nomes acessíveis, estados de foco visíveis e não depender somente de cor. A interface deve respeitar redução de movimento e manter contraste compatível com WCAG AA.
+
+## Estúdio do Dono
+
+O Estúdio é o espaço privado de conforto, clareza e produtividade do dono. Ele aceita pensamentos ainda desorganizados, escrita livre, áudio e materiais; o dono pode apenas guardar, conectar ideias, dar forma a metas/decisões/planos, preparar rituais ou pedir ajuda à IA. Ele não é uma segunda caixa de tarefas e não substitui a operação.
+
+Princípios do Estúdio:
+
+1. Somente o dono autenticado acessa seu conteúdo; gestores e funcionários ficam fora da V1.
+2. Privacidade é por `(workspace, owner)`, inclusive em busca, memória, IA, assets, export e exclusão.
+3. A IA propõe e cita; nunca altera o texto nem publica na operação sem revisão e confirmação explícitas.
+4. O original e o histórico permanecem legíveis depois de qualquer organização.
+5. Pesquisa externa é opt-in por pergunta e aparece separada das fontes internas.
+6. Contexto operacional é escolhido pelo dono por período e deve levar de volta ao recurso citado.
+7. Escrever, salvar e ler continuam disponíveis quando IA, vetor ou transcrição falham.
+8. Uma proposta só vira processo, rotina, treinamento ou comunicado após preview editável, validação e confirmação idempotente.
+9. Perda do papel de dono revoga acesso; conteúdo privado nunca é transferido silenciosamente.

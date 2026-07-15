@@ -362,6 +362,7 @@ describe("Studio API client", () => {
       "/api/studio/ritual-sessions/session%20%2F%201",
       "/api/studio/ritual-sessions/session%20%2F%201/finish"
     ]);
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toEqual({});
     expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({
       expected_revision: 3,
       answers: { "O que merece foco?": "Clientes" }

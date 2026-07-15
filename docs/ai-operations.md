@@ -279,3 +279,22 @@ Regras:
 - validar tamanho e MIME type;
 - guardar metadados no banco;
 - URLs públicas só quando necessário.
+
+---
+
+## 8. Estúdio do Dono
+
+Runs originados no Estúdio usam `source=owner_studio`. Por privacidade, `input_summary` e `output_summary` ficam respectivamente como `[private owner studio input]` e `[private owner studio output]`; conteúdo do documento, transcrição, prompt e resposta não entram em log operacional. Audite por run id, dono técnico, task kind, prompt/model, status, duração, erro e `cost_estimate_cents`.
+
+O harness deve preservar estes limites:
+
+- escrita/autosave não dependem do provider;
+- contexto privado é limitado ao mesmo `(workspace_id, owner_profile_id)`;
+- contexto operacional só entra quando solicitado e com período explícito;
+- pesquisa web exige consentimento por turno e citações externas permanecem separadas;
+- sugestões são pendentes e revisáveis; aplicar cria nova versão;
+- publicação operacional exige preview editável e confirmação idempotente;
+- falha de preparação não impede ritual manual;
+- embeddings falhos degradam para busca textual, sem bloquear o documento.
+
+Providers de produção: OpenAI para estrutura/síntese/embeddings e Deepgram para transcrição. A readiness deve bloquear o rollout do Estúdio se Postgres, vetor, provider estruturado ou storage privado não estiverem prontos. O procedimento completo de configuração, manutenção, exportação, exclusão, incidentes e rollout está em `docs/owner-studio-operations.md`.

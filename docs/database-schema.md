@@ -494,3 +494,22 @@ announcement_type = simple | process_change | mandatory_training
 audience_type = all | area | role | person
 ai_draft_type = process | routine | training | announcement | script
 ```
+
+---
+
+## 4. Persistência do Estúdio do Dono
+
+O schema operacional versionado adiciona as famílias abaixo. Toda leitura privada inclui `workspace_id` e `owner_profile_id`; chaves estrangeiras compostas e índices preservam esse escopo.
+
+- `studio_documents`, `studio_document_versions`: documento atual, histórico imutável, inbox, foco, arquivo e busca textual.
+- `studio_assets`, `studio_asset_upload_intents`, `studio_asset_cleanup_jobs`: originais privados, upload atômico, extração/transcrição, leases, retry e remoção.
+- `studio_collections`, `studio_collection_items`, `studio_relations`, `studio_index_jobs`: organização, conexões e memória reindexável.
+- `studio_conversations`, `studio_messages`, `studio_suggestions`, `studio_citations`: copiloto, propostas pendentes e proveniência interna/externa.
+- `studio_structures`, `studio_ritual_sessions`: metas, decisões, planos, rituais, preparação, respostas e síntese.
+- `studio_operation_previews`, `studio_operational_links`: preview durável, confirmação idempotente e vínculo com o recurso operacional publicado.
+- `studio_proactivity_settings`, `studio_proactive_signals`: sinais controláveis e preparação agendada.
+- `studio_portability_exports`, `studio_portability_delete_requests`, `studio_portability_object_deletions`: export assíncrono, expiração e exclusão reconciliada com storage.
+
+As migrations são aditivas, registradas em `baase_schema_migrations` e aplicadas por `pnpm --filter @prymeira/baase-api db:migrate-operational`. Para validar constraints e compatibilidade use um Postgres descartável com `TEST_DATABASE_URL` e rode `test:postgres-schema`. Rollback de aplicação deve manter as tabelas; remoção destrutiva exige backup/restauração testados e não faz parte do deploy automático.
+
+Assets e chunks de memória são derivados/reconciliáveis, mas o documento, suas versões, sugestões decididas e links operacionais são registros de autoridade. Excluir o Estúdio remove a origem privada e seus objetos; recursos operacionais previamente confirmados permanecem, com o vínculo marcado como origem excluída.
