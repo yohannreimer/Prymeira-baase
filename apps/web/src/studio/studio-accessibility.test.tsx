@@ -132,19 +132,63 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
     expect(navigationStatus).toHaveAttribute("aria-atomic", "true");
     expect(navigationStatus).toBeEmptyDOMElement();
 
-    window.history.replaceState(null, "", "/#estudio/all");
-    fireEvent.popState(window);
-    expect(navigationStatus).toBeEmptyDOMElement();
-
     await user.click(inbox);
     expect(inbox).toHaveFocus();
     expect(navigationStatus).toHaveTextContent("Seção Entrada aberta.");
     expect(within(content).getByRole("heading", { level: 2, name: "Entrada" })).toBeInTheDocument();
 
+    window.history.replaceState(null, "", "/#estudio/plans");
+    fireEvent.popState(window);
+    expect(navigationStatus).toBeEmptyDOMElement();
+    expect(within(content).getByRole("heading", { level: 2, name: "Planos" })).toBeInTheDocument();
+
     await user.click(goals);
     expect(goals).toHaveFocus();
     expect(navigationStatus).toHaveTextContent("Seção Metas aberta.");
     expect(within(content).getByRole("heading", { level: 2, name: "Metas" })).toBeInTheDocument();
+  });
+
+  it("parses material rules through nested grouping at-rules without entering keyframes", () => {
+    const fixtureRules = parseCssRules(String.raw`
+      @layer studio {
+        @container editor (min-width: 30rem) {
+          /* a comment with a misleading { brace } */
+          @supports (display: grid) {
+            @media (min-width: 60rem) {
+              .studio-material-composer::before {
+                content: "chave } e \"escape\" /* literal */";
+                color: var(--muted);
+              }
+            }
+          }
+        }
+      }
+      @font-face {
+        font-family: "Studio { Sans";
+        src: url("studio.woff2");
+      }
+      @keyframes quiet-material {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+    `);
+    const expectedContext = [
+      "@layer studio",
+      "@container editor (min-width: 30rem)",
+      "@supports (display: grid)",
+      "@media (min-width: 60rem)"
+    ];
+    const material = cssRuleFrom(
+      fixtureRules,
+      ".studio-material-composer::before",
+      "(min-width: 60rem)",
+      expectedContext
+    );
+
+    expect(material.get("content")).toBe(String.raw`"chave } e \"escape\" /* literal */"`);
+    expect(material.get("color")).toBe("var(--muted)");
+    expect(fixtureRules).toHaveLength(1);
+    expect(fixtureRules.flatMap((rule) => rule.selectors)).not.toEqual(expect.arrayContaining(["from", "to"]));
   });
 
   it("styles document materials as a quiet, wrapping, token-based action strip", () => {
@@ -287,44 +331,155 @@ type ParsedCssRule = {
   selectors: string[];
   declarations: Map<string, string>;
   media: string | null;
+  context: string[];
 };
 
-function cssRule(selector: string, media: string | null = null) {
-  const matches = studioCssRules.filter((rule) => (
-    rule.media === media && rule.selectors.includes(selector)
+function cssRule(selector: string, media: string | null = null, context?: readonly string[]) {
+  return cssRuleFrom(studioCssRules, selector, media, context);
+}
+
+function cssRuleFrom(
+  rules: ParsedCssRule[],
+  selector: string,
+  media: string | null = null,
+  context?: readonly string[]
+) {
+  const matches = rules.filter((rule) => (
+    rule.media === media
+    && rule.selectors.includes(selector)
+    && (context === undefined || (
+      rule.context.length === context.length
+      && rule.context.every((entry, index) => entry === context[index])
+    ))
   ));
-  expect(matches, `missing CSS rule: ${selector} @ ${media ?? "root"}`).toHaveLength(1);
+  const contextLabel = context?.join(" > ") ?? media ?? "root";
+  expect(matches, `missing CSS rule: ${selector} @ ${contextLabel}`).toHaveLength(1);
   return matches[0]?.declarations ?? new Map<string, string>();
 }
 
 function parseCssRules(styles: string) {
   const rules: ParsedCssRule[] = [];
-  const source = styles.replace(/\/\*[^]*?\*\//gu, "");
+  const source = styles;
 
-  function walk(start: number, end: number, media: string | null) {
+  function walk(start: number, end: number, context: string[]) {
     let cursor = start;
     while (cursor < end) {
-      while (cursor < end && /\s/u.test(source[cursor] ?? "")) cursor += 1;
+      cursor = skipCssTrivia(source, cursor, end);
       if (cursor >= end) return;
-      const open = source.indexOf("{", cursor);
-      if (open === -1 || open >= end) return;
-      const prelude = source.slice(cursor, open).trim();
+      const boundary = findCssBoundary(source, cursor, end);
+      if (!boundary) return;
+      if (boundary.kind === "statement") {
+        cursor = boundary.index + 1;
+        continue;
+      }
+      const open = boundary.index;
+      const prelude = stripCssComments(source.slice(cursor, open)).trim();
       const close = matchingBrace(source, open, end);
-      if (prelude.startsWith("@media ")) {
-        walk(open + 1, close, prelude.slice("@media".length).trim());
-      } else if (!prelude.startsWith("@")) {
+      if (prelude.startsWith("@")) {
+        const isKeyframes = /^@(?:-[\w]+-)?keyframes\b/iu.test(prelude);
+        if (!isKeyframes && findOpeningBrace(source, open + 1, close) !== -1) {
+          walk(open + 1, close, [...context, prelude]);
+        }
+      } else if (prelude) {
+        const mediaContext = findMediaContext(context);
         rules.push({
           selectors: splitTopLevel(prelude, ",").map((selector) => selector.trim()),
           declarations: parseDeclarations(source.slice(open + 1, close)),
-          media
+          media: mediaContext?.replace(/^@media\s+/iu, "") ?? null,
+          context: [...context]
         });
       }
       cursor = close + 1;
     }
   }
 
-  walk(0, source.length, null);
+  walk(0, source.length, []);
   return rules;
+}
+
+function findMediaContext(context: readonly string[]) {
+  for (let index = context.length - 1; index >= 0; index -= 1) {
+    const entry = context[index];
+    if (entry && /^@media\s+/iu.test(entry)) return entry;
+  }
+  return undefined;
+}
+
+function skipCssTrivia(source: string, start: number, end: number) {
+  let cursor = start;
+  while (cursor < end) {
+    if (/\s/u.test(source[cursor] ?? "")) {
+      cursor += 1;
+      continue;
+    }
+    if (source[cursor] === "/" && source[cursor + 1] === "*") {
+      cursor = skipCssComment(source, cursor, end);
+      continue;
+    }
+    break;
+  }
+  return cursor;
+}
+
+function skipCssComment(source: string, start: number, end: number) {
+  const close = source.indexOf("*/", start + 2);
+  return close === -1 || close >= end ? end : close + 2;
+}
+
+function findCssBoundary(source: string, start: number, end: number) {
+  let quote = "";
+  let roundDepth = 0;
+  let squareDepth = 0;
+  for (let index = start; index < end; index += 1) {
+    const character = source[index] ?? "";
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      index = skipCssComment(source, index, end) - 1;
+    } else if (character === "\\") {
+      index += 1;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "(") {
+      roundDepth += 1;
+    } else if (character === ")") {
+      roundDepth -= 1;
+    } else if (character === "[") {
+      squareDepth += 1;
+    } else if (character === "]") {
+      squareDepth -= 1;
+    } else if (roundDepth === 0 && squareDepth === 0 && character === "{") {
+      return { index, kind: "block" as const };
+    } else if (roundDepth === 0 && squareDepth === 0 && character === ";") {
+      return { index, kind: "statement" as const };
+    }
+  }
+  return null;
+}
+
+function findOpeningBrace(source: string, start: number, end: number) {
+  let quote = "";
+  for (let index = start; index < end; index += 1) {
+    const character = source[index] ?? "";
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      index = skipCssComment(source, index, end) - 1;
+    } else if (character === "\\") {
+      index += 1;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "{") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function matchingBrace(source: string, open: number, end: number) {
@@ -337,7 +492,10 @@ function matchingBrace(source: string, open: number, end: number) {
       else if (character === quote) quote = "";
       continue;
     }
-    if (character === '"' || character === "'") quote = character;
+    if (character === "/" && source[index + 1] === "*") {
+      index = skipCssComment(source, index, end) - 1;
+    } else if (character === "\\") index += 1;
+    else if (character === '"' || character === "'") quote = character;
     else if (character === "{") depth += 1;
     else if (character === "}" && --depth === 0) return index;
   }
@@ -356,7 +514,8 @@ function splitTopLevel(value: string, separator: string) {
       else if (character === quote) quote = "";
       continue;
     }
-    if (character === '"' || character === "'") quote = character;
+    if (character === "\\") index += 1;
+    else if (character === '"' || character === "'") quote = character;
     else if (character === "(" || character === "[") depth += 1;
     else if (character === ")" || character === "]") depth -= 1;
     else if (character === separator && depth === 0) {
@@ -370,7 +529,7 @@ function splitTopLevel(value: string, separator: string) {
 
 function parseDeclarations(body: string) {
   const declarations = new Map<string, string>();
-  for (const declaration of splitTopLevel(body, ";")) {
+  for (const declaration of splitTopLevel(stripCssComments(body), ";")) {
     const colon = declaration.indexOf(":");
     if (colon === -1) continue;
     declarations.set(
@@ -379,4 +538,28 @@ function parseDeclarations(body: string) {
     );
   }
   return declarations;
+}
+
+function stripCssComments(value: string) {
+  let result = "";
+  let quote = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (quote) {
+      result += character;
+      if (character === "\\" && index + 1 < value.length) {
+        result += value[++index];
+      } else if (character === quote) {
+        quote = "";
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      result += character;
+    } else if (character === "/" && value[index + 1] === "*") {
+      index = skipCssComment(value, index, value.length) - 1;
+    } else {
+      result += character;
+    }
+  }
+  return result;
 }

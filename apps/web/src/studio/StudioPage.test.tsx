@@ -166,10 +166,46 @@ describe("StudioPage", () => {
     expect(screen.getByRole("button", { name: "Entrada" })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("Toda captura já foi revisada.")).toBeInTheDocument();
 
+    const navigationStatus = screen.getByRole("status", { name: "Mudança de seção" });
+    fireEvent.click(screen.getByRole("button", { name: "Tudo" }));
+    expect(navigationStatus).toHaveTextContent("Seção Tudo aberta.");
+
     window.history.replaceState(null, "", "/#estudio/plans");
     fireEvent(window, new PopStateEvent("popstate"));
+    expect(navigationStatus).toBeEmptyDOMElement();
     expect(screen.getByRole("button", { name: "Planos" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Planos" })).toBeInTheDocument();
+  });
+
+  it("clears and reissues section announcements around document transitions", async () => {
+    const user = userEvent.setup();
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/studio/documents?")) {
+        return jsonResponse({
+          documents: [rawDocument],
+          next_cursor: null,
+          collections_by_document_id: {}
+        });
+      }
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    const navigationStatus = screen.getByRole("status", { name: "Mudança de seção" });
+    const all = screen.getByRole("button", { name: "Tudo" });
+    await user.click(all);
+    expect(navigationStatus).toHaveTextContent("Seção Tudo aberta.");
+
+    const row = await screen.findByRole("listitem", { name: "Reflexão estratégica" });
+    await user.click(within(row).getByRole("button", { name: /Reflexão estratégica/u }));
+    expect(await screen.findByRole("heading", { name: "Reflexão estratégica" })).toBeInTheDocument();
+    expect(navigationStatus).toBeEmptyDOMElement();
+
+    await user.click(all);
+    expect(navigationStatus).toHaveTextContent("Seção Tudo aberta.");
   });
 
   it("opens a document URL without writing a duplicate history entry", async () => {
@@ -960,9 +996,15 @@ describe("StudioPage", () => {
     });
     render(<StudioPage />);
 
+    const navigationStatus = screen.getByRole("status", { name: "Mudança de seção" });
+    await user.click(screen.getByRole("button", { name: "Metas" }));
+    expect(navigationStatus).toHaveTextContent("Seção Metas aberta.");
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    expect(navigationStatus).toHaveTextContent("Seção Início aberta.");
     await user.click(await screen.findByRole("button", { name: "Iniciar Revisão semanal" }));
 
     expect(await screen.findByRole("heading", { name: "A preparação está indisponível agora." })).toBeInTheDocument();
+    expect(navigationStatus).toBeEmptyDOMElement();
     expect(within(screen.getByRole("navigation", { name: "Seções do Estúdio" }))
       .getByRole("button", { name: "Rituais" })).toHaveAttribute("aria-current", "page");
     expect(window.location.hash).toBe("#estudio/rituals");

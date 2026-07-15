@@ -135,6 +135,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   }
 
   function showDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
+    setSectionAnnouncement("");
     selectedDocumentId.current = document.id;
     setSelectedDocument(document);
     setAssetState({
@@ -174,6 +175,7 @@ export default function StudioPage({ onOpenInternalSource }: {
 
   function openRitual(ritualId: string) {
     cancelDocumentOpen();
+    setSectionAnnouncement("");
     setDocumentOpenError(null);
     setSelectedRitualId(ritualId);
     setSection("rituals");
@@ -185,6 +187,7 @@ export default function StudioPage({ onOpenInternalSource }: {
     const controller = new AbortController();
     searchOpenController.current = controller;
     const generation = ++documentRequestGeneration.current;
+    setSectionAnnouncement("");
     selectedDocumentId.current = null;
     setSelectedDocument(null);
     setAssetState({ documentId: null, assets: [], loading: false, error: false });
@@ -227,6 +230,7 @@ export default function StudioPage({ onOpenInternalSource }: {
 
   useEffect(() => {
     function restoreInternalRoute() {
+      setSectionAnnouncement("");
       const route = parseStudioHash(window.location.hash);
       if (route.section === "document") {
         if (route.documentId !== selectedDocumentId.current) void openDocumentById(route.documentId, false);
