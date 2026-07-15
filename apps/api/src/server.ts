@@ -13,7 +13,7 @@ const objectStorage = await initializeRuntimeObjectStorage(runtimeConfig);
 
 const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
 const repositoryBundle = pool
-  ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore)
+  ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore, undefined, runtimeConfig.studio)
   : null;
 
 const app = repositoryBundle

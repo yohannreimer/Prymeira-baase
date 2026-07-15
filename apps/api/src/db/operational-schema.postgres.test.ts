@@ -10,6 +10,7 @@ import { createPostgresStudioMemoryIndex, StudioVectorPrerequisiteError } from "
 import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
 import { createPostgresStudioProactivityStore } from "../modules/studio/postgres-studio-proactivity.store";
 import { createPostgresStudioPortabilityStore } from "../modules/studio/postgres-studio-portability.store";
+import { initializeStudioVectorRuntime } from "../server-initialization";
 
 // Use an expendable PostgreSQL 16 database; each test creates and drops an isolated schema.
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -453,6 +454,21 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
   it("uses pgvector only through its guarded adapter and reports an unavailable prerequisite explicitly", async (context) => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchema(pool);
+      try {
+        await initializeStudioVectorRuntime(pool, {
+          enabled: true,
+          vectorConfigured: true,
+          aiModel: "gpt-5.6-terra",
+          embeddingModel: "text-embedding-3-small"
+        });
+      } catch (error) {
+        if (error instanceof StudioVectorPrerequisiteError) {
+          console.warn("Skipping pgvector assertions: STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE");
+          context.skip();
+          return;
+        }
+        throw error;
+      }
       const repository = createPostgresStudioRepository(pool);
       const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
       const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
@@ -471,16 +487,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const memory = createPostgresStudioMemoryIndex(pool, {
         embedder, dimensions: 3, now: () => "2026-07-14T12:00:00.000Z"
       });
-      try {
-        await memory.ensureSetup();
-      } catch (error) {
-        if (error instanceof StudioVectorPrerequisiteError) {
-          console.warn("Skipping pgvector assertions: STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE");
-          context.skip();
-          return;
-        }
-        throw error;
-      }
+      await memory.ensureSetup();
       const left = await create(ownerA, "Fluxo", "caixa para amanhã");
       const right = await create(ownerA, "Equipe", "contratações futuras");
       const foreign = await create(ownerB, "Privado", "caixa confidencial");

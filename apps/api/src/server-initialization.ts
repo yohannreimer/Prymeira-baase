@@ -11,6 +11,7 @@ import type { OperationalPool } from "./db/operational-repository-support";
 import type { ObjectStorage } from "./storage/object-storage";
 import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
 import { createS3ObjectStorage } from "./storage/s3-object-storage";
+import { StudioVectorPrerequisiteError } from "./modules/studio/postgres-studio-memory";
 
 type PostgresRuntimeDependencies<Repositories> = {
   ensurePostgresSchema(pool: OperationalPool): Promise<void>;
@@ -119,21 +120,49 @@ export async function ensureObjectStorageReady(
   }
 }
 
+export async function initializeStudioVectorRuntime(
+  pool: OperationalPool,
+  studio: BaaseRuntimeConfig["studio"]
+): Promise<void> {
+  if (!studio.enabled || !studio.vectorConfigured) return;
+
+  try {
+    await pool.query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public");
+    const vectorType = await pool.query<{ available: boolean }>(
+      "SELECT to_regtype('public.vector') IS NOT NULL AS available"
+    );
+    if (vectorType.rows[0]?.available !== true) {
+      throw new Error("STUDIO_MEMORY_VECTOR_EXTENSION_NOT_INSTALLED");
+    }
+  } catch (error) {
+    throw new StudioVectorPrerequisiteError(error);
+  }
+}
+
 export function initializePostgresRuntime(
   pool: OperationalPool,
   operationalStore: BaaseOperationalStore
 ): Promise<DefaultRepositoryBundle>;
+export function initializePostgresRuntime(
+  pool: OperationalPool,
+  operationalStore: BaaseOperationalStore,
+  dependencies: undefined,
+  studio: BaaseRuntimeConfig["studio"]
+): Promise<DefaultRepositoryBundle>;
 export function initializePostgresRuntime<Repositories>(
   pool: OperationalPool,
   operationalStore: BaaseOperationalStore,
-  dependencies: PostgresRuntimeDependencies<Repositories>
+  dependencies: PostgresRuntimeDependencies<Repositories>,
+  studio?: BaaseRuntimeConfig["studio"]
 ): Promise<Repositories>;
 export async function initializePostgresRuntime(
   pool: OperationalPool,
   operationalStore: BaaseOperationalStore,
-  dependencies: PostgresRuntimeDependencies<unknown> = defaultDependencies
+  dependencies: PostgresRuntimeDependencies<unknown> = defaultDependencies,
+  studio?: BaaseRuntimeConfig["studio"]
 ): Promise<unknown> {
   await dependencies.ensurePostgresSchema(pool);
   await dependencies.ensureOperationalSchema(pool);
+  if (studio) await initializeStudioVectorRuntime(pool, studio);
   return dependencies.createRepositoryBundle(pool, operationalStore);
 }

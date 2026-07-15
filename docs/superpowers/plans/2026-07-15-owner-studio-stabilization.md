@@ -232,7 +232,7 @@ git commit -m "feat(studio): expose honest AI readiness"
 - Test: `apps/api/src/server-initialization.test.ts`
 - Test: `apps/api/src/db/operational-schema.postgres.test.ts`
 
-- [ ] **Step 1: Add failing runtime prerequisite tests**
+- [x] **Step 1: Add failing runtime prerequisite tests**
 
 ```ts
 it("rejects vector-enabled Studio when pgvector cannot be initialized", async () => {
@@ -246,12 +246,12 @@ it("rejects vector-enabled Studio when pgvector cannot be initialized", async ()
 });
 ```
 
-- [ ] **Step 2: Run the focused initialization tests**
+- [x] **Step 2: Run the focused initialization tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts`  
 Expected: FAIL because vector readiness is lazy.
 
-- [ ] **Step 3: Update compose and startup initialization**
+- [x] **Step 3: Update compose and startup initialization**
 
 ```yaml
 prymeira_baase_postgres:
@@ -284,12 +284,12 @@ prymeira_baase_minio:
 
 Call `CREATE EXTENSION IF NOT EXISTS vector` during PostgreSQL runtime initialization when vector is enabled. Preserve the named external volume.
 
-- [ ] **Step 4: Run tests and validate compose rendering**
+- [x] **Step 4: Run tests and validate compose rendering**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts && docker compose -f docker-compose.prod.yml config >/dev/null`  
 Expected: PASS and compose exits 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docker-compose.prod.yml .env.production.example apps/api/src/server-initialization.ts apps/api/src/server-initialization.test.ts apps/api/src/db/operational-schema.postgres.test.ts

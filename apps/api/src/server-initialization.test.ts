@@ -6,7 +6,8 @@ import {
   assertRuntimeStoragePolicy,
   ensureObjectStorageReady,
   initializePostgresRuntime,
-  initializeRuntimeObjectStorage
+  initializeRuntimeObjectStorage,
+  initializeStudioVectorRuntime
 } from "./server-initialization";
 
 const pool = {} as OperationalPool;
@@ -51,6 +52,60 @@ function productionS3Config(endpoint: string | undefined): BaaseRuntimeConfig {
 }
 
 describe("PostgreSQL server initialization", () => {
+  it("rejects vector-enabled Studio when pgvector cannot be initialized", async () => {
+    const unavailable = new Error("extension vector is not available");
+    const vectorUnavailablePool = {
+      async query() {
+        throw unavailable;
+      },
+      async connect() {
+        throw new Error("connect should not be called");
+      }
+    } as unknown as OperationalPool;
+
+    await expect(initializeStudioVectorRuntime(vectorUnavailablePool, {
+      enabled: true,
+      vectorConfigured: true,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    })).rejects.toThrow("STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE");
+  });
+
+  it("preflights pgvector after schemas and before creating vector-enabled repositories", async () => {
+    const events: string[] = [];
+    const vectorReadyPool = {
+      async query(text: string) {
+        events.push(text);
+        return { rows: text.startsWith("SELECT to_regtype") ? [{ available: true }] : [] };
+      },
+      async connect() {
+        throw new Error("connect should not be called");
+      }
+    } as unknown as OperationalPool;
+
+    await initializePostgresRuntime(vectorReadyPool, "jsonb", {
+      async ensurePostgresSchema() { events.push("postgres-schema"); },
+      async ensureOperationalSchema() { events.push("operational-schema"); },
+      createRepositoryBundle() {
+        events.push("repository-bundle");
+        return {};
+      }
+    }, {
+      enabled: true,
+      vectorConfigured: true,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    });
+
+    expect(events).toEqual([
+      "postgres-schema",
+      "operational-schema",
+      "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public",
+      "SELECT to_regtype('public.vector') IS NOT NULL AS available",
+      "repository-bundle"
+    ]);
+  });
+
   it.each([
     { provider: "memory" as const, s3: null },
     { provider: "s3" as const, s3: null }

@@ -60,7 +60,7 @@ export async function runConfiguredStudioMaintenance() {
 
   try {
     const repositoryBundle = pool
-      ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore)
+      ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore, undefined, runtimeConfig.studio)
       : null;
     const app = repositoryBundle
       ? buildApp({ ...repositoryBundle, runtimeConfig, objectStorage })
