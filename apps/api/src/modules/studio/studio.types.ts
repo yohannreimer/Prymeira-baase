@@ -313,7 +313,8 @@ export type StudioRelation = StudioOwnerScope & {
 export type StudioIndexJob = StudioOwnerScope & {
   id: string;
   documentId: string;
-  versionId: string;
+  snapshotId: string;
+  documentRevision: number;
   status: StudioIndexJobStatus;
   attemptCount: number;
   nextAttemptAt: string | null;

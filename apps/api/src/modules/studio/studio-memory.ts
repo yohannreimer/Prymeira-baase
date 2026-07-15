@@ -286,39 +286,44 @@ export function createStudioMemoryIndexProcessor(options: {
     heartbeat.unref?.();
 
     try {
-      const [document, versions] = await Promise.all([
-        options.repository.findDocument(scope, claimed.documentId),
-        options.repository.listVersions(scope, claimed.documentId)
-      ]);
-      const version = versions.find((item) => item.id === claimed.versionId);
-      const latest = versions.at(-1);
-      if (!document || !version || !latest) throw new Error("STUDIO_MEMORY_SOURCE_NOT_FOUND");
+      const document = await options.repository.findDocument(scope, claimed.documentId);
+      if (!document) throw new Error("STUDIO_MEMORY_SOURCE_NOT_FOUND");
+      const snapshot: StudioDocumentVersion = {
+        ...scope,
+        id: claimed.snapshotId,
+        documentId: document.id,
+        versionNumber: claimed.documentRevision,
+        bodyJson: document.bodyJson,
+        bodyText: document.bodyText,
+        origin: "user",
+        actorProfileId: document.ownerProfileId,
+        aiRunId: null,
+        title: document.title,
+        checkpointReason: "legacy_autosave",
+        sourceRevision: document.revision,
+        isLegacy: true,
+        createdAt: document.updatedAt
+      };
       const isCurrent = async () => {
         if (!await renewClaim()) return false;
         throwIfAborted(operation.signal);
-        const [currentDocument, currentVersions] = await Promise.all([
-          options.repository.findDocument(scope, claimed.documentId),
-          options.repository.listVersions(scope, claimed.documentId)
-        ]);
-        const currentLatest = currentVersions.at(-1);
+        const currentDocument = await options.repository.findDocument(scope, claimed.documentId);
         return currentDocument?.revision === document.revision
-          && currentDocument.status === document.status
-          && currentLatest?.id === claimed.versionId
-          && currentLatest.versionNumber === version.versionNumber;
+          && currentDocument.status === document.status;
       };
       const guard: StudioMemoryMutationGuard = {
         expectedDocumentRevision: document.revision,
-        expectedVersionId: version.id,
-        expectedVersionNumber: version.versionNumber,
+        expectedVersionId: snapshot.id,
+        expectedVersionNumber: snapshot.versionNumber,
         jobId: claimed.id,
         claimToken: claimed.claimToken!,
         signal: operation.signal,
         isCurrent
       };
       throwIfAborted(operation.signal);
-      const applied = document.status === "archived"
-        ? await options.memoryIndex.removeDocument(scope, document.id, guard)
-        : await options.memoryIndex.indexVersion(scope, document, version, guard);
+      const applied = document.status === "active"
+        ? await options.memoryIndex.indexVersion(scope, document, snapshot, guard)
+        : await options.memoryIndex.removeDocument(scope, document.id, guard);
       throwIfAborted(operation.signal);
       void applied; // A newer committed generation may supersede this job while it works.
       const completed = await options.repository.completeIndexJob({

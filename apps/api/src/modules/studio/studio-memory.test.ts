@@ -35,8 +35,9 @@ describe("Studio semantic memory", () => {
     expect(distance).toBeGreaterThan(scopedFilter);
     expect(adapter).toContain("SELECT pg_advisory_xact_lock($1,$2)");
     expect(adapter).toContain("row.revision !== expected.documentRevision");
-    expect(adapter).toContain("row.version_id !== expected.versionId");
-    expect(adapter).toContain("claim_token=$6 AND lease_expires_at IS NOT NULL AND lease_expires_at>NOW()");
+    expect(adapter).not.toContain("studio_document_versions\n       WHERE workspace_id=document.workspace_id");
+    expect(adapter).toContain("snapshot_id=$5 AND document_revision=$6");
+    expect(adapter).toContain("claim_token=$7 AND lease_expires_at IS NOT NULL AND lease_expires_at>NOW()");
   });
 
   it("chunks at paragraph boundaries without breaking Unicode and keeps bounded overlap", () => {
@@ -147,7 +148,7 @@ describe("Studio semantic memory", () => {
     await expect(memory.indexVersion(ownerA, item.document, item.version)).resolves.toBe(true);
   });
 
-  it("enqueues every committed version and records index failure independently from saved content", async () => {
+  it("enqueues every committed document revision and records index failure independently from saved content", async () => {
     let clock = "2026-07-14T10:00:00.000Z";
     const repository = createInMemoryStudioRepository({ now: () => clock });
     const service = createStudioService(repository, { now: () => clock });

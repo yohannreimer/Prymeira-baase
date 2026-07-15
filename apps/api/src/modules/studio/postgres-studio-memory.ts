@@ -144,7 +144,7 @@ export function createPostgresStudioMemoryIndex(
       if (!await externalGuardCurrent(guard)) return false;
       await ensureSetup();
       return withOperationalTransaction(db, async (client) => {
-        if (guard && !await validatePostgresMutation(client, scope, documentId, "archived", {
+        if (guard && !await validatePostgresMutation(client, scope, documentId, "inactive", {
           guard,
           documentRevision: guard.expectedDocumentRevision,
           versionId: guard.expectedVersionId,
@@ -263,9 +263,7 @@ async function setupVectorStorage(db: OperationalPool, dimensions: number) {
         updated_at TIMESTAMPTZ NOT NULL,
         PRIMARY KEY (workspace_id,owner_profile_id,document_id),
         FOREIGN KEY (workspace_id,owner_profile_id,document_id)
-          REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
-        FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
-          REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
+          REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
       )
       `);
       await client.query(`
@@ -286,11 +284,11 @@ async function setupVectorStorage(db: OperationalPool, dimensions: number) {
         PRIMARY KEY (workspace_id,owner_profile_id,id),
         UNIQUE (workspace_id,owner_profile_id,document_id,version_id,chunk_index),
         FOREIGN KEY (workspace_id,owner_profile_id,document_id)
-          REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
-        FOREIGN KEY (workspace_id,owner_profile_id,document_id,version_id)
-          REFERENCES studio_document_versions(workspace_id,owner_profile_id,document_id,id) ON DELETE CASCADE
+          REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
       )
       `);
+      await client.query("ALTER TABLE studio_memory_document_state DROP CONSTRAINT IF EXISTS studio_memory_document_state_workspace_id_owner_profile_id_document_id_version_id_fkey");
+      await client.query("ALTER TABLE studio_memory_chunks DROP CONSTRAINT IF EXISTS studio_memory_chunks_workspace_id_owner_profile_id_document_id_version_id_fkey");
       const vectorType = await client.query<{ vector_type: string }>(
         `SELECT format_type(attribute.atttypid,attribute.atttypmod) AS vector_type
          FROM pg_attribute attribute
@@ -324,7 +322,7 @@ async function validatePostgresMutation(
   client: OperationalClient,
   scope: { workspaceId: string; ownerProfileId: string },
   documentId: string,
-  expectedStatus: "active" | "archived",
+  expectedStatus: "active" | "inactive",
   expected: {
     guard?: StudioMemoryMutationGuard;
     documentRevision: number;
@@ -340,35 +338,24 @@ async function validatePostgresMutation(
   const current = await client.query<{
     revision: number;
     status: "active" | "archived";
-    version_id: string | null;
-    version_number: number | null;
   }>(
-    `SELECT document.revision,document.status,
-       latest.id AS version_id,latest.version_number
-     FROM studio_documents document
-     LEFT JOIN LATERAL (
-       SELECT id,version_number FROM studio_document_versions
-       WHERE workspace_id=document.workspace_id
-         AND owner_profile_id=document.owner_profile_id
-         AND document_id=document.id
-       ORDER BY version_number DESC,id DESC LIMIT 1
-     ) latest ON TRUE
+    `SELECT document.revision,document.status FROM studio_documents document
      WHERE document.workspace_id=$1 AND document.owner_profile_id=$2 AND document.id=$3
      FOR UPDATE OF document`,
     [scope.workspaceId, scope.ownerProfileId, documentId]
   );
   const row = current.rows[0];
-  if (!row || row.revision !== expected.documentRevision || row.status !== expectedStatus
-    || row.version_id !== expected.versionId || row.version_number !== expected.versionNumber) return false;
+  if (!row || row.revision !== expected.documentRevision
+    || (expectedStatus === "active" ? row.status !== "active" : row.status === "active")) return false;
   if (expected.guard) {
     const claim = await client.query<{ id: string }>(
       `SELECT id FROM studio_index_jobs
        WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
-         AND document_id=$4 AND version_id=$5 AND status='processing'
-         AND claim_token=$6 AND lease_expires_at IS NOT NULL AND lease_expires_at>NOW()
+         AND document_id=$4 AND snapshot_id=$5 AND document_revision=$6 AND status='processing'
+         AND claim_token=$7 AND lease_expires_at IS NOT NULL AND lease_expires_at>NOW()
        FOR UPDATE`,
       [scope.workspaceId, scope.ownerProfileId, expected.guard.jobId,
-        documentId, expected.guard.expectedVersionId, expected.guard.claimToken]
+        documentId, expected.guard.expectedVersionId, expected.documentRevision, expected.guard.claimToken]
     );
     if (!claim.rows[0]) return false;
   }

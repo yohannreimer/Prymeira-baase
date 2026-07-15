@@ -118,7 +118,8 @@ type StudioIndexJobRow = {
   workspace_id: string;
   owner_profile_id: string;
   document_id: string;
-  version_id: string;
+  snapshot_id: string;
+  document_revision: number;
   status: StudioIndexJob["status"];
   attempt_count: number;
   next_attempt_at: string | Date | null;
@@ -338,7 +339,8 @@ function indexJobFromRow(row: StudioIndexJobRow): StudioIndexJob {
     workspaceId: row.workspace_id,
     ownerProfileId: row.owner_profile_id,
     documentId: row.document_id,
-    versionId: row.version_id,
+    snapshotId: row.snapshot_id,
+    documentRevision: row.document_revision,
     status: row.status,
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at ? iso(row.next_attempt_at) : null,
@@ -636,22 +638,24 @@ async function insertVersion(
       input.isLegacy ?? true
     ]
   );
-  const version = versionFromRow(result.rows[0]!);
+  return versionFromRow(result.rows[0]!);
+}
+
+async function insertIndexJob(client: OperationalClient, document: StudioDocument) {
   await client.query(
     `INSERT INTO studio_index_jobs
-       (id,workspace_id,owner_profile_id,document_id,version_id,status,next_attempt_at)
-     VALUES ($1,$2,$3,$4,$5,'pending',$6)
-     ON CONFLICT (workspace_id,owner_profile_id,version_id) DO NOTHING`,
+       (id,workspace_id,owner_profile_id,document_id,snapshot_id,document_revision,status,next_attempt_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending',NOW())
+     ON CONFLICT (workspace_id,owner_profile_id,document_id,document_revision) DO NOTHING`,
     [
       generatedId("studio_index_job"),
-      version.workspaceId,
-      version.ownerProfileId,
-      version.documentId,
-      version.id,
-      version.createdAt
+      document.workspaceId,
+      document.ownerProfileId,
+      document.id,
+      generatedId("studio_memory_snapshot"),
+      document.revision
     ]
   );
-  return version;
 }
 
 async function insertCitations(
@@ -774,6 +778,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           actorProfileId: document.ownerProfileId,
           aiRunId: null
         });
+        await insertIndexJob(client, document);
         return document;
       }).catch((error: unknown) => {
         const postgresError = error as { code?: string; constraint?: string };
@@ -830,7 +835,9 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           const exists = await findDocument(client, document, document.id);
           throw new Error(exists ? "STUDIO_DOCUMENT_STALE" : "STUDIO_DOCUMENT_NOT_FOUND");
         }
-        return documentFromRow(result.rows[0]);
+        const updated = documentFromRow(result.rows[0]);
+        await insertIndexJob(client, updated);
+        return updated;
       }).catch((error: unknown) => {
         const postgresError = error as { code?: string; constraint?: string };
         if (postgresError.code === "23505" && postgresError.constraint === "studio_documents_capture_uidx") {
@@ -2174,11 +2181,11 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const document = documentFromRow(documentResult.rows[0]);
         if (document.revision !== payload.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
         const search = prepareStudioSearchFields(payload.title, payload.body_text);
-        await client.query(
+        const updatedDocument = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET title=$4,body_json=$5::jsonb,body_text=$6,
              search_title_folded=$7,search_body_folded=$8,search_tokens=$9::text[],
              search_prefix_tokens=$10::text[],revision=revision+1,updated_at=NOW()
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
           [scope.workspaceId, scope.ownerProfileId, document.id, payload.title,
             JSON.stringify(payload.body_json), payload.body_text, search.titleFolded,
             search.bodyFolded, search.tokens, search.prefixTokens]
@@ -2187,6 +2194,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           ...scope, documentId: document.id, bodyJson: payload.body_json, bodyText: payload.body_text,
           origin: "accepted_ai_suggestion", actorProfileId, aiRunId: suggestion.aiRunId
         });
+        await insertIndexJob(client, documentFromRow(updatedDocument.rows[0]!));
         const accepted = await client.query<StudioSuggestionRow>(
           `UPDATE studio_suggestions SET status='accepted',accepted_version_id=$4,decided_at=NOW()
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,

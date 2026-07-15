@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -557,8 +557,8 @@ describe("operational schema", () => {
         (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id)
        values ('version_initial','workspace_a','owner_a','document_atomic',1,'{}','Original','user','owner_a');
        insert into studio_index_jobs
-        (id,workspace_id,owner_profile_id,document_id,version_id,status,next_attempt_at)
-       values ('index_initial','workspace_a','owner_a','document_atomic','version_initial','pending',now())`
+        (id,workspace_id,owner_profile_id,document_id,snapshot_id,document_revision,status,next_attempt_at)
+       values ('index_initial','workspace_a','owner_a','document_atomic','snapshot_initial',1,'pending',now())`
     );
     const document = await repository.findDocument(scope, "document_atomic");
     if (!document) throw new Error("expected document fixture");
@@ -601,7 +601,7 @@ describe("operational schema", () => {
     )).resolves.toBeNull();
   });
 
-  it("backfills one memory job for the latest active version in every owner scope", async () => {
+  it("backfills one memory job for the current active document revision in every owner scope", async () => {
     await ensureOperationalSchemaThrough(db, 13);
     await db.query(
       `INSERT INTO studio_documents
@@ -628,28 +628,31 @@ describe("operational schema", () => {
       workspace_id: string;
       owner_profile_id: string;
       document_id: string;
-      version_id: string;
+      snapshot_id: string;
+      document_revision: number;
     }>(
-      `SELECT workspace_id,owner_profile_id,document_id,version_id
-       FROM studio_index_jobs ORDER BY owner_profile_id,document_id,version_id`
+      `SELECT workspace_id,owner_profile_id,document_id,snapshot_id,document_revision
+       FROM studio_index_jobs ORDER BY owner_profile_id,document_id,snapshot_id`
     );
     expect(jobs.rows).toEqual([
       {
         workspace_id: "workspace_a",
         owner_profile_id: "owner_a",
         document_id: "document_a",
-        version_id: "version_a_2"
+        snapshot_id: "studio_memory_snapshot_backfill_document_a_1",
+        document_revision: 1
       },
       {
         workspace_id: "workspace_a",
         owner_profile_id: "owner_b",
         document_id: "document_b",
-        version_id: "version_b_1"
+        snapshot_id: "studio_memory_snapshot_backfill_document_b_1",
+        document_revision: 1
       }
     ]);
   });
 
-  it("rolls back a saved Studio version when its unique memory job cannot be enqueued", async () => {
+  it("keeps explicit Studio checkpoints independent from the memory-index queue", async () => {
     const statements: string[] = [];
     const failingPool: OperationalPool = {
       async query<T>() { return { rows: [] as T[] }; },
@@ -675,9 +678,6 @@ describe("operational schema", () => {
                 created_at: "2026-07-14T12:00:00.000Z"
               }] as T[] });
             }
-            if (text.includes("INSERT INTO studio_index_jobs")) {
-              throw new Error("INJECTED_STUDIO_INDEX_JOB_FAILURE");
-            }
             void params;
             return Promise.resolve({ rows: [] as T[] });
           },
@@ -695,12 +695,11 @@ describe("operational schema", () => {
       origin: "user",
       actorProfileId: "owner_a",
       aiRunId: null
-    })).rejects.toThrow("INJECTED_STUDIO_INDEX_JOB_FAILURE");
+    })).resolves.toMatchObject({ id: "version_atomic" });
     expect(statements[0]).toBe("BEGIN");
     expect(statements.some((statement) => statement.includes("INSERT INTO studio_document_versions"))).toBe(true);
-    expect(statements.some((statement) => statement.includes("INSERT INTO studio_index_jobs"))).toBe(true);
-    expect(statements.at(-1)).toBe("ROLLBACK");
-    expect(statements).not.toContain("COMMIT");
+    expect(statements.some((statement) => statement.includes("INSERT INTO studio_index_jobs"))).toBe(false);
+    expect(statements.at(-1)).toBe("COMMIT");
   });
 
   it("matches Studio library cursor queries to immutable owner-scoped indexes", () => {

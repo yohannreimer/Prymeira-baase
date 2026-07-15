@@ -195,12 +195,20 @@ export function createInMemoryStudioRepository(
       createdAt: timestamp
     };
     versions.push(version);
+    return cloneVersion(version);
+  }
+
+  function enqueueIndexJob(document: StudioDocument, timestamp = document.updatedAt) {
+    if (indexJobs.some((job) => job.workspaceId === document.workspaceId
+      && job.ownerProfileId === document.ownerProfileId && job.documentId === document.id
+      && job.documentRevision === document.revision)) return;
     indexJobs.push({
-      workspaceId: version.workspaceId,
-      ownerProfileId: version.ownerProfileId,
+      workspaceId: document.workspaceId,
+      ownerProfileId: document.ownerProfileId,
       id: `studio_index_job_${randomUUID()}`,
-      documentId: version.documentId,
-      versionId: version.id,
+      documentId: document.id,
+      snapshotId: `studio_memory_snapshot_${randomUUID()}`,
+      documentRevision: document.revision,
       status: "pending",
       attemptCount: 0,
       nextAttemptAt: timestamp,
@@ -210,7 +218,6 @@ export function createInMemoryStudioRepository(
       createdAt: timestamp,
       updatedAt: timestamp
     });
-    return cloneVersion(version);
   }
 
   function requireConversation(workspaceId: string, ownerProfileId: string, conversationId: string) {
@@ -358,6 +365,7 @@ export function createInMemoryStudioRepository(
         actorProfileId: document.ownerProfileId,
         aiRunId: null
       }, document.createdAt);
+      enqueueIndexJob(document, document.createdAt);
       return cloneDocument(document);
     },
 
@@ -394,6 +402,7 @@ export function createInMemoryStudioRepository(
         updatedAt: nextTimestamp(now, persisted.updatedAt)
       };
       documents[index] = updated;
+      enqueueIndexJob(updated);
       return cloneDocument(updated);
     },
 

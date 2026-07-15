@@ -1548,6 +1548,30 @@ const migrations: Migration[] = [{
       ADD COLUMN IF NOT EXISTS source_revision INTEGER,
       ADD COLUMN IF NOT EXISTS is_legacy BOOLEAN NOT NULL DEFAULT TRUE;
   `
+}, {
+  version: 28,
+  name: "studio_index_job_document_snapshots",
+  sql: `
+    ALTER TABLE studio_index_jobs
+      DROP CONSTRAINT IF EXISTS studio_index_jobs_version_fkey;
+    ALTER TABLE studio_index_jobs
+      DROP CONSTRAINT IF EXISTS studio_index_jobs_workspace_id_owner_profile_id_version_id_key;
+    ALTER TABLE studio_index_jobs
+      RENAME COLUMN version_id TO snapshot_id;
+    ALTER TABLE studio_index_jobs
+      ADD COLUMN IF NOT EXISTS document_revision INTEGER NOT NULL DEFAULT 1;
+    DELETE FROM studio_index_jobs;
+    INSERT INTO studio_index_jobs
+      (id,workspace_id,owner_profile_id,document_id,snapshot_id,document_revision,status,next_attempt_at)
+      SELECT 'studio_index_job_snapshot_backfill_' || document.id,
+        document.workspace_id,document.owner_profile_id,document.id,
+        'studio_memory_snapshot_backfill_' || document.id || '_' || document.revision::text,
+        document.revision,'pending',NOW()
+      FROM studio_documents document
+      WHERE document.status='active';
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_index_jobs_document_revision_uidx
+      ON studio_index_jobs (workspace_id,owner_profile_id,document_id,document_revision);
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

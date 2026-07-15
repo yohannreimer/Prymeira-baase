@@ -354,7 +354,7 @@ describe("Studio routes", () => {
     });
     expect(versions.statusCode).toBe(200);
     expect(versions.json().versions.map((version: { versionNumber: number }) => version.versionNumber))
-      .toEqual([1, 2]);
+      .toEqual([1]);
 
     const home = await app.inject({ method: "GET", url: "/studio/home", headers: ownerA });
     expect(home.json().home).toMatchObject({ pendingReviewCount: 0, nextRituals: [] });

@@ -61,7 +61,7 @@ describe("StudioService documents", () => {
     });
   });
 
-  it("preserves every exact normalized body version", async () => {
+  it("keeps the initial checkpoint while saving normalized draft bodies", async () => {
     const service = createService();
     const original = await service.createDocument(scope, "owner_a", {
       title: null,
@@ -77,7 +77,7 @@ describe("StudioService documents", () => {
     });
 
     expect((await service.listVersions(scope, original.id)).map((item) => item.bodyText))
-      .toEqual(["Crescer sem perder qualidade", "Talvez crescer depois de estabilizar"]);
+      .toEqual(["Crescer sem perder qualidade"]);
     expect(updated.revision).toBe(2);
   });
 
@@ -261,7 +261,7 @@ describe("StudioService documents", () => {
       revision: current.revision
     });
     expect((await service.listVersions(scope, original.id)).map((item) => item.bodyText))
-      .toEqual(["Original", "Current write"]);
+      .toEqual(["Original"]);
   });
 
   it("makes concurrent identical archive, restore, and focus transitions idempotent", async () => {
