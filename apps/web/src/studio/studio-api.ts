@@ -16,6 +16,9 @@ import type {
   RawStudioStructure,
   RawStudioStructureResponse,
   RawStudioStructuresResponse,
+  RawStudioRitualSession,
+  RawStudioRitualSessionResponse,
+  RawStudioRitualSessionsResponse,
   RawStudioVersionsResponse,
   StudioCollection,
   StudioAsset,
@@ -32,6 +35,7 @@ import type {
   StudioStructure,
   StudioStructureKind,
   StudioStructureLifecycleStatus,
+  StudioRitualSession,
   StudioCitation,
   StudioSuggestion,
   StudioRelatedThought,
@@ -189,6 +193,27 @@ export function mapStudioStructure(raw: RawStudioStructure): StudioStructure {
     createdAt: required(raw.created_at, raw.createdAt, "created_at"),
     updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
     archivedAt: raw.archived_at !== undefined ? raw.archived_at : raw.archivedAt ?? null
+  };
+}
+
+export function mapStudioRitualSession(raw: RawStudioRitualSession): StudioRitualSession {
+  return {
+    id: raw.id,
+    workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
+    ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
+    ritualId: required(raw.ritual_id, raw.ritualId, "ritual_id"),
+    status: raw.status,
+    revision: raw.revision,
+    contextJson: raw.context_json !== undefined ? raw.context_json : raw.contextJson ?? null,
+    preparationJson: raw.preparation_json !== undefined ? raw.preparation_json : raw.preparationJson ?? null,
+    answersJson: raw.answers_json ?? raw.answersJson ?? {},
+    synthesisJson: raw.synthesis_json !== undefined ? raw.synthesis_json : raw.synthesisJson ?? null,
+    prepareAiRunId: raw.prepare_ai_run_id !== undefined ? raw.prepare_ai_run_id : raw.prepareAiRunId ?? null,
+    synthesisAiRunId: raw.synthesis_ai_run_id !== undefined ? raw.synthesis_ai_run_id : raw.synthesisAiRunId ?? null,
+    failureCode: raw.failure_code !== undefined ? raw.failure_code : raw.failureCode ?? null,
+    createdAt: required(raw.created_at, raw.createdAt, "created_at"),
+    updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
+    completedAt: raw.completed_at !== undefined ? raw.completed_at : raw.completedAt ?? null
   };
 }
 
@@ -596,6 +621,70 @@ export async function archiveStudioStructure(
     fetcher
   );
   return mapStudioStructure(response.structure);
+}
+
+export type StudioRitualSessionPage = { items: StudioRitualSession[]; nextCursor: string | null };
+
+export async function listStudioRitualSessions(
+  ritualId: string,
+  query: { cursor?: string; limit?: number } = {},
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioRitualSessionPage> {
+  const params = new URLSearchParams();
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const response = await studioRequest<RawStudioRitualSessionsResponse>(
+    `/rituals/${encodeURIComponent(ritualId)}/sessions${suffix}`,
+    { signal },
+    fetcher
+  );
+  return {
+    items: response.sessions.map(mapStudioRitualSession),
+    nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null
+  };
+}
+
+export async function startStudioRitualSession(
+  ritualId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioRitualSession> {
+  const response = await studioRequest<RawStudioRitualSessionResponse>(
+    `/rituals/${encodeURIComponent(ritualId)}/sessions`,
+    { method: "POST", signal },
+    fetcher
+  );
+  return mapStudioRitualSession(response.session);
+}
+
+export async function updateStudioRitualSession(
+  sessionId: string,
+  input: { expected_revision: number; answers: Record<string, string> },
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioRitualSession> {
+  const response = await studioRequest<RawStudioRitualSessionResponse>(
+    `/ritual-sessions/${encodeURIComponent(sessionId)}`,
+    { method: "PATCH", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return mapStudioRitualSession(response.session);
+}
+
+export async function finishStudioRitualSession(
+  sessionId: string,
+  input: { expected_revision: number; answers: Record<string, string>; request_synthesis: boolean },
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioRitualSession> {
+  const response = await studioRequest<RawStudioRitualSessionResponse>(
+    `/ritual-sessions/${encodeURIComponent(sessionId)}/finish`,
+    { method: "POST", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return mapStudioRitualSession(response.session);
 }
 
 type RawStudioCitation = {

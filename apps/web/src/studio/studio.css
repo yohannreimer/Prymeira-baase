@@ -1056,10 +1056,21 @@
 
 .studio-ritual-preview {
   align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
   color: var(--ink);
   display: flex;
   gap: 12px;
+  padding: 6px;
+  text-align: left;
+  width: 100%;
 }
+
+.studio-ritual-preview:hover { background: var(--panel2); }
+.studio-ritual-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.studio-ritual-preview > div { flex: 1; }
+.studio-ritual-preview > i:last-child { background: transparent; border: 0; color: var(--faint); font-size: 16px; height: auto; width: auto; }
 
 .studio-ritual-preview > i {
   align-items: center;
@@ -1984,6 +1995,143 @@
   width: 84%;
 }
 
+.studio-rituals {
+  margin: 32px auto 0;
+  max-width: 780px;
+}
+
+.studio-ritual-library,
+.studio-ritual-builder,
+.studio-ritual-session,
+.studio-ritual-complete {
+  color: var(--ink);
+}
+
+.studio-ritual-library > header,
+.studio-ritual-builder > header,
+.studio-ritual-session > header,
+.studio-ritual-complete section > header {
+  align-items: flex-start;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+
+.studio-ritual-library > header { border-bottom: 1px solid var(--line); padding-bottom: 22px; }
+.studio-ritual-library > header h3,
+.studio-ritual-builder > header h3,
+.studio-ritual-session > header h3,
+.studio-ritual-complete h3 { font-size: 20px; line-height: 1.3; margin: 5px 0 0; }
+.studio-ritual-library > header p:last-child { color: var(--muted); line-height: 1.55; margin: 8px 0 0; max-width: 510px; }
+
+.studio-ritual-library button,
+.studio-ritual-builder button,
+.studio-ritual-session button,
+.studio-ritual-state button,
+.studio-rituals__back {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  min-height: 38px;
+  padding: 8px 13px;
+}
+
+.studio-ritual-library button:hover,
+.studio-ritual-builder button:hover:not(:disabled),
+.studio-ritual-session button:hover,
+.studio-ritual-state button:hover,
+.studio-rituals__back:hover { border-color: var(--accent-line); color: var(--accent-ink); }
+
+.studio-ritual-library button:focus-visible,
+.studio-ritual-builder button:focus-visible,
+.studio-ritual-session button:focus-visible,
+.studio-ritual-state button:focus-visible,
+.studio-rituals__back:focus-visible,
+.studio-ritual-builder input:focus-visible,
+.studio-ritual-builder textarea:focus-visible,
+.studio-ritual-builder select:focus-visible,
+.studio-ritual-session textarea:focus-visible,
+.studio-ritual-context summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.studio-ritual-builder button.primary,
+.studio-ritual-session button.primary,
+.studio-ritual-state button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.studio-ritual-builder button:disabled { cursor: default; opacity: 0.48; }
+
+.studio-ritual-list { display: grid; }
+.studio-ritual-row { align-items: center; border-bottom: 1px solid var(--line2); display: flex; gap: 20px; justify-content: space-between; padding: 17px 2px; }
+.studio-ritual-row:last-child { border-bottom: 0; }
+.studio-ritual-row > div { align-items: center; display: flex; gap: 12px; min-width: 0; }
+.studio-ritual-row__icon { align-items: center; background: var(--accent-bg); border: 1px solid var(--accent-line); border-radius: 9px; color: var(--accent-ink); display: flex; flex: none; font-size: 18px; height: 38px; justify-content: center; width: 38px; }
+.studio-ritual-row h4 { font-size: 14px; line-height: 1.4; margin: 0; }
+.studio-ritual-row p { color: var(--muted); font-size: 12px; margin: 3px 0 0; }
+
+.studio-ritual-state { align-items: center; border: 1px dashed var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; margin-top: 22px; padding: 34px 24px; text-align: center; }
+.studio-ritual-state > i { color: var(--faint); font-size: 28px; }
+.studio-ritual-state h3 { font-size: 17px; margin: 0; }
+.studio-ritual-state p { color: var(--muted); line-height: 1.55; margin: 0; max-width: 520px; }
+.studio-ritual-state > div { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+
+.studio-ritual-loading { display: grid; gap: 12px; padding: 24px 0; }
+.studio-ritual-loading span { background: var(--panel2); border-radius: 6px; height: 14px; }
+.studio-ritual-loading span:nth-child(2) { width: 86%; }
+.studio-ritual-loading span:nth-child(3) { width: 68%; }
+
+.studio-ritual-builder { display: grid; gap: 22px; }
+.studio-ritual-builder > header { border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+.studio-ritual-builder > header > button { align-items: center; display: flex; justify-content: center; padding: 8px; width: 38px; }
+.studio-ritual-builder label { display: grid; gap: 8px; }
+.studio-ritual-builder label > span,
+.studio-ritual-cadence legend { font-size: 12px; font-weight: 650; }
+.studio-ritual-builder input,
+.studio-ritual-builder textarea,
+.studio-ritual-builder select,
+.studio-ritual-session textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font: inherit; line-height: 1.55; padding: 11px 12px; width: 100%; }
+.studio-ritual-builder textarea,
+.studio-ritual-session textarea { resize: vertical; }
+.studio-ritual-builder__optional { justify-self: start; }
+.studio-ritual-cadence { border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 16px; margin: 0; padding: 18px; }
+.studio-ritual-cadence__grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.studio-ritual-cadence > button { justify-self: start; }
+.studio-ritual-builder > footer,
+.studio-ritual-session > footer { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 10px; justify-content: space-between; padding-top: 18px; }
+.studio-ritual-form-error { color: var(--danger-ink); font-size: 12px; line-height: 1.5; margin: 0; }
+
+.studio-ritual-session-shell { display: grid; gap: 18px; }
+.studio-rituals__back { justify-self: start; }
+.studio-ritual-session { display: grid; gap: 22px; }
+.studio-ritual-session > header { border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+.studio-ritual-save-state { align-items: center; color: var(--muted); display: inline-flex; flex: none; font-size: 11px; gap: 5px; padding-top: 3px; }
+.studio-ritual-save-state--offline,
+.studio-ritual-save-state--conflict,
+.studio-ritual-save-state--error { color: var(--danger-ink); }
+.studio-ritual-context { border-bottom: 1px solid var(--line2); padding-bottom: 18px; }
+.studio-ritual-context summary { color: var(--accent-ink); cursor: pointer; font-size: 12px; font-weight: 650; }
+.studio-ritual-context > div { color: var(--muted); display: grid; font-size: 13px; gap: 14px; line-height: 1.55; padding: 15px 0 0; }
+.studio-ritual-context h4,
+.studio-ritual-context p,
+.studio-ritual-context ul { margin: 0; }
+.studio-ritual-context ul { padding-left: 20px; }
+.studio-ritual-question { display: grid; gap: 12px; padding: 20px 0 28px; }
+.studio-ritual-question__purpose { color: var(--muted); font-size: 12px; margin: 0; }
+.studio-ritual-question h4 { font-family: var(--font-serif, Georgia, serif); font-size: clamp(24px, 4vw, 36px); font-weight: 400; line-height: 1.2; margin: 0 0 12px; }
+.studio-ritual-save-error { align-items: center; background: var(--danger-bg); border: 1px solid var(--danger-line); border-radius: 8px; display: flex; gap: 12px; justify-content: space-between; padding: 10px 12px; }
+.studio-ritual-save-error p { color: var(--danger-ink); font-size: 12px; line-height: 1.5; margin: 0; }
+
+.studio-ritual-complete { display: grid; gap: 10px; padding: 18px 0; }
+.studio-ritual-complete > i { color: var(--accent-ink); font-size: 30px; }
+.studio-ritual-complete > p:not(.mono) { color: var(--muted); line-height: 1.6; margin: 0; }
+.studio-ritual-complete section { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 20px; }
+.studio-ritual-complete section header h4,
+.studio-ritual-complete section header p { margin: 0; }
+.studio-ritual-complete section header p { color: var(--muted); font-size: 12px; }
+.studio-ritual-complete ul { display: grid; list-style: none; margin: 14px 0 0; padding: 0; }
+.studio-ritual-complete li { align-items: center; border-top: 1px solid var(--line2); display: flex; gap: 16px; justify-content: space-between; padding: 12px 0; }
+.studio-ritual-complete li small { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; padding: 4px 8px; }
+
 @media (max-width: 760px) {
   .studio-intro {
     align-items: start;
@@ -2017,6 +2165,33 @@
   .studio-home-section {
     gap: 12px;
     grid-template-columns: 1fr;
+  }
+
+  .studio-ritual-library > header,
+  .studio-ritual-session > header,
+  .studio-ritual-complete section > header,
+  .studio-ritual-row,
+  .studio-ritual-save-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .studio-ritual-library > header > button,
+  .studio-ritual-row > button {
+    align-self: flex-start;
+  }
+
+  .studio-ritual-cadence__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-ritual-library button,
+  .studio-ritual-builder button,
+  .studio-ritual-session button,
+  .studio-ritual-state button,
+  .studio-rituals__back,
+  .studio-ritual-preview {
+    min-height: 44px;
   }
 
   .studio-composer__link {
@@ -2183,6 +2358,15 @@
   .studio-collections__create button,
   .studio-collections__item button,
   .studio-document-open-error button {
+    min-height: 44px;
+  }
+
+  .studio-ritual-library button,
+  .studio-ritual-builder button,
+  .studio-ritual-session button,
+  .studio-ritual-state button,
+  .studio-rituals__back,
+  .studio-ritual-preview {
     min-height: 44px;
   }
 }

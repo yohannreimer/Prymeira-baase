@@ -12,6 +12,7 @@ import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import "./studio.css";
 
 const StudioEditor = lazy(() => import("./StudioEditor"));
+const StudioRituals = lazy(() => import("./StudioRituals"));
 
 type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "document";
 
@@ -49,6 +50,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 }) {
   const [section, setSection] = useState<StudioSection>(() => sectionFromHash(window.location.hash));
+  const [selectedRitualId, setSelectedRitualId] = useState<string | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
   const [assetState, setAssetState] = useState<DocumentAssetState>({
     documentId: null,
@@ -92,9 +94,18 @@ export default function StudioPage({ onOpenInternalSource }: {
 
   function navigateSection(next: Exclude<StudioSection, "document">) {
     cancelDocumentOpen();
+    setSelectedRitualId(null);
     setDocumentOpenError(null);
     setSection(next);
     window.history.pushState(null, "", `#estudio/${next}`);
+  }
+
+  function openRitual(ritualId: string) {
+    cancelDocumentOpen();
+    setDocumentOpenError(null);
+    setSelectedRitualId(ritualId);
+    setSection("rituals");
+    window.history.pushState(null, "", "#estudio/rituals");
   }
 
   async function openDocumentById(documentId: string, syncHistory = true) {
@@ -221,7 +232,7 @@ export default function StudioPage({ onOpenInternalSource }: {
         </nav>
 
         <section className="studio-content" aria-label="Conteúdo da seção" aria-live="polite">
-          {section === "home" ? <StudioHome onOpenDocument={openDocument} /> : section === "document" ? (
+          {section === "home" ? <StudioHome onOpenDocument={openDocument} onOpenRitual={openRitual} /> : section === "document" ? (
             selectedDocument ? <>
               <Suspense fallback={<StudioEditorSkeleton />}>
                 <StudioEditor
@@ -266,6 +277,13 @@ export default function StudioPage({ onOpenInternalSource }: {
             <>
               <StudioSectionHeading item={active} />
               <StudioCollections store={collectionStore} onOpenDocument={openDocument} />
+            </>
+          ) : section === "rituals" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <Suspense fallback={<StudioRitualsSkeleton />}>
+                <StudioRituals initialRitualId={selectedRitualId} />
+              </Suspense>
             </>
           ) : section === "archive" ? (
             <>
@@ -332,6 +350,16 @@ function StudioSectionHeading({ item }: { item: StudioNavItem }) {
 function StudioEditorSkeleton() {
   return (
     <div className="studio-editor-skeleton" role="status" aria-label="Abrindo caderno">
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+    </div>
+  );
+}
+
+function StudioRitualsSkeleton() {
+  return (
+    <div className="studio-ritual-loading" role="status" aria-label="Abrindo seus rituais">
       <span aria-hidden="true" />
       <span aria-hidden="true" />
       <span aria-hidden="true" />

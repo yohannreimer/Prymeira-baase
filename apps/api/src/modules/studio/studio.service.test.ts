@@ -122,6 +122,7 @@ describe("StudioService documents", () => {
     let recentCalls = 0;
     let focusedCalls = 0;
     let countCalls = 0;
+    let nextRitualCalls = 0;
     const instrumented = {
       ...repository,
       async listDocuments() {
@@ -135,6 +136,11 @@ describe("StudioService documents", () => {
         focusedCalls += 1;
         return repository.listFocusedDocuments(ownerScope, limit);
       },
+      async listNextRituals(ownerScope: typeof scope, limit: number) {
+        nextRitualCalls += 1;
+        expect(limit).toBe(1);
+        return repository.listNextRituals(ownerScope, limit);
+      },
       async countPendingReviewDocuments(ownerScope: typeof scope) {
         countCalls += 1;
         return repository.countPendingReviewDocuments(ownerScope);
@@ -145,10 +151,54 @@ describe("StudioService documents", () => {
     expect(home.focusedDocuments.map((item) => item.id)).toEqual([focused.id]);
     expect(new Set(home.recentDocuments.map((item) => item.id))).toEqual(new Set([focused.id, reviewed.id]));
     expect(home.pendingReviewCount).toBe(1);
-    expect({ recentCalls, focusedCalls, countCalls }).toEqual({
+    expect({ recentCalls, focusedCalls, countCalls, nextRitualCalls }).toEqual({
       recentCalls: 1,
       focusedCalls: 1,
-      countCalls: 1
+      countCalls: 1,
+      nextRitualCalls: 1
+    });
+  });
+
+  it("shows only the next active scheduled ritual for the current owner with its document title", async () => {
+    const service = createService();
+    const manualDocument = await service.createDocument(scope, "owner_a", {
+      ...documentInput("Ritual sob demanda"), title: "Revisão livre"
+    });
+    await service.createStructure(scope, "owner_a", manualDocument.id, {
+      kind: "ritual",
+      cadence_json: null,
+      properties_json: { intention: "Parar quando for necessário" }
+    });
+
+    const laterDocument = await service.createDocument(scope, "owner_a", {
+      ...documentInput("Ritual mensal"), title: "Revisão mensal"
+    });
+    await service.createStructure(scope, "owner_a", laterDocument.id, {
+      kind: "ritual",
+      cadence_json: { frequency: "daily", local_time: "11:00", timezone: "America/Sao_Paulo" },
+      properties_json: { intention: "Olhar o mês" }
+    });
+
+    const nextDocument = await service.createDocument(scope, "owner_a", {
+      ...documentInput("Ritual semanal"), title: "Revisão semanal"
+    });
+    const next = await service.createStructure(scope, "owner_a", nextDocument.id, {
+      kind: "ritual",
+      cadence_json: { frequency: "daily", local_time: "10:00", timezone: "America/Sao_Paulo" },
+      properties_json: { intention: "Escolher a próxima atenção" }
+    });
+
+    const otherDocument = await service.createDocument(otherScope, "owner_b", {
+      ...documentInput("Ritual privado de outro dono"), title: "Não pode aparecer"
+    });
+    await service.createStructure(otherScope, "owner_b", otherDocument.id, {
+      kind: "ritual",
+      cadence_json: { frequency: "daily", local_time: "09:30", timezone: "America/Sao_Paulo" },
+      properties_json: { intention: "Outro escopo" }
+    });
+
+    expect(await service.readHome(scope)).toMatchObject({
+      nextRituals: [{ id: next.id, title: "Revisão semanal", scheduledFor: next.nextRunAt }]
     });
   });
 

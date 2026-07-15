@@ -337,6 +337,72 @@ describe("StudioPage", () => {
     );
   });
 
+  it("opens the configured ritual from the calm home in the private session surface", async () => {
+    const user = userEvent.setup();
+    const ritualId = "ritual_weekly";
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) return jsonResponse({
+        home: {
+          recent_documents: [],
+          focused_documents: [],
+          pending_review_count: 0,
+          next_rituals: [{ id: ritualId, title: "Revisão semanal", scheduled_for: "2026-07-17T12:00:00.000Z" }]
+        }
+      });
+      if (url.includes("/api/studio/structures?") && !init?.method) return jsonResponse({
+        structures: [{
+          id: ritualId,
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: "document_ritual",
+          kind: "ritual",
+          lifecycle_status: "active",
+          revision: 1,
+          horizon_at: null,
+          metric_json: null,
+          cadence_json: { frequency: "weekly", weekdays: [5], local_time: "09:00", timezone: "America/Sao_Paulo" },
+          next_run_at: "2026-07-17T12:00:00.000Z",
+          properties_json: { intention: "Revisar a semana", guide_questions: ["O que mudou?"] },
+          created_at: "2026-07-14T12:00:00.000Z",
+          updated_at: "2026-07-14T12:00:00.000Z",
+          archived_at: null
+        }],
+        next_cursor: null
+      });
+      if (url.endsWith(`/api/studio/rituals/${ritualId}/sessions`) && init?.method === "POST") return jsonResponse({
+        session: {
+          id: "session_weekly",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          ritual_id: ritualId,
+          status: "failed",
+          revision: 1,
+          context_json: null,
+          preparation_json: null,
+          answers_json: {},
+          synthesis_json: null,
+          prepare_ai_run_id: null,
+          synthesis_ai_run_id: null,
+          failure_code: "STUDIO_RITUAL_PREPARATION_FAILED",
+          created_at: "2026-07-14T12:00:00.000Z",
+          updated_at: "2026-07-14T12:00:00.000Z",
+          completed_at: null
+        }
+      }, 201);
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisão semanal" }));
+
+    expect(await screen.findByRole("heading", { name: "A preparação está indisponível agora." })).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Seções do Estúdio" }))
+      .getByRole("button", { name: "Rituais" })).toHaveAttribute("aria-current", "page");
+    expect(window.location.hash).toBe("#estudio/rituals");
+  });
+
   it("does not move focus back to the document heading when persisted assets are retried", async () => {
     const user = userEvent.setup();
     let assetRequests = 0;

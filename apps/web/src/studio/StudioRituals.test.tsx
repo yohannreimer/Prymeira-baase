@@ -1,0 +1,239 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import StudioRituals from "./StudioRituals";
+
+const ritual = {
+  id: "ritual_1",
+  workspaceId: "workspace_1",
+  ownerProfileId: "owner_1",
+  documentId: "document_1",
+  kind: "ritual",
+  lifecycleStatus: "active",
+  revision: 1,
+  horizonAt: null,
+  metricJson: null,
+  cadenceJson: { frequency: "weekly", weekdays: [1], local_time: "09:00", timezone: "America/Sao_Paulo" },
+  nextRunAt: "2026-07-20T12:00:00.000Z",
+  propertiesJson: { intention: "Revisar prioridades", guide_questions: ["O que mudou?", "O que merece foco?"] },
+  createdAt: "2026-07-14T12:00:00.000Z",
+  updatedAt: "2026-07-14T12:00:00.000Z",
+  archivedAt: null
+};
+
+const readySession = {
+  id: "session_1",
+  workspaceId: "workspace_1",
+  ownerProfileId: "owner_1",
+  ritualId: ritual.id,
+  status: "ready",
+  revision: 1,
+  contextJson: {
+    preparedAt: "2026-07-14T12:00:00.000Z",
+    operational: { facts: [{ label: "Duas decisões seguem abertas" }] },
+    related: [{ documentId: "document_2", excerpt: "Margem e contratação" }]
+  },
+  preparationJson: {
+    proposal: {
+      ritual_id: ritual.id,
+      title: "Revisão semanal",
+      intent: "Decidir com clareza",
+      agenda: [
+        { prompt: "O que mudou?", purpose: "Separar fatos de impressão" },
+        { prompt: "O que merece foco?", purpose: "Escolher a próxima atenção" }
+      ],
+      preparation_notes: ["Há duas decisões abertas"],
+      suggested_duration_minutes: 20
+    }
+  },
+  answersJson: {},
+  synthesisJson: null,
+  prepareAiRunId: "run_prepare",
+  synthesisAiRunId: null,
+  preparationToken: null,
+  preparationLeaseExpiresAt: null,
+  failureCode: null,
+  createdAt: "2026-07-14T12:00:00.000Z",
+  updatedAt: "2026-07-14T12:00:00.000Z",
+  completedAt: null
+};
+
+describe("StudioRituals", () => {
+  beforeEach(() => installLocalStorage());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("saves one visible question at a time and keeps final suggestions pending", async () => {
+    const user = userEvent.setup();
+    let revision = 1;
+    let answers: Record<string, string> = {};
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        return response({ session: readySession }, 201);
+      }
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        answers = { ...answers, ...payload.answers };
+        revision += 1;
+        return response({ session: { ...readySession, status: "in_progress", revision, answersJson: answers } });
+      }
+      if (url.endsWith("/api/studio/ritual-sessions/session_1/finish") && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        answers = { ...answers, ...payload.answers };
+        revision += 1;
+        return response({ session: {
+          ...readySession,
+          status: "completed",
+          revision,
+          answersJson: answers,
+          completedAt: "2026-07-14T12:10:00.000Z",
+          synthesisJson: {
+            summary: "A semana pede foco comercial.",
+            decisions: ["Manter a contratação em revisão"],
+            open_questions: ["Qual margem mínima aceitar?"],
+            suggested_next_steps: ["Revisar a proposta comercial"]
+          }
+        } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+
+    expect(screen.getByRole("heading", { name: "O que mudou?" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "O que merece foco?" })).not.toBeInTheDocument();
+    await user.click(screen.getByText("Ver contexto preparado"));
+    expect(screen.getByText("Há duas decisões abertas")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "A margem melhorou.");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    expect(await screen.findByRole("heading", { name: "O que merece foco?" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Salvo");
+
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que merece foco?" }), "Proposta comercial.");
+    await user.click(screen.getByRole("button", { name: "Concluir ritual" }));
+
+    expect(await screen.findByRole("heading", { name: "Ritual concluído" })).toBeInTheDocument();
+    const suggestions = screen.getByRole("region", { name: "Sugestões para revisar" });
+    expect(within(suggestions).getAllByText("Pendente").length).toBeGreaterThan(0);
+    expect(within(suggestions).getByText("Revisar a proposta comercial")).toBeInTheDocument();
+    expect(within(suggestions).queryByRole("button", { name: /aplicar|criar tarefa|publicar/i })).not.toBeInTheDocument();
+    expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes("ritual-sessions/session_1") && init?.method === "PATCH")).toHaveLength(2);
+  });
+
+  it("starts manually when preparation fails", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        return response({ session: {
+          ...readySession,
+          status: "failed",
+          preparationJson: null,
+          failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+        } }, 201);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/preparação.*indisponível/i);
+    await user.click(screen.getByRole("button", { name: "Começar sem preparação" }));
+    expect(screen.getByRole("heading", { name: "O que mudou?" })).toBeInTheDocument();
+  });
+
+  it("keeps an offline answer locally and retries without hiding the save state", async () => {
+    const user = userEvent.setup();
+    let patchAttempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        patchAttempts += 1;
+        if (patchAttempts === 1) throw new TypeError("offline");
+        return response({ session: { ...readySession, status: "in_progress", revision: 2, answersJson: { "O que mudou?": "Resposta preservada" } } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "Resposta preservada");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    expect(await screen.findByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Offline");
+    expect(window.localStorage.getItem("baase:studio:ritual-draft:session_1")).toContain("Resposta preservada");
+    await user.click(screen.getByRole("button", { name: "Tentar salvar novamente" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Salvo"));
+  });
+
+  it("creates a free ritual and only reveals cadence when requested", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [], nextCursor: null });
+      if (url.endsWith("/api/studio/documents") && init?.method === "POST") return response({ document: {
+        id: "document_new",
+        workspaceId: "workspace_1",
+        ownerProfileId: "owner_1",
+        captureKey: null,
+        title: "Revisão mensal",
+        bodyJson: { type: "doc" },
+        bodyText: "Olhar decisões com calma",
+        revision: 1,
+        captureMode: "text",
+        inboxState: "pending_review",
+        isFocused: false,
+        status: "active",
+        createdAt: "2026-07-14T12:00:00.000Z",
+        updatedAt: "2026-07-14T12:00:00.000Z",
+        archivedAt: null
+      } }, 201);
+      if (url.endsWith("/api/studio/documents/document_new/structures") && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return response({ structure: { ...ritual, id: "ritual_new", documentId: "document_new", cadenceJson: payload.cadence_json, propertiesJson: payload.properties_json } }, 201);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Criar ritual" }));
+    expect(screen.queryByLabelText("Horário do ritual")).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Nome do ritual" }), "Revisão mensal");
+    await user.type(screen.getByRole("textbox", { name: "Intenção" }), "Olhar decisões com calma");
+    await user.type(screen.getByRole("textbox", { name: "Perguntas guia" }), "O que aprendi?\nO que muda agora?");
+    await user.click(screen.getByRole("button", { name: "Adicionar cadência" }));
+    expect(screen.getByLabelText("Horário do ritual")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Salvar ritual" }));
+
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => {
+      if (!String(url).endsWith("/documents/document_new/structures") || init?.method !== "POST") return false;
+      const payload = JSON.parse(String(init.body));
+      return payload.kind === "ritual" && payload.properties_json.guide_questions.length === 2 && payload.cadence_json.timezone;
+    })).toBe(true));
+    expect(await screen.findByText("Revisão mensal")).toBeInTheDocument();
+  });
+});
+
+function response(payload: unknown, status = 200) {
+  return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+}
+
+function installLocalStorage() {
+  const store = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+      key: (index: number) => [...store.keys()][index] ?? null,
+      get length() { return store.size; }
+    }
+  });
+}

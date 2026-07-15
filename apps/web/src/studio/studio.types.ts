@@ -74,6 +74,27 @@ export type StudioStructure = {
   archivedAt: string | null;
 };
 
+export type StudioRitualSessionStatus = "preparing" | "ready" | "in_progress" | "completed" | "failed";
+
+export type StudioRitualSession = {
+  id: string;
+  workspaceId: string;
+  ownerProfileId: string;
+  ritualId: string;
+  status: StudioRitualSessionStatus;
+  revision: number;
+  contextJson: Record<string, unknown> | null;
+  preparationJson: Record<string, unknown> | null;
+  answersJson: Record<string, string>;
+  synthesisJson: Record<string, unknown> | null;
+  prepareAiRunId: string | null;
+  synthesisAiRunId: string | null;
+  failureCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
 export type StudioCollection = {
   id: string;
   workspaceId: string;
@@ -268,6 +289,38 @@ export type RawStudioStructure = {
   archivedAt?: string | null;
 };
 
+export type RawStudioRitualSession = {
+  id: string;
+  workspace_id?: string;
+  workspaceId?: string;
+  owner_profile_id?: string;
+  ownerProfileId?: string;
+  ritual_id?: string;
+  ritualId?: string;
+  status: StudioRitualSessionStatus;
+  revision: number;
+  context_json?: Record<string, unknown> | null;
+  contextJson?: Record<string, unknown> | null;
+  preparation_json?: Record<string, unknown> | null;
+  preparationJson?: Record<string, unknown> | null;
+  answers_json?: Record<string, string>;
+  answersJson?: Record<string, string>;
+  synthesis_json?: Record<string, unknown> | null;
+  synthesisJson?: Record<string, unknown> | null;
+  prepare_ai_run_id?: string | null;
+  prepareAiRunId?: string | null;
+  synthesis_ai_run_id?: string | null;
+  synthesisAiRunId?: string | null;
+  failure_code?: string | null;
+  failureCode?: string | null;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  completed_at?: string | null;
+  completedAt?: string | null;
+};
+
 export type RawStudioCollection = {
   id: string;
   workspace_id?: string;
@@ -325,6 +378,12 @@ export type RawStudioVersionsResponse = { versions: RawStudioDocumentVersion[] }
 export type RawStudioStructureResponse = { structure: RawStudioStructure };
 export type RawStudioStructuresResponse = {
   structures: RawStudioStructure[];
+  next_cursor?: string | null;
+  nextCursor?: string | null;
+};
+export type RawStudioRitualSessionResponse = { session: RawStudioRitualSession };
+export type RawStudioRitualSessionsResponse = {
+  sessions: RawStudioRitualSession[];
   next_cursor?: string | null;
   nextCursor?: string | null;
 };

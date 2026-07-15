@@ -15,6 +15,7 @@ import type {
   StudioCitation,
   StudioStructure,
   StudioRitualSession,
+  StudioNextRitual,
   CreateStudioCitation,
   StudioRepository
 } from "./studio.types";
@@ -72,6 +73,13 @@ function cloneSuggestion(value: StudioSuggestion) { return structuredClone(value
 function cloneCitation(value: StudioCitation) { return structuredClone(value); }
 function cloneStructure(value: StudioStructure) { return structuredClone(value); }
 function cloneRitualSession(value: StudioRitualSession) { return structuredClone(value); }
+
+function nextRitualTitle(document: StudioDocument, structure: StudioStructure) {
+  const intention = structure.propertiesJson.intention;
+  return document.title?.trim()
+    || (typeof intention === "string" ? intention.trim() : "")
+    || "Ritual privado";
+}
 
 function normalizeTimestamp(value: unknown) {
   if (typeof value !== "string") throw new Error("STUDIO_CLOCK_INVALID");
@@ -577,6 +585,26 @@ export function createInMemoryStudioRepository(
         .sort(compareDocuments)
         .slice(0, limit)
         .map(cloneDocument);
+    },
+
+    async listNextRituals(scope, limit): Promise<StudioNextRitual[]> {
+      return structures
+        .filter((structure) => structure.workspaceId === scope.workspaceId)
+        .filter((structure) => structure.ownerProfileId === scope.ownerProfileId)
+        .filter((structure) => structure.kind === "ritual"
+          && structure.lifecycleStatus === "active"
+          && structure.nextRunAt !== null)
+        .flatMap((structure) => {
+          const document = documents.find((candidate) => candidate.workspaceId === scope.workspaceId
+            && candidate.ownerProfileId === scope.ownerProfileId
+            && candidate.id === structure.documentId
+            && candidate.status === "active");
+          return document && structure.nextRunAt
+            ? [{ id: structure.id, title: nextRitualTitle(document, structure), scheduledFor: structure.nextRunAt }]
+            : [];
+        })
+        .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor) || left.id.localeCompare(right.id))
+        .slice(0, limit);
     },
 
     async countPendingReviewDocuments(scope) {

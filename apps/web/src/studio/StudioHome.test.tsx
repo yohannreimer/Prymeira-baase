@@ -50,6 +50,17 @@ describe("StudioHome", () => {
     expect(onOpenDocument).toHaveBeenCalledWith(document);
   });
 
+  it("opens the next configured ritual without framing it as overdue", async () => {
+    const user = userEvent.setup();
+    const onOpenRitual = vi.fn();
+    render(<StudioHome loadHome={async () => home} onOpenDocument={vi.fn()} onOpenRitual={onOpenRitual} />);
+
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisão semanal" }));
+
+    expect(onOpenRitual).toHaveBeenCalledWith("ritual_1");
+    expect(screen.queryByText(/atrasad|vencid/i)).not.toBeInTheDocument();
+  });
+
   it("invites capture in empty sections without declaring there is nothing to do", async () => {
     render(<StudioHome loadHome={async () => ({ ...home, recentDocuments: [], focusedDocuments: [], nextRituals: [] })} onOpenDocument={vi.fn()} />);
 

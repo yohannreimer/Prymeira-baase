@@ -119,6 +119,62 @@ describe("Studio routes", () => {
     expect(restore.json().error.code).toBe("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
   });
 
+  it("returns the next configured ritual through the owner-scoped home contract", async () => {
+    const app = createApp();
+    const createRitual = async ({
+      headers,
+      title,
+      localTime
+    }: {
+      headers: typeof ownerA;
+      title: string;
+      localTime: string | null;
+    }) => {
+      const document = await app.inject({
+        method: "POST",
+        url: "/studio/documents",
+        headers,
+        payload: { ...documentPayload, title }
+      });
+      const documentId = document.json().document.id as string;
+      const structure = await app.inject({
+        method: "POST",
+        url: `/studio/documents/${documentId}/structures`,
+        headers,
+        payload: {
+          kind: "ritual",
+          cadence_json: localTime ? {
+            frequency: "daily",
+            local_time: localTime,
+            timezone: "America/Sao_Paulo"
+          } : null,
+          properties_json: { intention: `Intenção de ${title}` }
+        }
+      });
+      expect(structure.statusCode).toBe(201);
+      return structure.json().structure as { id: string; nextRunAt: string | null };
+    };
+
+    await createRitual({ headers: ownerA, title: "Revisão livre", localTime: null });
+    await createRitual({ headers: ownerA, title: "Revisão mensal", localTime: "11:00" });
+    const next = await createRitual({ headers: ownerA, title: "Revisão semanal", localTime: "10:00" });
+    await createRitual({ headers: ownerB, title: "Ritual de outro dono", localTime: "09:30" });
+
+    const ownerHome = await app.inject({ method: "GET", url: "/studio/home", headers: ownerA });
+    expect(ownerHome.statusCode).toBe(200);
+    expect(ownerHome.json().home.nextRituals).toEqual([{
+      id: next.id,
+      title: "Revisão semanal",
+      scheduledFor: next.nextRunAt
+    }]);
+    expect(ownerHome.json().home.nextRituals[0]).not.toHaveProperty("overdue");
+
+    const otherHome = await app.inject({ method: "GET", url: "/studio/home", headers: ownerB });
+    expect(otherHome.json().home.nextRituals).toEqual([
+      expect.objectContaining({ title: "Ritual de outro dono" })
+    ]);
+  });
+
   it("allows only owners to access the private Studio", async () => {
     const app = createApp();
 

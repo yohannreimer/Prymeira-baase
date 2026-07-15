@@ -185,17 +185,18 @@ export function createStudioService(
 
   return {
     async readHome(scope): Promise<StudioHome> {
-      const [recentDocuments, focusedDocuments, pendingReviewCount] = await Promise.all([
+      const [recentDocuments, focusedDocuments, pendingReviewCount, nextRituals] = await Promise.all([
         repository.listRecentDocuments(scope, HOME_DOCUMENT_LIMIT),
         repository.listFocusedDocuments(scope, HOME_DOCUMENT_LIMIT),
-        repository.countPendingReviewDocuments(scope)
+        repository.countPendingReviewDocuments(scope),
+        repository.listNextRituals(scope, 1)
       ]);
 
       return {
         recentDocuments,
         focusedDocuments,
         pendingReviewCount,
-        nextRituals: []
+        nextRituals
       };
     },
 

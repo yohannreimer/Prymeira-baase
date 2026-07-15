@@ -70,6 +70,13 @@ type StudioDocumentVersionRow = {
   created_at: string | Date;
 };
 
+type StudioNextRitualRow = {
+  id: string;
+  document_title: string | null;
+  intention: string | null;
+  scheduled_for: string | Date;
+};
+
 type StudioCollectionRow = {
   id: string;
   workspace_id: string;
@@ -1093,6 +1100,34 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, limit]
       );
       return result.rows.map(documentFromRow);
+    },
+
+    async listNextRituals(scope, limit) {
+      const result = await db.query<StudioNextRitualRow>(
+        `SELECT structures.id,
+                documents.title AS document_title,
+                structures.properties_json->>'intention' AS intention,
+                structures.next_run_at AS scheduled_for
+         FROM studio_structures structures
+         JOIN studio_documents documents
+           ON documents.workspace_id=structures.workspace_id
+          AND documents.owner_profile_id=structures.owner_profile_id
+          AND documents.id=structures.document_id
+         WHERE structures.workspace_id=$1
+           AND structures.owner_profile_id=$2
+           AND structures.kind='ritual'
+           AND structures.lifecycle_status='active'
+           AND structures.next_run_at IS NOT NULL
+           AND documents.status='active'
+         ORDER BY structures.next_run_at ASC,structures.id ASC
+         LIMIT $3`,
+        [scope.workspaceId, scope.ownerProfileId, limit]
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        title: row.document_title?.trim() || row.intention?.trim() || "Ritual privado",
+        scheduledFor: iso(row.scheduled_for)
+      }));
     },
 
     async countPendingReviewDocuments(scope) {

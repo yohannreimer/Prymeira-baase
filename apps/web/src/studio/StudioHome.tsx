@@ -5,6 +5,7 @@ import UniversalCaptureComposer, { type StudioCaptureOutcome } from "./Universal
 
 type StudioHomeProps = {
   onOpenDocument(document: StudioDocument, outcome?: StudioCaptureOutcome): void;
+  onOpenRitual?(ritualId: string): void;
   loadHome?: (signal?: AbortSignal) => Promise<StudioHomeModel>;
 };
 
@@ -28,14 +29,20 @@ function EmptyInvitation({ children }: { children: string }) {
   return <p className="studio-home__invitation">{children}</p>;
 }
 
-function NextRitual({ ritual }: { ritual: StudioNextRitual }) {
+function NextRitual({ ritual, onOpen }: { ritual: StudioNextRitual; onOpen?(ritualId: string): void }) {
   const date = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" })
     .format(new Date(ritual.scheduledFor));
   return (
-    <div className="studio-ritual-preview">
+    <button
+      className="studio-ritual-preview"
+      type="button"
+      aria-label={`Iniciar ${ritual.title}`}
+      onClick={() => onOpen?.(ritual.id)}
+    >
       <i aria-hidden="true" className="ph-light ph-calendar-check" />
       <div><strong>{ritual.title}</strong><span>{date}</span></div>
-    </div>
+      <i aria-hidden="true" className="ph-light ph-arrow-right" />
+    </button>
   );
 }
 
@@ -51,7 +58,7 @@ function StudioHomeSkeleton() {
   );
 }
 
-export default function StudioHome({ onOpenDocument, loadHome = loadDefaultHome }: StudioHomeProps) {
+export default function StudioHome({ onOpenDocument, onOpenRitual, loadHome = loadDefaultHome }: StudioHomeProps) {
   const [home, setHome] = useState<StudioHomeModel | null>(null);
   const [error, setError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -116,7 +123,7 @@ export default function StudioHome({ onOpenDocument, loadHome = loadDefaultHome 
         {nextRitual ? (
           <section className="studio-home-section" aria-labelledby="studio-ritual-title">
             <h3 id="studio-ritual-title">Próximo ritual</h3>
-            <NextRitual ritual={nextRitual} />
+            <NextRitual ritual={nextRitual} onOpen={onOpenRitual} />
           </section>
         ) : null}
       </div> : null}

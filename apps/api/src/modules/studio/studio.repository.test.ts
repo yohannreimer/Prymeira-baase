@@ -1197,6 +1197,60 @@ function repositoryContract(
         expect((await repository.listRitualSessions(scope, ritual.id, { limit: 10 })).items).toHaveLength(2);
       });
     });
+
+    it("projects the next active scheduled ritual with its owner-scoped document title in one bounded query", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const createRitual = async ({
+          title,
+          ownerProfileId = "owner_a",
+          nextRunAt,
+          lifecycleStatus = "active"
+        }: {
+          title: string | null;
+          ownerProfileId?: string;
+          nextRunAt: string | null;
+          lifecycleStatus?: "active" | "archived";
+        }) => {
+          const document = await repository.createDocument(documentInput({ ownerProfileId, title }));
+          const created = await repository.createStructure({
+            workspaceId: "workspace_a",
+            ownerProfileId,
+            documentId: document.id,
+            kind: "ritual",
+            lifecycleStatus: "active",
+            horizonAt: null,
+            metricJson: null,
+            cadenceJson: nextRunAt
+              ? { frequency: "daily", local_time: "09:00", timezone: "America/Sao_Paulo" }
+              : null,
+            nextRunAt,
+            propertiesJson: { intention: title ? "Intenção secundária" : "Título pela intenção" }
+          });
+          return lifecycleStatus === "archived"
+            ? repository.updateStructure({
+              ...created,
+              lifecycleStatus: "archived",
+              archivedAt: "2026-07-14T08:00:00.000Z"
+            }, created.revision)
+            : created;
+        };
+
+        await createRitual({ title: "Sem agenda", nextRunAt: null });
+        await createRitual({ title: "Arquivado", nextRunAt: "2026-07-14T08:00:00.000Z", lifecycleStatus: "archived" });
+        await createRitual({ title: "Outro dono", ownerProfileId: "owner_b", nextRunAt: "2026-07-14T08:30:00.000Z" });
+        const next = await createRitual({ title: "Revisão semanal", nextRunAt: "2026-07-14T09:00:00.000Z" });
+        await createRitual({ title: "Revisão mensal", nextRunAt: "2026-07-14T10:00:00.000Z" });
+
+        expect(await repository.listNextRituals(scope, 1)).toEqual([{
+          id: next.id,
+          title: "Revisão semanal",
+          scheduledFor: "2026-07-14T09:00:00.000Z"
+        }]);
+        expect(await repository.listNextRituals({ ...scope, ownerProfileId: "owner_b" }, 1))
+          .toEqual([expect.objectContaining({ title: "Outro dono" })]);
+      });
+    });
   });
 }
 
@@ -1387,6 +1441,37 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("loads the next ritual and document title with one scoped join instead of N+1 reads", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const pool: OperationalPool = {
+      async query<T>(text: string, params?: unknown[]) {
+        calls.push({ text, params });
+        return { rows: [{
+          id: "ritual_a",
+          document_title: "Revisão semanal",
+          intention: "Escolher prioridades",
+          scheduled_for: "2026-07-15T12:00:00.000Z"
+        }] as T[] };
+      },
+      async connect() { throw new Error("connect should not be called"); }
+    };
+
+    await expect(createPostgresStudioRepository(pool).listNextRituals({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a"
+    }, 1)).resolves.toEqual([{
+      id: "ritual_a",
+      title: "Revisão semanal",
+      scheduledFor: "2026-07-15T12:00:00.000Z"
+    }]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.params).toEqual(["workspace_a", "owner_a", 1]);
+    expect(calls[0]!.text).toMatch(/JOIN studio_documents documents[\s\S]*documents\.owner_profile_id=structures\.owner_profile_id/u);
+    expect(calls[0]!.text).toContain("structures.lifecycle_status='active'");
+    expect(calls[0]!.text).toContain("structures.next_run_at IS NOT NULL");
+    expect(calls[0]!.text).toContain("ORDER BY structures.next_run_at ASC,structures.id ASC");
+  });
+
   it("creates or returns an open ritual session from an active locked ritual with bounded retries", async () => {
     const statements: string[] = [];
     const pool: OperationalPool = {

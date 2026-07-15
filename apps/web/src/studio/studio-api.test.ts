@@ -15,9 +15,11 @@ import {
   getStudioDocumentAssets,
   getStudioDocument,
   getStudioHome,
+  finishStudioRitualSession,
   listStudioCollections,
   listStudioDocumentVersions,
   listStudioDocuments,
+  listStudioRitualSessions,
   listStudioStructures,
   removeStudioDocumentFromCollection,
   renameStudioCollection,
@@ -25,7 +27,9 @@ import {
   retryStudioAsset,
   searchStudioDocuments,
   studioRequest,
+  startStudioRitualSession,
   updateStudioDocument,
+  updateStudioRitualSession,
   updateStudioStructure
 } from "./studio-api";
 
@@ -302,6 +306,61 @@ describe("Studio API client", () => {
     ]);
     expect(fetcher.mock.calls.map(([, init]) => init?.signal)).toEqual([controller.signal, controller.signal, controller.signal]);
     expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({ expected_revision: 1 });
+  });
+
+  it("maps ritual sessions and preserves optimistic revisions across session routes", async () => {
+    const rawSession = {
+      id: "session_1",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      ritual_id: "ritual / 1",
+      status: "ready" as const,
+      revision: 3,
+      context_json: { preparedAt: "2026-07-14T12:00:00.000Z" },
+      preparation_json: { proposal: { agenda: [] } },
+      answers_json: { "O que mudou?": "Mais clareza" },
+      synthesis_json: null,
+      prepare_ai_run_id: "run_prepare",
+      synthesis_ai_run_id: null,
+      failure_code: null,
+      created_at: "2026-07-14T12:00:00.000Z",
+      updated_at: "2026-07-14T12:01:00.000Z",
+      completed_at: null
+    };
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
+      if (init?.method === "POST" && input.endsWith("/finish")) {
+        return jsonResponse({ session: { ...rawSession, status: "completed", revision: 5, completed_at: "2026-07-14T12:15:00.000Z" } });
+      }
+      if (init?.method === "PATCH") return jsonResponse({ session: { ...rawSession, status: "in_progress", revision: 4 } });
+      if (init?.method === "POST") return jsonResponse({ session: rawSession }, 201);
+      return jsonResponse({ sessions: [rawSession], next_cursor: "cursor_2" });
+    });
+
+    await expect(listStudioRitualSessions("ritual / 1", { limit: 1 }, undefined, fetcher)).resolves.toMatchObject({
+      items: [{ ritualId: "ritual / 1", ownerProfileId: "profile_owner", answersJson: { "O que mudou?": "Mais clareza" } }],
+      nextCursor: "cursor_2"
+    });
+    await expect(startStudioRitualSession("ritual / 1", undefined, fetcher)).resolves.toMatchObject({ status: "ready", revision: 3 });
+    await expect(updateStudioRitualSession("session / 1", {
+      expected_revision: 3,
+      answers: { "O que merece foco?": "Clientes" }
+    }, undefined, fetcher)).resolves.toMatchObject({ status: "in_progress", revision: 4 });
+    await expect(finishStudioRitualSession("session / 1", {
+      expected_revision: 4,
+      answers: {},
+      request_synthesis: true
+    }, undefined, fetcher)).resolves.toMatchObject({ status: "completed", revision: 5 });
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/studio/rituals/ritual%20%2F%201/sessions?limit=1",
+      "/api/studio/rituals/ritual%20%2F%201/sessions",
+      "/api/studio/ritual-sessions/session%20%2F%201",
+      "/api/studio/ritual-sessions/session%20%2F%201/finish"
+    ]);
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({
+      expected_revision: 3,
+      answers: { "O que merece foco?": "Clientes" }
+    });
   });
 
   it("archives, restores, and changes collection membership with encoded owner-scoped routes", async () => {
