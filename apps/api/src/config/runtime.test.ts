@@ -139,4 +139,30 @@ describe("runtime config", () => {
       }
     });
   });
+
+  it("warns when the Studio is enabled without durable data, real AI, or vector capability", () => {
+    const config = readRuntimeConfig({ BAASE_STUDIO_ENABLED: "true" });
+
+    expect(config.ok).toBe(false);
+    expect(config.studio).toEqual({ enabled: true, vectorConfigured: false });
+    expect(config.warnings).toEqual(expect.arrayContaining([
+      "BAASE Studio habilitado requer persistência durável em Postgres.",
+      "BAASE Studio habilitado requer um provider real de IA.",
+      "BAASE Studio habilitado requer capacidade vetorial configurada."
+    ]));
+  });
+
+  it("reports Studio readiness when all private intelligence prerequisites are configured", () => {
+    const config = readRuntimeConfig({
+      BAASE_STUDIO_ENABLED: "true",
+      BAASE_STUDIO_VECTOR_ENABLED: "true",
+      DATABASE_URL: "postgres://baase:baase@localhost:5432/baase",
+      OPENAI_API_KEY: "sk-test"
+    });
+
+    expect(config.studio).toEqual({ enabled: true, vectorConfigured: true });
+    expect(config.warnings).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("Studio habilitado")
+    ]));
+  });
 });

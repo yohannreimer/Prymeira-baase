@@ -26,6 +26,7 @@ import {
 } from "./studio-link-fetcher";
 import type { StudioAsset, StudioAssetUploadIntent, StudioOwnerScope, StudioRepository } from "./studio.types";
 import type { createStudioAssetCleanupProcessor } from "./studio-asset-cleanup";
+import { safeStudioTelemetrySink, type StudioTelemetrySink } from "./studio-telemetry";
 
 export type { StudioLinkFetcher, StudioLinkResolver } from "./studio-link-fetcher";
 
@@ -45,10 +46,12 @@ export type RegisterStudioAssetRoutesOptions = {
   uploadLeaseMs?: number;
   uploadLeaseHeartbeatMs?: number;
   uploadAbortTimeoutMs?: number;
+  telemetry?: StudioTelemetrySink;
 };
 
 export async function registerStudioAssetRoutes(app: FastifyInstance, options: RegisterStudioAssetRoutesOptions) {
   const uploadSemaphore = options.uploadSemaphore ?? createStudioUploadSemaphore(2);
+  const telemetry = safeStudioTelemetrySink(options.telemetry);
 
   app.get("/studio/documents/:documentId/assets", async (request) => {
     const scope = requireStudioScope(request);
@@ -111,6 +114,15 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
       if ("interrupt" in outcome) throw outcome.interrupt.responseError;
       if (!outcome.owner.ok) throw outcome.owner.error;
       const { asset, replayed } = outcome.owner.result;
+      telemetry({
+        name: "studio_asset_received",
+        ...scope,
+        documentId,
+        assetId: asset.id,
+        modality: asset.kind,
+        sizeBytes: asset.sizeBytes,
+        status: replayed ? "replayed" : "accepted"
+      });
       return reply.status(replayed ? 200 : 201).send({ asset });
     }
 
@@ -121,7 +133,18 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
     const input = studioLinkCaptureSchema.parse(request.body);
     if (idempotencyKey) {
       const existing = await options.repository.findAssetByIdempotencyKey(scope, documentId, idempotencyKey);
-      if (existing) return reply.status(200).send({ asset: existing });
+      if (existing) {
+        telemetry({
+          name: "studio_asset_received",
+          ...scope,
+          documentId,
+          assetId: existing.id,
+          modality: existing.kind,
+          sizeBytes: existing.sizeBytes,
+          status: "replayed"
+        });
+        return reply.status(200).send({ asset: existing });
+      }
     }
     const snapshot = await captureStudioLinkSnapshot(input.url, {
       resolver: options.resolver,
@@ -152,6 +175,15 @@ export async function registerStudioAssetRoutes(app: FastifyInstance, options: R
         lastErrorCode: null,
         attemptCount: 1,
         nextAttemptAt: null
+      });
+      telemetry({
+        name: "studio_asset_received",
+        ...scope,
+        documentId,
+        assetId: asset.id,
+        modality: asset.kind,
+        sizeBytes: asset.sizeBytes,
+        status: "accepted"
       });
       return reply.status(201).send({ asset });
     } catch (error) {

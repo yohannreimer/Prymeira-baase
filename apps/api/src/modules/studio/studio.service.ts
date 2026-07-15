@@ -20,9 +20,12 @@ import {
   studioRitualCadenceSchema,
   studioStructurePropertiesSchema
 } from "./studio.schemas";
+import { assertStudioEditorJson } from "./studio-security";
+import { safeStudioTelemetrySink, type StudioTelemetrySink } from "./studio-telemetry";
 
 type StudioServiceOptions = {
   now?: () => string;
+  telemetry?: StudioTelemetrySink;
 };
 
 const HOME_DOCUMENT_LIMIT = 10;
@@ -182,6 +185,7 @@ export function createStudioService(
   options: StudioServiceOptions = {}
 ): StudioService {
   const clock = options.now ?? (() => new Date().toISOString());
+  const telemetry = safeStudioTelemetrySink(options.telemetry);
 
   return {
     async readHome(scope): Promise<StudioHome> {
@@ -211,7 +215,8 @@ export function createStudioService(
 
     async createDocument(scope, actorProfileId, input: CreateStudioDocument, captureKey = null) {
       assertActor(scope, actorProfileId);
-      return repository.createDocument({
+      assertStudioEditorJson(input.body_json);
+      const document = await repository.createDocument({
         ...scope,
         captureKey,
         title: input.title,
@@ -222,12 +227,21 @@ export function createStudioService(
         isFocused: false,
         status: "active"
       });
+      telemetry({
+        name: "studio_capture_created",
+        ...scope,
+        documentId: document.id,
+        mode: document.captureMode,
+        assetCount: 0
+      });
+      return document;
     },
 
     async updateDocument(scope, actorProfileId, id, input: UpdateStudioDocument) {
       assertActor(scope, actorProfileId);
       const current = await requireDocument(repository, scope, id);
       if (input.revision !== current.revision) throw new Error("STUDIO_DOCUMENT_STALE");
+      if (input.body_json !== undefined) assertStudioEditorJson(input.body_json);
       return repository.updateDocument({
         ...current,
         title: input.title === undefined ? current.title : input.title,

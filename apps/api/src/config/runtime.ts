@@ -31,6 +31,10 @@ export type BaaseRuntimeConfig = {
     provider: "memory" | "s3";
     s3: BaaseS3Config | null;
   };
+  studio?: {
+    enabled: boolean;
+    vectorConfigured: boolean;
+  };
   ok: boolean;
   warnings: string[];
 };
@@ -46,12 +50,14 @@ export function readRuntimeConfig(env: RuntimeEnv): BaaseRuntimeConfig {
   const structured: BaaseStructuredAiProvider = env.OPENAI_API_KEY ? "openai" : "mock";
   const transcription: BaaseTranscriptionProvider = env.DEEPGRAM_API_KEY ? "deepgram" : "mock";
   const s3 = readS3Config(env);
+  const studioEnabled = env.BAASE_STUDIO_ENABLED === "true";
+  const studioVectorConfigured = env.BAASE_STUDIO_VECTOR_ENABLED === "true";
   const demoSeedEnabled = env.BAASE_SEED_DEMO_DATA
     ? env.BAASE_SEED_DEMO_DATA !== "false"
     : persistence === "memory";
   const warnings = readRuntimeWarnings({
     mode, authMode, accountApiUrl, persistence, operationalStoreInput: env.BAASE_OPERATIONAL_STORE,
-    structured, transcription, s3Configured: Boolean(s3)
+    structured, transcription, s3Configured: Boolean(s3), studioEnabled, studioVectorConfigured
   });
 
   return {
@@ -70,6 +76,10 @@ export function readRuntimeConfig(env: RuntimeEnv): BaaseRuntimeConfig {
     objectStorage: {
       provider: s3 ? "s3" : "memory",
       s3
+    },
+    studio: {
+      enabled: studioEnabled,
+      vectorConfigured: studioVectorConfigured
     },
     ok: warnings.length === 0,
     warnings
@@ -119,10 +129,21 @@ function readRuntimeWarnings(input: {
   structured: BaaseStructuredAiProvider;
   transcription: BaaseTranscriptionProvider;
   s3Configured: boolean;
+  studioEnabled: boolean;
+  studioVectorConfigured: boolean;
 }) {
   const warnings: string[] = [];
   if (input.operationalStoreInput === "relational" && input.persistence !== "postgres") {
     warnings.push("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");
+  }
+  if (input.studioEnabled && input.persistence !== "postgres") {
+    warnings.push("BAASE Studio habilitado requer persistência durável em Postgres.");
+  }
+  if (input.studioEnabled && input.structured !== "openai") {
+    warnings.push("BAASE Studio habilitado requer um provider real de IA.");
+  }
+  if (input.studioEnabled && !input.studioVectorConfigured) {
+    warnings.push("BAASE Studio habilitado requer capacidade vetorial configurada.");
   }
   if (input.mode === "demo") return warnings;
   if (input.authMode === "account" && !input.accountApiUrl) {

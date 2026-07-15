@@ -63,6 +63,9 @@ function studioRouteError(error: unknown) {
       "Já existe uma captura ativa com esta chave."
     );
   }
+  if (error.message === "STUDIO_EDITOR_JSON_INVALID") {
+    return new ApiError(400, "STUDIO_EDITOR_JSON_INVALID", "O conteúdo do editor excede os limites de segurança.");
+  }
   if (error.message === "STUDIO_DOCUMENT_NOT_FOUND") {
     return new ApiError(404, "STUDIO_DOCUMENT_NOT_FOUND", "Documento do Studio não encontrado.");
   }

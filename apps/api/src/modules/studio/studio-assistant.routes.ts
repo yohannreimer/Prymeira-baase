@@ -261,6 +261,12 @@ function publicStreamErrorCode(error: unknown) {
 
 function assistantRouteError(error: unknown) {
   if (!(error instanceof Error)) return error;
+  if (error.message === "STUDIO_OWNER_RATE_LIMITED") {
+    return new ApiError(429, error.message, "Aguarde um pouco antes de iniciar outra conversa no Estúdio.");
+  }
+  if (error.message === "STUDIO_ASSISTANT_CONTEXT_LIMIT") {
+    return new ApiError(413, error.message, "O contexto selecionado é grande demais para uma única análise.");
+  }
   if (["STUDIO_DOCUMENT_NOT_FOUND", "STUDIO_CONVERSATION_NOT_FOUND", "STUDIO_SUGGESTION_NOT_FOUND",
     "STUDIO_OPERATION_PREVIEW_NOT_FOUND"].includes(error.message)) {
     return new ApiError(404, error.message, "Conteúdo privado do Estúdio não encontrado.");

@@ -18,6 +18,13 @@ import type {
   StudioTextSuggestionProposal
 } from "./studio.types";
 import type { StudioContextBuilder } from "./studio-context-builder";
+import {
+  assertStudioAssistantContext,
+  createStudioOwnerRequestLimiter,
+  studioAllowedTools,
+  type StudioOwnerRequestLimiter
+} from "./studio-security";
+import { safeStudioTelemetrySink, type StudioTelemetrySink } from "./studio-telemetry";
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_HISTORY_CHARACTERS = 24_000;
@@ -118,13 +125,18 @@ type StudioAssistantServiceOptions = {
   harness: AiHarness;
   contextBuilder?: StudioContextBuilder;
   now?: () => Date;
+  requestLimiter?: StudioOwnerRequestLimiter;
+  telemetry?: StudioTelemetrySink;
 };
 
 export function createStudioAssistantService(options: StudioAssistantServiceOptions): StudioAssistantService {
   const now = options.now ?? (() => new Date());
+  const requestLimiter = options.requestLimiter ?? createStudioOwnerRequestLimiter();
+  const telemetry = safeStudioTelemetrySink(options.telemetry);
 
   return {
     async streamTurn(scope, rawInput) {
+      requestLimiter.take(scope);
       const input = normalizeTurnInput(rawInput);
       assertNotAborted(input.signal);
       const started = await options.repository.startAssistantTurn({
@@ -153,18 +165,27 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
       if (authoritativeCitations.length > MAX_CITATIONS) throw new Error("STUDIO_ASSISTANT_OUTPUT_LIMIT");
       const citationRegistry = createAuthoritativeCitationRegistry(authoritativeCitations);
       const history = boundHistory(messages);
+      const taskKind = input.allowExternalResearch ? "studio_external_research" : "studio_assist";
+      studioAllowedTools({
+        agentKey: "owner_studio_companion",
+        taskKind,
+        allowExternalResearch: input.allowExternalResearch
+      });
+      const narrativeInput = buildNarrativeInput(history, document, context, input.selectedTextContext ?? null);
+      assertStudioAssistantContext(narrativeInput);
+      const startedAt = now().getTime();
       const narrative = await options.harness.runTextStream({
         workspaceId: scope.workspaceId,
         actorProfileId: scope.ownerProfileId,
         source: "owner_studio",
         inputMode: "text",
-        taskKind: input.allowExternalResearch ? "studio_external_research" : "studio_assist",
+        taskKind,
         agentKey: "owner_studio_companion",
         promptKey: "agent/owner-studio-companion",
         promptVersion: "1",
         model: "gpt-5.5",
         reasoningEffort: "medium",
-        input: buildNarrativeInput(history, document, context, input.selectedTextContext ?? null),
+        input: narrativeInput,
         allowExternalResearch: input.allowExternalResearch,
         signal: input.signal
       });
@@ -172,6 +193,8 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
       return streamAssistantTurn({
         ...options,
         now,
+        telemetry,
+        startedAt,
         scope,
         input,
         conversationId: started.conversation.id,
@@ -182,12 +205,28 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
       });
     },
 
-    acceptSuggestion(scope, suggestionId, proposalOverride) {
-      return options.repository.acceptSuggestion(scope, suggestionId, scope.ownerProfileId, proposalOverride);
+    async acceptSuggestion(scope, suggestionId, proposalOverride) {
+      const decision = await options.repository.acceptSuggestion(scope, suggestionId, scope.ownerProfileId, proposalOverride);
+      telemetry({
+        name: "studio_suggestion_decided",
+        ...scope,
+        suggestionId: decision.suggestion.id,
+        kind: decision.suggestion.kind,
+        decision: "accepted"
+      });
+      return decision;
     },
 
-    dismissSuggestion(scope, suggestionId) {
-      return options.repository.dismissSuggestion(scope, suggestionId);
+    async dismissSuggestion(scope, suggestionId) {
+      const decision = await options.repository.dismissSuggestion(scope, suggestionId);
+      telemetry({
+        name: "studio_suggestion_decided",
+        ...scope,
+        suggestionId: decision.suggestion.id,
+        kind: decision.suggestion.kind,
+        decision: "dismissed"
+      });
+      return decision;
     }
   };
 }
@@ -201,6 +240,8 @@ type StreamAssistantTurnOptions = StudioAssistantServiceOptions & {
   context: StudioContextSnapshot | null;
   citationRegistry: AuthoritativeCitationRegistry;
   narrative: Awaited<ReturnType<AiHarness["runTextStream"]>>;
+  telemetry: StudioTelemetrySink;
+  startedAt: number;
 };
 
 async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncIterable<StudioSseEvent> {
@@ -212,10 +253,10 @@ async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncI
   let narrativeCodepoints = 0;
   let deltaCount = 0;
   let providerCompleted = false;
-  yield { event: "run", data: { ai_run_id: options.narrative.run.id, conversation_id: options.conversationId } };
-  for (const citation of citations) yield { event: "citation", data: citationPreview(citation) };
-
+  let terminalStatus: "completed" | "failed" | "cancelled" = "cancelled";
   try {
+    yield { event: "run", data: { ai_run_id: options.narrative.run.id, conversation_id: options.conversationId } };
+    for (const citation of citations) yield { event: "citation", data: citationPreview(citation) };
     for await (const event of options.narrative.events) {
       assertNotAborted(options.input.signal);
       if (event.type === "delta") {
@@ -265,10 +306,26 @@ async function* streamAssistantTurn(options: StreamAssistantTurnOptions): AsyncI
       if (suggestion) yield { event: "suggestion", data: suggestion };
     }
     assertNotAborted(options.input.signal);
+    terminalStatus = "completed";
     yield { event: "done", data: { message_id: persisted.message.id } };
   } catch (error) {
-    if (isAbortError(error, options.input.signal)) throw error;
+    if (isAbortError(error, options.input.signal)) {
+      terminalStatus = "cancelled";
+      throw error;
+    }
+    terminalStatus = "failed";
     throw sanitizeAssistantFailure(error);
+  } finally {
+    options.telemetry({
+      name: "studio_ai_run_finished",
+      ...options.scope,
+      aiRunId: options.narrative.run.id,
+      taskKind: options.narrative.run.taskKind,
+      status: terminalStatus,
+      latencyMs: Math.max(0, options.now().getTime() - options.startedAt),
+      citationCount: citations.length,
+      model: options.narrative.run.model
+    });
   }
 }
 
