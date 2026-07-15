@@ -1508,6 +1508,37 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("maps checkpoint and trash columns from PostgreSQL rows", async () => {
+    const pool: OperationalPool = {
+      async query<T>(text: string) {
+        if (text.includes("studio_document_versions")) {
+          return { rows: [{
+            id: "version_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", document_id: "document_a",
+            version_number: 2, body_json: {}, body_text: "checkpoint", origin: "user", actor_profile_id: "owner_a",
+            ai_run_id: null, created_at: "2026-07-12T10:00:00.000Z", title: "Decisão", checkpoint_reason: "manual",
+            source_revision: 4, is_legacy: false
+          }] as T[] };
+        }
+        return { rows: [{
+          id: "document_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", capture_key: null, title: "Plano",
+          body_json: {}, body_text: "current", revision: 4, capture_mode: "text", inbox_state: "reviewed", is_focused: false,
+          status: "trashed", created_at: "2026-07-10T10:00:00.000Z", updated_at: "2026-07-12T10:00:00.000Z",
+          archived_at: null, trashed_at: "2026-07-13T10:00:00.000Z", pre_trash_status: "archived"
+        }] as T[] };
+      },
+      async connect() { throw new Error("connect should not be called"); }
+    };
+    const repository = createPostgresStudioRepository(pool);
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+
+    await expect(repository.findDocument(scope, "document_a")).resolves.toMatchObject({
+      trashedAt: "2026-07-13T10:00:00.000Z", preTrashStatus: "archived"
+    });
+    await expect(repository.listVersions(scope, "document_a")).resolves.toEqual([expect.objectContaining({
+      title: "Decisão", checkpointReason: "manual", sourceRevision: 4, isLegacy: false
+    })]);
+  });
+
   it("removes resolved upload intents and claims the next due owner in one skip-locked statement", async () => {
     const statements: string[] = [];
     const pool: OperationalPool = {

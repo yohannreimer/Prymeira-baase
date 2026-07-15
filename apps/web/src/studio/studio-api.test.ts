@@ -26,6 +26,8 @@ import {
   restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
+  mapStudioDocument,
+  mapStudioDocumentVersion,
   studioRequest,
   startStudioRitualSession,
   updateStudioDocument,
@@ -48,7 +50,9 @@ const rawDocument = {
   status: "active",
   created_at: "2026-07-10T10:00:00.000Z",
   updated_at: "2026-07-12T10:00:00.000Z",
-  archived_at: null
+  archived_at: null,
+  trashed_at: "2026-07-13T10:00:00.000Z",
+  pre_trash_status: "archived"
 } as const;
 
 function jsonResponse(body: unknown, status = 200) {
@@ -95,7 +99,7 @@ describe("Studio API client", () => {
       if (input.startsWith("/api/studio/search?")) {
         return jsonResponse({ results: [{ document_id: "document_1", title: "Plano anual", excerpt: "Crescer com margem", updated_at: "2026-07-12", collections: [{ id: "collection_1", name: "Estratégia" }] }] });
       }
-      return jsonResponse({ versions: [{ id: "version_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", document_id: "document_1", version_number: 3, body_json: { type: "doc" }, body_text: "Crescer com margem.", origin: "user", actor_profile_id: "profile_owner", ai_run_id: null, created_at: "2026-07-12" }] });
+      return jsonResponse({ versions: [{ id: "version_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", document_id: "document_1", version_number: 3, body_json: { type: "doc" }, body_text: "Crescer com margem.", origin: "user", actor_profile_id: "profile_owner", ai_run_id: null, created_at: "2026-07-12", title: "Checkpoint de decisão", checkpoint_reason: "manual", source_revision: 3, is_legacy: false }] });
     });
 
     await expect(getStudioHome(fetcher)).resolves.toMatchObject({
@@ -108,7 +112,9 @@ describe("Studio API client", () => {
       }],
       nextRituals: [{ scheduledFor: "2026-07-17T13:00:00.000Z", timezone: "America/Sao_Paulo" }]
     });
-    await expect(getStudioDocument("document_1", fetcher)).resolves.toMatchObject({ id: "document_1", captureMode: "text" });
+    await expect(getStudioDocument("document_1", fetcher)).resolves.toMatchObject({
+      id: "document_1", captureMode: "text", trashedAt: "2026-07-13T10:00:00.000Z", preTrashStatus: "archived"
+    });
     await expect(listStudioDocuments({ status: "active", limit: 20, cursor: "cursor 1" }, fetcher)).resolves.toMatchObject({
       items: [{ id: "document_1", inboxState: "reviewed" }],
       nextCursor: "cursor_2",
@@ -122,12 +128,28 @@ describe("Studio API client", () => {
       expect.objectContaining({ documentId: "document_1", updatedAt: "2026-07-12", collections: [{ id: "collection_1", name: "Estratégia" }] })
     ]);
     await expect(listStudioDocumentVersions("document_1", fetcher)).resolves.toEqual([
-      expect.objectContaining({ documentId: "document_1", versionNumber: 3, actorProfileId: "profile_owner" })
+      expect.objectContaining({ documentId: "document_1", versionNumber: 3, actorProfileId: "profile_owner", title: "Checkpoint de decisão", checkpointReason: "manual", sourceRevision: 3, isLegacy: false })
     ]);
 
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&limit=20&cursor=cursor+1");
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&inbox_state=pending_review&collection_id=collection+%2F+1");
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/search?query=margem+%26+foco&limit=10");
+  });
+
+  it("maps camelCase checkpoint and trash metadata", () => {
+    expect(mapStudioDocument({
+      id: "document_camel", workspaceId: "workspace_a", ownerProfileId: "profile_owner", captureKey: null,
+      title: null, bodyJson: {}, bodyText: "", revision: 1, captureMode: "text", inboxState: "reviewed",
+      isFocused: false, status: "trashed", createdAt: "2026-07-10T10:00:00.000Z",
+      updatedAt: "2026-07-11T10:00:00.000Z", archivedAt: null,
+      trashedAt: "2026-07-12T10:00:00.000Z", preTrashStatus: "active"
+    })).toMatchObject({ trashedAt: "2026-07-12T10:00:00.000Z", preTrashStatus: "active" });
+    expect(mapStudioDocumentVersion({
+      id: "version_camel", workspaceId: "workspace_a", ownerProfileId: "profile_owner", documentId: "document_camel",
+      versionNumber: 1, bodyJson: {}, bodyText: "", origin: "user", actorProfileId: "profile_owner", aiRunId: null,
+      createdAt: "2026-07-12T10:00:00.000Z", title: "Checkpoint", checkpointReason: "manual",
+      sourceRevision: 1, isLegacy: false
+    })).toMatchObject({ title: "Checkpoint", checkpointReason: "manual", sourceRevision: 1, isLegacy: false });
   });
 
   it("merges JSON and owner auth headers, preserves caller headers and AbortSignal", async () => {

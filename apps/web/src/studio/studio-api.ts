@@ -161,7 +161,9 @@ export function mapStudioDocument(raw: RawStudioDocument): StudioDocument {
     status: raw.status,
     createdAt: required(raw.created_at, raw.createdAt, "created_at"),
     updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
-    archivedAt: raw.archived_at !== undefined ? raw.archived_at : raw.archivedAt ?? null
+    archivedAt: raw.archived_at !== undefined ? raw.archived_at : raw.archivedAt ?? null,
+    trashedAt: raw.trashed_at !== undefined ? raw.trashed_at : raw.trashedAt ?? null,
+    preTrashStatus: raw.pre_trash_status !== undefined ? raw.pre_trash_status : raw.preTrashStatus ?? null
   };
 }
 
@@ -177,7 +179,11 @@ export function mapStudioDocumentVersion(raw: RawStudioDocumentVersion): StudioD
     origin: raw.origin,
     actorProfileId: required(raw.actor_profile_id, raw.actorProfileId, "actor_profile_id"),
     aiRunId: raw.ai_run_id !== undefined ? raw.ai_run_id : raw.aiRunId ?? null,
-    createdAt: required(raw.created_at, raw.createdAt, "created_at")
+    createdAt: required(raw.created_at, raw.createdAt, "created_at"),
+    title: raw.title ?? null,
+    checkpointReason: raw.checkpoint_reason ?? raw.checkpointReason,
+    sourceRevision: raw.source_revision !== undefined ? raw.source_revision : raw.sourceRevision ?? null,
+    isLegacy: raw.is_legacy ?? raw.isLegacy
   };
 }
 

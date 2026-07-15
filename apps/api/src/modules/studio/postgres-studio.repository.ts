@@ -54,6 +54,8 @@ type StudioDocumentRow = {
   created_at: string | Date;
   updated_at: string | Date;
   archived_at: string | Date | null;
+  trashed_at: string | Date | null;
+  pre_trash_status: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
 type StudioDocumentVersionRow = {
@@ -68,6 +70,10 @@ type StudioDocumentVersionRow = {
   actor_profile_id: string;
   ai_run_id: string | null;
   created_at: string | Date;
+  title: string | null;
+  checkpoint_reason: string;
+  source_revision: number | null;
+  is_legacy: boolean;
 };
 
 type StudioNextRitualRow = {
@@ -265,7 +271,9 @@ function documentFromRow(row: StudioDocumentRow): StudioDocument {
     status: row.status,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    archivedAt: row.archived_at ? iso(row.archived_at) : null
+    archivedAt: row.archived_at ? iso(row.archived_at) : null,
+    trashedAt: row.trashed_at ? iso(row.trashed_at) : null,
+    preTrashStatus: row.pre_trash_status
   };
 }
 
@@ -281,7 +289,11 @@ function versionFromRow(row: StudioDocumentVersionRow): StudioDocumentVersion {
     origin: row.origin,
     actorProfileId: row.actor_profile_id,
     aiRunId: row.ai_run_id,
-    createdAt: iso(row.created_at)
+    createdAt: iso(row.created_at),
+    title: row.title,
+    checkpointReason: row.checkpoint_reason,
+    sourceRevision: row.source_revision,
+    isLegacy: row.is_legacy
   };
 }
 
