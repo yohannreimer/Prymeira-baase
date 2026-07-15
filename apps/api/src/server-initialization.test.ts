@@ -127,16 +127,22 @@ describe("PostgreSQL server initialization", () => {
     "http://minio..internal:9000",
     `http://${"a".repeat(64)}.example:9000`,
     `http://${Array.from({ length: 13 }, () => "a".repeat(20)).join(".")}:9000`,
+    "ftp://minio:9000",
+    "file://minio/path",
     "not a URL"
   ])("rejects a production S3 endpoint with invalid hostname: %s", (endpoint) => {
     expect(() => assertRuntimeStoragePolicy(productionS3Config(endpoint)))
       .toThrow("S3_ENDPOINT_HOSTNAME_INVALID");
   });
 
-  it("rejects an invalid production endpoint before constructing storage", async () => {
+  it.each([
+    "",
+    "ftp://minio:9000",
+    "file://minio/path"
+  ])("rejects an invalid production endpoint before constructing storage: %s", async (endpoint) => {
     const events: string[] = [];
 
-    await expect(initializeRuntimeObjectStorage(productionS3Config(""), {
+    await expect(initializeRuntimeObjectStorage(productionS3Config(endpoint), {
       createMemoryObjectStorage() {
         events.push("memory-factory");
         return createInMemoryObjectStorage();
@@ -256,6 +262,22 @@ describe("PostgreSQL server initialization", () => {
     };
     await expect(ensureObjectStorageReady(storage))
       .rejects.toThrow("STUDIO_STORAGE_MULTIPART_LIFECYCLE_REQUIRED");
+  });
+
+  it.each([0, 2.5])("rejects invalid readiness attempts %s before readiness or sleep", async (attempts) => {
+    const events: string[] = [];
+    const storage = {
+      ...createInMemoryObjectStorage(),
+      async ensureReady() { events.push("storage-ready"); }
+    };
+
+    await expect(ensureObjectStorageReady(storage, {
+      attempts,
+      delayMs: 1000,
+      async sleep(ms) { events.push(`sleep${ms}`); }
+    })).rejects.toThrow("OBJECT_STORAGE_READINESS_ATTEMPTS_INVALID");
+
+    expect(events).toEqual([]);
   });
 
   for (const operationalStore of ["jsonb", "relational"] as const) {

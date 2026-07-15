@@ -35,13 +35,15 @@ const defaultObjectStorageDependencies: RuntimeObjectStorageDependencies = {
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 function hasValidEndpointHostname(endpoint: string): boolean {
-  let hostname: string;
+  let parsedEndpoint: URL;
   try {
-    hostname = new URL(endpoint).hostname;
+    parsedEndpoint = new URL(endpoint);
   } catch {
     return false;
   }
 
+  if (parsedEndpoint.protocol !== "http:" && parsedEndpoint.protocol !== "https:") return false;
+  const hostname = parsedEndpoint.hostname;
   if (!hostname) return false;
   const unwrappedHostname = hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1)
@@ -92,6 +94,9 @@ export async function ensureObjectStorageReady(
   } = {}
 ): Promise<void> {
   const attempts = options.attempts ?? 1;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error("OBJECT_STORAGE_READINESS_ATTEMPTS_INVALID");
+  }
   const delayMs = options.delayMs ?? 0;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
