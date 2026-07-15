@@ -3,6 +3,7 @@ import type { BaaseRuntimeConfig } from "./config/runtime";
 import type { OperationalPool } from "./db/operational-repository-support";
 import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
 import {
+  assertRuntimeStoragePolicy,
   ensureObjectStorageReady,
   initializePostgresRuntime,
   initializeRuntimeObjectStorage
@@ -23,6 +24,23 @@ function runtimeConfig(overrides: Partial<BaaseRuntimeConfig> = {}): BaaseRuntim
     warnings: [],
     ...overrides
   };
+}
+
+function productionS3Config(endpoint: string | undefined): BaaseRuntimeConfig {
+  return runtimeConfig({
+    mode: "production",
+    objectStorage: {
+      provider: "s3",
+      s3: {
+        endpoint,
+        region: "us-east-1",
+        bucket: "baase",
+        accessKeyId: "access",
+        secretAccessKey: "secret",
+        forcePathStyle: true
+      }
+    }
+  });
 }
 
 describe("PostgreSQL server initialization", () => {
@@ -89,6 +107,94 @@ describe("PostgreSQL server initialization", () => {
     expect(events).toEqual(["s3-factory", "storage-ready", "listen"]);
   });
 
+  it.each([
+    undefined,
+    "http://localhost:9000",
+    "http://127.0.0.1:9000",
+    "http://[::1]:9000",
+    "http://minio:9000",
+    "https://objetos.example.com",
+    "https://object-storage.example.com"
+  ])("accepts a production S3 endpoint with valid hostname: %s", (endpoint) => {
+    expect(() => assertRuntimeStoragePolicy(productionS3Config(endpoint))).not.toThrow();
+  });
+
+  it.each([
+    "http://prymeira_baase_minio:9000",
+    "http://-minio:9000",
+    "http://minio-:9000",
+    "http://minio..internal:9000",
+    `http://${"a".repeat(64)}.example:9000`,
+    `http://${Array.from({ length: 13 }, () => "a".repeat(20)).join(".")}:9000`,
+    "not a URL"
+  ])("rejects a production S3 endpoint with invalid hostname: %s", (endpoint) => {
+    expect(() => assertRuntimeStoragePolicy(productionS3Config(endpoint)))
+      .toThrow("S3_ENDPOINT_HOSTNAME_INVALID");
+  });
+
+  it("rejects an invalid production endpoint before constructing storage", async () => {
+    const events: string[] = [];
+
+    await expect(initializeRuntimeObjectStorage(productionS3Config("http://invalid_host:9000"), {
+      createMemoryObjectStorage() {
+        events.push("memory-factory");
+        return createInMemoryObjectStorage();
+      },
+      createS3ObjectStorage() {
+        events.push("s3-factory");
+        return createInMemoryObjectStorage();
+      }
+    })).rejects.toThrow("S3_ENDPOINT_HOSTNAME_INVALID");
+
+    expect(events).toEqual([]);
+  });
+
+  it("retries production S3 readiness until the third attempt", async () => {
+    const events: string[] = [];
+    let attempts = 0;
+
+    await initializeRuntimeObjectStorage(productionS3Config("http://minio:9000"), {
+      createMemoryObjectStorage: createInMemoryObjectStorage,
+      createS3ObjectStorage() {
+        return {
+          ...createInMemoryObjectStorage(),
+          async ensureReady() {
+            attempts += 1;
+            events.push(`ready${attempts}`);
+            if (attempts < 3) throw new Error("not ready");
+          }
+        };
+      },
+      async sleep(ms) { events.push(`sleep${ms}`); }
+    });
+
+    expect(events).toEqual(["ready1", "sleep1000", "ready2", "sleep1000", "ready3"]);
+  });
+
+  it("propagates the last production readiness error after 30 attempts and 29 sleeps", async () => {
+    const errors = Array.from({ length: 30 }, (_, index) => new Error(`not ready ${index + 1}`));
+    const sleeps: number[] = [];
+    let attempts = 0;
+
+    await expect(initializeRuntimeObjectStorage(productionS3Config("http://minio:9000"), {
+      createMemoryObjectStorage: createInMemoryObjectStorage,
+      createS3ObjectStorage() {
+        return {
+          ...createInMemoryObjectStorage(),
+          async ensureReady() {
+            const error = errors[attempts];
+            attempts += 1;
+            throw error;
+          }
+        };
+      },
+      async sleep(ms) { sleeps.push(ms); }
+    })).rejects.toBe(errors[29]);
+
+    expect(attempts).toBe(30);
+    expect(sleeps).toEqual(Array.from({ length: 29 }, () => 1000));
+  });
+
   it.each(["demo", "pilot"] as const)("allows verified in-memory storage for %s mode", async (mode) => {
     const events: string[] = [];
     await initializeRuntimeObjectStorage(runtimeConfig({ mode }), {
@@ -107,6 +213,28 @@ describe("PostgreSQL server initialization", () => {
     events.push("listen");
 
     expect(events).toEqual(["memory-factory", "storage-ready", "listen"]);
+  });
+
+  it.each(["demo", "pilot"] as const)("does not retry failed readiness in %s mode", async (mode) => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+
+    await expect(initializeRuntimeObjectStorage(runtimeConfig({ mode }), {
+      createMemoryObjectStorage() {
+        return {
+          ...createInMemoryObjectStorage(),
+          async ensureReady() {
+            attempts += 1;
+            throw new Error("not ready");
+          }
+        };
+      },
+      createS3ObjectStorage: createInMemoryObjectStorage,
+      async sleep(ms) { sleeps.push(ms); }
+    })).rejects.toThrow("not ready");
+
+    expect(attempts).toBe(1);
+    expect(sleeps).toEqual([]);
   });
 
   it("verifies object storage before startup can continue", async () => {

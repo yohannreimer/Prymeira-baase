@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { BaaseOperationalStore, BaaseRuntimeConfig, BaaseS3Config } from "./config/runtime";
 import { createConfiguredPostgresRepositoryBundle, ensurePostgresSchema } from "./db/postgres";
 import { ensureOperationalSchema } from "./db/operational-schema";
@@ -23,6 +24,7 @@ const defaultDependencies: PostgresRuntimeDependencies<DefaultRepositoryBundle> 
 type RuntimeObjectStorageDependencies = {
   createMemoryObjectStorage(): ObjectStorage;
   createS3ObjectStorage(config: BaaseS3Config): ObjectStorage;
+  sleep?(ms: number): Promise<void>;
 };
 
 const defaultObjectStorageDependencies: RuntimeObjectStorageDependencies = {
@@ -30,10 +32,34 @@ const defaultObjectStorageDependencies: RuntimeObjectStorageDependencies = {
   createS3ObjectStorage
 };
 
+const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function hasValidEndpointHostname(endpoint: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(endpoint).hostname;
+  } catch {
+    return false;
+  }
+
+  if (!hostname) return false;
+  const unwrappedHostname = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (isIP(unwrappedHostname)) return true;
+  if (hostname.length > 253) return false;
+  return hostname.split(".").every((label) => DNS_LABEL_PATTERN.test(label));
+}
+
 export function assertRuntimeStoragePolicy(runtimeConfig: BaaseRuntimeConfig): void {
   if (runtimeConfig.mode === "production"
     && (runtimeConfig.objectStorage.provider !== "s3" || !runtimeConfig.objectStorage.s3)) {
     throw new Error("PRODUCTION_OBJECT_STORAGE_REQUIRED");
+  }
+  if (runtimeConfig.mode === "production"
+    && runtimeConfig.objectStorage.s3?.endpoint
+    && !hasValidEndpointHostname(runtimeConfig.objectStorage.s3.endpoint)) {
+    throw new Error("S3_ENDPOINT_HOSTNAME_INVALID");
   }
 }
 
@@ -46,12 +72,37 @@ export async function initializeRuntimeObjectStorage(
   const objectStorage = runtimeConfig.objectStorage.provider === "s3" && s3
     ? dependencies.createS3ObjectStorage(s3)
     : dependencies.createMemoryObjectStorage();
-  await ensureObjectStorageReady(objectStorage);
+  const productionS3 = runtimeConfig.mode === "production"
+    && runtimeConfig.objectStorage.provider === "s3";
+  await ensureObjectStorageReady(objectStorage, productionS3 ? {
+    attempts: 30,
+    delayMs: 1000,
+    sleep: dependencies.sleep
+  } : undefined);
   return objectStorage;
 }
 
-export async function ensureObjectStorageReady(objectStorage: ObjectStorage): Promise<void> {
-  await objectStorage.ensureReady();
+export async function ensureObjectStorageReady(
+  objectStorage: ObjectStorage,
+  options: {
+    attempts?: number;
+    delayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<void> {
+  const attempts = options.attempts ?? 1;
+  const delayMs = options.delayMs ?? 0;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await objectStorage.ensureReady();
+      return;
+    } catch (error) {
+      if (attempt === attempts) throw error;
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  }
 }
 
 export function initializePostgresRuntime(

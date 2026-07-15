@@ -119,7 +119,7 @@ describe("runtime config", () => {
 
   it("reads a path-style S3-compatible configuration for MinIO", () => {
     const config = readRuntimeConfig({
-      S3_ENDPOINT: "http://prymeira_baase_minio:9000",
+      S3_ENDPOINT: "http://minio:9000",
       S3_REGION: "us-east-1",
       S3_BUCKET: "prymeira-baase",
       S3_ACCESS_KEY: "minio-user",
@@ -130,7 +130,7 @@ describe("runtime config", () => {
     expect(config.objectStorage).toEqual({
       provider: "s3",
       s3: {
-        endpoint: "http://prymeira_baase_minio:9000",
+        endpoint: "http://minio:9000",
         region: "us-east-1",
         bucket: "prymeira-baase",
         accessKeyId: "minio-user",
