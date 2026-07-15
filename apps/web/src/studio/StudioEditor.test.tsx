@@ -35,7 +35,7 @@ describe("StudioEditor", () => {
       return response({}, 404);
     });
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} debounceMs={60_000} />);
-    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize este plano");
+    await user.type(await screen.findByLabelText(/o que você quer entender/i), "Organize este plano");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
 
@@ -62,7 +62,7 @@ describe("StudioEditor", () => {
       return response({}, 404);
     });
     render(<StudioEditor document={document} onDocumentChange={onDocumentChange} debounceMs={60_000} />);
-    await user.type(screen.getByLabelText(/o que você quer entender/i), "Organize este plano");
+    await user.type(await screen.findByLabelText(/o que você quer entender/i), "Organize este plano");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
     await user.click(within(card).getByRole("button", { name: "Aceitar como nova versão" }));
@@ -654,9 +654,9 @@ describe("StudioEditor", () => {
   it("provides coarse-pointer touch targets without enlarging the desktop controls", () => {
     expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-height: 44px/);
     expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*min-width: 44px/);
-    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__toolbar button[\s\S]*min-height: 44px/);
+    expect(studioStyles).toMatch(/@media \(max-width: 720px\)[\s\S]*\.studio-editor__toolbar button[\s\S]*min-height: 44px/);
     expect(studioStyles).toMatch(/@media \(pointer: coarse\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
-    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
+    expect(studioStyles).toMatch(/@media \(max-width: 720px\)[\s\S]*\.studio-editor__link-field input[\s\S]*min-height: 44px/);
   });
 });
 

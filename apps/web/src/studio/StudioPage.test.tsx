@@ -217,7 +217,7 @@ describe("StudioPage", () => {
     expect(navigation).not.toHaveAttribute("aria-hidden");
     expect(within(navigation).getAllByRole("button")).toHaveLength(10);
     expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeVisible();
-    expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*overflow-x: auto/);
+    expect(studioStyles).toMatch(/@media \(max-width: 720px\)[\s\S]*overflow-x: auto/);
   });
 
   it("connects inbox, search, and archive to one private library surface", async () => {

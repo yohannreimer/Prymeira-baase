@@ -198,7 +198,11 @@ button { cursor: pointer; }
 }
 
 .app { display: flex; min-height: 100vh; background: var(--bg); color: var(--ink); }
-.screen { animation: fadeUp 0.28s ease both; max-width: 1120px; margin: 0 auto; }
+.screen { max-width: 1120px; margin: 0 auto; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .screen { animation: fadeUp 0.28s cubic-bezier(.22, 1, .36, 1) both; }
+}
 .app-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .app-main { flex: 1; overflow: auto; padding: 30px 26px 70px; }
 
@@ -2602,7 +2606,6 @@ button { cursor: pointer; }
   .app-side {
     position: fixed;
     transform: translateX(-104%);
-    transition: transform 0.26s ease;
     box-shadow: 0 24px 70px rgba(27, 26, 23, 0.28);
   }
   .app-side.open { transform: translateX(0); }
@@ -2613,6 +2616,10 @@ button { cursor: pointer; }
   .app-main { padding: 22px 16px 70px; }
   .top-actions { gap: 8px; }
   .user-chip div { display: none; }
+}
+
+@media (max-width: 900px) and (prefers-reduced-motion: no-preference) {
+  .app-side { transition: transform 0.2s cubic-bezier(.22, 1, .36, 1); }
 }
 
 .employee-bottom-nav { display: none; }

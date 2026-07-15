@@ -1,5 +1,5 @@
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   createStudioDocument,
   getStudioDocument,
@@ -9,9 +9,10 @@ import {
 import type { StudioCitation, StudioDocument, StudioDocumentVersion, StudioInternalCitationTarget } from "./studio.types";
 import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-editor-content";
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
-import StudioCopilot from "./StudioCopilot";
 import RelatedThoughts from "./RelatedThoughts";
 import StudioStructures from "./StudioStructures";
+
+const StudioCopilot = lazy(() => import("./StudioCopilot"));
 
 type StudioEditorProps = {
   document: StudioDocument;
@@ -413,7 +414,7 @@ function StudioEditorSession({
           }}
         />
         <div className="studio-editor__save-line">
-          <span className="studio-editor__save-status" role="status" aria-label="Estado do salvamento" data-state={autosave.state}>
+          <span className="studio-editor__save-status" role="status" aria-live="polite" aria-atomic="true" aria-label="Estado do salvamento" data-state={autosave.state}>
             <i aria-hidden="true" className={`ph-light ${autosave.state === "saving" ? "ph-circle-notch" : autosave.state === "saved" ? "ph-check" : "ph-cloud"}`} />
             {saveLabel}
           </span>
@@ -560,25 +561,27 @@ function StudioEditorSession({
     <aside className="studio-editor__context" aria-label="Conexões deste documento">
       <RelatedThoughts documentId={sourceDocument.id} onOpenDocument={onOpenDocument} />
     </aside>
-    <StudioCopilot
-      document={autosave.document}
-      selectedText={selectedText}
-      onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
-      suggestionAcceptance={{
-        canAccept: canAcceptSuggestion,
-        status: suggestionAcceptanceStatus,
-        capture: captureEditorGeneration,
-        isCurrent: isCurrentEditorGeneration,
-        onConflict: () => {
-          autosave.markConflict(getCurrentEditorDraft());
-          setResolutionError("A proposta foi salva como nova versão no servidor, mas sua edição local mudou durante o aceite. Sua escrita foi preservada para você decidir como continuar.");
-        }
-      }}
-      onOpenInternalSource={(target, citation) => {
-        if (target.kind === "studio_document" && target.resourceId) onOpenDocument?.(target.resourceId);
-        else onOpenInternalSource?.(target, citation);
-      }}
-    />
+    <Suspense fallback={<div className="studio-copilot-skeleton" role="status" aria-label="Abrindo copiloto"><span /><span /><span /></div>}>
+      <StudioCopilot
+        document={autosave.document}
+        selectedText={selectedText}
+        onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
+        suggestionAcceptance={{
+          canAccept: canAcceptSuggestion,
+          status: suggestionAcceptanceStatus,
+          capture: captureEditorGeneration,
+          isCurrent: isCurrentEditorGeneration,
+          onConflict: () => {
+            autosave.markConflict(getCurrentEditorDraft());
+            setResolutionError("A proposta foi salva como nova versão no servidor, mas sua edição local mudou durante o aceite. Sua escrita foi preservada para você decidir como continuar.");
+          }
+        }}
+        onOpenInternalSource={(target, citation) => {
+          if (target.kind === "studio_document" && target.resourceId) onOpenDocument?.(target.resourceId);
+          else onOpenInternalSource?.(target, citation);
+        }}
+      />
+    </Suspense>
     </div>
   );
 }

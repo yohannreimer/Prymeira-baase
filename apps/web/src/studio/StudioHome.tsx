@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { getStudioHome } from "./studio-api";
 import type { StudioDocument, StudioHome as StudioHomeModel, StudioNextRitual } from "./studio.types";
 import UniversalCaptureComposer, { type StudioCaptureOutcome } from "./UniversalCaptureComposer";
@@ -16,7 +16,7 @@ function documentLabel(document: StudioDocument) {
   return document.title?.trim() || document.bodyText.trim().split(/\s+/u).slice(0, 8).join(" ") || "Captura sem título";
 }
 
-function DocumentLink({ document, onOpen }: { document: StudioDocument; onOpen(document: StudioDocument): void }) {
+const DocumentLink = memo(function DocumentLink({ document, onOpen }: { document: StudioDocument; onOpen(document: StudioDocument): void }) {
   return (
     <button className="studio-document-link" type="button" onClick={() => onOpen(document)}>
       <span>{documentLabel(document)}</span>
@@ -24,13 +24,13 @@ function DocumentLink({ document, onOpen }: { document: StudioDocument; onOpen(d
       <i aria-hidden="true" className="ph-light ph-arrow-up-right" />
     </button>
   );
-}
+});
 
 function EmptyInvitation({ children }: { children: string }) {
   return <p className="studio-home__invitation">{children}</p>;
 }
 
-function NextRitual({ ritual, onOpen }: { ritual: StudioNextRitual; onOpen?(ritualId: string): void }) {
+const NextRitual = memo(function NextRitual({ ritual, onOpen }: { ritual: StudioNextRitual; onOpen?(ritualId: string): void }) {
   const date = new Intl.DateTimeFormat("pt-BR", {
     weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
     timeZone: ritual.timezone
@@ -48,7 +48,7 @@ function NextRitual({ ritual, onOpen }: { ritual: StudioNextRitual; onOpen?(ritu
       <i aria-hidden="true" className="ph-light ph-arrow-right" />
     </button>
   );
-}
+});
 
 function StudioHomeSkeleton() {
   return (

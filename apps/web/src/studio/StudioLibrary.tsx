@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import {
   addStudioDocumentToCollection,
   archiveStudioDocument,
@@ -32,6 +32,7 @@ type StudioLibraryProps = {
 type Rollback = { document: StudioDocument; index: number };
 
 const PAGE_SIZE = 30;
+const EMPTY_MEMBERSHIPS: string[] = [];
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "short", year: "numeric" });
 
 export default function StudioLibrary({
@@ -65,6 +66,7 @@ export default function StudioLibrary({
   const pendingFocusIndex = useRef<number | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const emptyRef = useRef<HTMLDivElement | null>(null);
+  const rowActionsRef = useRef<StudioLibraryRowActions>(undefined!);
   const queryKey = `${query.status}:${query.inbox_state ?? "all"}:${query.collection_id ?? "all"}`;
   const queryGeneration = useRef(0);
   const collections = sharedCollections ?? loadedCollections;
@@ -282,6 +284,18 @@ export default function StudioLibrary({
     titleRefs.current[next]?.focus();
   }
 
+  rowActionsRef.current = {
+    changeActiveIndex: setActiveIndex,
+    open: onOpenDocument,
+    moveFocus,
+    review,
+    restore,
+    archive,
+    changeConfirming: setConfirmingId,
+    changeOrganizing: setExpandedCollectionsId,
+    changeMembership: toggleMembership
+  };
+
   return (
     <section className="studio-library" aria-label={query.status === "archived" ? "Documentos arquivados" : query.inbox_state ? "Entrada" : "Biblioteca do Estúdio"}>
       <p className="sr-only" role="status" aria-live="polite">{liveMessage}</p>
@@ -296,70 +310,138 @@ export default function StudioLibrary({
 
       {visibleDocuments.length ? (
         <div className="studio-library__list" role="list">
-          {visibleDocuments.map((document, index) => {
-            const isOrganizing = expandedCollectionsId === document.id;
-            const selectedCollections = memberships[document.id] ?? [];
-            return (
-              <article className="studio-library-row" role="listitem" aria-label={document.title || "Sem título"} key={document.id}>
-                <div className="studio-library-row__main">
-                  <button
-                    ref={(node) => { titleRefs.current[index] = node; }}
-                    type="button"
-                    className="studio-library-row__open"
-                    tabIndex={activeIndex === index ? 0 : -1}
-                    onFocus={() => setActiveIndex(index)}
-                    onClick={() => onOpenDocument(document)}
-                    onKeyDown={(event) => {
-                      if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(index, 1); }
-                      else if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(index, -1); }
-                    }}
-                  >
-                    <span className="studio-library-row__title">{document.title || "Sem título"}</span>
-                    <span className="studio-library-row__excerpt">{document.bodyText || "Registro sem texto."}</span>
-                  </button>
-                  <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
-                </div>
-
-                <div className="studio-library-row__actions">
-                  {query.inbox_state ? <button type="button" onClick={() => void review(document)}>Marcar como revisado</button> : null}
-                  {query.status === "active" && collections.length ? (
-                    <button type="button" aria-expanded={isOrganizing} onClick={() => setExpandedCollectionsId(isOrganizing ? null : document.id)}>Organizar em coleções</button>
-                  ) : null}
-                  {query.status === "archived" ? (
-                    <button type="button" onClick={() => void restore(document)}>Restaurar</button>
-                  ) : confirmingId === document.id ? (
-                    <span className="studio-library-row__confirm">
-                      <span>Arquivar este registro?</span>
-                      <button ref={confirmButtonRef} type="button" onClick={() => void archive(document)}>Confirmar arquivo</button>
-                      <button type="button" onClick={() => setConfirmingId(null)}>Cancelar</button>
-                    </span>
-                  ) : <button type="button" onClick={() => setConfirmingId(document.id)}>Arquivar</button>}
-                </div>
-
-                {isOrganizing ? (
-                  <fieldset className="studio-library-row__collections">
-                    <legend>Coleções</legend>
-                    {collections.map((collection) => (
-                      <label key={collection.id}>
-                        <input
-                          type="checkbox"
-                          checked={selectedCollections.includes(collection.id)}
-                          onChange={(event) => void toggleMembership(document.id, collection.id, event.target.checked)}
-                        />
-                        <span>{collection.name}</span>
-                      </label>
-                    ))}
-                  </fieldset>
-                ) : null}
-              </article>
-            );
-          })}
+          {visibleDocuments.map((document, index) => (
+            <StudioLibraryRow
+              key={document.id}
+              document={document}
+              index={index}
+              active={activeIndex === index}
+              isOrganizing={expandedCollectionsId === document.id}
+              isConfirming={confirmingId === document.id}
+              selectedCollections={memberships[document.id] ?? EMPTY_MEMBERSHIPS}
+              collections={collections}
+              inbox={Boolean(query.inbox_state)}
+              status={query.status}
+              titleRefs={titleRefs}
+              confirmButtonRef={confirmButtonRef}
+              actionsRef={rowActionsRef}
+            />
+          ))}
         </div>
       ) : null}
 
       {cursor ? <button className="studio-library__more" type="button" disabled={loadingMore} onClick={() => void loadNextPage()}>{loadingMore ? "Carregando…" : "Carregar mais"}</button> : null}
     </section>
   );
+}
+
+type StudioLibraryRowProps = {
+  document: StudioDocument;
+  index: number;
+  active: boolean;
+  isOrganizing: boolean;
+  isConfirming: boolean;
+  selectedCollections: string[];
+  collections: StudioCollection[];
+  inbox: boolean;
+  status: StudioDocumentStatus;
+  titleRefs: MutableRefObject<Array<HTMLButtonElement | null>>;
+  confirmButtonRef: RefObject<HTMLButtonElement | null>;
+  actionsRef: MutableRefObject<StudioLibraryRowActions>;
+};
+
+type StudioLibraryRowActions = {
+  changeActiveIndex(index: number): void;
+  open(document: StudioDocument): void;
+  moveFocus(index: number, direction: 1 | -1): void;
+  review(document: StudioDocument): Promise<void>;
+  restore(document: StudioDocument): Promise<void>;
+  archive(document: StudioDocument): Promise<void>;
+  changeConfirming(documentId: string | null): void;
+  changeOrganizing(documentId: string | null): void;
+  changeMembership(documentId: string, collectionId: string, checked: boolean): Promise<void>;
+};
+
+const StudioLibraryRow = memo(function StudioLibraryRow({
+  document,
+  index,
+  active,
+  isOrganizing,
+  isConfirming,
+  selectedCollections,
+  collections,
+  inbox,
+  status,
+  titleRefs,
+  confirmButtonRef,
+  actionsRef
+}: StudioLibraryRowProps) {
+  return (
+    <article className="studio-library-row" role="listitem" aria-label={document.title || "Sem título"}>
+      <div className="studio-library-row__main">
+        <button
+          ref={(node) => { titleRefs.current[index] = node; }}
+          type="button"
+          className="studio-library-row__open"
+          tabIndex={active ? 0 : -1}
+          onFocus={() => actionsRef.current.changeActiveIndex(index)}
+          onClick={() => actionsRef.current.open(document)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") { event.preventDefault(); actionsRef.current.moveFocus(index, 1); }
+            else if (event.key === "ArrowUp") { event.preventDefault(); actionsRef.current.moveFocus(index, -1); }
+          }}
+        >
+          <span className="studio-library-row__title">{document.title || "Sem título"}</span>
+          <span className="studio-library-row__excerpt">{document.bodyText || "Registro sem texto."}</span>
+        </button>
+        <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
+      </div>
+
+      <div className="studio-library-row__actions">
+        {inbox ? <button type="button" onClick={() => void actionsRef.current.review(document)}>Marcar como revisado</button> : null}
+        {status === "active" && collections.length ? (
+          <button type="button" aria-expanded={isOrganizing} onClick={() => actionsRef.current.changeOrganizing(isOrganizing ? null : document.id)}>Organizar em coleções</button>
+        ) : null}
+        {status === "archived" ? (
+          <button type="button" onClick={() => void actionsRef.current.restore(document)}>Restaurar</button>
+        ) : isConfirming ? (
+          <span className="studio-library-row__confirm">
+            <span>Arquivar este registro?</span>
+            <button ref={confirmButtonRef} type="button" onClick={() => void actionsRef.current.archive(document)}>Confirmar arquivo</button>
+            <button type="button" onClick={() => actionsRef.current.changeConfirming(null)}>Cancelar</button>
+          </span>
+        ) : <button type="button" onClick={() => actionsRef.current.changeConfirming(document.id)}>Arquivar</button>}
+      </div>
+
+      {isOrganizing ? (
+        <fieldset className="studio-library-row__collections">
+          <legend>Coleções</legend>
+          {collections.map((collection) => (
+            <label key={collection.id}>
+              <input
+                type="checkbox"
+                checked={selectedCollections.includes(collection.id)}
+                onChange={(event) => void actionsRef.current.changeMembership(document.id, collection.id, event.target.checked)}
+              />
+              <span>{collection.name}</span>
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
+    </article>
+  );
+}, sameStudioLibraryRow);
+
+function sameStudioLibraryRow(previous: StudioLibraryRowProps, next: StudioLibraryRowProps) {
+  return previous.document === next.document
+    && previous.index === next.index
+    && previous.active === next.active
+    && previous.isOrganizing === next.isOrganizing
+    && previous.isConfirming === next.isConfirming
+    && previous.selectedCollections === next.selectedCollections
+    && previous.collections === next.collections
+    && previous.inbox === next.inbox
+    && previous.status === next.status;
 }
 
 function LibrarySkeleton() {

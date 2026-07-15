@@ -287,7 +287,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
         }}><i className="ph-light ph-sidebar-simple" aria-hidden="true" /></button>
       </header>
 
-      <p ref={liveStatusRef} className="sr-only" role="status" aria-live="polite" tabIndex={-1}>{liveStatus}</p>
+      <p ref={liveStatusRef} className="sr-only" role="status" aria-live="polite" aria-atomic="true" tabIndex={-1}>{liveStatus}</p>
       <div className="studio-copilot__conversation">
         {!turns.length ? <div className="studio-copilot__welcome">
           <p>Use este espaço para questionar, organizar ou confrontar o que você está escrevendo.</p>

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import StudioLibrary from "./StudioLibrary";
@@ -66,6 +66,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   const documentRequestGeneration = useRef(0);
   const selectedDocumentId = useRef<string | null>(null);
   const documentErrorActionRef = useRef<HTMLButtonElement | null>(null);
+  const navigationRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const collectionStore = useStudioCollections();
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
 
@@ -100,6 +101,22 @@ export default function StudioPage({ onOpenInternalSource }: {
     setDocumentOpenError(null);
     setSection(next);
     window.history.pushState(null, "", `#estudio/${next}`);
+  }
+
+  function moveNavigationFocus(event: ReactKeyboardEvent<HTMLButtonElement>, currentIndex: number) {
+    const lastIndex = studioNavigation.length - 1;
+    const nextIndex = event.key === "ArrowDown" || event.key === "ArrowRight"
+      ? (currentIndex + 1) % studioNavigation.length
+      : event.key === "ArrowUp" || event.key === "ArrowLeft"
+        ? (currentIndex - 1 + studioNavigation.length) % studioNavigation.length
+        : event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? lastIndex
+            : null;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    navigationRefs.current[nextIndex]?.focus();
   }
 
   function openRitual(ritualId: string) {
@@ -219,13 +236,15 @@ export default function StudioPage({ onOpenInternalSource }: {
 
       <div className="studio-layout" data-testid="studio-layout">
         <nav className="studio-nav" aria-label="Seções do Estúdio">
-          {studioNavigation.map((item) => (
+          {studioNavigation.map((item, index) => (
             <button
               className="studio-nav__item"
               type="button"
               key={item.key}
+              ref={(node) => { navigationRefs.current[index] = node; }}
               aria-current={section === item.key ? "page" : undefined}
               onClick={() => navigateSection(item.key as Exclude<StudioSection, "document">)}
+              onKeyDown={(event) => moveNavigationFocus(event, index)}
             >
               <i aria-hidden="true" className={`ph-light ${item.icon}`} />
               <span>{item.label}</span>

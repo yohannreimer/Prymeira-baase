@@ -1,0 +1,164 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import StudioCopilot from "./StudioCopilot";
+import StudioPage from "./StudioPage";
+import type { StudioDocument } from "./studio.types";
+
+const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
+const proactivityStyles = readFileSync(resolve(process.cwd(), "src/studio/studio-proactivity.css"), "utf8");
+
+describe("Owner Studio accessibility and adaptive quiet ops", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/#estudio");
+    installLocalStorage();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn()
+      })
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.document.body.style.overflow = "";
+  });
+
+  it("exposes named landmarks, ordered headings, and labelled capture controls", () => {
+    render(<StudioPage />);
+
+    const studio = screen.getByRole("region", { name: "Estúdio" });
+    expect(within(studio).getByRole("navigation", { name: "Seções do Estúdio" })).toBeInTheDocument();
+    expect(within(studio).getByRole("region", { name: "Conteúdo da seção" })).toBeInTheDocument();
+    expect(within(studio).getByRole("heading", { level: 1, name: "Estúdio" })).toBeInTheDocument();
+    expect(within(studio).getByRole("heading", { level: 2, name: "Um espaço para pensar com clareza." })).toBeInTheDocument();
+    expect(within(studio).getByRole("form", { name: "Nova captura" })).toBeInTheDocument();
+    expect(within(studio).getByRole("textbox", { name: "Registre um pensamento" })).toBeInTheDocument();
+  });
+
+  it("moves through the internal navigation with arrows, Home, and End", () => {
+    render(<StudioPage />);
+    const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
+    const home = within(navigation).getByRole("button", { name: "Início" });
+    const inbox = within(navigation).getByRole("button", { name: "Entrada" });
+    const privacy = within(navigation).getByRole("button", { name: "Privacidade" });
+
+    home.focus();
+    fireEvent.keyDown(home, { key: "ArrowDown" });
+    expect(inbox).toHaveFocus();
+    fireEvent.keyDown(inbox, { key: "End" });
+    expect(privacy).toHaveFocus();
+    fireEvent.keyDown(privacy, { key: "Home" });
+    expect(home).toHaveFocus();
+    fireEvent.keyDown(home, { key: "ArrowUp" });
+    expect(privacy).toHaveFocus();
+  });
+
+  it("contains the mobile copilot sheet and returns focus to its trigger", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query === "(max-width: 900px)",
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn()
+      })
+    });
+
+    render(<StudioCopilot document={studioDocument} onDocumentChange={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: "Copiloto do Estúdio" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    await waitFor(() => expect(screen.getByLabelText("O que você quer entender melhor?")).toHaveFocus());
+    await user.keyboard("{Escape}");
+    const trigger = screen.getByRole("button", { name: "Pensar com a IA" });
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("announces stream phases once without exposing token deltas as live text", async () => {
+    const user = userEvent.setup();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(globalThis.fetch).mockResolvedValue(new Response(new ReadableStream({
+      start(streamController) { controller = streamController; }
+    }), { headers: { "content-type": "text/event-stream" } }));
+    render(<StudioCopilot document={studioDocument} onDocumentChange={vi.fn()} />);
+
+    const live = screen.getByRole("status");
+    await user.type(screen.getByLabelText("O que você quer entender melhor?"), "Organize este pensamento");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    expect(live).toHaveTextContent("Gerando resposta");
+
+    controller.enqueue(new TextEncoder().encode("event: delta\ndata: {\"text\":\"Primeiro token\"}\n\n"));
+    controller.enqueue(new TextEncoder().encode("event: delta\ndata: {\"text\":\" e segundo token\"}\n\n"));
+    expect(live).not.toHaveTextContent("token");
+    controller.enqueue(new TextEncoder().encode("event: done\ndata: {\"message_id\":\"message_1\"}\n\n"));
+    controller.close();
+    await waitFor(() => expect(live).toHaveTextContent("Resposta concluída"));
+  });
+
+  it("encodes state beyond color and keeps save feedback persistently live", () => {
+    render(<StudioPage />);
+    expect(screen.getByRole("button", { name: "Início" })).toHaveAttribute("aria-current", "page");
+    expect(studioStyles).toMatch(/studio-editor__save-status[\s\S]*data-state/);
+    expect(studioStyles).toMatch(/studio-nav__item\[aria-current="page"\]/);
+  });
+
+  it.each([1440, 1024, 768, 390])("defines a usable Studio layout at %s CSS pixels", (width) => {
+    expect(studioStyles).toMatch(/\.studio-layout\s*\{[\s\S]*?display:\s*grid/);
+    expect(studioStyles).toMatch(/\.studio-writing-layout\s*\{[\s\S]*?grid-template-areas:\s*"editor copilot" "related copilot"/);
+    if (width < 900) expect(studioStyles).toMatch(/@media \(max-width: 900px\)[\s\S]*?\.studio-copilot\s*\{/);
+    if (width < 720) expect(studioStyles).toMatch(/@media \(max-width: 720px\)[\s\S]*?\.studio-nav\s*\{[\s\S]*?overflow-x:\s*auto/);
+    expect(studioStyles).toMatch(/--studio-touch-target:\s*44px/);
+  });
+
+  it("enables motion only when the user has not requested reduced motion", () => {
+    expect(studioStyles).toMatch(/@media \(prefers-reduced-motion: no-preference\)[\s\S]*?transition:/);
+    expect(studioStyles).not.toMatch(/\.studio-nav__item\s*\{[^}]*transition:/);
+    expect(studioStyles).not.toMatch(/\.studio-composer\s*\{[^}]*transition:/);
+  });
+
+  it("keeps proactive signals inside the shared quiet-ops visual system", () => {
+    expect(proactivityStyles).not.toMatch(/linear-gradient|#[0-9a-f]{3,8}|\brgba?\(/i);
+    expect(proactivityStyles).toMatch(/background:\s*var\(--accent-bg\)/);
+    expect(proactivityStyles).toMatch(/border-radius:\s*var\(--studio-panel-radius\)/);
+    expect(proactivityStyles).toMatch(/@media \(max-width: 720px\)/);
+  });
+});
+
+const studioDocument: StudioDocument = {
+  id: "document_1",
+  workspaceId: "workspace_1",
+  ownerProfileId: "owner_1",
+  captureKey: null,
+  title: "Plano",
+  bodyJson: { type: "doc", content: [] },
+  bodyText: "Original",
+  revision: 1,
+  captureMode: "text",
+  inboxState: "reviewed",
+  isFocused: false,
+  status: "active",
+  createdAt: "2026-07-14T10:00:00.000Z",
+  updatedAt: "2026-07-14T10:00:00.000Z",
+  archivedAt: null
+};
+
+function installLocalStorage() {
+  const values = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, String(value))
+    }
+  });
+}
