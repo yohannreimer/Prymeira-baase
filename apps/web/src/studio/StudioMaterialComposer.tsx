@@ -159,6 +159,7 @@ export default function StudioMaterialComposer({
         setMessage({ kind: "status", text: "Material adicionado." });
         if (material.kind === "link") {
           setLink("");
+          restoreLinkFocusRef.current = true;
           setLinkMode(false);
         }
       }

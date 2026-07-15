@@ -89,6 +89,26 @@ describe("StudioMaterialComposer", () => {
     expect(onAttached).toHaveBeenCalledWith(attached);
   });
 
+  it("restores focus to the link trigger after a successful capture", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    renderComposer({ attachLink: vi.fn(() => request.promise) });
+
+    const trigger = screen.getByRole("button", { name: "Capturar link" });
+    await user.click(trigger);
+    await user.type(
+      screen.getByRole("textbox", { name: "Endereço do link" }),
+      "https://example.com/referencia"
+    );
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+    await act(async () => request.resolve(asset({ kind: "link_snapshot" })));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("form", { name: "Captura de link" })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    });
+  });
+
   it("shows exactly the four material actions under their accessible label", () => {
     renderComposer();
 
@@ -221,8 +241,6 @@ describe("StudioMaterialComposer", () => {
     expect(editor).toBeEnabled();
     await user.type(editor, "Texto externo");
     expect(editor).toHaveValue("Texto externo");
-
-    await act(async () => request.resolve(asset({ kind: "link_snapshot" })));
   });
 
   it("validates public HTTP(S) links and restores focus when link mode closes", async () => {
