@@ -311,6 +311,16 @@ export function buildApp(options: BuildAppOptions = {}) {
       });
     }
 
+    if (error instanceof Error && error.message === "AI_PROVIDER_UNAVAILABLE") {
+      return reply.status(503).send({
+        error: {
+          code: "AI_PROVIDER_UNAVAILABLE",
+          message: "A inteligência artificial do Estúdio está indisponível no momento.",
+          details: {}
+        }
+      });
+    }
+
     if (error instanceof Error && error.message === "ONBOARDING_SESSION_STALE") {
       return reply.status(409).send({
         error: {

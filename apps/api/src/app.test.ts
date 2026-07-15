@@ -35,6 +35,22 @@ function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput>
 }
 
 describe("Baase API app", () => {
+  it("maps unavailable AI providers to a safe service-unavailable response globally", async () => {
+    const app = buildApp();
+    app.get("/__test/ai-provider-unavailable", async () => {
+      throw new Error("AI_PROVIDER_UNAVAILABLE");
+    });
+
+    const response = await app.inject({ method: "GET", url: "/__test/ai-provider-unavailable" });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toEqual({
+      code: "AI_PROVIDER_UNAVAILABLE",
+      message: "A inteligência artificial do Estúdio está indisponível no momento.",
+      details: {}
+    });
+  });
+
   it("bounds request receipt with a configurable two-minute default", async () => {
     const defaultApp = buildApp();
     const configuredApp = buildApp({ requestTimeoutMs: 45_000 });
