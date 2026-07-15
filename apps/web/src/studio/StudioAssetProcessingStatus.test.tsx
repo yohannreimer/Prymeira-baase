@@ -199,11 +199,11 @@ describe("StudioAssetProcessingStatus", () => {
       .toBeInTheDocument();
   });
 
-  it.each([
-    ["false", () => false],
-    ["rejection", () => Promise.reject(new Error("editor unavailable"))]
-  ])("keeps insertion retryable after a quiet %s result", async (_label, result) => {
-    const onInsertTranscript = vi.fn(result);
+  it.each(["false", "rejection"])("keeps insertion retryable after a quiet %s result", async (result) => {
+    const onInsertTranscript = vi.fn<(text: string) => boolean | Promise<boolean>>();
+    if (result === "false") onInsertTranscript.mockReturnValueOnce(false);
+    else onInsertTranscript.mockRejectedValueOnce(new Error("editor unavailable"));
+    onInsertTranscript.mockReturnValueOnce(true);
     render(
       <StudioAssetProcessingStatus
         asset={asset({ extractionStatus: "ready", extractedText: "Tentar novamente." })}
@@ -216,8 +216,13 @@ describe("StudioAssetProcessingStatus", () => {
     await userEvent.click(button);
     await waitFor(() => expect(button).toBeEnabled());
     expect(screen.queryByText("Transcrição adicionada ao documento")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "A transcrição não foi adicionada. Você pode tentar novamente."
+    );
+
     await userEvent.click(button);
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(onInsertTranscript).toHaveBeenCalledTimes(2);
   });
 });

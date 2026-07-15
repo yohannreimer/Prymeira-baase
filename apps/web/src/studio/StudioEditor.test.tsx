@@ -86,6 +86,35 @@ describe("StudioEditor", () => {
     expect(JSON.parse(String(patchCall?.[1]?.body)).body_text).toBe("Antes\nPrimeira\nSegunda\n depois");
   });
 
+  it("inserts transcript blocks between two existing paragraphs", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const source: StudioDocument = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Parágrafo um" }] },
+          { type: "paragraph", content: [{ type: "text", text: "Parágrafo dois" }] }
+        ]
+      },
+      bodyText: "Parágrafo um\nParágrafo dois"
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ document: { ...rawDocument, revision: 5 } }));
+    render(<StudioEditor ref={editorRef} document={source} onDocumentChange={vi.fn()} debounceMs={0} />);
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    const firstParagraph = body.querySelector("p");
+    if (!firstParagraph) throw new Error("Expected the first paragraph");
+
+    await setTipTapSelection(body, firstParagraph.textContent?.length ?? 0);
+    act(() => { editorRef.current?.insertTextAtLastSelection("Transcrição intermediária"); });
+
+    expect([...body.querySelectorAll("p")].map((paragraph) => paragraph.textContent)).toEqual([
+      "Parágrafo um",
+      "Transcrição intermediária",
+      "Parágrafo dois"
+    ]);
+  });
+
   it("falls back to the document end without a saved selection and ignores empty text", async () => {
     const editorRef = createRef<StudioEditorHandle>();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ document: { ...rawDocument, revision: 5 } }));

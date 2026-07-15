@@ -259,6 +259,8 @@ export default function StudioAssetProcessingStatus({
               </button>
               {insertionState === "inserted" ? (
                 <p role="status" aria-live="polite">Transcrição adicionada ao documento</p>
+              ) : insertionState === "error" ? (
+                <p role="alert">A transcrição não foi adicionada. Você pode tentar novamente.</p>
               ) : null}
             </div>
           ) : null}
