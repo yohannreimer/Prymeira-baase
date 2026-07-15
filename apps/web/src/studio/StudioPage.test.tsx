@@ -358,14 +358,19 @@ describe("StudioPage", () => {
       created_at: "2026-07-13T14:00:00.000Z"
     });
     let attachment = 0;
+    let assetLists = 0;
     vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
       const url = String(input);
+      const method = init?.method ?? "GET";
       if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return jsonResponse({ document: rawDocument });
-      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && method === "POST") {
         attachment += 1;
         return jsonResponse({ asset: attachment === 1 ? fileAsset : imageAsset }, 201);
       }
-      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [rawAsset] });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && method === "GET") {
+        assetLists += 1;
+        return jsonResponse({ assets: [rawAsset] });
+      }
       if (url.includes("/api/studio/assets/") && url.endsWith("/download")) {
         return jsonResponse({ url: `https://private.example/${url.split("/").at(-2)}`, expires_in_seconds: 600 });
       }
@@ -393,6 +398,7 @@ describe("StudioPage", () => {
     expect(screen.getAllByRole("region", { name: "Materiais do documento" })).toHaveLength(1);
     expect(materialRegion.closest("article.studio-editor")).not.toBeNull();
     expect(container.querySelector(".studio-writing-layout + .studio-document-assets")).toBeNull();
+    expect(assetLists).toBe(1);
   });
 
   it("keeps a document B attachment when document A's obsolete asset list resolves", async () => {
