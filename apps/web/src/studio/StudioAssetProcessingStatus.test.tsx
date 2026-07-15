@@ -1,10 +1,14 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StudioAsset } from "./studio.types";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 
 describe("StudioAssetProcessingStatus", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("follows a preserved audio asset through failure, real retry, and transcription", async () => {
     const pending = asset({ extractionStatus: "pending", updatedAt: "2026-07-13T12:01:00.000Z" });
     const failed = asset({
@@ -70,6 +74,148 @@ describe("StudioAssetProcessingStatus", () => {
     view.unmount();
     expect(statusSignal?.aborted).toBe(true);
     expect(downloadSignal?.aborted).toBe(true);
+  });
+
+  it("renews an expiring audio URL and cancels its timer when the card unmounts", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 });
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId("studio-audio-player")).toHaveAttribute(
+      "src",
+      "https://private.example/audio-v1"
+    );
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_001); });
+    expect(getDownload).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("studio-audio-player")).toHaveAttribute(
+      "src",
+      "https://private.example/audio-v2"
+    );
+
+    view.unmount();
+    await vi.advanceTimersByTimeAsync(600_001);
+    expect(getDownload).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["file", "image"] as const)("fetches a fresh %s download only when activated", async (kind) => {
+    const clicked: HTMLAnchorElement[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function captureClick(
+      this: HTMLAnchorElement
+    ) {
+      clicked.push(this);
+    });
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: `https://private.example/${kind}-v1`, expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: `https://private.example/${kind}-v2`, expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({
+          kind,
+          displayName: kind === "file" ? "plano.pdf" : "quadro.png",
+          extractionStatus: "ready"
+        })}
+        getDownload={getDownload}
+      />
+    );
+
+    expect(getDownload).not.toHaveBeenCalled();
+    const download = screen.getByRole("button", { name: "Baixar arquivo original" });
+    await userEvent.click(download);
+    await waitFor(() => expect(clicked).toHaveLength(1));
+    await userEvent.click(download);
+    await waitFor(() => expect(clicked).toHaveLength(2));
+
+    expect(getDownload).toHaveBeenCalledTimes(2);
+    expect(clicked.map((anchor) => anchor.href)).toEqual([
+      `https://private.example/${kind}-v1`,
+      `https://private.example/${kind}-v2`
+    ]);
+    for (const anchor of clicked) {
+      expect(anchor).toHaveAttribute("target", "_blank");
+      expect(anchor).toHaveAttribute("rel", "noreferrer");
+      expect(anchor).toHaveAttribute("download", kind === "file" ? "plano.pdf" : "quadro.png");
+      expect(anchor.isConnected).toBe(false);
+    }
+    click.mockRestore();
+  });
+
+  it("keeps a failed file download retryable and does not act after unmount", async () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const pending = deferred<{ url: string; expiresInSeconds: number }>();
+    const getDownload = vi.fn()
+      .mockRejectedValueOnce(new Error("expired"))
+      .mockImplementationOnce(() => pending.promise);
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ kind: "file", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+
+    const download = screen.getByRole("button", { name: "Baixar arquivo original" });
+    await userEvent.click(download);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Não foi possível preparar o download");
+    await userEvent.click(download);
+    expect(download).toBeDisabled();
+    view.unmount();
+    await act(async () => pending.resolve({ url: "https://private.example/late", expiresInSeconds: 600 }));
+
+    expect(click).not.toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it("suppresses concurrent file download activation", async () => {
+    const request = deferred<{ url: string; expiresInSeconds: number }>();
+    const getDownload = vi.fn(() => request.promise);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ kind: "file", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    const download = screen.getByRole("button", { name: "Baixar arquivo original" });
+
+    act(() => {
+      download.click();
+      download.click();
+    });
+    expect(getDownload).toHaveBeenCalledTimes(1);
+
+    await act(async () => request.resolve({ url: "https://private.example/file", expiresInSeconds: 600 }));
+    expect(click).toHaveBeenCalledTimes(1);
+    click.mockRestore();
+  });
+
+  it("offers one safe audio refresh after a player error", async () => {
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/broken", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/recovered", expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    const player = await screen.findByTestId("studio-audio-player");
+
+    fireEvent.error(player);
+    expect(screen.queryByTestId("studio-audio-player")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+
+    expect(await screen.findByTestId("studio-audio-player")).toHaveAttribute(
+      "src",
+      "https://private.example/recovered"
+    );
+    expect(getDownload).toHaveBeenCalledTimes(2);
   });
 
   it("stops bounded polling without declaring a processing failure", async () => {

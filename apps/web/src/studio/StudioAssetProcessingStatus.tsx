@@ -72,8 +72,10 @@ export default function StudioAssetProcessingStatus({
   const headingId = useId();
   const [current, setCurrent] = useState(asset);
   const [download, setDownload] = useState<Download | null>(null);
-  const [downloadError, setDownloadError] = useState(false);
-  const [downloadCycle, setDownloadCycle] = useState(0);
+  const [audioDownloadError, setAudioDownloadError] = useState(false);
+  const [audioDownloadCycle, setAudioDownloadCycle] = useState(0);
+  const [fileDownloadLoading, setFileDownloadLoading] = useState(false);
+  const [fileDownloadError, setFileDownloadError] = useState(false);
   const [pollError, setPollError] = useState(false);
   const [pollExhausted, setPollExhausted] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -82,7 +84,9 @@ export default function StudioAssetProcessingStatus({
   const [insertionState, setInsertionState] = useState<"idle" | "inserting" | "inserted" | "error">("idle");
   const pollControllerRef = useRef<AbortController | null>(null);
   const retryControllerRef = useRef<AbortController | null>(null);
+  const fileDownloadControllerRef = useRef<AbortController | null>(null);
   const retryingRef = useRef(false);
+  const fileDownloadingRef = useRef(false);
   const insertingRef = useRef(false);
   const insertionGenerationRef = useRef(0);
   const insertionCallbackRef = useRef(onInsertTranscript);
@@ -125,23 +129,48 @@ export default function StudioAssetProcessingStatus({
   }, [onInsertTranscript]);
 
   useEffect(() => {
-    if (asset.kind === "link_snapshot") {
+    if (asset.kind !== "audio") {
       setDownload(null);
-      setDownloadError(false);
+      setAudioDownloadError(false);
       return;
     }
     const controller = new AbortController();
-    setDownloadError(false);
+    let renewalTimer: ReturnType<typeof setTimeout> | null = null;
+    setAudioDownloadError(false);
     void getDownload(asset.id, controller.signal).then((result) => {
-      if (!controller.signal.aborted) setDownload(result);
+      if (controller.signal.aborted) return;
+      setDownload(result);
+      const lifetimeMs = Math.max(0, result.expiresInSeconds * 1_000);
+      if (lifetimeMs > 0) {
+        const renewalLeadMs = Math.min(30_000, Math.max(1_000, lifetimeMs * 0.1));
+        const renewalDelayMs = Math.max(1_000, lifetimeMs - renewalLeadMs);
+        renewalTimer = setTimeout(() => {
+          if (controller.signal.aborted) return;
+          setDownload(null);
+          setAudioDownloadCycle((cycle) => cycle + 1);
+        }, renewalDelayMs);
+      }
     }).catch(() => {
       if (!controller.signal.aborted) {
         setDownload(null);
-        setDownloadError(true);
+        setAudioDownloadError(true);
       }
     });
-    return () => controller.abort();
-  }, [asset.id, asset.kind, downloadCycle, getDownload]);
+    return () => {
+      controller.abort();
+      if (renewalTimer !== null) clearTimeout(renewalTimer);
+    };
+  }, [asset.id, asset.kind, audioDownloadCycle, getDownload]);
+
+  useEffect(() => {
+    setFileDownloadError(false);
+    setFileDownloadLoading(false);
+    return () => {
+      fileDownloadControllerRef.current?.abort();
+      fileDownloadControllerRef.current = null;
+      fileDownloadingRef.current = false;
+    };
+  }, [asset.id, asset.kind]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -178,9 +207,41 @@ export default function StudioAssetProcessingStatus({
 
   useEffect(() => () => {
     retryControllerRef.current?.abort();
+    fileDownloadControllerRef.current?.abort();
     insertionGenerationRef.current += 1;
     insertingRef.current = false;
   }, []);
+
+  async function downloadOriginal() {
+    const target = currentRef.current;
+    if (target.kind === "audio" || target.kind === "link_snapshot" || fileDownloadingRef.current) return;
+    fileDownloadingRef.current = true;
+    const controller = new AbortController();
+    fileDownloadControllerRef.current = controller;
+    setFileDownloadLoading(true);
+    setFileDownloadError(false);
+    try {
+      const freshDownload = await getDownload(target.id, controller.signal);
+      if (controller.signal.aborted) return;
+      const anchor = document.createElement("a");
+      anchor.href = freshDownload.url;
+      anchor.target = "_blank";
+      anchor.rel = "noreferrer";
+      anchor.download = target.displayName;
+      document.body.append(anchor);
+      try {
+        anchor.click();
+      } finally {
+        anchor.remove();
+      }
+    } catch {
+      if (!controller.signal.aborted) setFileDownloadError(true);
+    } finally {
+      if (fileDownloadControllerRef.current === controller) fileDownloadControllerRef.current = null;
+      fileDownloadingRef.current = false;
+      if (!controller.signal.aborted) setFileDownloadLoading(false);
+    }
+  }
 
   async function retryProcessing() {
     if (retryingRef.current) return;
@@ -243,25 +304,36 @@ export default function StudioAssetProcessingStatus({
         </span>
       </div>
 
-      {download ? (
+      {isAudio && download ? (
         <div className="studio-asset-status__original">
-          {isAudio ? (
-            <audio
-              controls
-              preload="metadata"
-              src={download.url}
-              onError={() => {
-                setDownload(null);
-                setDownloadError(true);
-              }}
-              aria-label={`Ouvir áudio original: ${current.displayName}`}
-              data-testid="studio-audio-player"
-            />
-          ) : null}
+          <audio
+            controls
+            preload="metadata"
+            src={download.url}
+            onError={() => {
+              setDownload(null);
+              setAudioDownloadError(true);
+            }}
+            aria-label={`Ouvir áudio original: ${current.displayName}`}
+            data-testid="studio-audio-player"
+          />
           <a href={download.url} target="_blank" rel="noreferrer" aria-label={originalLabel}>
             <i aria-hidden="true" className="ph-light ph-download-simple" />
             {originalLabel}
           </a>
+        </div>
+      ) : null}
+      {!isAudio && current.kind !== "link_snapshot" ? (
+        <div className="studio-asset-status__original">
+          <button
+            type="button"
+            aria-label={originalLabel}
+            disabled={fileDownloadLoading}
+            onClick={() => void downloadOriginal()}
+          >
+            <i aria-hidden="true" className="ph-light ph-download-simple" />
+            {fileDownloadLoading ? "Preparando download…" : originalLabel}
+          </button>
         </div>
       ) : null}
       {current.kind === "link_snapshot" && current.sourceUrl ? (
@@ -272,10 +344,15 @@ export default function StudioAssetProcessingStatus({
           </a>
         </div>
       ) : null}
-      {downloadError ? (
-        <button className="studio-asset-status__download-retry" type="button" onClick={() => setDownloadCycle((cycle) => cycle + 1)}>
-          {isAudio ? "Carregar áudio original" : "Carregar arquivo original"}
+      {audioDownloadError && isAudio ? (
+        <button className="studio-asset-status__download-retry" type="button" onClick={() => setAudioDownloadCycle((cycle) => cycle + 1)}>
+          Carregar áudio original
         </button>
+      ) : null}
+      {fileDownloadError ? (
+        <p role="alert" className="studio-asset-status__error">
+          Não foi possível preparar o download. Tente novamente.
+        </p>
       ) : null}
 
       <div className="studio-asset-status__processing" role="status" aria-live="polite">
