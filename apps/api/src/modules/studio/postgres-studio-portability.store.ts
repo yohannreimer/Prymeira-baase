@@ -1,12 +1,25 @@
 import type { OperationalClient, OperationalPool } from "../../db/operational-repository-support";
 import type {
   StudioOwnerPortabilityScope,
+  StudioPortabilityExport,
   StudioPortabilityObjectTarget,
   StudioPortabilitySnapshot,
   StudioPortabilityStore
 } from "./studio-portability.service";
 
 type Row = Record<string, unknown>;
+
+type ExportRow = {
+  id: string;
+  workspace_id: string;
+  owner_profile_id: string;
+  object_key: string;
+  status: StudioPortabilityExport["status"];
+  created_at: string | Date;
+  expires_at: string | Date;
+  claim_token: string | null;
+  claim_lease_expires_at: string | Date | null;
+};
 
 export function createPostgresStudioPortabilityStore(pool: OperationalPool): StudioPortabilityStore {
   return {
@@ -39,39 +52,179 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
       } satisfies StudioPortabilitySnapshot;
     },
 
-    async recordExport({ id, scope, objectKey, createdAt, expiresAt }) {
-      await pool.query(
-        `INSERT INTO studio_portability_exports
-          (id,workspace_id,owner_profile_id,object_key,status,created_at,expires_at)
-         VALUES ($1,$2,$3,$4,'preparing',$5,$6)`,
-        [id, scope.workspaceId, scope.ownerProfileId, objectKey, createdAt, expiresAt]
+    async createExport({ id, scope, objectKey, createdAt, expiresAt }, authorize) {
+      await withOwnerTransaction(pool, scope, authorize, async (client) => {
+        await ensureNoActiveDeletion(client, scope);
+        await client.query(
+          `INSERT INTO studio_portability_exports
+            (id,workspace_id,owner_profile_id,object_key,status,created_at,expires_at,updated_at)
+           VALUES ($1,$2,$3,$4,'pending',$5,$6,$5)`,
+          [id, scope.workspaceId, scope.ownerProfileId, objectKey, createdAt, expiresAt]
+        );
+      });
+    },
+
+    async findExport(scope, id) {
+      const result = await pool.query<ExportRow>(
+        `SELECT * FROM studio_portability_exports
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, id]
       );
+      return result.rows[0] ? exportFromRow(result.rows[0]) : null;
     },
 
-    async markExportReady(id) {
-      await pool.query(`UPDATE studio_portability_exports SET status='ready',updated_at=NOW() WHERE id=$1`, [id]);
-    },
-
-    async markExportFailed(id) {
-      await pool.query(
-        `UPDATE studio_portability_exports SET status='failed',updated_at=NOW() WHERE id=$1`,
-        [id]
-      );
-    },
-
-    async beginDeletion({ requestId, scope, requestedAt }) {
+    async claimNextExport({ claimToken, claimLeaseExpiresAt, now, excludeOwnerKeys = [] }) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const activeOwner = await client.query<{ id: string }>(
-          `SELECT id FROM people
-           WHERE workspace_id=$1 AND id=$2 AND role='owner' AND status='active'
-           FOR KEY SHARE`,
-          [scope.workspaceId, scope.ownerProfileId]
+        const selected = await client.query<ExportRow>(
+          `SELECT exports.* FROM studio_portability_exports exports
+           JOIN people owner
+             ON owner.workspace_id=exports.workspace_id AND owner.id=exports.owner_profile_id
+           WHERE (exports.status='pending'
+                  OR (exports.status='processing' AND exports.claim_lease_expires_at<=$1))
+             AND owner.role='owner' AND owner.status='active'
+             AND NOT ((exports.workspace_id || '/' || exports.owner_profile_id)=ANY($2::text[]))
+             AND NOT EXISTS (
+               SELECT 1 FROM studio_portability_delete_requests deletion
+               WHERE deletion.workspace_id=exports.workspace_id
+                 AND deletion.owner_profile_id=exports.owner_profile_id
+                 AND deletion.status IN ('processing','reconciliation_pending')
+             )
+           ORDER BY exports.created_at,exports.id
+           FOR UPDATE OF exports SKIP LOCKED
+           LIMIT 1`,
+          [now, [...excludeOwnerKeys]]
         );
-        if (!activeOwner.rows[0]) throw Object.assign(new Error("STUDIO_PORTABILITY_FORBIDDEN"), {
-          code: "STUDIO_PORTABILITY_FORBIDDEN"
-        });
+        const row = selected.rows[0];
+        if (!row) {
+          await client.query("COMMIT");
+          return null;
+        }
+        const updated = await client.query<ExportRow>(
+          `UPDATE studio_portability_exports
+           SET status='processing',claim_token=$2,claim_lease_expires_at=$3,failure_code=NULL,updated_at=$4
+           WHERE id=$1 RETURNING *`,
+          [row.id, claimToken, claimLeaseExpiresAt, now]
+        );
+        await client.query("COMMIT");
+        return exportFromRow(updated.rows[0]!);
+      } catch (error) {
+        await rollback(client, error);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async publishExport({ scope, id, claimToken, readyAt, expiresAt }, authorize, publish) {
+      return withOwnerTransaction(pool, scope, authorize, async (client) => {
+        await ensureNoActiveDeletion(client, scope);
+        const claimed = await client.query<ExportRow>(
+          `SELECT * FROM studio_portability_exports
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, id]
+        );
+        const record = claimed.rows[0];
+        if (!record) throw portabilityError("STUDIO_EXPORT_NOT_FOUND");
+        if (record.status !== "processing" || record.claim_token !== claimToken) {
+          throw portabilityError("STUDIO_EXPORT_CLAIM_LOST");
+        }
+        const result = await publish();
+        await client.query(
+          `UPDATE studio_portability_exports
+           SET status='ready',claim_token=NULL,claim_lease_expires_at=NULL,ready_at=$2,expires_at=$3,updated_at=$2
+           WHERE id=$1`,
+          [id, readyAt, expiresAt]
+        );
+        return result;
+      });
+    },
+
+    async signExport({ scope, id, now }, authorize, sign) {
+      return withOwnerTransaction(pool, scope, authorize, async (client) => {
+        await ensureNoActiveDeletion(client, scope);
+        const selected = await client.query<ExportRow>(
+          `SELECT * FROM studio_portability_exports
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, id]
+        );
+        const record = selected.rows[0];
+        if (!record) throw portabilityError("STUDIO_EXPORT_NOT_FOUND");
+        if (record.status !== "ready") throw portabilityError("STUDIO_EXPORT_NOT_READY");
+        if (iso(record.expires_at) <= now) throw portabilityError("STUDIO_EXPORT_EXPIRED");
+        return sign(exportFromRow(record));
+      });
+    },
+
+    async markExportFailed({ id, claimToken, errorCode }) {
+      await pool.query(
+        `UPDATE studio_portability_exports
+         SET status='failed',claim_token=NULL,claim_lease_expires_at=NULL,failure_code=$3,updated_at=NOW()
+         WHERE id=$1 AND status='processing' AND claim_token=$2`,
+        [id, claimToken, errorCode]
+      );
+    },
+
+    async expireNextExport({ now, excludeOwnerKeys = [] }, remove) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const selected = await client.query<ExportRow>(
+          `SELECT * FROM studio_portability_exports
+           WHERE ((status='ready' AND expires_at<=$1) OR (status='failed' AND expired_at IS NULL))
+             AND NOT ((workspace_id || '/' || owner_profile_id)=ANY($2::text[]))
+           ORDER BY expires_at,id
+           LIMIT 1`,
+          [now, [...excludeOwnerKeys]]
+        );
+        const candidate = selected.rows[0];
+        if (!candidate) {
+          await client.query("COMMIT");
+          return null;
+        }
+        await lockOwnerRow(client, { workspaceId: candidate.workspace_id, ownerProfileId: candidate.owner_profile_id });
+        const locked = await client.query<ExportRow>(
+          `SELECT * FROM studio_portability_exports
+           WHERE id=$1
+             AND ((status='ready' AND expires_at<=$2) OR (status='failed' AND expired_at IS NULL))
+           FOR UPDATE`,
+          [candidate.id, now]
+        );
+        const row = locked.rows[0];
+        if (!row) {
+          await client.query("COMMIT");
+          return null;
+        }
+        const record = exportFromRow(row);
+        await remove(record);
+        await client.query(
+          `UPDATE studio_portability_exports
+           SET status=CASE WHEN status='ready' THEN 'expired' ELSE status END,
+               expired_at=$2,updated_at=$2 WHERE id=$1`,
+          [row.id, now]
+        );
+        await client.query("COMMIT");
+        return { ...record, status: record.status === "ready" ? "expired" as const : "failed" as const };
+      } catch (error) {
+        await rollback(client, error);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async beginDeletion({ requestId, scope, requestedAt }, authorize) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const owner = await lockOwnerRow(client, scope);
+        if (!owner || owner.role !== "owner" || owner.status !== "active" || !(await authorize())) {
+          throw portabilityError("STUDIO_PORTABILITY_FORBIDDEN");
+        }
+        await ensureNoActiveDeletion(client, scope);
         await client.query(
           `INSERT INTO studio_portability_delete_requests
             (id,workspace_id,owner_profile_id,status,requested_at,updated_at)
@@ -127,7 +280,7 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
       );
     },
 
-    async pendingObjectDeletions(limit) {
+    async pendingObjectDeletions(limit, excludeOwnerKeys = []) {
       const result = await pool.query<{
         request_id: string;
         workspace_id: string;
@@ -138,9 +291,10 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
         `SELECT request_id,workspace_id,owner_profile_id,object_key,storage_upload_id
          FROM studio_portability_object_deletions
          WHERE status='pending'
+           AND NOT ((workspace_id || '/' || owner_profile_id)=ANY($2::text[]))
          ORDER BY updated_at,request_id,object_key
          LIMIT $1`,
-        [limit]
+        [limit, [...excludeOwnerKeys]]
       );
       return result.rows.map((row) => ({
         requestId: row.request_id,
@@ -149,6 +303,26 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
         objectKey: row.object_key,
         storageUploadId: row.storage_upload_id,
         status: "pending" as const
+      }));
+    },
+
+    async pendingDeletionRequests(limit, excludeOwnerKeys = []) {
+      const result = await pool.query<{
+        id: string;
+        workspace_id: string;
+        owner_profile_id: string;
+      }>(
+        `SELECT id,workspace_id,owner_profile_id
+         FROM studio_portability_delete_requests
+         WHERE status IN ('processing','reconciliation_pending')
+           AND NOT ((workspace_id || '/' || owner_profile_id)=ANY($2::text[]))
+         ORDER BY updated_at,id LIMIT $1`,
+        [limit, [...excludeOwnerKeys]]
+      );
+      return result.rows.map((row) => ({
+        requestId: row.id,
+        workspaceId: row.workspace_id,
+        ownerProfileId: row.owner_profile_id
       }));
     },
 
@@ -167,6 +341,73 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
       return { pendingObjectCount };
     }
   };
+}
+
+async function withOwnerTransaction<T>(
+  pool: OperationalPool,
+  scope: StudioOwnerPortabilityScope,
+  authorize: () => Promise<boolean>,
+  action: (client: OperationalClient) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = await lockOwnerRow(client, scope);
+    if (!owner || owner.role !== "owner" || owner.status !== "active" || !(await authorize())) {
+      throw portabilityError("STUDIO_PORTABILITY_FORBIDDEN");
+    }
+    const result = await action(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await rollback(client, error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function lockOwnerRow(client: OperationalClient, scope: StudioOwnerPortabilityScope) {
+  const result = await client.query<{ id: string; role: string; status: string }>(
+    `SELECT id,role,status FROM people
+     WHERE workspace_id=$1 AND id=$2
+     FOR UPDATE`,
+    [scope.workspaceId, scope.ownerProfileId]
+  );
+  return result.rows[0] ?? null;
+}
+
+async function ensureNoActiveDeletion(client: OperationalClient, scope: StudioOwnerPortabilityScope) {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM studio_portability_delete_requests
+     WHERE workspace_id=$1 AND owner_profile_id=$2
+       AND status IN ('processing','reconciliation_pending')
+     LIMIT 1`,
+    [scope.workspaceId, scope.ownerProfileId]
+  );
+  if (result.rows[0]) throw portabilityError("STUDIO_PORTABILITY_DELETION_ACTIVE");
+}
+
+function exportFromRow(row: ExportRow): StudioPortabilityExport {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    ownerProfileId: row.owner_profile_id,
+    objectKey: row.object_key,
+    status: row.status,
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at),
+    claimToken: row.claim_token,
+    claimLeaseExpiresAt: row.claim_lease_expires_at ? iso(row.claim_lease_expires_at) : null
+  };
+}
+
+function iso(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function portabilityError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
 }
 
 async function rows(pool: OperationalPool, table: string, values: string[]): Promise<Row[]> {

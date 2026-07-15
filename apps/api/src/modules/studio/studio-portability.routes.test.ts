@@ -8,17 +8,27 @@ const owner = { "x-baase-workspace-id": "workspace_a", "x-baase-profile-id": "ow
 describe("Studio portability routes", () => {
   it("keeps export and deletion owner-only and passes the authenticated profile to the recheck", async () => {
     const exportData = vi.fn(async () => ({
-      exportId: "export_1", downloadUrl: "https://private.test/export", expiresAt: "2026-07-14T15:15:00.000Z"
+      exportId: "export_1", status: "pending" as const, expiresAt: "2026-07-14T15:15:00.000Z"
+    }));
+    const getExport = vi.fn(async () => ({
+      exportId: "export_1", status: "ready" as const, downloadUrl: "https://private.test/export",
+      expiresAt: "2026-07-14T15:15:00.000Z"
     }));
     const deleteData = vi.fn(async () => ({
       requestId: "delete_1", status: "completed" as const, pendingObjectCount: 0
     }));
     const app = Fastify({ logger: false });
-    await registerStudioPortabilityRoutes(app, { exportData, deleteData } as unknown as StudioPortabilityService);
+    await registerStudioPortabilityRoutes(app, { exportData, getExport, deleteData } as unknown as StudioPortabilityService);
 
     const exported = await app.inject({ method: "POST", url: "/studio/export", headers: owner });
-    expect(exported.statusCode).toBe(201);
+    expect(exported.statusCode).toBe(202);
     expect(exportData).toHaveBeenCalledWith({ workspaceId: "workspace_a", profileId: "owner_a", role: "owner" });
+    const ready = await app.inject({ method: "GET", url: "/studio/export/export_1", headers: owner });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json().export.downloadUrl).toBe("https://private.test/export");
+    expect(getExport).toHaveBeenCalledWith(
+      { workspaceId: "workspace_a", profileId: "owner_a", role: "owner" }, "export_1"
+    );
 
     const deleted = await app.inject({
       method: "DELETE", url: "/studio/data", headers: owner,

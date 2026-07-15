@@ -8,7 +8,7 @@ describe("Postgres Studio portability store", () => {
     const client: OperationalClient = {
       async query<T>(sql: string, params?: unknown[]) {
         calls.push({ sql: normalized(sql), params });
-        if (sql.includes("SELECT id FROM people")) return { rows: [{ id: "owner" }] as T[] };
+        if (sql.includes("FROM people")) return { rows: [{ id: "owner", role: "owner", status: "active" }] as T[] };
         if (sql.includes("MAX(storage_upload_id)")) {
           return { rows: [{ object_key: "workspaces/ws/studio/owner/assets/a.pdf", storage_upload_id: null }] as T[] };
         }
@@ -27,7 +27,7 @@ describe("Postgres Studio portability store", () => {
       requestId: "delete_1",
       scope: { workspaceId: "ws", ownerProfileId: "owner" },
       requestedAt: "2026-07-14T16:00:00.000Z"
-    });
+    }, async () => true);
 
     expect(objectKeys).toEqual([{
       objectKey: "workspaces/ws/studio/owner/assets/a.pdf", storageUploadId: null
@@ -36,10 +36,59 @@ describe("Postgres Studio portability store", () => {
     const firstPrivateDelete = calls.findIndex((call) => call.sql.startsWith("DELETE FROM studio_"));
     expect(markerIndex).toBeGreaterThan(-1);
     expect(markerIndex).toBeLessThan(firstPrivateDelete);
+    expect(calls.some((call) => call.sql.includes("FROM people") && call.sql.includes("FOR UPDATE"))).toBe(true);
+    expect(calls.some((call) => call.sql.includes("FOR KEY SHARE"))).toBe(false);
     expect(calls.some((call) => call.sql.includes("UPDATE studio_operational_links") && call.sql.includes("source_deleted_at"))).toBe(true);
     expect(calls.some((call) => call.sql.includes("DELETE FROM studio_operational_links"))).toBe(false);
     expect(calls.some((call) => /DELETE FROM (tasks|routines|processes|announcements)/u.test(call.sql))).toBe(false);
     expect(calls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("holds the owner row and deletion fence through export publication before marking ready", async () => {
+    const calls: string[] = [];
+    let publishObserved = false;
+    const client: OperationalClient = {
+      async query<T>(sql: string) {
+        calls.push(normalized(sql));
+        if (sql.includes("FROM people")) {
+          return { rows: [{ id: "owner", role: "owner", status: "active" }] as T[] };
+        }
+        if (sql.includes("studio_portability_delete_requests") && sql.includes("SELECT id")) {
+          return { rows: [] as T[] };
+        }
+        if (sql.includes("SELECT * FROM studio_portability_exports")) {
+          return { rows: [{
+            id: "export_1", workspace_id: "ws", owner_profile_id: "owner", object_key: "private.zip",
+            status: "processing", created_at: "2026-07-14T12:00:00.000Z",
+            expires_at: "2026-07-14T12:15:00.000Z", claim_token: "claim_1",
+            claim_lease_expires_at: "2026-07-14T12:02:00.000Z"
+          }] as T[] };
+        }
+        return { rows: [] as T[] };
+      },
+      release() {}
+    };
+    const pool: OperationalPool = {
+      async connect() { return client; },
+      async query<T>() { return { rows: [] as T[] }; }
+    };
+    const store = createPostgresStudioPortabilityStore(pool);
+    await store.publishExport({
+      scope: { workspaceId: "ws", ownerProfileId: "owner" }, id: "export_1", claimToken: "claim_1",
+      readyAt: "2026-07-14T12:00:00.000Z", expiresAt: "2026-07-14T12:15:00.000Z"
+    }, async () => true, async () => {
+      publishObserved = true;
+      expect(calls.at(-1)).toContain("FOR UPDATE");
+    });
+
+    expect(publishObserved).toBe(true);
+    const ownerLock = calls.findIndex((sql) => sql.includes("FROM people") && sql.includes("FOR UPDATE"));
+    const deletionFence = calls.findIndex((sql) => sql.includes("studio_portability_delete_requests"));
+    const markReady = calls.findIndex((sql) => sql.includes("status='ready'"));
+    expect(ownerLock).toBeGreaterThan(-1);
+    expect(deletionFence).toBeGreaterThan(ownerLock);
+    expect(markReady).toBeGreaterThan(deletionFence);
+    expect(calls.at(-1)).toBe("COMMIT");
   });
 
   it("uses the owner pair on every private snapshot query", async () => {

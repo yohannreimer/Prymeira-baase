@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -347,7 +347,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 25", async () => {
+  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 26", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -356,7 +356,8 @@ describe("operational schema", () => {
       18: "studio_operation_previews_and_links",
       19: "studio_proactivity_settings_and_signals",
       23: "studio_owner_portability_and_erasure",
-      25: "studio_operation_preview_strict_durable_identity"
+      25: "studio_operation_preview_strict_durable_identity",
+      26: "studio_portability_async_exports"
     });
     await ensureOperationalSchema(db);
     const assetColumns = await db.query<{ column_name: string }>(
@@ -427,6 +428,22 @@ describe("operational schema", () => {
        where table_name='studio_operational_links' and column_name='source_deleted_at'`
     );
     expect(tombstone.rows).toEqual([{ column_name: "source_deleted_at" }]);
+  });
+
+  it("upgrades portability exports to an asynchronous leased queue in migration 26", async () => {
+    await ensureOperationalSchemaThrough(db, 26);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_portability_exports'
+         and column_name in ('claim_token','claim_lease_expires_at','failure_code','ready_at','expired_at')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual([
+      "claim_lease_expires_at", "claim_token", "expired_at", "failure_code", "ready_at"
+    ]);
+    const source = readFileSync(resolve(process.cwd(), "src/db/operational-schema.ts"), "utf8");
+    const migration26 = source.slice(source.indexOf("  version: 26,"));
+    expect(migration26).toContain("UPDATE studio_portability_exports SET status='pending' WHERE status='preparing'");
+    expect(migration26).toContain("status IN ('pending','processing','ready','failed','expired')");
   });
 
   it("creates relational owner-scoped assistant state with citation identity constraints", async () => {

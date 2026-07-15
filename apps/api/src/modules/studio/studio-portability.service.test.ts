@@ -15,7 +15,7 @@ const ownerA = { workspaceId: "workspace_a", profileId: "owner_a", role: "owner"
 const ownerB = { workspaceId: "workspace_a", profileId: "owner_b", role: "owner" as const };
 
 describe("Studio portability service", () => {
-  it("exports only the current owner's complete private archive with originals and an expiring owner-scoped URL", async () => {
+  it("records an asynchronous export before snapshotting, streams it in maintenance, and signs only when ready", async () => {
     const storage = createInMemoryObjectStorage();
     const assetAKey = "workspaces/workspace_a/studio/owner_a/assets/audio-a.webm";
     const assetBKey = "workspaces/workspace_a/studio/owner_b/assets/audio-b.webm";
@@ -25,6 +25,7 @@ describe("Studio portability service", () => {
       snapshot("owner_a", assetAKey),
       snapshot("owner_b", assetBKey)
     ] });
+    const readSnapshot = vi.spyOn(store, "readSnapshot");
     const logs: Array<Record<string, unknown>> = [];
     const service = createStudioPortabilityService({
       store,
@@ -35,9 +36,22 @@ describe("Studio portability service", () => {
     });
 
     const exported = await service.exportData(ownerA);
+    expect(exported).toMatchObject({ status: "pending", expiresAt: "2026-07-14T15:15:00.000Z" });
+    expect(storage.keys().filter((key) => key.includes("/exports/"))).toEqual([]);
+    expect(readSnapshot).not.toHaveBeenCalled();
 
-    expect(exported.downloadUrl).toContain("expires_in=900");
-    expect(exported.expiresAt).toBe("2026-07-14T15:15:00.000Z");
+    await expect(service.getExport(ownerA, exported.exportId)).resolves.toMatchObject({
+      exportId: exported.exportId, status: "pending"
+    });
+    await expect(service.processNextExport()).resolves.toMatchObject({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a"
+    });
+    expect(readSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", status: "processing"
+    }));
+    const downloadable = await service.getExport(ownerA, exported.exportId);
+    expect(downloadable).toMatchObject({ status: "ready", expiresAt: "2026-07-14T15:15:00.000Z" });
+    expect(downloadable.downloadUrl).toContain("expires_in=900");
     const exportKey = storage.keys().find((key) => key.includes("/exports/"));
     expect(exportKey).toMatch(/^workspaces\/workspace_a\/studio\/owner_a\/exports\/.+\.zip$/u);
     const archive = await readObject(storage, exportKey!);
@@ -55,6 +69,115 @@ describe("Studio portability service", () => {
     expect(JSON.stringify(manifest)).not.toContain("owner_b");
     expect(entries.get("originais/document_owner_a/asset_owner_a-audio-a.webm")?.toString()).toBe("original-a");
     expect([...logs].some((entry) => JSON.stringify(entry).includes("segredo owner_a"))).toBe(false);
+  });
+
+  it("fences deletion against an in-flight export publication and removes the staged object", async () => {
+    const storage = createInMemoryObjectStorage();
+    const ownerSnapshot = snapshot("owner_a", null);
+    const store = createInMemoryStudioPortabilityStore({ snapshots: [ownerSnapshot] });
+    let releaseOwnerCheck!: () => void;
+    const ownerCheckBlocked = new Promise<void>((resolve) => { releaseOwnerCheck = resolve; });
+    let publishCheckStarted!: () => void;
+    const publishCheck = new Promise<void>((resolve) => { publishCheckStarted = resolve; });
+    let checks = 0;
+    const service = createStudioPortabilityService({
+      store,
+      objectStorage: storage,
+      verifyOwner: async () => {
+        checks += 1;
+        if (checks === 3) {
+          publishCheckStarted();
+          await ownerCheckBlocked;
+        }
+        return true;
+      }
+    });
+    const requested = await service.exportData(ownerA);
+    const processing = service.processNextExport();
+    await publishCheck;
+    let deletionSettled = false;
+    const deleting = service.deleteData(ownerA, STUDIO_DELETE_CONFIRMATION).then((result) => {
+      deletionSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(deletionSettled).toBe(false);
+    releaseOwnerCheck();
+
+    await processing;
+    await expect(deleting).resolves.toMatchObject({ status: "completed" });
+    expect(storage.keys().filter((key) => key.includes(requested.exportId))).toEqual([]);
+    await expect(service.getExport(ownerA, requested.exportId)).rejects.toThrow("STUDIO_EXPORT_NOT_FOUND");
+  });
+
+  it("revalidates the persisted owner immediately before publication and download signing", async () => {
+    const storage = createInMemoryObjectStorage();
+    const store = createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", null)] });
+    let activeOwner = true;
+    const service = createStudioPortabilityService({
+      store,
+      objectStorage: storage,
+      verifyOwner: async () => activeOwner
+    });
+    const requested = await service.exportData(ownerA);
+    activeOwner = false;
+    await service.processNextExport();
+    await expect(service.getExport(ownerA, requested.exportId)).rejects.toThrow("STUDIO_PORTABILITY_FORBIDDEN");
+    expect(storage.keys().filter((key) => key.includes(requested.exportId))).toEqual([]);
+
+    activeOwner = true;
+    const ready = await service.exportData(ownerA);
+    await service.processNextExport();
+    activeOwner = false;
+    await expect(service.getExport(ownerA, ready.exportId)).rejects.toThrow("STUDIO_PORTABILITY_FORBIDDEN");
+  });
+
+  it("streams archive chunks with a bounded plan instead of concatenating the full ZIP", async () => {
+    const backing = createInMemoryObjectStorage();
+    const assetKey = "workspaces/workspace_a/studio/owner_a/assets/chunked.bin";
+    await put(backing, assetKey, "abcdefghij");
+    const chunkSizes: number[] = [];
+    const storage = {
+      ...backing,
+      async put(input: Parameters<typeof backing.put>[0], options?: Parameters<typeof backing.put>[1]) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.body) {
+          const body = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          chunkSizes.push(body.length);
+          chunks.push(body);
+        }
+        await backing.put({ ...input, body: Readable.from(chunks) }, options);
+      }
+    };
+    const service = createStudioPortabilityService({
+      store: createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", assetKey)] }),
+      objectStorage: storage,
+      verifyOwner: async () => true
+    });
+
+    await service.exportData(ownerA);
+    await service.processNextExport();
+
+    expect(chunkSizes.length).toBeGreaterThan(4);
+    expect(Math.max(...chunkSizes)).toBeLessThan(1024 * 1024);
+  });
+
+  it("fails an oversized export before writing any staged archive object", async () => {
+    const storage = createInMemoryObjectStorage();
+    const assetKey = "workspaces/workspace_a/studio/owner_a/assets/oversized.bin";
+    await put(storage, assetKey, "x".repeat(5_000));
+    const service = createStudioPortabilityService({
+      store: createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", assetKey)] }),
+      objectStorage: storage,
+      verifyOwner: async () => true,
+      maxExportBytes: 4_000
+    });
+    const requested = await service.exportData(ownerA);
+
+    await service.processNextExport();
+
+    await expect(service.getExport(ownerA, requested.exportId)).resolves.toMatchObject({ status: "failed" });
+    expect(storage.keys().filter((key) => key.includes(requested.exportId))).toEqual([]);
   });
 
   it("rechecks ownership and denies downgraded roles and a different owner", async () => {
@@ -99,10 +222,59 @@ describe("Studio portability service", () => {
     })]);
     expect(store.pendingObjectDeletionRows()).toEqual([expect.objectContaining({ objectKey, status: "pending" })]);
     expect(storage.keys()).toContain(objectKey);
+    await expect(service.exportData(ownerA)).rejects.toThrow("STUDIO_PORTABILITY_DELETION_ACTIVE");
 
     await service.reconcileObjectDeletions(10);
     expect(storage.keys()).not.toContain(objectKey);
     expect(store.pendingObjectDeletionRows()).toEqual([]);
+    await expect(service.exportData(ownerA)).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it("returns accepted reconciliation after relational deletion and lets maintenance retry finalization", async () => {
+    const actualBase = createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", null)] });
+    let failFinalization = true;
+    const failingStore = {
+      ...actualBase,
+      async finalizeDeletion(requestId: string) {
+        if (failFinalization) throw new Error("database unavailable after commit");
+        return actualBase.finalizeDeletion(requestId);
+      }
+    };
+    const service = createStudioPortabilityService({
+      store: failingStore,
+      objectStorage: createInMemoryObjectStorage(),
+      verifyOwner: async () => true
+    });
+
+    await expect(service.deleteData(ownerA, STUDIO_DELETE_CONFIRMATION)).resolves.toMatchObject({
+      status: "reconciliation_pending",
+      cleanupContinues: true
+    });
+    expect((await actualBase.readSnapshot({ workspaceId: "workspace_a", ownerProfileId: "owner_a" })).documents).toEqual([]);
+    failFinalization = false;
+    await expect(service.reconcileObjectDeletions(1)).resolves.toMatchObject({ attempted: 1 });
+    await expect(service.exportData(ownerA)).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it("expires ready exports through maintenance and deletes the private object before marking expired", async () => {
+    let current = new Date("2026-07-14T15:00:00.000Z");
+    const storage = createInMemoryObjectStorage();
+    const service = createStudioPortabilityService({
+      store: createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", null)] }),
+      objectStorage: storage,
+      verifyOwner: async () => true,
+      now: () => current
+    });
+    const requested = await service.exportData(ownerA);
+    await service.processNextExport();
+    expect(storage.keys().some((key) => key.includes(requested.exportId))).toBe(true);
+    current = new Date("2026-07-14T15:16:00.000Z");
+
+    await expect(service.processNextExportExpiration()).resolves.toMatchObject({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a"
+    });
+    expect(storage.keys().some((key) => key.includes(requested.exportId))).toBe(false);
+    await expect(service.getExport(ownerA, requested.exportId)).resolves.toMatchObject({ status: "expired" });
   });
 
   it("ports and erases the live in-memory repository without touching another owner", async () => {

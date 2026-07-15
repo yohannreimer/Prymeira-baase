@@ -24,7 +24,17 @@ export async function registerStudioPortabilityRoutes(app: FastifyInstance, serv
     const actor = requireOwnerActor(request);
     try {
       const exported = await service.exportData(actor);
-      return reply.code(201).send({ export: exported });
+      return reply.code(202).send({ export: exported });
+    } catch (error) {
+      throw portabilityRouteError(error);
+    }
+  });
+
+  app.get<{ Params: { exportId: string } }>("/studio/export/:exportId", async (request, reply) => {
+    const actor = requireOwnerActor(request);
+    try {
+      const exported = await service.getExport(actor, request.params.exportId);
+      return reply.send({ export: exported });
     } catch (error) {
       throw portabilityRouteError(error);
     }
@@ -51,8 +61,20 @@ function portabilityRouteError(error: unknown): unknown {
   if (code === "STUDIO_DELETE_CONFIRMATION_INVALID") {
     return new ApiError(400, code, "Digite a confirmação exata para excluir o Estúdio.");
   }
+  if (code === "STUDIO_PORTABILITY_DELETION_ACTIVE") {
+    return new ApiError(409, code, "A exclusão privada ainda está sendo reconciliada.");
+  }
   if (code === "STUDIO_EXPORT_TOO_LARGE") {
     return new ApiError(413, code, "A exportação excede o limite seguro.");
+  }
+  if (code === "STUDIO_EXPORT_NOT_FOUND") {
+    return new ApiError(404, code, "Exportação não encontrada.");
+  }
+  if (code === "STUDIO_EXPORT_NOT_READY") {
+    return new ApiError(409, code, "A exportação ainda está sendo preparada.");
+  }
+  if (code === "STUDIO_EXPORT_EXPIRED") {
+    return new ApiError(410, code, "Esta exportação expirou.");
   }
   return error;
 }

@@ -9,6 +9,7 @@ import {
 import { createPostgresStudioMemoryIndex, StudioVectorPrerequisiteError } from "../modules/studio/postgres-studio-memory";
 import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
 import { createPostgresStudioProactivityStore } from "../modules/studio/postgres-studio-proactivity.store";
+import { createPostgresStudioPortabilityStore } from "../modules/studio/postgres-studio-portability.store";
 
 // Use an expendable PostgreSQL 16 database; each test creates and drops an isolated schema.
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -148,6 +149,49 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
     });
   });
 
+  it("upgrades legacy exports through migration 26 and serializes publication with owner downgrade", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 23);
+      await pool.query(`INSERT INTO people
+        (id,workspace_id,name,role,status,created_by_profile_id,access_scope)
+        VALUES ('owner','workspace','Dona','owner','active','owner','workspace')`);
+      await pool.query(`INSERT INTO studio_portability_exports
+        (id,workspace_id,owner_profile_id,object_key,status,expires_at)
+        VALUES ('legacy','workspace','owner','legacy.zip','preparing','2026-07-15T12:00:00Z')`);
+
+      await ensureOperationalSchemaThrough(pool, 26);
+      await expect(pool.query<{ status: string }>(
+        "SELECT status FROM studio_portability_exports WHERE id='legacy'"
+      )).resolves.toMatchObject({ rows: [{ status: "pending" }] });
+      await pool.query(`UPDATE studio_portability_exports
+        SET status='processing',claim_token='claim',claim_lease_expires_at='2026-07-14T12:02:00Z'
+        WHERE id='legacy'`);
+
+      let entered!: () => void;
+      const publicationEntered = new Promise<void>((resolve) => { entered = resolve; });
+      let release!: () => void;
+      const publicationGate = new Promise<void>((resolve) => { release = resolve; });
+      const publishing = createPostgresStudioPortabilityStore(pool).publishExport({
+        scope: { workspaceId: "workspace", ownerProfileId: "owner" }, id: "legacy", claimToken: "claim",
+        readyAt: "2026-07-14T12:00:00.000Z", expiresAt: "2026-07-14T12:15:00.000Z"
+      }, async () => true, async () => {
+        entered();
+        await publicationGate;
+      });
+      await publicationEntered;
+      let downgraded = false;
+      const downgrade = pool.query(
+        "UPDATE people SET status='inactive' WHERE workspace_id='workspace' AND id='owner'"
+      ).then(() => { downgraded = true; });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(downgraded).toBe(false);
+      release();
+      await publishing;
+      await downgrade;
+      expect(downgraded).toBe(true);
+    });
+  });
+
   it("upgrades the released migration 17 ritual table through additive migration 22", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 17);
@@ -205,7 +249,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       );
       expect(result.rows.map((row) => row.version)).toEqual([
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
+        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26
       ]);
     });
   });

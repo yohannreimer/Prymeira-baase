@@ -45,8 +45,15 @@ describe("Studio portability app authorization", () => {
       method: "POST", url: "/studio/export",
       headers: ownerHeaders(owner.id)
     });
-    expect(allowed.statusCode).toBe(201);
-    expect(allowed.json().export.downloadUrl).toContain("expires_in=900");
+    expect(allowed.statusCode).toBe(202);
+    expect(allowed.json().export).toMatchObject({ status: "pending" });
+    await app.studioPortabilityReconciliationProcessor.processNext();
+    const ready = await app.inject({
+      method: "GET", url: `/studio/export/${allowed.json().export.exportId}`,
+      headers: ownerHeaders(owner.id)
+    });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json().export.downloadUrl).toContain("expires_in=900");
 
     await app.close();
   });

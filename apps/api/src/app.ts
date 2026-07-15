@@ -243,9 +243,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     }
   });
   const studioPortabilityReconciliationProcessor = {
-    async processNext() {
-      const result = await studioPortabilityService.reconcileObjectDeletions(1);
-      return result.attempted > 0 ? result : null;
+    async processNext(signal?: AbortSignal, budget?: { excludeOwnerKeys?: readonly string[] }) {
+      return studioPortabilityService.processNextMaintenance(signal, budget);
     }
   };
   const studioAssetProcessor = createStudioAssetProcessor({

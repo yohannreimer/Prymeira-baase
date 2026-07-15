@@ -25,7 +25,8 @@ export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   18: "studio_operation_previews_and_links",
   19: "studio_proactivity_settings_and_signals",
   23: "studio_owner_portability_and_erasure",
-  25: "studio_operation_preview_strict_durable_identity"
+  25: "studio_operation_preview_strict_durable_identity",
+  26: "studio_portability_async_exports"
 } as const);
 
 const operationalSchemaLock = [1111574853, 1869636978];
@@ -1488,6 +1489,44 @@ const migrations: Migration[] = [{
           AND intended_resource_id=result_resource_id)
         OR (status IN ('preview','expired') AND intended_resource_id IS NULL)
       );
+  `
+}, {
+  version: 26,
+  name: "studio_portability_async_exports",
+  sql: `
+    ALTER TABLE studio_portability_exports
+      ADD COLUMN IF NOT EXISTS claim_token TEXT,
+      ADD COLUMN IF NOT EXISTS claim_lease_expires_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS failure_code TEXT,
+      ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+
+    ALTER TABLE studio_portability_exports
+      DROP CONSTRAINT IF EXISTS studio_portability_exports_status_check;
+
+    UPDATE studio_portability_exports SET status='pending' WHERE status='preparing';
+    UPDATE studio_portability_exports SET ready_at=updated_at WHERE status='ready' AND ready_at IS NULL;
+
+    ALTER TABLE studio_portability_exports
+      ADD CONSTRAINT studio_portability_exports_status_check
+      CHECK (status IN ('pending','processing','ready','failed','expired'));
+
+    ALTER TABLE studio_portability_exports
+      ADD CONSTRAINT studio_portability_exports_claim_state_ck
+      CHECK (
+        (status='processing' AND claim_token IS NOT NULL AND claim_lease_expires_at IS NOT NULL)
+        OR (status<>'processing' AND claim_token IS NULL AND claim_lease_expires_at IS NULL)
+      );
+
+    CREATE INDEX IF NOT EXISTS studio_portability_exports_queue_idx
+      ON studio_portability_exports (status,claim_lease_expires_at,created_at,id);
+    CREATE INDEX IF NOT EXISTS studio_portability_exports_expiry_idx
+      ON studio_portability_exports (expires_at,id) WHERE status='ready';
+    CREATE INDEX IF NOT EXISTS studio_portability_exports_cleanup_idx
+      ON studio_portability_exports (expired_at,updated_at,id) WHERE status='failed';
+    CREATE INDEX IF NOT EXISTS studio_portability_delete_requests_active_idx
+      ON studio_portability_delete_requests (workspace_id,owner_profile_id)
+      WHERE status IN ('processing','reconciliation_pending');
   `
 }];
 
