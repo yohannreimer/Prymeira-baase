@@ -118,8 +118,10 @@ describe("StudioAssetProcessingStatus", () => {
       />
     );
     await act(async () => { await Promise.resolve(); });
-    const player = screen.getByTestId("studio-audio-player");
-    Object.defineProperty(player, "paused", { configurable: true, value: false });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    let paused = false;
+    Object.defineProperty(player, "paused", { configurable: true, get: () => paused });
+    player.currentTime = 84.25;
 
     await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
     expect(getDownload).toHaveBeenCalledTimes(2);
@@ -133,9 +135,44 @@ describe("StudioAssetProcessingStatus", () => {
     expect(screen.queryByTestId("studio-audio-player")).toBe(player);
     expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
 
+    paused = true;
     fireEvent.pause(player);
     expect(screen.queryByTestId("studio-audio-player")).toBe(player);
     expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+    player.currentTime = 0;
+    expect(player.currentTime).toBe(0);
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(84.25);
+  });
+
+  it("adopts a pending audio URL at position zero after playback ends", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    let ended = false;
+    Object.defineProperty(player, "paused", { configurable: true, get: () => ended });
+    Object.defineProperty(player, "ended", { configurable: true, get: () => ended });
+    player.currentTime = 84.25;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+    ended = true;
+    fireEvent.ended(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+    player.currentTime = 21;
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(0);
   });
 
   it("keeps the current audio mounted when background renewal fails and recovers manually", async () => {
@@ -163,6 +200,42 @@ describe("StudioAssetProcessingStatus", () => {
     expect(screen.getByTestId("studio-audio-player")).toBe(player);
     expect(player).toHaveAttribute("src", "https://private.example/audio-v3");
     expect(getDownload).toHaveBeenCalledTimes(3);
+  });
+
+  it("invalidates a pending renewed URL when the next renewal cycle fails", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v4", expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player");
+    let paused = false;
+    Object.defineProperty(player, "paused", { configurable: true, get: () => paused });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(getDownload).toHaveBeenCalledTimes(2);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(getDownload).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("button", { name: "Carregar áudio original" })).toBeInTheDocument();
+
+    paused = true;
+    fireEvent.pause(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v4");
+    expect(getDownload).toHaveBeenCalledTimes(4);
   });
 
   it("ignores a late audio renewal from the previous asset generation", async () => {
@@ -207,6 +280,41 @@ describe("StudioAssetProcessingStatus", () => {
       "src",
       "https://private.example/asset-b-v1"
     );
+  });
+
+  it("clears a pending audio seek when the asset generation changes before metadata loads", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/asset-a-v1", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/asset-a-v2", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/asset-b-v1", expiresInSeconds: 600 });
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_a", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    let paused = false;
+    Object.defineProperty(player, "paused", { configurable: true, get: () => paused });
+    player.currentTime = 84.25;
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    paused = true;
+    fireEvent.pause(player);
+    player.currentTime = 0;
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_b", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(player).toHaveAttribute("src", "https://private.example/asset-b-v1");
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(0);
   });
 
   it.each(["file", "image"] as const)("fetches a fresh %s download only when activated", async (kind) => {

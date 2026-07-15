@@ -87,6 +87,7 @@ export default function StudioAssetProcessingStatus({
   const fileDownloadControllerRef = useRef<AbortController | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
   const pendingAudioDownloadRef = useRef<Download | null>(null);
+  const pendingAudioSeekRef = useRef<{ url: string; position: number } | null>(null);
   const retryingRef = useRef(false);
   const fileDownloadingRef = useRef(false);
   const insertingRef = useRef(false);
@@ -143,6 +144,7 @@ export default function StudioAssetProcessingStatus({
         pendingAudioDownloadRef.current = result;
       } else {
         pendingAudioDownloadRef.current = null;
+        pendingAudioSeekRef.current = null;
         setDownload(result);
       }
       const lifetimeMs = Math.max(0, result.expiresInSeconds * 1_000);
@@ -156,6 +158,7 @@ export default function StudioAssetProcessingStatus({
       }
     }).catch(() => {
       if (!controller.signal.aborted) {
+        pendingAudioDownloadRef.current = null;
         if (!audioPlayerRef.current) setDownload(null);
         setAudioDownloadError(true);
       }
@@ -168,8 +171,10 @@ export default function StudioAssetProcessingStatus({
 
   useEffect(() => {
     pendingAudioDownloadRef.current = null;
+    pendingAudioSeekRef.current = null;
     return () => {
       pendingAudioDownloadRef.current = null;
+      pendingAudioSeekRef.current = null;
     };
   }, [asset.id, asset.kind]);
 
@@ -254,12 +259,30 @@ export default function StudioAssetProcessingStatus({
     }
   }
 
-  function adoptPendingAudioDownload() {
+  function adoptPendingAudioDownload(ended = false) {
     const pendingDownload = pendingAudioDownloadRef.current;
     if (!pendingDownload) return;
+    const player = audioPlayerRef.current;
+    const position = ended || player?.ended
+      ? 0
+      : player && Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0;
     pendingAudioDownloadRef.current = null;
+    pendingAudioSeekRef.current = { url: pendingDownload.url, position };
     setAudioDownloadError(false);
     setDownload(pendingDownload);
+  }
+
+  function restorePendingAudioPosition() {
+    const pendingSeek = pendingAudioSeekRef.current;
+    const player = audioPlayerRef.current;
+    if (!pendingSeek || !player || download?.url !== pendingSeek.url) return;
+    pendingAudioSeekRef.current = null;
+    try {
+      player.currentTime = pendingSeek.position;
+    } catch {
+      // The next metadata event can retry if the browser is not seekable yet.
+      pendingAudioSeekRef.current = pendingSeek;
+    }
   }
 
   async function retryProcessing() {
@@ -333,11 +356,13 @@ export default function StudioAssetProcessingStatus({
             src={download.url}
             onError={() => {
               pendingAudioDownloadRef.current = null;
+              pendingAudioSeekRef.current = null;
               setDownload(null);
               setAudioDownloadError(true);
             }}
-            onPause={adoptPendingAudioDownload}
-            onEnded={adoptPendingAudioDownload}
+            onPause={() => adoptPendingAudioDownload(false)}
+            onEnded={() => adoptPendingAudioDownload(true)}
+            onLoadedMetadata={restorePendingAudioPosition}
             aria-label={`Ouvir áudio original: ${current.displayName}`}
             data-testid="studio-audio-player"
           />
