@@ -7,6 +7,15 @@ const composePath = fileURLToPath(
 );
 const storageEndpoint = "S3_ENDPOINT: http://minio:9000";
 const legacyEndpoint = "http://prymeira_" + "baase_minio:9000";
+const webForbiddenStorageKeys = [
+  "S3_ENDPOINT",
+  "S3_ACCESS_KEY",
+  "S3_SECRET_KEY",
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
+  "BAASE_MINIO_ACCESS_KEY",
+  "BAASE_MINIO_SECRET_KEY"
+] as const;
 
 function serviceBlock(compose: string, serviceName: string): string {
   const lines = compose.split(/\r?\n/);
@@ -43,6 +52,12 @@ function expectStorageContract(compose: string): void {
   expect(minio).toMatch(
     /^    networks:\n      prymeira_baase_internal:\n        aliases:\n(?:          - [^\n]+\n)*          - minio$/m
   );
+  expect(minio).not.toMatch(/^    (?:ports|labels):/m);
+  expect(minio).not.toContain("network_swarm_public");
+
+  for (const key of webForbiddenStorageKeys) {
+    expect(web).not.toMatch(new RegExp(`^\\s+${key}:`, "m"));
+  }
 
   expect(bootstrap).toContain(storageEndpoint);
   expect(bootstrap).toContain(
@@ -80,5 +95,22 @@ describe("production compose object storage contract", () => {
 
     expect(mutatedCompose.match(/S3_ENDPOINT: http:\/\/minio:9000/g)).toHaveLength(2);
     expect(() => expectStorageContract(mutatedCompose)).toThrow();
+  });
+
+  it("rejects publishing MinIO or exposing storage secrets to the web", () => {
+    const compose = readFileSync(composePath, "utf8");
+    const minio = serviceBlock(compose, "prymeira_baase_minio");
+    const web = serviceBlock(compose, "prymeira_baase_web");
+    const publicMinio = minio.replace(
+      "    environment:\n",
+      '    ports:\n      - "9000:9000"\n    environment:\n'
+    );
+    const webWithSecret = web.replace(
+      "    environment:\n",
+      "    environment:\n      S3_SECRET_KEY: leaked-to-web\n"
+    );
+
+    expect(() => expectStorageContract(compose.replace(minio, publicMinio))).toThrow();
+    expect(() => expectStorageContract(compose.replace(web, webWithSecret))).toThrow();
   });
 });
