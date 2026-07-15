@@ -346,8 +346,9 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       );
       expect(routineHistory.rows[0]).toEqual({ archived_steps: 1, old_parents: 1 });
 
-      await routines.deleteTask("workspace_a", manual.id);
-      expect(await relational.routineRepository!.findTaskOccurrence("workspace_a", manual.id)).toBeNull();
+      await expect(routines.deleteTask("workspace_a", manual.id)).rejects.toThrow("TASK_NOT_PENDING");
+      expect(await relational.routineRepository!.findTaskOccurrence("workspace_a", manual.id))
+        .toMatchObject({ status: "completed" });
       const history = await pool.query<{ archived_at: Date | null; checks: number; evidence: number }>(
         `SELECT t.archived_at,
           (SELECT COUNT(*)::int FROM task_checklist_items c WHERE c.workspace_id=t.workspace_id AND c.task_occurrence_id=t.id) checks,
@@ -355,7 +356,7 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
          FROM task_occurrences t WHERE t.workspace_id=$1 AND t.id=$2`, ["workspace_a", manual.id]
       );
       expect(history.rows[0]).toMatchObject({ checks: 1, evidence: 1 });
-      expect(history.rows[0]?.archived_at).not.toBeNull();
+      expect(history.rows[0]?.archived_at).toBeNull();
       await company.deleteTeamMember("workspace_a", person.id);
       await company.deleteRoleTemplate("workspace_a", role.id);
       await company.deleteArea("workspace_a", area.id);
@@ -884,7 +885,7 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
     });
   });
 
-  it("repairs partial generation, remains concurrent-idempotent, and freezes older revisions", async () => {
+  it("rolls back failed atomic generation, remains concurrent-idempotent, and reconciles pending revisions", async () => {
     await withPostgresSchema(async (pool) => {
       const bundle = createConfiguredPostgresRepositoryBundle(pool, "relational");
       const base = bundle.routineRepository;
@@ -892,38 +893,36 @@ describe.skipIf(!testDatabaseUrl)("relational operational repositories on Postgr
       const routine = await routineService.createRoutine("workspace_a", "account_owner", {
         title: "Checklist", taskTemplates: [{ title: "Um" }, { title: "Dois" }]
       });
-      let creates = 0;
-      let failed = false;
-      const partialRepository: RoutineRepository = {
-        ...base,
-        async createTaskOccurrence(input) {
-          creates += 1;
-          if (creates === 2 && !failed) {
-            failed = true;
-            throw new Error("INJECTED_PARTIAL_FAILURE");
-          }
-          return base.createTaskOccurrence(input);
-        }
-      };
-      const partialService = createRoutineService(partialRepository);
-      await expect(partialService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17")).rejects.toThrow("INJECTED_PARTIAL_FAILURE");
-      const partial = await base.listTaskOccurrences("workspace_a", { dueDate: "2026-07-17" });
-      expect(partial).toHaveLength(1);
-      expect(partial[0]?.routineRevisionSnapshot).toBe(routine.updatedAt);
-      expect(await partialService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17")).toHaveLength(2);
+      const failingBundle = createConfiguredPostgresRepositoryBundle(
+        failOnQuery(pool, "INSERT INTO routine_occurrences", "INJECTED_ATOMIC_FAILURE"),
+        "relational"
+      );
+      const failingService = createRoutineService(failingBundle.routineRepository);
+      await expect(failingService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17"))
+        .rejects.toThrow("INJECTED_ATOMIC_FAILURE");
+      expect(await base.listTaskOccurrences("workspace_a", { dueDate: "2026-07-17" })).toEqual([]);
+      const recovered = await routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-17");
+      expect(recovered).toHaveLength(2);
+      expect(recovered.every((task) => task.routineRevisionSnapshot === routine.updatedAt)).toBe(true);
 
       const concurrent = await Promise.all([
         routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20"),
         routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20")
       ]);
       expect(new Set(concurrent.flat().map((task) => task.id)).size).toBe(2);
-      const historicalIds = concurrent[0]!.map((task) => task.id).sort();
-      await routineService.updateRoutine("workspace_a", routine.id, {
+      const retained = concurrent[0]!.find((task) => task.title === "Um");
+      expect(retained).toBeDefined();
+      const revised = await routineService.updateRoutine("workspace_a", routine.id, {
         title: "Checklist novo", taskTemplates: [{ id: routine.taskTemplates[0]!.id, title: "Um novo" }]
       });
-      const frozen = await routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20");
-      expect(frozen.map((task) => task.id).sort()).toEqual(historicalIds);
-      expect(frozen.every((task) => task.routineTitleSnapshot === "Checklist")).toBe(true);
+      const reconciled = await routineService.generateRoutineOccurrences("workspace_a", routine.id, "2026-07-20");
+      expect(reconciled).toEqual([expect.objectContaining({
+        id: retained!.id,
+        title: "Um novo",
+        routineTitleSnapshot: "Checklist novo",
+        routineRevisionSnapshot: revised.updatedAt,
+        status: "pending"
+      })]);
     });
   });
 });
