@@ -92,8 +92,7 @@ function isMissingBucket(error: unknown): boolean {
 }
 
 function isSafeCreateBucketRace(error: unknown): boolean {
-  return hasErrorCode(error, "BucketAlreadyOwnedByYou")
-    || hasErrorCode(error, "BucketAlreadyExists");
+  return hasErrorCode(error, "BucketAlreadyOwnedByYou");
 }
 
 function hasErrorCode(error: unknown, expected: string): boolean {

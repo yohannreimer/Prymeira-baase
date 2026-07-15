@@ -226,4 +226,25 @@ describe("S3 object storage bootstrap", () => {
       lifecycleUpdated: true
     });
   });
+
+  it("propagates BucketAlreadyExists without accessing lifecycle", async () => {
+    const collision = Object.assign(new Error("owned by another account"), {
+      Code: "BucketAlreadyExists"
+    });
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof HeadBucketCommand) {
+          throw Object.assign(new Error("missing"), { name: "NoSuchBucket" });
+        }
+        if (command instanceof CreateBucketCommand) throw collision;
+        throw new Error("unexpected lifecycle access");
+      })
+    };
+
+    await expect(bootstrapS3ObjectStorage(config, client)).rejects.toBe(collision);
+    expect(client.send).toHaveBeenCalledTimes(2);
+    expect(client.send.mock.calls.some(([command]) =>
+      command instanceof GetBucketLifecycleConfigurationCommand
+      || command instanceof PutBucketLifecycleConfigurationCommand)).toBe(false);
+  });
 });
