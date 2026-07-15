@@ -8,8 +8,8 @@ import StudioPage from "./StudioPage";
 import type { StudioDocument } from "./studio.types";
 
 const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
-const studioPageSource = readFileSync(resolve(process.cwd(), "src/studio/StudioPage.tsx"), "utf8");
 const proactivityStyles = readFileSync(resolve(process.cwd(), "src/studio/studio-proactivity.css"), "utf8");
+const studioCssRules = parseCssRules(studioStyles);
 
 describe("Owner Studio accessibility and adaptive quiet ops", () => {
   beforeEach(() => {
@@ -107,70 +107,141 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
   it("encodes state beyond color and keeps save feedback persistently live", () => {
     render(<StudioPage />);
     expect(screen.getByRole("button", { name: "Início" })).toHaveAttribute("aria-current", "page");
-    expect(studioStyles).toMatch(/studio-editor__save-status[\s\S]*data-state/);
-    expect(studioStyles).toMatch(/studio-nav__item\[aria-current="page"\]/);
+    expect(cssRule('.studio-editor__save-status[data-state="offline"]')).toBeDefined();
+    expect(cssRule('.studio-nav__item[aria-current="page"]')).toBeDefined();
   });
 
   it("enables motion only when the user has not requested reduced motion", () => {
-    expect(studioStyles).toMatch(/@media \(prefers-reduced-motion: no-preference\)[\s\S]*?transition:/);
-    expect(studioStyles).not.toMatch(/\.studio-nav__item\s*\{[^}]*transition:/);
-    expect(studioStyles).not.toMatch(/\.studio-composer\s*\{[^}]*transition:/);
+    expect(cssRule(".studio-nav__item", "(prefers-reduced-motion: no-preference)").get("transition-duration")).toBe("180ms");
+    expect(cssRule(".studio-nav__item").has("transition")).toBe(false);
+    expect(cssRule(".studio-nav__item").has("transition-duration")).toBe(false);
+    expect(cssRule(".studio-composer").has("transition")).toBe(false);
+    expect(cssRule(".studio-composer").has("transition-duration")).toBe(false);
   });
 
-  it("keeps material feedback out of a page-wide live region", () => {
-    expect(studioPageSource).not.toMatch(
-      /className="studio-content"[^>]*aria-live=/u
-    );
+  it("announces explicit section navigation without making the content region live", async () => {
+    const user = userEvent.setup();
+    render(<StudioPage />);
+
+    const content = screen.getByRole("region", { name: "Conteúdo da seção" });
+    const navigationStatus = screen.getByRole("status", { name: "Mudança de seção" });
+    const inbox = screen.getByRole("button", { name: "Entrada" });
+    const goals = screen.getByRole("button", { name: "Metas" });
+    expect(content).not.toHaveAttribute("aria-live");
+    expect(navigationStatus).toHaveAttribute("aria-live", "polite");
+    expect(navigationStatus).toHaveAttribute("aria-atomic", "true");
+    expect(navigationStatus).toBeEmptyDOMElement();
+
+    window.history.replaceState(null, "", "/#estudio/all");
+    fireEvent.popState(window);
+    expect(navigationStatus).toBeEmptyDOMElement();
+
+    await user.click(inbox);
+    expect(inbox).toHaveFocus();
+    expect(navigationStatus).toHaveTextContent("Seção Entrada aberta.");
+    expect(within(content).getByRole("heading", { level: 2, name: "Entrada" })).toBeInTheDocument();
+
+    await user.click(goals);
+    expect(goals).toHaveFocus();
+    expect(navigationStatus).toHaveTextContent("Seção Metas aberta.");
+    expect(within(content).getByRole("heading", { level: 2, name: "Metas" })).toBeInTheDocument();
   });
 
   it("styles document materials as a quiet, wrapping, token-based action strip", () => {
-    const strip = cssRule(studioStyles, ".studio-material-composer");
-    expect(strip).toMatch(/border-top:\s*1px solid var\(--line\)/u);
-    expect(strip).toMatch(/padding:\s*18px 0/u);
+    const strip = cssRule(".studio-material-composer");
+    expect(strip.get("border-top")).toBe("1px solid var(--line)");
+    expect(strip.get("padding")).toBe("18px 0");
 
-    const actions = cssRule(studioStyles, ".studio-material-composer__actions");
-    expect(actions).toMatch(/display:\s*flex/u);
-    expect(actions).toMatch(/flex-wrap:\s*wrap/u);
-    expect(actions).toMatch(/gap:\s*8px/u);
+    const actions = cssRule(".studio-material-composer__actions");
+    expect(actions.get("display")).toBe("flex");
+    expect(actions.get("flex-wrap")).toBe("wrap");
+    expect(actions.get("gap")).toBe("8px");
 
-    const actionButton = cssRule(studioStyles, ".studio-material-composer__action");
-    expect(actionButton).toMatch(/min-height:\s*40px/u);
-    expect(actionButton).toMatch(/background:\s*var\(--panel\)/u);
-    expect(actionButton).toMatch(/border:\s*1px solid var\(--line\)/u);
+    const actionButton = cssRule(".studio-material-composer__action");
+    expect(actionButton.get("min-height")).toBe("40px");
+    expect(actionButton.get("background")).toBe("var(--panel)");
+    expect(actionButton.get("border")).toBe("1px solid var(--line)");
+    expect(cssRule(".studio-material-composer__label").get("color")).toBe("var(--muted)");
 
     const recording = cssRule(
-      studioStyles,
       '.studio-material-composer__action[aria-pressed="true"]'
     );
-    expect(recording).toMatch(/background:\s*var\(--accent-bg\)/u);
-    expect(recording).toMatch(/color:\s*var\(--accent-ink\)/u);
-    expect(cssRule(studioStyles, ".studio-material-composer__link")).toMatch(/display:\s*grid/u);
-    expect(cssRule(studioStyles, ".studio-material-composer__recovery")).toMatch(/display:\s*flex/u);
-    expect(cssRule(studioStyles, ".studio-material-composer__status")).toMatch(/color:\s*var\(--muted\)/u);
-    expect(studioStyles).toMatch(
-      /\.studio-material-composer__action:focus-visible[\s\S]*?outline:\s*2px solid var\(--accent\)/u
-    );
-    expect(studioStyles).toMatch(
-      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-material-composer__action[\s\S]*?min-height:\s*44px/u
-    );
-    expect(studioStyles).toMatch(
-      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets[\s\S]*?min-width:\s*0[\s\S]*?\.studio-material-composer__link/u
-    );
-    expect(studioStyles).toMatch(
-      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets\s*\{[^}]*max-width:\s*100%[^}]*min-width:\s*0/u
-    );
-    expect(studioStyles).not.toMatch(
-      /\.studio-document-assets[^}]*?(?:linear-gradient|#[0-9a-f]{3,8}|\brgba?\()/iu
-    );
-    expect(studioStyles).not.toMatch(
-      /\.studio-document-assets\s*>\s*section:first-child|\.studio-document-assets[^,{]*\[role=/u
-    );
+    expect(recording.get("background")).toBe("var(--accent-bg)");
+    expect(recording.get("color")).toBe("var(--accent-ink)");
+    expect(cssRule(".studio-material-composer__link").get("display")).toBe("grid");
+    expect(cssRule(".studio-material-composer__recovery").get("display")).toBe("flex");
+    expect(cssRule(".studio-material-composer__status").get("color")).toBe("var(--muted)");
+    expect(cssRule(".studio-material-composer__action:focus-visible").get("outline")).toBe("2px solid var(--accent)");
+
+    const mobile = "(max-width: 720px)";
+    expect(cssRule(".studio-document-assets", mobile).get("max-width")).toBe("100%");
+    expect(cssRule(".studio-document-assets", mobile).get("min-width")).toBe("0");
+    expect(cssRule(".studio-material-composer__link", mobile).get("grid-template-columns")).toBe("repeat(2, minmax(0, 1fr))");
+
+    const selectors = studioCssRules.flatMap((rule) => rule.selectors);
+    expect(selectors.some((selector) => selector.includes(".studio-document-assets > section:first-child"))).toBe(false);
+    expect(selectors.some((selector) => selector.includes(".studio-document-assets") && selector.includes("[role="))).toBe(false);
   });
 
-  it("gives preserved audio a 44px player on coarse pointers without overflow", () => {
-    expect(studioStyles).toMatch(
-      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-asset-status__original audio\s*\{[^}]*height:\s*44px[^}]*max-width:\s*100%[^}]*min-height:\s*44px/u
-    );
+  it("keeps primary hover accented instead of inheriting the neutral hover", () => {
+    const hover = "(hover: hover)";
+    expect(cssRule(
+      ".studio-material-composer__link-action:not(.studio-material-composer__link-action--primary):hover:not(:disabled)",
+      hover
+    ).get("background")).toBe("var(--panel2)");
+    expect(cssRule(
+      ".studio-material-composer__link-action--primary:hover:not(:disabled)",
+      hover
+    ).get("background")).toBe("var(--accent-bg)");
+    expect(cssRule(
+      ".studio-material-composer__recovery-action:not(.studio-material-composer__recovery-action--primary):hover:not(:disabled)",
+      hover
+    ).get("background")).toBe("var(--panel2)");
+    expect(cssRule(
+      ".studio-material-composer__recovery-action--primary:hover:not(:disabled)",
+      hover
+    ).get("background")).toBe("var(--accent-bg)");
+  });
+
+  it("uses the global coarse target rule for controls and specific rules for links and audio", () => {
+    const coarse = "(pointer: coarse)";
+    expect(cssRule(".studio-screen").get("--studio-touch-target")).toBe("44px");
+    expect(cssRule(".studio-screen button", coarse).get("min-height")).toBe("var(--studio-touch-target)");
+    expect(cssRule('.studio-screen input:not([type="checkbox"]):not([type="radio"])', coarse).get("min-height")).toBe("var(--studio-touch-target)");
+    expect(studioCssRules.filter((rule) => (
+      rule.media === coarse
+      && rule.selectors.some((selector) => selector.startsWith(".studio-material-composer"))
+    ))).toHaveLength(0);
+    expect(cssRule(".studio-document-assets .studio-asset-status a", coarse).get("min-height")).toBe("44px");
+    const audio = cssRule(".studio-asset-status__original audio", coarse);
+    expect(audio.get("height")).toBe("44px");
+    expect(audio.get("max-width")).toBe("100%");
+    expect(audio.get("min-height")).toBe("44px");
+  });
+
+  it("keeps every material rule token-based and asset rows free of nested cards", () => {
+    const materialRules = studioCssRules.filter((rule) => rule.selectors.some((selector) => (
+      selector.startsWith(".studio-material-composer")
+      || selector.startsWith(".studio-document-assets")
+      || selector.startsWith(".studio-asset-status")
+      || selector.startsWith(".studio-asset-transcript")
+    )));
+    expect(materialRules.length).toBeGreaterThan(0);
+    for (const rule of materialRules) {
+      const values = [...rule.declarations.values()].join(" ");
+      expect(values, rule.selectors.join(", ")).not.toMatch(/linear-gradient|#[0-9a-f]{3,8}|\brgba?\(/iu);
+    }
+    for (const selector of [
+      ".studio-document-assets",
+      ".studio-asset-status",
+      ".studio-asset-status__processing"
+    ]) {
+      const declarations = cssRule(selector);
+      expect(declarations.has("background"), selector).toBe(false);
+      expect(declarations.has("border"), selector).toBe(false);
+      expect(declarations.has("border-radius"), selector).toBe(false);
+      expect(declarations.has("box-shadow"), selector).toBe(false);
+    }
   });
 
   it("keeps proactive signals inside the shared quiet-ops visual system", () => {
@@ -212,9 +283,100 @@ function installLocalStorage() {
   });
 }
 
-function cssRule(styles: string, selector: string) {
-  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const match = styles.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "u"));
-  expect(match, `missing CSS rule: ${selector}`).not.toBeNull();
-  return match?.[1] ?? "";
+type ParsedCssRule = {
+  selectors: string[];
+  declarations: Map<string, string>;
+  media: string | null;
+};
+
+function cssRule(selector: string, media: string | null = null) {
+  const matches = studioCssRules.filter((rule) => (
+    rule.media === media && rule.selectors.includes(selector)
+  ));
+  expect(matches, `missing CSS rule: ${selector} @ ${media ?? "root"}`).toHaveLength(1);
+  return matches[0]?.declarations ?? new Map<string, string>();
+}
+
+function parseCssRules(styles: string) {
+  const rules: ParsedCssRule[] = [];
+  const source = styles.replace(/\/\*[^]*?\*\//gu, "");
+
+  function walk(start: number, end: number, media: string | null) {
+    let cursor = start;
+    while (cursor < end) {
+      while (cursor < end && /\s/u.test(source[cursor] ?? "")) cursor += 1;
+      if (cursor >= end) return;
+      const open = source.indexOf("{", cursor);
+      if (open === -1 || open >= end) return;
+      const prelude = source.slice(cursor, open).trim();
+      const close = matchingBrace(source, open, end);
+      if (prelude.startsWith("@media ")) {
+        walk(open + 1, close, prelude.slice("@media".length).trim());
+      } else if (!prelude.startsWith("@")) {
+        rules.push({
+          selectors: splitTopLevel(prelude, ",").map((selector) => selector.trim()),
+          declarations: parseDeclarations(source.slice(open + 1, close)),
+          media
+        });
+      }
+      cursor = close + 1;
+    }
+  }
+
+  walk(0, source.length, null);
+  return rules;
+}
+
+function matchingBrace(source: string, open: number, end: number) {
+  let depth = 1;
+  let quote = "";
+  for (let index = open + 1; index < end; index += 1) {
+    const character = source[index] ?? "";
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) return index;
+  }
+  throw new Error(`Unclosed CSS block at ${open}`);
+}
+
+function splitTopLevel(value: string, separator: string) {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === "(" || character === "[") depth += 1;
+    else if (character === ")" || character === "]") depth -= 1;
+    else if (character === separator && depth === 0) {
+      parts.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(value.slice(start));
+  return parts;
+}
+
+function parseDeclarations(body: string) {
+  const declarations = new Map<string, string>();
+  for (const declaration of splitTopLevel(body, ";")) {
+    const colon = declaration.indexOf(":");
+    if (colon === -1) continue;
+    declarations.set(
+      declaration.slice(0, colon).trim(),
+      declaration.slice(colon + 1).trim()
+    );
+  }
+  return declarations;
 }

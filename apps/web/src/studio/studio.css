@@ -1419,7 +1419,7 @@
 }
 
 .studio-material-composer__label {
-  color: var(--faint);
+  color: var(--muted);
   font-size: 10.5px;
   font-weight: 650;
   letter-spacing: 0.06em;
@@ -1546,8 +1546,8 @@
 
 @media (hover: hover) {
   .studio-material-composer__action:hover:not(:disabled):not([aria-pressed="true"]),
-  .studio-material-composer__link-action:hover:not(:disabled),
-  .studio-material-composer__recovery-action:hover:not(:disabled) {
+  .studio-material-composer__link-action:not(.studio-material-composer__link-action--primary):hover:not(:disabled),
+  .studio-material-composer__recovery-action:not(.studio-material-composer__recovery-action--primary):hover:not(:disabled) {
     background: var(--panel2);
     border-color: var(--line2);
     color: var(--ink);
@@ -1555,6 +1555,7 @@
 
   .studio-material-composer__link-action--primary:hover:not(:disabled),
   .studio-material-composer__recovery-action--primary:hover:not(:disabled) {
+    background: var(--accent-bg);
     border-color: var(--accent);
     color: var(--accent-ink);
   }
@@ -2870,11 +2871,6 @@
     min-height: 44px;
   }
 
-  .studio-material-composer__action,
-  .studio-material-composer__link-input,
-  .studio-material-composer__link-action,
-  .studio-material-composer__recovery-action,
-  .studio-document-assets .studio-asset-status button,
   .studio-document-assets .studio-asset-status a {
     min-height: 44px;
   }

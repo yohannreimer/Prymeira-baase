@@ -90,6 +90,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
 }) {
   const [section, setSection] = useState<StudioSection>(() => sectionFromHash(window.location.hash));
+  const [sectionAnnouncement, setSectionAnnouncement] = useState("");
   const [selectedRitualId, setSelectedRitualId] = useState<string | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
   const [assetState, setAssetState] = useState<DocumentAssetState>({
@@ -150,6 +151,8 @@ export default function StudioPage({ onOpenInternalSource }: {
     setSelectedRitualId(null);
     setDocumentOpenError(null);
     setSection(next);
+    const nextItem = studioNavigation.find((item) => item.key === next);
+    if (nextItem) setSectionAnnouncement(`Seção ${nextItem.label} aberta.`);
     window.history.pushState(null, "", `#estudio/${next}`);
   }
 
@@ -291,6 +294,16 @@ export default function StudioPage({ onOpenInternalSource }: {
         </div>
         <p>Um lugar reservado para capturar, organizar e amadurecer o que guia a empresa.</p>
       </header>
+
+      <p
+        className="sr-only"
+        role="status"
+        aria-label="Mudança de seção"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {sectionAnnouncement}
+      </p>
 
       <div className="studio-layout" data-testid="studio-layout">
         <nav className="studio-nav" aria-label="Seções do Estúdio">
