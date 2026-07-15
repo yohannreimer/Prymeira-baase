@@ -146,20 +146,20 @@ async function seedPreviewReferences(pool: Pool) {
 async function seedOldPreviewRows(pool: Pool) {
   const common = `workspace_id,owner_profile_id,source_suggestion_id,source_document_id,resource_type,payload_json,expires_at`;
   await pool.query(`insert into studio_operation_previews (id,${common}) values
-    ('preview_open','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,'2026-07-15T12:00:00Z')`);
+    ('preview_open','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,'2099-07-15T12:00:00Z')`);
   await pool.query(`insert into studio_operation_previews
     (id,${common},confirmed_payload_json,status,idempotency_key,claim_token,claim_lease_expires_at)
     values ('preview_confirming','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,
-      '2026-07-15T12:00:00Z','{}'::jsonb,'confirming','22222222-2222-4222-8222-222222222222',
+      '2099-07-15T12:00:00Z','{}'::jsonb,'confirming','22222222-2222-4222-8222-222222222222',
       'claim_before_upgrade','2026-07-14T12:05:00Z')`);
   await pool.query(`insert into studio_operation_previews
     (id,${common},confirmed_payload_json,status,idempotency_key,result_resource_id,confirmed_at)
     values ('preview_confirmed','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,
-      '2026-07-15T12:00:00Z','{}'::jsonb,'confirmed','33333333-3333-4333-8333-333333333333',
+      '2099-07-15T12:00:00Z','{}'::jsonb,'confirmed','33333333-3333-4333-8333-333333333333',
       'task_existing','2026-07-14T12:00:00Z')`);
   await pool.query(`insert into studio_operation_previews (id,${common},status) values
     ('preview_expired','workspace_a','owner_a','suggestion_a','document_a','task','{}'::jsonb,
-      '2026-07-15T12:00:00Z','expired')`);
+      '2099-07-15T12:00:00Z','expired')`);
 }
 
 function taskDraft() {
