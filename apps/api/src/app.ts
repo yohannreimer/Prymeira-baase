@@ -407,6 +407,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     object_storage: runtimeConfig.objectStorage.provider,
     demo_seed_enabled: runtimeConfig.demoSeedEnabled,
     ai: runtimeConfig.ai,
+    studio: {
+      enabled: runtimeConfig.studio.enabled,
+      vector_configured: runtimeConfig.studio.vectorConfigured
+    },
     warnings: runtimeConfig.warnings
   }));
 

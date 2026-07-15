@@ -90,8 +90,8 @@ describe("Baase API app", () => {
       },
       objectStorage: inMemoryObjectStorage,
       studio: {
-        enabled: false,
-        vectorConfigured: false,
+        enabled: true,
+        vectorConfigured: true,
         aiModel: "gpt-5.6-terra",
         embeddingModel: "text-embedding-3-small"
       },
@@ -117,6 +117,10 @@ describe("Baase API app", () => {
       ai: {
         structured: "openai",
         transcription: "deepgram"
+      },
+      studio: {
+        enabled: true,
+        vector_configured: true
       },
       warnings: []
     });

@@ -2,13 +2,18 @@ import "dotenv/config";
 import { buildApp } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
 import { createPostgresPool } from "./db/postgres";
-import { initializePostgresRuntime, initializeRuntimeObjectStorage } from "./server-initialization";
+import {
+  assertStudioVectorProductionPrerequisite,
+  initializePostgresRuntime,
+  initializeRuntimeObjectStorage
+} from "./server-initialization";
 import { startStudioAssetMaintenance } from "./modules/studio/studio-asset-maintenance-runner";
 
 const port = Number(process.env.PORT ?? 3090);
 const host = process.env.HOST ?? "0.0.0.0";
 const databaseUrl = process.env.DATABASE_URL;
 const runtimeConfig = readRuntimeConfig(process.env);
+assertStudioVectorProductionPrerequisite(runtimeConfig, databaseUrl);
 const objectStorage = await initializeRuntimeObjectStorage(runtimeConfig);
 
 const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;

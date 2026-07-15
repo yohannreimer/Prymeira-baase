@@ -75,6 +75,18 @@ export function assertRuntimeStoragePolicy(runtimeConfig: BaaseRuntimeConfig): v
   }
 }
 
+export function assertStudioVectorProductionPrerequisite(
+  runtimeConfig: BaaseRuntimeConfig,
+  databaseUrl: string | undefined
+): void {
+  if (runtimeConfig.mode === "production"
+    && runtimeConfig.studio.enabled
+    && runtimeConfig.studio.vectorConfigured
+    && !databaseUrl) {
+    throw new StudioVectorPrerequisiteError(new Error("DATABASE_URL_REQUIRED_FOR_STUDIO_VECTOR"));
+  }
+}
+
 export async function initializeRuntimeObjectStorage(
   runtimeConfig: BaaseRuntimeConfig,
   dependencies: RuntimeObjectStorageDependencies = defaultObjectStorageDependencies

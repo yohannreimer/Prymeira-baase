@@ -63,7 +63,7 @@ services:
       HOST: 0.0.0.0
       NODE_ENV: production
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3090/studio/readiness',{headers:{'x-baase-role':'dono','x-workspace-id':'health','x-profile-id':'health'}}).then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3090/readiness').then(async r=>{const body=await r.json().catch(()=>null);process.exit(r.ok&&body?.ok===true&&body?.studio?.enabled===true&&body?.studio?.vector_configured===true?0:1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 8s
       retries: 12

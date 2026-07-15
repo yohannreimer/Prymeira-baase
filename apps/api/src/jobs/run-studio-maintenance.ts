@@ -3,7 +3,11 @@ import { pathToFileURL } from "node:url";
 import { buildApp } from "../app";
 import { readRuntimeConfig } from "../config/runtime";
 import { createPostgresPool } from "../db/postgres";
-import { initializePostgresRuntime, initializeRuntimeObjectStorage } from "../server-initialization";
+import {
+  assertStudioVectorProductionPrerequisite,
+  initializePostgresRuntime,
+  initializeRuntimeObjectStorage
+} from "../server-initialization";
 import { createStudioAssetMaintenanceRunner } from "../modules/studio/studio-asset-maintenance-runner";
 
 type Processor = { processNext(signal?: AbortSignal): Promise<unknown | null> };
@@ -54,8 +58,9 @@ export async function runStudioMaintenanceOnce(
 
 export async function runConfiguredStudioMaintenance() {
   const runtimeConfig = readRuntimeConfig(process.env);
-  const objectStorage = await initializeRuntimeObjectStorage(runtimeConfig);
   const databaseUrl = process.env.DATABASE_URL;
+  assertStudioVectorProductionPrerequisite(runtimeConfig, databaseUrl);
+  const objectStorage = await initializeRuntimeObjectStorage(runtimeConfig);
   const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
 
   try {

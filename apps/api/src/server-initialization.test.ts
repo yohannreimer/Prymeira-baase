@@ -4,6 +4,7 @@ import type { OperationalPool } from "./db/operational-repository-support";
 import { createInMemoryObjectStorage } from "./storage/in-memory-object-storage";
 import {
   assertRuntimeStoragePolicy,
+  assertStudioVectorProductionPrerequisite,
   ensureObjectStorageReady,
   initializePostgresRuntime,
   initializeRuntimeObjectStorage,
@@ -52,6 +53,18 @@ function productionS3Config(endpoint: string | undefined): BaaseRuntimeConfig {
 }
 
 describe("PostgreSQL server initialization", () => {
+  it("rejects production vector Studio without a PostgreSQL connection before app startup", () => {
+    expect(() => assertStudioVectorProductionPrerequisite(runtimeConfig({
+      mode: "production",
+      studio: {
+        enabled: true,
+        vectorConfigured: true,
+        aiModel: "gpt-5.6-terra",
+        embeddingModel: "text-embedding-3-small"
+      }
+    }), undefined)).toThrow("STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE");
+  });
+
   it("rejects vector-enabled Studio when pgvector cannot be initialized", async () => {
     const unavailable = new Error("extension vector is not available");
     const vectorUnavailablePool = {
