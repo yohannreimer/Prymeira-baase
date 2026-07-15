@@ -1,5 +1,10 @@
 import { isIP } from "node:net";
-import type { BaaseOperationalStore, BaaseRuntimeConfig, BaaseS3Config } from "./config/runtime";
+import {
+  INVALID_MULTIPART_CLEANUP_MODE_WARNING,
+  type BaaseOperationalStore,
+  type BaaseRuntimeConfig,
+  type BaaseS3Config
+} from "./config/runtime";
 import { createConfiguredPostgresRepositoryBundle, ensurePostgresSchema } from "./db/postgres";
 import { ensureOperationalSchema } from "./db/operational-schema";
 import type { OperationalPool } from "./db/operational-repository-support";
@@ -54,6 +59,9 @@ function hasValidEndpointHostname(endpoint: string): boolean {
 }
 
 export function assertRuntimeStoragePolicy(runtimeConfig: BaaseRuntimeConfig): void {
+  if (runtimeConfig.warnings.includes(INVALID_MULTIPART_CLEANUP_MODE_WARNING)) {
+    throw new Error("S3_MULTIPART_CLEANUP_MODE_INVALID");
+  }
   if (runtimeConfig.mode === "production"
     && (runtimeConfig.objectStorage.provider !== "s3" || !runtimeConfig.objectStorage.s3)) {
     throw new Error("PRODUCTION_OBJECT_STORAGE_REQUIRED");

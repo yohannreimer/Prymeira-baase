@@ -5,6 +5,8 @@ export type BaaseOperationalStore = "jsonb" | "relational";
 export type BaaseStructuredAiProvider = "mock" | "openai";
 export type BaaseTranscriptionProvider = "mock" | "deepgram";
 export type BaaseMultipartCleanupMode = "lifecycle" | "minio-native";
+export const INVALID_MULTIPART_CLEANUP_MODE_WARNING =
+  "S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native.";
 
 export type BaaseS3Config = {
   endpoint: string | undefined;
@@ -149,7 +151,7 @@ function readRuntimeWarnings(input: {
 }) {
   const warnings: string[] = [];
   if (hasInvalidMultipartCleanupMode(input.multipartCleanupModeInput)) {
-    warnings.push("S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native.");
+    warnings.push(INVALID_MULTIPART_CLEANUP_MODE_WARNING);
   }
   if (input.operationalStoreInput === "relational" && input.persistence !== "postgres") {
     warnings.push("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");

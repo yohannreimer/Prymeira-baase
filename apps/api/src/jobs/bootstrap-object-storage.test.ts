@@ -68,4 +68,19 @@ describe("object storage bootstrap job", () => {
       multipartCleanupMode: "minio-native"
     });
   });
+
+  it("rejects an invalid cleanup mode before invoking bootstrap", async () => {
+    Object.assign(process.env, {
+      BAASE_RUNTIME_MODE: "production",
+      S3_ENDPOINT: "http://minio:9000",
+      S3_BUCKET: "prymeira-baase",
+      S3_ACCESS_KEY: "minio-user",
+      S3_SECRET_KEY: "minio-secret",
+      S3_MULTIPART_CLEANUP_MODE: "disabled"
+    });
+
+    await expect(runObjectStorageBootstrap())
+      .rejects.toThrow("S3_MULTIPART_CLEANUP_MODE_INVALID");
+    expect(mocks.bootstrapS3ObjectStorage).not.toHaveBeenCalled();
+  });
 });
