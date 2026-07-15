@@ -369,12 +369,16 @@ describe("StudioCopilot", () => {
     await user.type(screen.getByLabelText(/o que você quer entender/i), "Sugira");
     await user.click(screen.getByRole("button", { name: "Enviar" }));
     const suggestion = await screen.findByRole("region", { name: "Proposta revisável da IA" });
-    await user.click(within(suggestion).getByRole("button", { name: "Levar para a operação" }));
+    const operationTrigger = within(suggestion).getByRole("button", { name: "Levar para a operação" });
+    await user.click(operationTrigger);
     const preview = await within(suggestion).findByRole("region", { name: "Prévia operacional" });
+    await waitFor(() => expect(within(preview).getByRole("heading", { name: "Da clareza para a operação" })).toHaveFocus());
     expect(within(preview).getAllByText("Plano")).toHaveLength(2);
     expect(within(preview).getByRole("button", { name: /Confirmar e criar 1 registro/ })).toBeEnabled();
     expect(within(suggestion).getByRole("button", { name: "Aceitar como nova versão" })).toBeEnabled();
     expect(requests.some((url) => url.endsWith("/suggestions/suggestion_1/accept"))).toBe(false);
+    await user.click(within(preview).getByRole("button", { name: "Fechar prévia operacional" }));
+    await waitFor(() => expect(within(suggestion).getByRole("button", { name: "Levar para a operação" })).toHaveFocus());
   });
 
   it("resizes by keyboard and pointer within persisted bounds, then restores focus after collapsing", async () => {

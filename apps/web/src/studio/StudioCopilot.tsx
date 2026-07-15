@@ -385,6 +385,8 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
   const [operationDrafts, setOperationDrafts] = useState<StudioOperationDraft[] | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const decisionRef = useRef<HTMLParagraphElement>(null);
+  const operationTriggerRef = useRef<HTMLButtonElement>(null);
+  const operationWasOpenRef = useRef(false);
   const decisionGenerationRef = useRef(0);
   const decisionControllerRef = useRef<AbortController | null>(null);
   const activeIdentityRef = useRef({ documentId: sessionDocumentId, suggestionId: suggestion.id });
@@ -400,6 +402,17 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
     if (state === "dismissed") decisionRef.current?.focus();
     if (state === "error" || state === "conflict") errorRef.current?.focus();
   }, [state]);
+
+  useEffect(() => {
+    if (operationOpen) {
+      operationWasOpenRef.current = true;
+      return;
+    }
+    if (operationWasOpenRef.current) {
+      operationWasOpenRef.current = false;
+      operationTriggerRef.current?.focus();
+    }
+  }, [operationOpen]);
 
   async function accept() {
     if (state !== "pending" && state !== "error") return;
@@ -473,8 +486,8 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
     <section className="studio-suggestion__proposal" aria-labelledby={`studio-suggestion-proposal-${suggestion.id}`}>
       <h4 id={`studio-suggestion-proposal-${suggestion.id}`}>Proposta</h4>
     {editing ? <div className="studio-suggestion__edit">
-      <label>Título<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} /></label>
-      <label>Texto<textarea rows={8} value={body} onChange={(event) => setBody(event.currentTarget.value)} /></label>
+      <label>Título<input name={`studio-suggestion-${suggestion.id}-title`} autoComplete="off" value={title} onChange={(event) => setTitle(event.currentTarget.value)} /></label>
+      <label>Texto<textarea name={`studio-suggestion-${suggestion.id}-body`} autoComplete="off" rows={8} value={body} onChange={(event) => setBody(event.currentTarget.value)} /></label>
     </div> : <div className="studio-suggestion__preview"><h4>{title || "Sem título"}</h4><p>{body}</p></div>}
     </section>
     <StudioCitations citations={suggestion.payload.citations} onOpenInternal={onOpenInternalSource} />
@@ -497,7 +510,7 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
     {state === "conflict" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta chegou ao servidor, mas sua edição local mudou. Sua escrita foi preservada para você resolver o conflito.</p> : null}
     {state === "error" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta não foi aplicada. O texto original continua intacto.</p> : null}
     <footer>
-      {!operationOpen ? <button type="button" disabled={state !== "pending" && state !== "error"} onClick={() => {
+      {!operationOpen ? <button ref={operationTriggerRef} type="button" disabled={state !== "pending" && state !== "error"} onClick={() => {
         setOperationDrafts([operationDraftFromSuggestion(suggestion, title, body)]);
         setOperationOpen(true);
       }}>Levar para a operação</button> : null}

@@ -30,12 +30,69 @@ describe("OperationPreview", () => {
     expect(within(preview).getByLabelText("Data de vencimento")).toHaveValue("2026-07-20");
     expect(within(preview).getByText("Área não definida")).toBeInTheDocument();
     expect(within(preview).getByText("Responsável não definido")).toBeInTheDocument();
-    expect(within(preview).getByLabelText("Checklist / passos")).toHaveValue("Conferir saldo\nRegistrar diferença");
+    expect(within(preview).getByRole("textbox", { name: "Item 1 do checklist" })).toHaveValue("Conferir saldo");
+    expect(within(preview).getByRole("textbox", { name: "Item 2 do checklist" })).toHaveValue("Registrar diferença");
 
     await userEvent.click(within(preview).getByText(/2\. Rotina/));
     expect(within(preview).getByDisplayValue("Fechamento diário")).toBeInTheDocument();
     expect(within(preview).getByText("Revisar o cenário")).toBeInTheDocument();
     expect(within(preview).getAllByDisplayValue("owner_a")).toHaveLength(2);
+  });
+
+  it("adds and removes empty checklist, responsible, weekday and step rows without erasing them while editing", async () => {
+    const user = userEvent.setup();
+    const drafts = [taskDraft(), routineDraft()];
+    let index = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      const draft = drafts[index++]!;
+      return json({ preview: rawPreview(`preview_${index}`, draft) }, 201);
+    });
+    render(<OperationPreview suggestionId="suggestion_1" sourceDocument={{ id: "document_1", title: "Plano" }} drafts={drafts} />);
+    const preview = await screen.findByRole("region", { name: "Prévia operacional" });
+
+    await user.click(within(preview).getByRole("button", { name: "Adicionar item ao checklist" }));
+    const emptyChecklist = within(preview).getByRole("textbox", { name: "Item 3 do checklist" });
+    expect(emptyChecklist).toHaveValue("");
+    expect(within(preview).getByRole("button", { name: "Confirmar e criar 2 registros" })).toBeDisabled();
+    await user.type(emptyChecklist, "Validar divergências");
+    expect(emptyChecklist).toHaveValue("Validar divergências");
+    await user.click(within(preview).getByRole("button", { name: "Remover item 3 do checklist" }));
+    expect(within(preview).queryByRole("textbox", { name: "Item 3 do checklist" })).not.toBeInTheDocument();
+
+    await user.click(within(preview).getByText(/2\. Rotina/));
+    await user.click(within(preview).getByRole("button", { name: "Adicionar responsável" }));
+    const responsible = within(preview).getByRole("textbox", { name: "Responsável 2" });
+    expect(responsible).toHaveValue("");
+    await user.type(responsible, "owner_b");
+    await user.click(within(preview).getByRole("button", { name: "Remover responsável 2" }));
+
+    await user.click(within(preview).getByRole("button", { name: "Adicionar dia da semana" }));
+    expect(within(preview).getByRole("combobox", { name: "Dia da semana 1" })).toBeInTheDocument();
+    await user.click(within(preview).getByRole("button", { name: "Remover dia da semana 1" }));
+
+    await user.click(within(preview).getByRole("button", { name: "Adicionar etapa" }));
+    const newStep = within(preview).getByRole("textbox", { name: "Título da etapa 2" });
+    expect(newStep).toHaveValue("");
+    await user.type(newStep, "Registrar decisão");
+    await user.click(within(preview).getByRole("button", { name: "Remover etapa 2" }));
+    expect(within(preview).queryByRole("textbox", { name: "Título da etapa 2" })).not.toBeInTheDocument();
+  });
+
+  it("edits quiz options as multiline text and adds/removes complete question rows", async () => {
+    const user = userEvent.setup();
+    const draft = announcementDraft();
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => json({ preview: rawPreview("preview_1", draft) }, 201));
+    render(<OperationPreview suggestionId="suggestion_1" sourceDocument={{ id: "document_1", title: "Comunicado" }} drafts={[draft]} />);
+    const options = await screen.findByRole("textbox", { name: "Opções da pergunta 1" });
+    expect(options.tagName).toBe("TEXTAREA");
+    await user.type(options, "\n");
+    expect(options).toHaveValue("yes: Sim\nno: Não\n");
+    expect(screen.getByRole("button", { name: "Confirmar e criar 1 registro" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Adicionar pergunta" }));
+    expect(screen.getByRole("textbox", { name: "Pergunta 2" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Remover pergunta 2" }));
+    expect(screen.queryByRole("textbox", { name: "Pergunta 2" })).not.toBeInTheDocument();
   });
 
   it("edits before an explicit final confirmation, blocks invalid/double submit, reuses its UUID, and links success", async () => {
@@ -72,6 +129,8 @@ describe("OperationPreview", () => {
 
     await user.click(screen.getByRole("button", { name: "Tentar confirmação novamente" }));
     const linked = await screen.findByRole("region", { name: "Recurso criado" });
+    expect(linked).toHaveAttribute("aria-live", "polite");
+    await waitFor(() => expect(linked).toHaveFocus());
     expect(within(linked).getByText("Fechamento revisado")).toBeInTheDocument();
     expect(within(linked).getByText(/Decisão estratégica/)).toBeInTheDocument();
     expect(confirmationKeys[0]).toMatch(/^[0-9a-f-]{36}$/u);
@@ -110,7 +169,20 @@ function routineDraft() {
   };
 }
 
-function rawPreview(id: string, draft: ReturnType<typeof taskDraft> | ReturnType<typeof routineDraft>) {
+function announcementDraft() {
+  return {
+    resource_type: "announcement" as const,
+    payload: {
+      title: "Mudança de processo", body: "Leia com atenção.", type: "process_change" as const,
+      requirement: "quiz_confirmation" as const, audience: { type: "all" as const },
+      related_process_id: null, related_training_id: null,
+      quiz_questions: [{ prompt: "Você entendeu?", options: [{ id: "yes", label: "Sim" }, { id: "no", label: "Não" }],
+        correct_option_id: "yes", explanation: null }]
+    }
+  };
+}
+
+function rawPreview(id: string, draft: ReturnType<typeof taskDraft> | ReturnType<typeof routineDraft> | ReturnType<typeof announcementDraft>) {
   return {
     id, source_suggestion_id: "suggestion_1", source_document_id: "document_1",
     resource_type: draft.resource_type, payload: draft, confirmed_payload: null, status: "preview",
