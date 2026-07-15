@@ -53,6 +53,33 @@ describe("StudioAudioRecorder", () => {
     expect(audio.blob).toHaveProperty("type", "audio/webm");
   });
 
+  it.each([
+    ["audio/webm; codecs=opus", "webm"],
+    ["audio/mp4", "m4a"],
+    ["audio/x-m4a", "m4a"],
+    ["audio/ogg", "ogg"],
+    ["audio/wav", "wav"],
+    ["audio/x-wav", "wav"],
+    ["audio/mpeg", "mp3"],
+    ["audio/mp3", "mp3"],
+    ["audio/aac", "aac"],
+    ["audio/unknown", "webm"]
+  ])("maps recording MIME %s to .%s", async (mimeType, extension) => {
+    const { recorders } = installRecorder();
+    const onCaptured = vi.fn();
+    renderRecorder({ onCaptured });
+
+    fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+    const stop = await screen.findByRole("button", { name: "Parar gravação" });
+    recorders[0]!.mimeType = mimeType;
+    await act(async () => recorders[0]!.emit("dataavailable", new Blob(["audio"])));
+    fireEvent.click(stop);
+    await act(async () => recorders[0]!.emit("stop"));
+
+    expect(onCaptured).toHaveBeenCalledTimes(1);
+    expect(onCaptured.mock.calls[0]![0].filename).toMatch(new RegExp(`\\.${extension}$`, "u"));
+  });
+
   it("opens the hidden audio input when MediaRecorder is unsupported", () => {
     Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: undefined });
     const onInputClick = vi.fn();

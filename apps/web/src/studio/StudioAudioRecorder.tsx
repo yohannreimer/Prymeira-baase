@@ -20,6 +20,17 @@ type RecordingSession = {
   terminal: boolean;
 };
 
+function recordingExtension(mimeType: string) {
+  const normalized = mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const subtype = normalized.split("/").at(-1);
+  if (subtype === "mp4" || subtype === "x-m4a") return "m4a";
+  if (subtype === "ogg") return "ogg";
+  if (subtype === "wav" || subtype === "x-wav") return "wav";
+  if (subtype === "mpeg" || subtype === "mp3") return "mp3";
+  if (subtype === "aac") return "aac";
+  return "webm";
+}
+
 export default function StudioAudioRecorder({
   className,
   disabled = false,
@@ -123,7 +134,7 @@ export default function StudioAudioRecorder({
           onStatusRef.current("Não foi possível registrar áudio desta vez.");
           return;
         }
-        const extension = type.includes("mp4") ? "m4a" : "webm";
+        const extension = recordingExtension(type);
         onCapturedRef.current({
           blob,
           filename: `registro-${new Date().toISOString().replaceAll(":", "-")}.${extension}`
