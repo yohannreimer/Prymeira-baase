@@ -20,6 +20,12 @@ function runtimeConfig(overrides: Partial<BaaseRuntimeConfig> = {}): BaaseRuntim
     demoSeedEnabled: true,
     ai: { structured: "mock", transcription: "mock" },
     objectStorage: { provider: "memory", s3: null },
+    studio: {
+      enabled: false,
+      vectorConfigured: false,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    },
     ok: true,
     warnings: [],
     ...overrides

@@ -77,6 +77,12 @@ const operationalRuntimeConfig: BaaseRuntimeConfig = {
   demoSeedEnabled: false,
   ai: { structured: "openai", transcription: "deepgram" },
   objectStorage: { provider: "memory", s3: null },
+  studio: {
+    enabled: false,
+    vectorConfigured: false,
+    aiModel: "gpt-5.6-terra",
+    embeddingModel: "text-embedding-3-small"
+  },
   ok: true,
   warnings: []
 };

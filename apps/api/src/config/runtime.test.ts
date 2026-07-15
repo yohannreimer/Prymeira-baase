@@ -173,7 +173,12 @@ describe("runtime config", () => {
     const config = readRuntimeConfig({ BAASE_STUDIO_ENABLED: "true" });
 
     expect(config.ok).toBe(false);
-    expect(config.studio).toMatchObject({ enabled: true, vectorConfigured: false });
+    expect(config.studio).toEqual({
+      enabled: true,
+      vectorConfigured: false,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    });
     expect(config.warnings).toEqual(expect.arrayContaining([
       "BAASE Studio habilitado requer persistência durável em Postgres.",
       "BAASE Studio habilitado requer um provider real de IA.",
@@ -189,7 +194,12 @@ describe("runtime config", () => {
       OPENAI_API_KEY: "sk-test"
     });
 
-    expect(config.studio).toMatchObject({ enabled: true, vectorConfigured: true });
+    expect(config.studio).toEqual({
+      enabled: true,
+      vectorConfigured: true,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    });
     expect(config.warnings).not.toEqual(expect.arrayContaining([
       expect.stringContaining("Studio habilitado")
     ]));
