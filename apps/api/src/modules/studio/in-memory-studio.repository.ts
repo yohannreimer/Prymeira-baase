@@ -186,6 +186,10 @@ export function createInMemoryStudioRepository(
     )).toISOString();
     const version: StudioDocumentVersion = {
       ...structuredClone(input),
+      title: input.title ?? null,
+      checkpointReason: input.checkpointReason ?? "legacy_autosave",
+      sourceRevision: input.sourceRevision ?? null,
+      isLegacy: input.isLegacy ?? true,
       id: `studio_version_${randomUUID()}`,
       versionNumber,
       createdAt: timestamp
@@ -384,6 +388,8 @@ export function createInMemoryStudioRepository(
         isFocused: input.isFocused,
         status: input.status,
         archivedAt: input.archivedAt,
+        trashedAt: input.trashedAt ?? null,
+        preTrashStatus: input.preTrashStatus ?? null,
         revision: persisted.revision + 1,
         updatedAt: nextTimestamp(now, persisted.updatedAt)
       };

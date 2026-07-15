@@ -612,12 +612,12 @@ async function insertVersion(
 ) {
   const result = await client.query<StudioDocumentVersionRow>(
     `INSERT INTO studio_document_versions
-       (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,ai_run_id)
+       (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,ai_run_id,title,checkpoint_reason,source_revision,is_legacy)
      VALUES (
        $1,$2,$3,$4,
        (SELECT COALESCE(MAX(version_number),0)+1 FROM studio_document_versions
         WHERE workspace_id=$2 AND owner_profile_id=$3 AND document_id=$4),
-       $5::jsonb,$6,$7,$8,$9
+       $5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13
      )
      RETURNING *`,
     [
@@ -629,7 +629,11 @@ async function insertVersion(
       input.bodyText,
       input.origin,
       input.actorProfileId,
-      input.aiRunId
+      input.aiRunId,
+      input.title ?? null,
+      input.checkpointReason ?? "legacy_autosave",
+      input.sourceRevision ?? null,
+      input.isLegacy ?? true
     ]
   );
   const version = versionFromRow(result.rows[0]!);
@@ -797,9 +801,9 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                WHEN title IS DISTINCT FROM $4 OR body_text IS DISTINCT FROM $6
                THEN $10::text[] ELSE search_prefix_tokens END,
              capture_mode=$11,
-             inbox_state=$12,is_focused=$13,status=$14,archived_at=$15,
+             inbox_state=$12,is_focused=$13,status=$14,archived_at=$15,trashed_at=$16,pre_trash_status=$17,
              revision=revision+1,updated_at=NOW()
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$16
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$18
            RETURNING *`,
           [
             document.workspaceId,
@@ -817,6 +821,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
             document.isFocused,
             document.status,
             document.archivedAt,
+            document.trashedAt ?? null,
+            document.preTrashStatus ?? null,
             expectedRevision
           ]
         );

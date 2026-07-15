@@ -1539,6 +1539,59 @@ describe("PostgreSQL repository bundle", () => {
     })]);
   });
 
+  it("persists checkpoint and trash fields with backward-compatible defaults", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const documentRow = {
+      id: "document_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", capture_key: null, title: "Plano",
+      body_json: {}, body_text: "current", revision: 5, capture_mode: "text", inbox_state: "reviewed", is_focused: false,
+      status: "trashed", created_at: "2026-07-10T10:00:00.000Z", updated_at: "2026-07-13T10:00:00.000Z",
+      archived_at: null, trashed_at: "2026-07-13T10:00:00.000Z", pre_trash_status: "archived"
+    };
+    const versionRow = {
+      id: "version_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", document_id: "document_a",
+      version_number: 2, body_json: {}, body_text: "checkpoint", origin: "user", actor_profile_id: "owner_a",
+      ai_run_id: null, created_at: "2026-07-13T10:00:00.000Z", title: "Decisão", checkpoint_reason: "manual",
+      source_revision: 5, is_legacy: false
+    };
+    const client = {
+      async query<T>(text: string, params?: unknown[]) {
+        calls.push({ text, params });
+        if (text.includes("SELECT id FROM studio_documents")) return { rows: [{ id: "document_a" }] as T[] };
+        if (text.includes("INSERT INTO studio_document_versions")) return { rows: [versionRow] as T[] };
+        if (text.includes("UPDATE studio_documents SET")) return { rows: [documentRow] as T[] };
+        return { rows: [] as T[] };
+      },
+      release() {}
+    };
+    const pool: OperationalPool = {
+      async query<T>() { return { rows: [] as T[] }; },
+      async connect() { return client; }
+    };
+    const repository = createPostgresStudioRepository(pool);
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+
+    await expect(repository.appendVersion({
+      ...scope, documentId: "document_a", bodyJson: {}, bodyText: "checkpoint", origin: "user", actorProfileId: "owner_a",
+      aiRunId: null, title: "Decisão", checkpointReason: "manual", sourceRevision: 5, isLegacy: false
+    })).resolves.toMatchObject({ title: "Decisão", checkpointReason: "manual", sourceRevision: 5, isLegacy: false });
+    await repository.appendVersion({
+      ...scope, documentId: "document_a", bodyJson: {}, bodyText: "legacy", origin: "user", actorProfileId: "owner_a", aiRunId: null
+    });
+    await expect(repository.updateDocument({
+      id: "document_a", ...scope, captureKey: null, title: "Plano", bodyJson: {}, bodyText: "current", revision: 4,
+      captureMode: "text", inboxState: "reviewed", isFocused: false, status: "trashed", createdAt: "2026-07-10T10:00:00.000Z",
+      updatedAt: "2026-07-12T10:00:00.000Z", archivedAt: null, trashedAt: "2026-07-13T10:00:00.000Z", preTrashStatus: "archived"
+    }, 4)).resolves.toMatchObject({ trashedAt: "2026-07-13T10:00:00.000Z", preTrashStatus: "archived" });
+
+    const inserts = calls.filter((call) => call.text.includes("INSERT INTO studio_document_versions"));
+    expect(inserts[0]?.text).toContain("title,checkpoint_reason,source_revision,is_legacy");
+    expect(inserts[0]?.params?.slice(-4)).toEqual(["Decisão", "manual", 5, false]);
+    expect(inserts[1]?.params?.slice(-4)).toEqual([null, "legacy_autosave", null, true]);
+    const update = calls.find((call) => call.text.includes("UPDATE studio_documents SET"));
+    expect(update?.text).toContain("trashed_at=$16,pre_trash_status=$17");
+    expect(update?.params?.slice(-3)).toEqual(["2026-07-13T10:00:00.000Z", "archived", 4]);
+  });
+
   it("removes resolved upload intents and claims the next due owner in one skip-locked statement", async () => {
     const statements: string[] = [];
     const pool: OperationalPool = {
