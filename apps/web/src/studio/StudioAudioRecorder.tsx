@@ -127,6 +127,7 @@ export default function StudioAudioRecorder({
       else grantedStream?.getTracks().forEach((track) => track.stop());
       if (mountedRef.current) {
         onStatus("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
+        inputRef.current?.click();
       }
     }
   }

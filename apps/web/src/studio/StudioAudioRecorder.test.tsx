@@ -103,17 +103,22 @@ describe("StudioAudioRecorder", () => {
     expect(onStatus).toHaveBeenLastCalledWith("Não foi possível registrar áudio desta vez.");
   });
 
-  it("reports the file fallback when microphone permission is denied", async () => {
+  it("reports and opens the file fallback once when microphone permission is denied", async () => {
     const getUserMedia = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
     installRecorder({ getUserMedia });
     const onStatus = vi.fn();
     renderRecorder({ onStatus });
+    const onInputClick = vi.fn();
+    screen.getByTestId("audio-fallback").addEventListener("click", onInputClick);
 
+    fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
     fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
 
     await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith(
       "Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado."
     ));
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(onInputClick).toHaveBeenCalledTimes(1);
   });
 
   it("stops every recording track on unmount", async () => {
