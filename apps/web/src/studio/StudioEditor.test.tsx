@@ -82,7 +82,9 @@ describe("StudioEditor", () => {
       "Antes", "Primeira", "Segunda", " depois"
     ]);
     await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
-    const patchCall = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
+    const patchCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    expect(patchCalls).toHaveLength(1);
+    const patchCall = patchCalls[0];
     expect(JSON.parse(String(patchCall?.[1]?.body)).body_text).toBe("Antes\nPrimeira\nSegunda\n depois");
   });
 
@@ -133,6 +135,152 @@ describe("StudioEditor", () => {
     await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH")?.[1]?.body)).body_text)
       .toBe("No fim");
+  });
+
+  it.each([
+    ["final paragraph", [
+      { type: "paragraph", content: [{ type: "text", text: "Último parágrafo" }] }
+    ], ["paragraph", "paragraph"]],
+    ["horizontal rule", [
+      { type: "horizontalRule" }
+    ], ["horizontalRule", "paragraph"]],
+    ["bullet list", [
+      {
+        type: "bulletList",
+        content: [{
+          type: "listItem",
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Último item" }] }]
+        }]
+      }
+    ], ["bulletList", "paragraph"]],
+    ["blockquote", [
+      {
+        type: "blockquote",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Última citação" }] }]
+      }
+    ], ["blockquote", "paragraph"]]
+  ])("appends fallback transcript after a top-level %s without structural warnings", async (_label, content, expectedTypes) => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      return response({ document: {
+        ...rawDocument,
+        revision: 5,
+        body_json: payload.body_json,
+        body_text: payload.body_text
+      } });
+    });
+    const source: StudioDocument = {
+      ...document,
+      bodyJson: { type: "doc", content },
+      bodyText: "Conteúdo existente"
+    };
+    render(<StudioEditor ref={editorRef} document={source} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    act(() => { editorRef.current?.insertTextAtLastSelection("Transcrição final"); });
+
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1));
+    const patch = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
+    const payload = JSON.parse(String(patch?.[1]?.body));
+    expect(payload.body_json.content.map((node: { type: string }) => node.type)).toEqual(expectedTypes);
+    expect(payload.body_json.content.at(-1)).toEqual({
+      type: "paragraph",
+      content: [{ type: "text", text: "Transcrição final" }]
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("replaces an empty document cleanly with transcript blocks in one update", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      return response({ document: {
+        ...rawDocument,
+        revision: 5,
+        body_json: payload.body_json,
+        body_text: payload.body_text
+      } });
+    });
+    render(<StudioEditor ref={editorRef} document={document} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    act(() => { editorRef.current?.insertTextAtLastSelection("Primeira\nSegunda"); });
+
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1));
+    const patch = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
+    const payload = JSON.parse(String(patch?.[1]?.body));
+    expect(payload.body_json.content).toEqual([
+      { type: "paragraph", content: [{ type: "text", text: "Primeira" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Segunda" }] }
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("uses the top-level fallback for an all-document selection", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const source: StudioDocument = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Primeiro" }] },
+          { type: "paragraph", content: [{ type: "text", text: "Segundo" }] }
+        ]
+      },
+      bodyText: "Primeiro\nSegundo"
+    };
+    render(<StudioEditor ref={editorRef} document={source} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    body.focus();
+    await userEvent.keyboard("{Control>}a{/Control}");
+
+    act(() => { editorRef.current?.insertTextAtLastSelection("Depois de tudo"); });
+
+    expect([...body.querySelectorAll("p")].map((paragraph) => paragraph.textContent)).toEqual([
+      "Primeiro",
+      "Segundo",
+      "Depois de tudo"
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("uses the top-level fallback for a node selection", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const source: StudioDocument = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Antes" }] },
+          { type: "horizontalRule" }
+        ]
+      },
+      bodyText: "Antes"
+    };
+    render(<StudioEditor ref={editorRef} document={source} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    const horizontalRule = body.querySelector("hr");
+    if (!horizontalRule) throw new Error("Expected a horizontal rule");
+    await setTipTapNodeSelection(body, horizontalRule);
+    expect([...body.children].map((node) => node.tagName)).toEqual(["P", "HR", "P"]);
+    expect(body.lastElementChild?.textContent).toBe("");
+
+    act(() => { editorRef.current?.insertTextAtLastSelection("Depois do divisor"); });
+
+    expect([...body.children].map((node) => node.tagName)).toEqual(["P", "HR", "P", "P"]);
+    expect(body.lastElementChild).toHaveTextContent("Depois do divisor");
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("binds the imperative handle to the current keyed document session", async () => {
@@ -1114,6 +1262,20 @@ async function setTipTapSelection(editor: HTMLElement, offset: number) {
   selection?.addRange(range);
   fireEvent(globalThis.document, new Event("selectionchange"));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+}
+
+async function setTipTapNodeSelection(editor: HTMLElement, node: HTMLElement) {
+  await act(async () => {
+    editor.focus();
+    const range = globalThis.document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent(globalThis.document, new Event("selectionchange"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function storeDraftEnvelope(draft: { title: string | null; bodyJson: Record<string, unknown>; bodyText: string }, baseRevision: number) {

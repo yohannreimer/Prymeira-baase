@@ -102,7 +102,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   const focusVersionAfterRetryRef = useRef(false);
   const conflictCopyOperationRef = useRef<{ signature: string; key: string } | null>(null);
   const editGenerationRef = useRef(0);
-  const lastSelectionRef = useRef<{ from: number; to: number } | null>(null);
+  const lastSelectionRef = useRef<{ from: number; to: number; isTextSelection: boolean } | null>(null);
   const asyncActionTokenRef = useRef(0);
   const sourceDocumentIdRef = useRef(sourceDocument.id);
   const [linkFieldOpen, setLinkFieldOpen] = useState(false);
@@ -140,8 +140,15 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       });
     },
     onSelectionUpdate({ editor: currentEditor }) {
-      const { from, to } = currentEditor.state.selection;
-      lastSelectionRef.current = { from, to };
+      const selection = currentEditor.state.selection;
+      const { from, to } = selection;
+      lastSelectionRef.current = {
+        from,
+        to,
+        isTextSelection: selection.$from.parent.inlineContent
+          && selection.$to.parent.inlineContent
+          && !("node" in selection)
+      };
       setSelectedText(from === to ? "" : currentEditor.state.doc.textBetween(from, Math.min(to, from + 4_000), "\n"));
     }
   });
@@ -160,24 +167,35 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         }));
       if (paragraphs.length === 0) return false;
 
-      const documentSize = editor.state.doc.content.size;
+      const currentDocument = editor.state.doc;
+      const documentSize = currentDocument.content.size;
       const savedSelection = lastSelectionRef.current;
       const hasValidSelectionBounds = savedSelection !== null
+        && savedSelection.isTextSelection
         && Number.isInteger(savedSelection.from)
         && Number.isInteger(savedSelection.to)
         && savedSelection.from > 0
         && savedSelection.to >= savedSelection.from
         && savedSelection.to < documentSize;
       const hasValidSelection = hasValidSelectionBounds
-        && editor.state.doc.resolve(savedSelection.from).parent.inlineContent
-        && editor.state.doc.resolve(savedSelection.to).parent.inlineContent;
-      const documentEnd = Math.max(1, documentSize - 1);
-      const selection = hasValidSelection
-        ? savedSelection!
-        : { from: documentEnd, to: documentEnd };
+        && currentDocument.resolve(savedSelection.from).parent.inlineContent
+        && currentDocument.resolve(savedSelection.to).parent.inlineContent;
       const chain = editor.chain().focus();
-      if (documentSize > 0) chain.setTextSelection(selection);
-      return chain.insertContent(paragraphs).run();
+      if (hasValidSelection) {
+        return chain
+          .setTextSelection({ from: savedSelection!.from, to: savedSelection!.to })
+          .insertContent(paragraphs)
+          .run();
+      }
+
+      const isEmptyDocument = currentDocument.childCount === 0
+        || (currentDocument.childCount === 1
+          && currentDocument.firstChild?.isTextblock
+          && currentDocument.firstChild.content.size === 0);
+      const fallbackPosition = isEmptyDocument
+        ? { from: 0, to: documentSize }
+        : documentSize;
+      return chain.insertContentAt(fallbackPosition, paragraphs).run();
     }
   }), [editor]);
 

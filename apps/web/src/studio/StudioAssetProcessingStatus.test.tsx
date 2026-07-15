@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StudioAsset } from "./studio.types";
@@ -224,6 +224,117 @@ describe("StudioAssetProcessingStatus", () => {
     expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(onInsertTranscript).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a new asset while the previous transcript promise is pending and ignores its late result", async () => {
+    const oldInsertion = deferred<boolean>();
+    const insertA = vi.fn(() => oldInsertion.promise);
+    const insertB = vi.fn(() => true);
+    const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_a", extractedText: "Transcrição A", extractionStatus: "ready" })}
+        onInsertTranscript={insertA}
+        getDownload={getDownload}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar transcrição ao documento" }));
+    expect(screen.getByRole("button", { name: "Adicionando…" })).toBeDisabled();
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_b", extractedText: "Transcrição B", extractionStatus: "ready" })}
+        onInsertTranscript={insertB}
+        getDownload={getDownload}
+      />
+    );
+    const buttonB = screen.getByRole("button", { name: "Adicionar transcrição ao documento" });
+    expect(buttonB).toBeEnabled();
+    await userEvent.click(buttonB);
+    expect(insertB).toHaveBeenCalledWith("Transcrição B");
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+
+    oldInsertion.resolve(false);
+    await act(async () => { await oldInsertion.promise; });
+    expect(screen.getByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("resets pending insertion when processing status or transcript text changes", async () => {
+    const oldInsertion = deferred<boolean>();
+    const onInsertTranscript = vi.fn((text: string) => (
+      text === "Transcrição antiga" ? oldInsertion.promise : true
+    ));
+    const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "Transcrição antiga" })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={getDownload}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar transcrição ao documento" }));
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "processing", extractedText: "Transcrição antiga" })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={getDownload}
+      />
+    );
+    expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "Transcrição nova" })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={getDownload}
+      />
+    );
+    const retry = screen.getByRole("button", { name: "Adicionar transcrição ao documento" });
+    expect(retry).toBeEnabled();
+    await userEvent.click(retry);
+    expect(onInsertTranscript).toHaveBeenLastCalledWith("Transcrição nova");
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+
+    oldInsertion.resolve(false);
+    await act(async () => { await oldInsertion.promise; });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("resets insertion feedback when only the callback changes and uses the newest callback", async () => {
+    const firstCallback = vi.fn(() => true);
+    const nextCallback = vi.fn(() => true);
+    const ready = asset({ extractionStatus: "ready", extractedText: "Mesmo texto" });
+    const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
+    const view = render(
+      <StudioAssetProcessingStatus asset={ready} onInsertTranscript={firstCallback} getDownload={getDownload} />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar transcrição ao documento" }));
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+
+    view.rerender(
+      <StudioAssetProcessingStatus asset={ready} onInsertTranscript={nextCallback} getDownload={getDownload} />
+    );
+    expect(screen.queryByText("Transcrição adicionada ao documento")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar transcrição ao documento" }));
+    expect(firstCallback).toHaveBeenCalledTimes(1);
+    expect(nextCallback).toHaveBeenCalledWith("Mesmo texto");
+  });
+
+  it("keeps insertion feedback outside the processing live region", async () => {
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "Texto" })}
+        onInsertTranscript={() => true}
+        getDownload={vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined))}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar transcrição ao documento" }));
+
+    const feedback = await screen.findByText("Transcrição adicionada ao documento");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback.parentElement?.closest("[role='status']")).toBeNull();
   });
 });
 

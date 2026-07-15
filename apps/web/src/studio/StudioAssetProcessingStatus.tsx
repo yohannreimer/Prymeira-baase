@@ -66,12 +66,36 @@ export default function StudioAssetProcessingStatus({
   const retryControllerRef = useRef<AbortController | null>(null);
   const retryingRef = useRef(false);
   const insertingRef = useRef(false);
+  const insertionGenerationRef = useRef(0);
+  const insertionCallbackRef = useRef(onInsertTranscript);
   const currentRef = useRef(asset);
 
+  function resetInsertion() {
+    insertionGenerationRef.current += 1;
+    insertingRef.current = false;
+    setInsertionState("idle");
+  }
+
+  function adoptCurrent(next: StudioAsset) {
+    const previous = currentRef.current;
+    if (previous.id !== next.id
+      || previous.extractionStatus !== next.extractionStatus
+      || previous.extractedText !== next.extractedText) {
+      resetInsertion();
+    }
+    currentRef.current = next;
+    setCurrent(next);
+  }
+
   useEffect(() => {
-    currentRef.current = asset;
-    setCurrent(asset);
+    adoptCurrent(asset);
   }, [asset]);
+
+  useEffect(() => {
+    if (insertionCallbackRef.current === onInsertTranscript) return;
+    insertionCallbackRef.current = onInsertTranscript;
+    resetInsertion();
+  }, [onInsertTranscript]);
 
   useEffect(() => {
     if (asset.kind === "link_snapshot") {
@@ -104,8 +128,7 @@ export default function StudioAssetProcessingStatus({
         await wait(delay, controller.signal);
         latest = await getStatus(asset.id, controller.signal);
         if (controller.signal.aborted) return;
-        currentRef.current = latest;
-        setCurrent(latest);
+        adoptCurrent(latest);
         if (!shouldPoll(latest)) return;
       }
       if (!controller.signal.aborted) setPollExhausted(true);
@@ -126,7 +149,11 @@ export default function StudioAssetProcessingStatus({
     pollDelays
   ]);
 
-  useEffect(() => () => retryControllerRef.current?.abort(), []);
+  useEffect(() => () => {
+    retryControllerRef.current?.abort();
+    insertionGenerationRef.current += 1;
+    insertingRef.current = false;
+  }, []);
 
   async function retryProcessing() {
     if (retryingRef.current) return;
@@ -139,8 +166,7 @@ export default function StudioAssetProcessingStatus({
     try {
       const retried = await retry(current.id, controller.signal);
       if (controller.signal.aborted) return;
-      currentRef.current = retried;
-      setCurrent(retried);
+      adoptCurrent(retried);
       setPollCycle((cycle) => cycle + 1);
     } catch {
       if (!controller.signal.aborted) setRetryError(true);
@@ -153,20 +179,28 @@ export default function StudioAssetProcessingStatus({
 
   async function insertTranscript() {
     if (insertingRef.current || !onInsertTranscript || !current.extractedText) return;
+    const generation = insertionGenerationRef.current;
+    const callback = onInsertTranscript;
+    const transcript = current.extractedText;
     insertingRef.current = true;
     setInsertionState("inserting");
     try {
-      const inserted = await onInsertTranscript(current.extractedText);
+      const inserted = await callback(transcript);
+      if (generation !== insertionGenerationRef.current) return;
       setInsertionState(inserted ? "inserted" : "error");
     } catch {
-      setInsertionState("error");
+      if (generation === insertionGenerationRef.current) setInsertionState("error");
     } finally {
-      insertingRef.current = false;
+      if (generation === insertionGenerationRef.current) insertingRef.current = false;
     }
   }
 
   const isAudio = current.kind === "audio";
   const originalLabel = isAudio ? "Baixar áudio original" : "Baixar arquivo original";
+  const canInsertTranscript = isAudio
+    && current.extractionStatus === "ready"
+    && Boolean(current.extractedText?.trim())
+    && Boolean(onInsertTranscript);
 
   return (
     <section className="studio-asset-status" aria-labelledby={headingId}>
@@ -245,26 +279,23 @@ export default function StudioAssetProcessingStatus({
           </div>
         ) : null}
         {retryError ? <p className="studio-asset-status__error">Não foi possível solicitar a nova tentativa agora.</p> : null}
-        {isAudio
-          && current.extractionStatus === "ready"
-          && current.extractedText?.trim()
-          && onInsertTranscript ? (
-            <div className="studio-asset-transcript__insert">
-              <button
-                type="button"
-                disabled={insertionState === "inserting"}
-                onClick={() => void insertTranscript()}
-              >
-                {insertionState === "inserting" ? "Adicionando…" : "Adicionar transcrição ao documento"}
-              </button>
-              {insertionState === "inserted" ? (
-                <p role="status" aria-live="polite">Transcrição adicionada ao documento</p>
-              ) : insertionState === "error" ? (
-                <p role="alert">A transcrição não foi adicionada. Você pode tentar novamente.</p>
-              ) : null}
-            </div>
-          ) : null}
       </div>
+      {canInsertTranscript ? (
+        <div className="studio-asset-transcript__insert">
+          <button
+            type="button"
+            disabled={insertionState === "inserting"}
+            onClick={() => void insertTranscript()}
+          >
+            {insertionState === "inserting" ? "Adicionando…" : "Adicionar transcrição ao documento"}
+          </button>
+          {insertionState === "inserted" ? (
+            <p role="status" aria-live="polite">Transcrição adicionada ao documento</p>
+          ) : insertionState === "error" ? (
+            <p role="alert">A transcrição não foi adicionada. Você pode tentar novamente.</p>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }
