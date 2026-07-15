@@ -29,6 +29,27 @@ describe("StudioEditor", () => {
     expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toBeInTheDocument();
   });
 
+  it("places the material region between the editable body and the supporting surfaces", async () => {
+    const { container } = render(
+      <StudioEditor
+        document={document}
+        onDocumentChange={vi.fn()}
+        materialRegion={<section aria-label="Materiais de teste">Materiais</section>}
+      />
+    );
+
+    const editableBody = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    const materialRegion = screen.getByRole("region", { name: "Materiais de teste" });
+    const relatedThoughts = screen.getByRole("heading", { name: "Pensamentos relacionados" });
+    const copilot = await screen.findByRole("complementary", { name: "Copiloto do Estúdio" });
+    const article = container.querySelector("article.studio-editor");
+
+    expect(article).toContainElement(materialRegion);
+    expect(editableBody.compareDocumentPosition(materialRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(materialRegion.compareDocumentPosition(relatedThoughts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(relatedThoughts.compareDocumentPosition(copilot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("blocks an AI suggestion while the editor has a locally persisted dirty draft", async () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {

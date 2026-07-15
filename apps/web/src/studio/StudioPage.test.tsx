@@ -341,6 +341,219 @@ describe("StudioPage", () => {
     );
   });
 
+  it("keeps existing and newly attached materials together inside the editor without reopening", async () => {
+    const user = userEvent.setup();
+    const fileAsset = rawAssetWith({
+      id: "asset_file",
+      kind: "file",
+      display_name: "premissas.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T13:00:00.000Z"
+    });
+    const imageAsset = rawAssetWith({
+      id: "asset_image",
+      kind: "image",
+      display_name: "mapa.png",
+      mime_type: "image/png",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    let attachment = 0;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return jsonResponse({ document: rawDocument });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+        attachment += 1;
+        return jsonResponse({ asset: attachment === 1 ? fileAsset : imageAsset }, 201);
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [rawAsset] });
+      if (url.includes("/api/studio/assets/") && url.endsWith("/download")) {
+        return jsonResponse({ url: `https://private.example/${url.split("/").at(-2)}`, expires_in_seconds: 600 });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    const { container } = render(<StudioPage />);
+
+    expect(await screen.findByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["pdf"], "premissas.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "premissas.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
+
+    await user.upload(screen.getByTestId("studio-material-image-input"), new File(["png"], "mapa.png", { type: "image/png" }));
+    const materialRegion = screen.getByRole("region", { name: "Materiais do documento" });
+    expect(await within(materialRegion).findByRole("heading", { name: "mapa.png" })).toBeInTheDocument();
+    expect(within(materialRegion).getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      "reflexao.wav",
+      "premissas.pdf",
+      "mapa.png"
+    ]);
+    const composer = within(materialRegion).getByRole("group", { name: "Adicionar material" });
+    const firstMaterial = within(materialRegion).getByRole("heading", { name: "reflexao.wav" });
+    expect(composer.compareDocumentPosition(firstMaterial) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("region", { name: "Materiais do documento" })).toHaveLength(1);
+    expect(materialRegion.closest("article.studio-editor")).not.toBeNull();
+    expect(container.querySelector(".studio-writing-layout + .studio-document-assets")).toBeNull();
+  });
+
+  it("keeps a document B attachment when document A's obsolete asset list resolves", async () => {
+    const user = userEvent.setup();
+    const assetsA = deferred<Response>();
+    const assetB = rawAssetWith({
+      id: "asset_b",
+      document_id: rawDocumentB.id,
+      kind: "file",
+      display_name: "plano-b.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T15:00:00.000Z"
+    });
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) return Promise.resolve(jsonResponse({
+        home: { recent_documents: [rawDocument, rawDocumentB], focused_documents: [], pending_review_count: 0, next_rituals: [] }
+      }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return assetsA.promise;
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}/assets`) && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ asset: assetB }, 201));
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      if (url.endsWith(`/api/studio/assets/${assetB.id}/download`)) {
+        return Promise.resolve(jsonResponse({ url: "https://private.example/plano-b.pdf", expires_in_seconds: 600 }));
+      }
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    render(<StudioPage />);
+
+    await user.click((await screen.findAllByRole("button", { name: /Reflexão estratégica/u })).at(-1)!);
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    await user.click((await screen.findAllByRole("button", { name: /Plano comercial/u })).at(-1)!);
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["b"], "plano-b.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "plano-b.pdf" })).toBeInTheDocument();
+
+    await act(async () => assetsA.resolve(jsonResponse({ assets: [rawAsset] })));
+    expect(screen.getByRole("heading", { name: "plano-b.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "reflexao.wav" })).not.toBeInTheDocument();
+  });
+
+  it("merges a late initial list with a newly attached material for the same document", async () => {
+    const user = userEvent.setup();
+    const initialAssets = deferred<Response>();
+    const attached = rawAssetWith({
+      id: "asset_new",
+      kind: "file",
+      display_name: "novo.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return Promise.resolve(jsonResponse({ document: rawDocument }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ asset: attached }, 201));
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return initialAssets.promise;
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await screen.findByRole("heading", { name: "Reflexão estratégica" });
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["new"], "novo.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "novo.pdf" })).toBeInTheDocument();
+    await act(async () => initialAssets.resolve(jsonResponse({ assets: [rawAsset] })));
+
+    expect(screen.getByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "novo.pdf" })).toBeInTheDocument();
+  });
+
+  it("keeps a newly attached material visible when the current document list fails", async () => {
+    const user = userEvent.setup();
+    const initialAssets = deferred<Response>();
+    const attached = rawAssetWith({
+      id: "asset_preserved",
+      kind: "file",
+      display_name: "preservado.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return Promise.resolve(jsonResponse({ document: rawDocument }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ asset: attached }, 201));
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return initialAssets.promise;
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await screen.findByRole("heading", { name: "Reflexão estratégica" });
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["known"], "preservado.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "preservado.pdf" })).toBeInTheDocument();
+
+    await act(async () => initialAssets.resolve(jsonResponse({
+      error: { code: "TEMPORARY", message: "retry" }
+    }, 503)));
+
+    expect(screen.getByRole("heading", { name: "preservado.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Falha ao carregar materiais do documento Reflexão estratégica" }))
+      .toHaveTextContent("Não foi possível carregar os materiais preservados agora.");
+    expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+  });
+
+  it("deduplicates assets by id and lets each incoming merge replace the known version", async () => {
+    const user = userEvent.setup();
+    const initialAssets = deferred<Response>();
+    const firstAttached = rawAssetWith({
+      id: "asset_same",
+      kind: "file",
+      display_name: "retornado-primeiro.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    const listedVersion = rawAssetWith({
+      id: "asset_same",
+      kind: "file",
+      display_name: "listado-depois.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    const finalAttached = rawAssetWith({
+      id: "asset_same",
+      kind: "file",
+      display_name: "retornado-por-ultimo.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-13T14:00:00.000Z"
+    });
+    let attachments = 0;
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`)) return Promise.resolve(jsonResponse({ document: rawDocument }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") {
+        attachments += 1;
+        return Promise.resolve(jsonResponse({ asset: attachments === 1 ? firstAttached : finalAttached }, 201));
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return initialAssets.promise;
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await screen.findByRole("heading", { name: "Reflexão estratégica" });
+    const input = screen.getByTestId("studio-material-file-input");
+    await user.upload(input, new File(["first"], "primeiro.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "retornado-primeiro.pdf" })).toBeInTheDocument();
+
+    await act(async () => initialAssets.resolve(jsonResponse({ assets: [listedVersion] })));
+    expect(await screen.findByRole("heading", { name: "listado-depois.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "retornado-primeiro.pdf" })).not.toBeInTheDocument();
+
+    await user.upload(input, new File(["last"], "ultimo.pdf", { type: "application/pdf" }));
+    expect(await screen.findByRole("heading", { name: "retornado-por-ultimo.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "listado-depois.pdf" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Materiais do documento" })).getAllByRole("heading", { level: 3 })).toHaveLength(1);
+  });
+
   it("opens the configured ritual from the calm home in the private session surface", async () => {
     const user = userEvent.setup();
     const ritualId = "ritual_weekly";
@@ -507,6 +720,10 @@ const rawDocumentB = {
   body_text: "Crescer com consistência.",
   capture_mode: "text"
 } as const;
+
+function rawAssetWith(overrides: Record<string, unknown>) {
+  return { ...rawAsset, ...overrides };
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

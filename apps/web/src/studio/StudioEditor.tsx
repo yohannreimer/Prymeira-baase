@@ -1,5 +1,5 @@
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   createStudioDocument,
   getStudioDocument,
@@ -21,6 +21,7 @@ type StudioEditorProps = {
   debounceMs?: number;
   onOpenDocument?(documentId: string): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
+  materialRegion?: ReactNode;
 };
 
 const saveLabels: Record<AutosaveState, string> = {
@@ -58,7 +59,8 @@ function StudioEditorSession({
   focusHeadingOnMount = false,
   debounceMs,
   onOpenDocument,
-  onOpenInternalSource
+  onOpenInternalSource,
+  materialRegion
 }: StudioEditorProps) {
   const save = useCallback((draft: StudioDocumentDraft, expectedRevision: number, signal?: AbortSignal) => (
     updateStudioDocument(sourceDocument.id, {
@@ -571,6 +573,7 @@ function StudioEditorSession({
           ) : null}
         </aside>
       ) : null}
+      {materialRegion}
     </article>
     <aside className="studio-editor__context" aria-label="Conexões deste documento">
       <RelatedThoughts documentId={sourceDocument.id} onOpenDocument={onOpenDocument} />

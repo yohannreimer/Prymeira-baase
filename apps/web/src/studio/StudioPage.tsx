@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
+import StudioMaterialComposer from "./StudioMaterialComposer";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
@@ -34,6 +35,12 @@ type DocumentAssetState = {
 };
 
 type DocumentOpenError = { kind: "unavailable" | "temporary"; documentId: string };
+
+function mergeAssets(current: StudioAsset[], incoming: StudioAsset[]): StudioAsset[] {
+  const byId = new Map(current.map((asset) => [asset.id, asset]));
+  for (const asset of incoming) byId.set(asset.id, asset);
+  return [...byId.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
 
 const studioNavigation: StudioNavItem[] = [
   { key: "home", label: "Início", icon: "ph-house", title: "Um espaço para pensar com clareza.", description: "Registre o que importa e transforme notas em direção, no seu ritmo.", instruction: "Comece registrando uma ideia, decisão ou assunto que não pode se perder." },
@@ -211,7 +218,7 @@ export default function StudioPage({ onOpenInternalSource }: {
     void getStudioDocumentAssets(documentId, controller.signal).then((assets) => {
       if (!controller.signal.aborted) {
         setAssetState((current) => current.documentId === documentId
-          ? { documentId, assets, loading: false, error: false }
+          ? { documentId, assets: mergeAssets(current.assets, assets), loading: false, error: false }
           : current);
       }
     }).catch(() => {
@@ -223,6 +230,13 @@ export default function StudioPage({ onOpenInternalSource }: {
     });
     return () => controller.abort();
   }, [assetsReloadKey, section, selectedDocument?.id]);
+
+  function attachDocumentAsset(asset: StudioAsset) {
+    if (selectedDocumentId.current !== asset.documentId) return;
+    setAssetState((current) => current.documentId === asset.documentId
+      ? { ...current, assets: mergeAssets(current.assets, [asset]) }
+      : current);
+  }
 
   return (
     <section className="studio-screen screen" aria-labelledby="studio-title">
@@ -266,15 +280,19 @@ export default function StudioPage({ onOpenInternalSource }: {
                   }}
                   onOpenDocument={(documentId) => void openDocumentById(documentId)}
                   onOpenInternalSource={onOpenInternalSource}
+                  materialRegion={(
+                    <DocumentAssets
+                      documentId={selectedDocument.id}
+                      documentTitle={selectedDocument.title || "Sem título"}
+                      assets={assetState.documentId === selectedDocument.id ? assetState.assets : []}
+                      loading={assetState.documentId === selectedDocument.id ? assetState.loading : true}
+                      error={assetState.documentId === selectedDocument.id ? assetState.error : false}
+                      onAttached={attachDocumentAsset}
+                      onRetry={() => setAssetsReloadKey((key) => key + 1)}
+                    />
+                  )}
                 />
               </Suspense>
-              <DocumentAssets
-                documentTitle={selectedDocument.title || "Sem título"}
-                assets={assetState.documentId === selectedDocument.id ? assetState.assets : []}
-                loading={assetState.documentId === selectedDocument.id ? assetState.loading : true}
-                error={assetState.documentId === selectedDocument.id ? assetState.error : false}
-                onRetry={() => setAssetsReloadKey((key) => key + 1)}
-              />
             </> : documentOpenError ? (
               <DocumentOpenFailure
                 error={documentOpenError}
@@ -429,20 +447,25 @@ function DocumentOpenFailure({
 }
 
 function DocumentAssets({
+  documentId,
   documentTitle,
   assets,
   loading,
   error,
+  onAttached,
   onRetry
 }: {
+  documentId: string;
   documentTitle: string;
   assets: StudioAsset[];
   loading: boolean;
   error: boolean;
+  onAttached(asset: StudioAsset): void;
   onRetry(): void;
 }) {
   return (
-    <div className="studio-document-assets" aria-label="Materiais do documento">
+    <div className="studio-document-assets" role="region" aria-label="Materiais do documento">
+      <StudioMaterialComposer documentId={documentId} onAttached={onAttached} />
       {assets.map((asset) => <StudioAssetProcessingStatus key={asset.id} asset={asset} />)}
       {loading && assets.length === 0 ? (
         <p
