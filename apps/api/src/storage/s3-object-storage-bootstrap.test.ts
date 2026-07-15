@@ -18,10 +18,56 @@ const config = {
   bucket: "private",
   accessKeyId: "test",
   secretAccessKey: "test",
-  forcePathStyle: true
+  forcePathStyle: true,
+  multipartCleanupMode: "lifecycle" as const
 };
 
 describe("S3 object storage bootstrap", () => {
+  it("creates a missing MinIO bucket without lifecycle requests", async () => {
+    const commands: unknown[] = [];
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof HeadBucketCommand) {
+          throw Object.assign(new Error("missing"), { name: "NoSuchBucket" });
+        }
+        if (command instanceof CreateBucketCommand) return {};
+        throw new Error("unexpected command");
+      })
+    };
+
+    await expect(bootstrapS3ObjectStorage({
+      ...config,
+      multipartCleanupMode: "minio-native"
+    }, client)).resolves.toEqual({
+      bucketCreated: true,
+      lifecycleUpdated: false
+    });
+    expect(commands.filter((command) =>
+      command instanceof GetBucketLifecycleConfigurationCommand
+      || command instanceof PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  });
+
+  it("is idempotent for an existing native MinIO bucket", async () => {
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof HeadBucketCommand) return {};
+        throw new Error("unexpected command");
+      })
+    };
+    const nativeConfig = { ...config, multipartCleanupMode: "minio-native" as const };
+
+    await expect(bootstrapS3ObjectStorage(nativeConfig, client)).resolves.toEqual({
+      bucketCreated: false,
+      lifecycleUpdated: false
+    });
+    await expect(bootstrapS3ObjectStorage(nativeConfig, client)).resolves.toEqual({
+      bucketCreated: false,
+      lifecycleUpdated: false
+    });
+    expect(client.send).toHaveBeenCalledTimes(2);
+  });
+
   it("creates a missing bucket and installs a missing lifecycle rule", async () => {
     let configuredRules: LifecycleRule[] | undefined;
     const client = {

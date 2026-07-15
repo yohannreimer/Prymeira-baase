@@ -37,6 +37,9 @@ export async function bootstrapS3ObjectStorage(
   }) as unknown as S3ClientLike;
 
   const bucketCreated = await ensureBucket(client, config.bucket);
+  if (config.multipartCleanupMode === "minio-native") {
+    return { bucketCreated, lifecycleUpdated: false };
+  }
   const existingRules = await readLifecycleRules(client, config.bucket);
   if (hasSafeMultipartLifecycle(existingRules)) {
     return { bucketCreated, lifecycleUpdated: false };
