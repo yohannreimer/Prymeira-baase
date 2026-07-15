@@ -16,10 +16,46 @@ const config = {
   bucket: "private",
   accessKeyId: "test",
   secretAccessKey: "test",
-  forcePathStyle: true
+  forcePathStyle: true,
+  multipartCleanupMode: "lifecycle" as const
 };
 
 describe("S3 atomic multipart uploads", () => {
+  it("verifies native MinIO readiness without lifecycle requests", async () => {
+    const commands: unknown[] = [];
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof HeadBucketCommand) return {};
+        throw new Error("unexpected command");
+      })
+    };
+
+    await expect(createS3ObjectStorage({
+      ...config,
+      multipartCleanupMode: "minio-native"
+    }, client).ensureReady()).resolves.toBeUndefined();
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toBeInstanceOf(HeadBucketCommand);
+    expect(commands.some((command) =>
+      command instanceof GetBucketLifecycleConfigurationCommand)).toBe(false);
+  });
+
+  it("propagates native MinIO bucket readiness errors", async () => {
+    const unavailable = new Error("minio unavailable");
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof HeadBucketCommand) throw unavailable;
+        throw new Error("unexpected command");
+      })
+    };
+
+    await expect(createS3ObjectStorage({
+      ...config,
+      multipartCleanupMode: "minio-native"
+    }, client).ensureReady()).rejects.toBe(unavailable);
+  });
+
   it.each([
     ["Studio prefix", { Rules: [{
       Status: "Enabled",

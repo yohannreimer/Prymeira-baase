@@ -957,7 +957,8 @@ describe("Studio asset routes", () => {
       bucket: "private",
       accessKeyId: "test",
       secretAccessKey: "test",
-      forcePathStyle: true
+      forcePathStyle: true,
+      multipartCleanupMode: "lifecycle"
     }, client);
     const app = buildApp({
       studioRepository: repository,

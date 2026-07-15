@@ -37,7 +37,8 @@ function productionS3Config(endpoint: string | undefined): BaaseRuntimeConfig {
         bucket: "baase",
         accessKeyId: "access",
         secretAccessKey: "secret",
-        forcePathStyle: true
+        forcePathStyle: true,
+        multipartCleanupMode: "lifecycle"
       }
     }
   });
@@ -81,7 +82,8 @@ describe("PostgreSQL server initialization", () => {
           bucket: "baase",
           accessKeyId: "access",
           secretAccessKey: "secret",
-          forcePathStyle: false
+          forcePathStyle: false,
+          multipartCleanupMode: "lifecycle"
         }
       },
       ok: false

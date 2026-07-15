@@ -16,6 +16,7 @@ import type { GetBucketLifecycleConfigurationCommandOutput } from "@aws-sdk/clie
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
+import type { BaaseMultipartCleanupMode } from "../config/runtime";
 import type { ObjectStorage } from "./object-storage";
 import { hasSafeMultipartLifecycle } from "./s3-lifecycle-policy";
 
@@ -26,6 +27,7 @@ export type S3ObjectStorageConfig = {
   accessKeyId: string;
   secretAccessKey: string;
   forcePathStyle: boolean;
+  multipartCleanupMode: BaaseMultipartCleanupMode;
 };
 
 type S3ClientLike = {
@@ -48,6 +50,10 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig, clientOverr
 
   return {
     async ensureReady() {
+      if (config.multipartCleanupMode === "minio-native") {
+        await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+        return;
+      }
       try {
         const response = await client.send(new GetBucketLifecycleConfigurationCommand({
           Bucket: config.bucket
