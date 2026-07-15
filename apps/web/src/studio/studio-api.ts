@@ -182,6 +182,7 @@ export function mapStudioStructure(raw: RawStudioStructure): StudioStructure {
     workspaceId: required(raw.workspace_id, raw.workspaceId, "workspace_id"),
     ownerProfileId: required(raw.owner_profile_id, raw.ownerProfileId, "owner_profile_id"),
     documentId: required(raw.document_id, raw.documentId, "document_id"),
+    documentTitle: raw.document_title !== undefined ? raw.document_title : raw.documentTitle,
     kind: raw.kind,
     lifecycleStatus: required(raw.lifecycle_status, raw.lifecycleStatus, "lifecycle_status"),
     revision: raw.revision,

@@ -356,6 +356,7 @@ describe("StudioPage", () => {
           workspace_id: "workspace_a",
           owner_profile_id: "profile_owner",
           document_id: "document_ritual",
+          document_title: "Revisão semanal",
           kind: "ritual",
           lifecycle_status: "active",
           revision: 1,

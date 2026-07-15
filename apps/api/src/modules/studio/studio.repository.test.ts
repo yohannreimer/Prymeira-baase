@@ -1114,10 +1114,10 @@ function repositoryContract(
         expect(archived).toMatchObject({ revision: 3, lifecycleStatus: "archived" });
         const recreated = await repository.createStructure(input);
         expect((await repository.listStructures(scope, { kind: "goal", lifecycleStatus: "active", limit: 1 })).items)
-          .toEqual([recreated]);
+          .toEqual([{ ...recreated, documentTitle: document.title }]);
         expect((await repository.listStructures(scope, {
           documentId: document.id, lifecycleStatus: "active", limit: 4
-        })).items).toEqual([recreated]);
+        })).items).toEqual([{ ...recreated, documentTitle: document.title }]);
         expect((await repository.listStructures({ ...scope, ownerProfileId: "owner_b" }, {
           documentId: document.id, lifecycleStatus: "active", limit: 4
         })).items).toEqual([]);
@@ -1148,6 +1148,33 @@ function repositoryContract(
           kind: "goal", lifecycleStatus: "active", limit: 2, cursor: firstPage.nextCursor!
         });
         expect(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size).toBe(3);
+      });
+    });
+
+    it("projects the exact owner-scoped document title even beyond 500 unrelated documents", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const target = await repository.createDocument(documentInput({ title: "Revisão mais antiga" }));
+        const ritual = await repository.createStructure({
+          ...scope,
+          documentId: target.id,
+          kind: "ritual",
+          lifecycleStatus: "active",
+          horizonAt: null,
+          metricJson: null,
+          cadenceJson: null,
+          nextRunAt: null,
+          propertiesJson: { intention: "Não usar como título" }
+        });
+        for (let index = 0; index < 501; index += 1) {
+          await repository.createDocument(documentInput({ title: `Documento recente ${index}` }));
+        }
+
+        await expect(repository.listStructures(scope, {
+          kind: "ritual", lifecycleStatus: "active", limit: 10
+        })).resolves.toMatchObject({
+          items: [{ id: ritual.id, documentTitle: "Revisão mais antiga" }]
+        });
       });
     });
 
@@ -1443,6 +1470,31 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("loads structure document titles with one exact owner-scoped join", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const pool: OperationalPool = {
+      async query<T>(text: string, params?: unknown[]) {
+        calls.push({ text, params });
+        return { rows: [{
+          id: "ritual_a", workspace_id: "workspace_a", owner_profile_id: "owner_a",
+          document_id: "document_old", document_title: "Revisão mais antiga", kind: "ritual",
+          lifecycle_status: "active", revision: 1, horizon_at: null, metric_json: null,
+          cadence_json: null, next_run_at: null, properties_json: { intention: "Não usar" },
+          created_at: "2026-07-10T12:00:00.000Z", updated_at: "2026-07-10T12:00:00.000Z", archived_at: null
+        }] as T[] };
+      },
+      async connect() { throw new Error("connect should not be called"); }
+    };
+
+    await expect(createPostgresStudioRepository(pool).listStructures({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a"
+    }, { kind: "ritual", lifecycleStatus: "active", limit: 10 })).resolves.toMatchObject({
+      items: [{ id: "ritual_a", documentTitle: "Revisão mais antiga" }]
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toMatch(/JOIN studio_documents documents[\s\S]*documents\.workspace_id=structures\.workspace_id[\s\S]*documents\.owner_profile_id=structures\.owner_profile_id/u);
+  });
+
   it("loads the next ritual and document title with one scoped join instead of N+1 reads", async () => {
     const calls: Array<{ text: string; params?: unknown[] }> = [];
     const pool: OperationalPool = {

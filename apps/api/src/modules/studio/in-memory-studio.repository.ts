@@ -441,7 +441,13 @@ export function createInMemoryStudioRepository(
       const page = matches.slice(0, input.limit);
       const last = page[page.length - 1];
       return {
-        items: page.map(cloneStructure),
+        items: page.map((structure) => {
+          const document = documents.find((candidate) => candidate.workspaceId === scope.workspaceId
+            && candidate.ownerProfileId === scope.ownerProfileId
+            && candidate.id === structure.documentId);
+          if (!document) throw new Error("STUDIO_STRUCTURE_DOCUMENT_NOT_FOUND");
+          return { ...cloneStructure(structure), documentTitle: document.title };
+        }),
         nextCursor: matches.length > page.length && last
           ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString("base64url")
           : null

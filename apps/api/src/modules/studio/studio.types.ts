@@ -227,6 +227,8 @@ export type StudioDocumentVersion = StudioOwnerScope & {
 export type StudioStructure = StudioOwnerScope & {
   id: string;
   documentId: string;
+  /** Present on list projections; null means the source document is intentionally untitled. */
+  documentTitle?: string | null;
   kind: StudioStructureKind;
   lifecycleStatus: StudioStructureLifecycleStatus;
   revision: number;

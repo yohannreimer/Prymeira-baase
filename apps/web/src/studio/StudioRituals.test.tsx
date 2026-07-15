@@ -8,6 +8,7 @@ const ritual = {
   workspaceId: "workspace_1",
   ownerProfileId: "owner_1",
   documentId: "document_1",
+  documentTitle: "Revisar prioridades",
   kind: "ritual",
   lifecycleStatus: "active",
   revision: 1,
@@ -255,6 +256,41 @@ describe("StudioRituals", () => {
     expect(finishCalls).toBe(1);
   });
 
+  it("keeps synthesis retry enabled when the retry itself finishes with another provider failure", async () => {
+    const user = userEvent.setup();
+    let finishCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: {
+        ...readySession,
+        status: "completed",
+        revision: 4,
+        completedAt: "2026-07-14T12:10:00.000Z",
+        synthesisFailureCode: "STUDIO_RITUAL_SYNTHESIS_FAILED"
+      } }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1/finish") && init?.method === "POST") {
+        finishCalls += 1;
+        return response({ session: {
+          ...readySession,
+          status: "completed",
+          revision: 4 + finishCalls,
+          completedAt: "2026-07-14T12:10:00.000Z",
+          synthesisFailureCode: "STUDIO_RITUAL_SYNTHESIS_FAILED"
+        } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    const retry = await screen.findByRole("button", { name: /tentar gerar síntese/i });
+    await user.click(retry);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /tentar gerar síntese/i })).toBeEnabled());
+    expect(finishCalls).toBe(1);
+  });
+
   it("restores an unfinished ritual builder draft after leaving the page", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ structures: [], nextCursor: null }));
@@ -270,37 +306,19 @@ describe("StudioRituals", () => {
     expect(screen.getByRole("textbox", { name: "Intenção" })).toHaveValue("Escolher as apostas centrais");
   });
 
-  it("projects the persisted document title after reload without one request per ritual", async () => {
+  it("uses the exact projected document title without scanning document pages", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
-      if (url.includes("/api/studio/documents") && !init?.method) return response({
-        documents: [{
-          id: ritual.documentId,
-          workspaceId: "workspace_1",
-          ownerProfileId: "owner_1",
-          captureKey: null,
-          title: "Revisão semanal do dono",
-          bodyJson: { type: "doc" },
-          bodyText: "Revisar prioridades",
-          revision: 1,
-          captureMode: "text",
-          inboxState: "reviewed",
-          isFocused: false,
-          status: "active",
-          createdAt: "2026-07-14T12:00:00.000Z",
-          updatedAt: "2026-07-14T12:00:00.000Z",
-          archivedAt: null
-        }],
-        nextCursor: null,
-        collectionsByDocumentId: {}
+      if (url.includes("/api/studio/structures") && !init?.method) return response({
+        structures: [{ ...ritual, documentTitle: "Revisão semanal do dono" }], nextCursor: null
       });
+      if (url.includes("/api/studio/documents")) throw new Error("DOCUMENT_SCAN_FORBIDDEN");
       return response({}, 404);
     });
 
     render(<StudioRituals />);
     expect(await screen.findByText("Revisão semanal do dono")).toBeInTheDocument();
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("drains a newer answer snapshot before finishing when a previous PATCH is still pending", async () => {

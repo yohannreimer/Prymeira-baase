@@ -4,7 +4,6 @@ import {
   createStudioDocument,
   createStudioStructure,
   finishStudioRitualSession,
-  listStudioDocuments,
   listStudioRitualSessions,
   listStudioStructures,
   startStudioRitualSession,
@@ -42,10 +41,10 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
     void listStudioStructures({ kind: "ritual", lifecycle_status: "active", limit: 50 }, fetch, controller.signal)
       .then((page) => {
         if (controller.signal.aborted) return;
+        if (page.items.some((ritual) => ritual.documentTitle === undefined)) {
+          throw new Error("STUDIO_RITUAL_TITLE_PROJECTION_MISSING");
+        }
         setRituals(page.items);
-        void loadRitualDocumentNames(page.items, controller.signal)
-          .then((names) => { if (!controller.signal.aborted) setRitualNames(names); })
-          .catch(() => undefined);
         setLoadState("ready");
         if (initialRitualId) {
           const target = page.items.find((ritual) => ritual.id === initialRitualId);
@@ -426,6 +425,7 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
         request_synthesis: true
       });
       acceptSession(completed);
+      setFinishing(false);
       lastSavedRef.current = JSON.stringify(completed.answersJson);
       removeRitualDraft(session.id);
       setSaveState("saved");
@@ -679,6 +679,7 @@ function preparationTitle(session: StudioRitualSession) {
 }
 
 function ritualTitle(ritual: StudioStructure) {
+  if (ritual.documentTitle?.trim()) return ritual.documentTitle.trim();
   const intention = ritual.propertiesJson[RITUAL_FIELDS.intention.key];
   return typeof intention === "string" && intention.trim() ? intention.trim() : "Ritual privado";
 }
@@ -799,23 +800,6 @@ function writeRitualBuilderDraft(draft: RitualBuilderDraft) {
 
 function removeRitualBuilderDraft() {
   try { window.localStorage.removeItem(RITUAL_BUILDER_DRAFT_KEY); } catch { /* best effort */ }
-}
-
-async function loadRitualDocumentNames(rituals: StudioStructure[], signal: AbortSignal) {
-  const needed = new Set(rituals.map((ritual) => ritual.documentId));
-  const names: Record<string, string> = {};
-  let cursor: string | undefined;
-  for (let pageIndex = 0; pageIndex < 5 && needed.size; pageIndex += 1) {
-    const page = await listStudioDocuments({ status: "active", limit: 100, cursor }, fetch, signal);
-    for (const document of page.items) {
-      if (!needed.has(document.id)) continue;
-      if (document.title?.trim()) names[rituals.find((ritual) => ritual.documentId === document.id)!.id] = document.title.trim();
-      needed.delete(document.id);
-    }
-    if (!page.nextCursor) break;
-    cursor = page.nextCursor;
-  }
-  return names;
 }
 
 function createIdempotencyKey() {

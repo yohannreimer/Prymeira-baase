@@ -61,6 +61,7 @@ export type StudioStructure = {
   workspaceId: string;
   ownerProfileId: string;
   documentId: string;
+  documentTitle?: string | null;
   kind: StudioStructureKind;
   lifecycleStatus: StudioStructureLifecycleStatus;
   revision: number;
@@ -271,6 +272,8 @@ export type RawStudioStructure = {
   ownerProfileId?: string;
   document_id?: string;
   documentId?: string;
+  document_title?: string | null;
+  documentTitle?: string | null;
   kind: StudioStructureKind;
   lifecycle_status?: StudioStructureLifecycleStatus;
   lifecycleStatus?: StudioStructureLifecycleStatus;

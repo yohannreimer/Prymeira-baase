@@ -28,6 +28,7 @@ const MAX_ANSWER_VALUE = 20_000;
 const OPERATIONAL_RESOURCE_TYPES = new Set([
   "dashboard", "task", "routine", "process", "training", "announcement", "people"
 ]);
+const CADENCE_OCCURRENCE_CONTEXT_KEY = "cadenceOccurrenceAt";
 
 const ritualSynthesisSchema = z.object({
   summary: z.string().trim().min(1).max(20_000),
@@ -110,22 +111,21 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
     async finishSession(scope, sessionId, input) {
       throwIfAborted(input.signal);
       let completed = await requireSession(options.repository, scope, sessionId);
-      const completedNow = completed.status !== "completed";
       if (completed.status !== "completed") {
         if (completed.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+        const ritual = await requireRitual(options.repository, scope, completed.ritualId, false);
         completed = assertSession(await options.repository.updateRitualSession({
           ...completed,
           status: "completed",
           answersJson: mergeAnswers(completed.answersJson, input.answers),
+          contextJson: withCadenceOccurrence(completed.contextJson, ritual.nextRunAt),
           preparationToken: null,
           preparationLeaseExpiresAt: null,
           failureCode: null,
           completedAt: timestamp(now)
         }, completed.revision));
       }
-      if (completedNow) {
-        await advanceRitualCadence(options.repository, scope, completed.ritualId, now());
-      }
+      await reconcileRitualCadence(options.repository, scope, completed);
       if (!input.requestSynthesis || completed.synthesisJson !== null) return completed;
 
       const key = scopeKey(scope, completed.id);
@@ -147,18 +147,19 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
   };
 }
 
-async function advanceRitualCadence(
+async function reconcileRitualCadence(
   repository: StudioRepository,
   scope: StudioOwnerScope,
-  ritualId: string,
-  completedAt: Date
+  session: StudioRitualSession
 ) {
+  const occurrenceAt = cadenceOccurrence(session.contextJson);
+  if (!occurrenceAt || !session.completedAt) return;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const ritual = await requireRitual(repository, scope, ritualId, false);
-    if (!ritual.cadenceJson || !ritual.nextRunAt) return;
-    const after = new Date(ritual.nextRunAt).getTime() > completedAt.getTime()
-      ? ritual.nextRunAt
-      : completedAt.toISOString();
+    const ritual = await requireRitual(repository, scope, session.ritualId, false);
+    if (!ritual.cadenceJson || ritual.nextRunAt !== occurrenceAt) return;
+    const after = new Date(occurrenceAt).getTime() > new Date(session.completedAt).getTime()
+      ? occurrenceAt
+      : session.completedAt;
     try {
       await repository.updateStructure({
         ...ritual,
@@ -170,6 +171,19 @@ async function advanceRitualCadence(
     }
   }
   throw new Error("STUDIO_STRUCTURE_STALE");
+}
+
+function withCadenceOccurrence(context: Record<string, unknown> | null, occurrenceAt: string | null) {
+  return assertJsonBounds({ ...(context ?? {}), [CADENCE_OCCURRENCE_CONTEXT_KEY]: occurrenceAt });
+}
+
+function cadenceOccurrence(context: Record<string, unknown> | null) {
+  const value = context?.[CADENCE_OCCURRENCE_CONTEXT_KEY];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || Number.isNaN(new Date(value).getTime())) {
+    throw new Error("STUDIO_RITUAL_SESSION_DATA_INVALID");
+  }
+  return new Date(value).toISOString();
 }
 
 type DeadlineOperation = {

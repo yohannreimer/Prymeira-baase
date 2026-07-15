@@ -148,6 +148,48 @@ describe("Studio ritual sessions", () => {
     });
   });
 
+  it("reconciles one cadence occurrence after a partial finish failure without advancing it twice", async () => {
+    const setup = await fixture();
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    const updateStructure = setup.repository.updateStructure.bind(setup.repository);
+    let advanceAttempts = 0;
+    setup.repository.updateStructure = async (input, expectedRevision) => {
+      advanceAttempts += 1;
+      if (advanceAttempts === 1) throw new Error("DB_DOWN");
+      return updateStructure(input, expectedRevision);
+    };
+
+    await expect(setup.service.finishSession(scope, started.id, {
+      expectedRevision: started.revision,
+      answers: { "O que mudou?": "A margem melhorou." },
+      requestSynthesis: false
+    })).rejects.toThrow("DB_DOWN");
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "completed",
+      answersJson: { "O que mudou?": "A margem melhorou." }
+    });
+
+    const recovered = await setup.service.finishSession(scope, started.id, {
+      expectedRevision: started.revision,
+      answers: { ignored: "não sobrescrever" },
+      requestSynthesis: false
+    });
+    expect(recovered.status).toBe("completed");
+    expect(await setup.repository.findStructure(scope, setup.ritual.id)).toMatchObject({
+      nextRunAt: "2026-07-27T12:00:00.000Z"
+    });
+
+    await setup.service.finishSession(scope, started.id, {
+      expectedRevision: recovered.revision,
+      answers: {},
+      requestSynthesis: false
+    });
+    expect(await setup.repository.findStructure(scope, setup.ritual.id)).toMatchObject({
+      nextRunAt: "2026-07-27T12:00:00.000Z"
+    });
+    expect(advanceAttempts).toBe(2);
+  });
+
   it("isolates sessions by owner and only accepts active ritual structures", async () => {
     const setup = await fixture();
     const session = await setup.service.startSession(scope, setup.ritual.id);

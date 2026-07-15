@@ -156,6 +156,7 @@ type StudioStructureRow = {
   metric_json: StudioStructure["metricJson"]; cadence_json: StudioStructure["cadenceJson"];
   next_run_at: string | Date | null; properties_json: Record<string, unknown>;
   created_at: string | Date; updated_at: string | Date; archived_at: string | Date | null;
+  document_title?: string | null;
 };
 
 type StudioRitualSessionRow = {
@@ -368,7 +369,8 @@ function citationFromRow(row: StudioCitationRow): StudioCitation {
 function structureFromRow(row: StudioStructureRow): StudioStructure {
   return {
     id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
-    documentId: row.document_id, kind: row.kind, lifecycleStatus: row.lifecycle_status,
+    documentId: row.document_id, documentTitle: row.document_title,
+    kind: row.kind, lifecycleStatus: row.lifecycle_status,
     revision: row.revision, horizonAt: row.horizon_at ? iso(row.horizon_at) : null,
     metricJson: row.metric_json === null ? null : structuredClone(row.metric_json),
     cadenceJson: row.cadence_json === null ? null : structuredClone(row.cadence_json),
@@ -904,19 +906,25 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async listStructures(scope, input) {
       const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
-      const conditions = ["workspace_id=$1", "owner_profile_id=$2"];
-      if (input.documentId) { params.push(input.documentId); conditions.push(`document_id=$${params.length}`); }
-      if (input.kind) { params.push(input.kind); conditions.push(`kind=$${params.length}`); }
-      if (input.lifecycleStatus) { params.push(input.lifecycleStatus); conditions.push(`lifecycle_status=$${params.length}`); }
+      const conditions = ["structures.workspace_id=$1", "structures.owner_profile_id=$2"];
+      if (input.documentId) { params.push(input.documentId); conditions.push(`structures.document_id=$${params.length}`); }
+      if (input.kind) { params.push(input.kind); conditions.push(`structures.kind=$${params.length}`); }
+      if (input.lifecycleStatus) { params.push(input.lifecycleStatus); conditions.push(`structures.lifecycle_status=$${params.length}`); }
       if (input.cursor) {
         const cursor = decodeStructureCursor(input.cursor);
         params.push(cursor.createdAt, cursor.id);
-        conditions.push(`(created_at,id) < ($${params.length - 1}::timestamptz,$${params.length}::text)`);
+        conditions.push(`(structures.created_at,structures.id) < ($${params.length - 1}::timestamptz,$${params.length}::text)`);
       }
       params.push(input.limit + 1);
       const result = await db.query<StudioStructureRow>(
-        `SELECT * FROM studio_structures WHERE ${conditions.join(" AND ")}
-         ORDER BY created_at DESC,id DESC
+        `SELECT structures.*,documents.title AS document_title
+         FROM studio_structures structures
+         JOIN studio_documents documents
+           ON documents.workspace_id=structures.workspace_id
+          AND documents.owner_profile_id=structures.owner_profile_id
+          AND documents.id=structures.document_id
+         WHERE ${conditions.join(" AND ")}
+         ORDER BY structures.created_at DESC,structures.id DESC
          LIMIT $${params.length}`,
         params
       );
