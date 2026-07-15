@@ -53,6 +53,58 @@ async function createMigrationLedger(pool: Pool) {
 }
 
 describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
+  it("does not let a locked resolved upload block another owner's cleanup claim", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 21);
+      await pool.query(`INSERT INTO studio_documents
+        (id,workspace_id,owner_profile_id,title,body_json,body_text,capture_mode)
+        VALUES
+          ('document_a','workspace_a','owner_a','Upload A','{}'::jsonb,'','file'),
+          ('document_b','workspace_a','owner_b','Upload B','{}'::jsonb,'','file')`);
+      await pool.query(`INSERT INTO studio_assets
+        (id,workspace_id,owner_profile_id,document_id,kind,display_name,object_key,
+         mime_type,size_bytes,extraction_status,lifecycle_status)
+        VALUES ('asset_a','workspace_a','owner_a','document_a','file','A','private/a',
+          'text/plain',1,'pending','active')`);
+      await pool.query(`INSERT INTO studio_asset_upload_intents
+        (id,workspace_id,owner_profile_id,document_id,object_key,display_name,kind,mime_type,
+         size_bytes,status,next_attempt_at,storage_session_state)
+        VALUES
+          ('intent_a','workspace_a','owner_a','document_a','private/a','A','file','text/plain',
+           1,'cleanup_pending','2026-07-14T10:00:00Z','abort_pending'),
+          ('intent_b','workspace_a','owner_b','document_b','private/b','B','file','text/plain',
+           1,'cleanup_pending','2026-07-14T10:00:00Z','abort_pending')`);
+
+      const locker = await pool.connect();
+      let claim: ReturnType<ReturnType<typeof createPostgresStudioRepository>["claimNextAssetUploadCleanup"]> | undefined;
+      try {
+        await locker.query("BEGIN");
+        await locker.query("SELECT id FROM studio_asset_upload_intents WHERE id='intent_a' FOR UPDATE");
+
+        claim = createPostgresStudioRepository(pool).claimNextAssetUploadCleanup(
+          "2026-07-14T12:00:00.000Z", 120_000
+        );
+        const result = await Promise.race([
+          claim,
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error("cleanup claim blocked by another owner's resolved upload")), 750);
+          })
+        ]);
+
+        expect(result).toMatchObject({
+          id: "intent_b",
+          workspaceId: "workspace_a",
+          ownerProfileId: "owner_b",
+          status: "processing"
+        });
+      } finally {
+        await locker.query("ROLLBACK");
+        locker.release();
+        await claim?.catch(() => undefined);
+      }
+    });
+  });
+
   it("claims each due private ritual once across concurrent maintenance workers", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 19);

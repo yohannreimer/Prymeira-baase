@@ -1544,9 +1544,14 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const token = generatedId("studio_upload_cleanup_claim");
         const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
         const claimed = await client.query<StudioAssetUploadIntentRow>(
-          `WITH resolved AS (
-             DELETE FROM studio_asset_upload_intents intents
-              USING studio_assets assets
+          `WITH resolved_candidates AS MATERIALIZED (
+             SELECT intents.workspace_id,intents.owner_profile_id,intents.id
+               FROM studio_asset_upload_intents intents
+               JOIN studio_assets assets
+                 ON assets.workspace_id=intents.workspace_id
+                AND assets.owner_profile_id=intents.owner_profile_id
+                AND assets.object_key=intents.object_key
+                AND assets.lifecycle_status='active'
               WHERE ((intents.status IN ('cleanup_pending','failed') AND intents.next_attempt_at IS NOT NULL
                         AND intents.next_attempt_at <= $1)
                  OR (intents.status='uploading' AND intents.upload_lease_expires_at IS NOT NULL
@@ -1554,10 +1559,14 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                  OR (intents.status='processing' AND intents.lease_expires_at IS NOT NULL
                        AND intents.lease_expires_at <= $1))
                 AND NOT ((intents.workspace_id || '/' || intents.owner_profile_id) = ANY($2::text[]))
-                AND assets.workspace_id=intents.workspace_id
-                AND assets.owner_profile_id=intents.owner_profile_id
-                AND assets.object_key=intents.object_key
-                AND assets.lifecycle_status='active'
+              ORDER BY intents.created_at ASC,intents.id ASC
+              FOR UPDATE OF intents SKIP LOCKED
+           ), resolved AS (
+             DELETE FROM studio_asset_upload_intents intents
+              USING resolved_candidates candidates
+              WHERE intents.workspace_id=candidates.workspace_id
+                AND intents.owner_profile_id=candidates.owner_profile_id
+                AND intents.id=candidates.id
               RETURNING intents.id
            ), candidate AS (
              SELECT intents.workspace_id,intents.owner_profile_id,intents.id

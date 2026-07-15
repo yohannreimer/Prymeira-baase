@@ -1528,10 +1528,12 @@ describe("PostgreSQL repository bundle", () => {
     )).resolves.toBeNull();
 
     const claim = statements.find((statement) => statement.includes("studio_asset_upload_intents")) ?? "";
+    expect(claim).toContain("resolved_candidates AS MATERIALIZED");
     expect(claim).toContain("DELETE FROM studio_asset_upload_intents");
-    expect(claim).toContain("USING studio_assets");
+    expect(claim).toContain("JOIN studio_assets assets");
+    expect(claim).toContain("USING resolved_candidates");
     expect(claim).toContain("NOT EXISTS");
-    expect(claim).toContain("FOR UPDATE OF intents SKIP LOCKED");
+    expect(claim.match(/FOR UPDATE OF intents SKIP LOCKED/g)).toHaveLength(2);
     expect(claim).toContain("ANY($2::text[])");
   });
 
