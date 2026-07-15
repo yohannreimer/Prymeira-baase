@@ -134,6 +134,20 @@ describe("Studio ritual sessions", () => {
     expect(repeated).toEqual(completed);
   });
 
+  it("advances the configured cadence after a ritual session is completed", async () => {
+    const setup = await fixture();
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.finishSession(scope, started.id, {
+      expectedRevision: started.revision,
+      answers: { "O que mudou?": "A margem melhorou." },
+      requestSynthesis: false
+    });
+
+    expect(await setup.repository.findStructure(scope, setup.ritual.id)).toMatchObject({
+      nextRunAt: "2026-07-27T12:00:00.000Z"
+    });
+  });
+
   it("isolates sessions by owner and only accepts active ritual structures", async () => {
     const setup = await fixture();
     const session = await setup.service.startSession(scope, setup.ritual.id);

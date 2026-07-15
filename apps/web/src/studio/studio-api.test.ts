@@ -72,7 +72,12 @@ describe("Studio API client", () => {
             recent_documents: [rawDocument],
             focused_documents: [rawDocument],
             pending_review_count: 2,
-            next_rituals: [{ id: "ritual_1", title: "Revisão semanal", scheduled_for: "2026-07-17T13:00:00.000Z" }]
+            next_rituals: [{
+              id: "ritual_1",
+              title: "Revisão semanal",
+              scheduled_for: "2026-07-17T13:00:00.000Z",
+              timezone: "America/Sao_Paulo"
+            }]
           }
         });
       }
@@ -101,7 +106,7 @@ describe("Studio API client", () => {
         bodyText: "Crescer com margem.",
         isFocused: true
       }],
-      nextRituals: [{ scheduledFor: "2026-07-17T13:00:00.000Z" }]
+      nextRituals: [{ scheduledFor: "2026-07-17T13:00:00.000Z", timezone: "America/Sao_Paulo" }]
     });
     await expect(getStudioDocument("document_1", fetcher)).resolves.toMatchObject({ id: "document_1", captureMode: "text" });
     await expect(listStudioDocuments({ status: "active", limit: 20, cursor: "cursor 1" }, fetcher)).resolves.toMatchObject({

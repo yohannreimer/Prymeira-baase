@@ -30,7 +30,10 @@ function EmptyInvitation({ children }: { children: string }) {
 }
 
 function NextRitual({ ritual, onOpen }: { ritual: StudioNextRitual; onOpen?(ritualId: string): void }) {
-  const date = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" })
+  const date = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
+    timeZone: ritual.timezone
+  })
     .format(new Date(ritual.scheduledFor));
   return (
     <button

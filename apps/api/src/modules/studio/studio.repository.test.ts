@@ -1239,15 +1239,17 @@ function repositoryContract(
         await createRitual({ title: "Sem agenda", nextRunAt: null });
         await createRitual({ title: "Arquivado", nextRunAt: "2026-07-14T08:00:00.000Z", lifecycleStatus: "archived" });
         await createRitual({ title: "Outro dono", ownerProfileId: "owner_b", nextRunAt: "2026-07-14T08:30:00.000Z" });
+        await createRitual({ title: "Já passou", nextRunAt: "2026-07-14T08:40:00.000Z" });
         const next = await createRitual({ title: "Revisão semanal", nextRunAt: "2026-07-14T09:00:00.000Z" });
         await createRitual({ title: "Revisão mensal", nextRunAt: "2026-07-14T10:00:00.000Z" });
 
-        expect(await repository.listNextRituals(scope, 1)).toEqual([{
+        expect(await repository.listNextRituals(scope, 1, "2026-07-14T08:45:00.000Z")).toEqual([{
           id: next.id,
           title: "Revisão semanal",
-          scheduledFor: "2026-07-14T09:00:00.000Z"
+          scheduledFor: "2026-07-14T09:00:00.000Z",
+          timezone: "America/Sao_Paulo"
         }]);
-        expect(await repository.listNextRituals({ ...scope, ownerProfileId: "owner_b" }, 1))
+        expect(await repository.listNextRituals({ ...scope, ownerProfileId: "owner_b" }, 1, "2026-07-14T08:00:00.000Z"))
           .toEqual([expect.objectContaining({ title: "Outro dono" })]);
       });
     });
@@ -1450,7 +1452,8 @@ describe("PostgreSQL repository bundle", () => {
           id: "ritual_a",
           document_title: "Revisão semanal",
           intention: "Escolher prioridades",
-          scheduled_for: "2026-07-15T12:00:00.000Z"
+          scheduled_for: "2026-07-15T12:00:00.000Z",
+          timezone: "America/Sao_Paulo"
         }] as T[] };
       },
       async connect() { throw new Error("connect should not be called"); }
@@ -1458,14 +1461,15 @@ describe("PostgreSQL repository bundle", () => {
 
     await expect(createPostgresStudioRepository(pool).listNextRituals({
       workspaceId: "workspace_a", ownerProfileId: "owner_a"
-    }, 1)).resolves.toEqual([{
+    }, 1, "2026-07-14T12:00:00.000Z")).resolves.toEqual([{
       id: "ritual_a",
       title: "Revisão semanal",
-      scheduledFor: "2026-07-15T12:00:00.000Z"
+      scheduledFor: "2026-07-15T12:00:00.000Z",
+      timezone: "America/Sao_Paulo"
     }]);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.params).toEqual(["workspace_a", "owner_a", 1]);
+    expect(calls[0]!.params).toEqual(["workspace_a", "owner_a", "2026-07-14T12:00:00.000Z", 1]);
     expect(calls[0]!.text).toMatch(/JOIN studio_documents documents[\s\S]*documents\.owner_profile_id=structures\.owner_profile_id/u);
     expect(calls[0]!.text).toContain("structures.lifecycle_status='active'");
     expect(calls[0]!.text).toContain("structures.next_run_at IS NOT NULL");

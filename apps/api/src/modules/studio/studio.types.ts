@@ -326,6 +326,7 @@ export type StudioNextRitual = {
   id: string;
   title: string;
   scheduledFor: string;
+  timezone: string;
 };
 
 export type StudioHome = {
@@ -516,7 +517,7 @@ export type StudioRepository = {
   searchDocuments(scope: StudioOwnerScope, input: StudioLexicalSearchQuery): Promise<StudioSearchDocument[]>;
   listRecentDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;
   listFocusedDocuments(scope: StudioOwnerScope, limit: number): Promise<StudioDocument[]>;
-  listNextRituals(scope: StudioOwnerScope, limit: number): Promise<StudioNextRitual[]>;
+  listNextRituals(scope: StudioOwnerScope, limit: number, scheduledAfter: string): Promise<StudioNextRitual[]>;
   countPendingReviewDocuments(scope: StudioOwnerScope): Promise<number>;
   listCollections(scope: StudioOwnerScope): Promise<StudioCollection[]>;
   findCollection(scope: StudioOwnerScope, collectionId: string): Promise<StudioCollection | null>;

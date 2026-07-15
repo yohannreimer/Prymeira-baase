@@ -13,6 +13,7 @@ import type {
   StudioRitualSessionQuery,
   StudioStructure
 } from "./studio.types";
+import { nextRitualRun } from "./studio.service";
 
 const PREPARATION_LEASE_MS = 120_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
@@ -109,6 +110,7 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
     async finishSession(scope, sessionId, input) {
       throwIfAborted(input.signal);
       let completed = await requireSession(options.repository, scope, sessionId);
+      const completedNow = completed.status !== "completed";
       if (completed.status !== "completed") {
         if (completed.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
         completed = assertSession(await options.repository.updateRitualSession({
@@ -120,6 +122,9 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
           failureCode: null,
           completedAt: timestamp(now)
         }, completed.revision));
+      }
+      if (completedNow) {
+        await advanceRitualCadence(options.repository, scope, completed.ritualId, now());
       }
       if (!input.requestSynthesis || completed.synthesisJson !== null) return completed;
 
@@ -140,6 +145,31 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       return pending;
     }
   };
+}
+
+async function advanceRitualCadence(
+  repository: StudioRepository,
+  scope: StudioOwnerScope,
+  ritualId: string,
+  completedAt: Date
+) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const ritual = await requireRitual(repository, scope, ritualId, false);
+    if (!ritual.cadenceJson || !ritual.nextRunAt) return;
+    const after = new Date(ritual.nextRunAt).getTime() > completedAt.getTime()
+      ? ritual.nextRunAt
+      : completedAt.toISOString();
+    try {
+      await repository.updateStructure({
+        ...ritual,
+        nextRunAt: nextRitualRun(ritual.cadenceJson, after)
+      }, ritual.revision);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "STUDIO_STRUCTURE_STALE") throw error;
+    }
+  }
+  throw new Error("STUDIO_STRUCTURE_STALE");
 }
 
 type DeadlineOperation = {

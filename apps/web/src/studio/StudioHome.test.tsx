@@ -26,7 +26,12 @@ const home: StudioHomeModel = {
   recentDocuments: [document],
   focusedDocuments: [document],
   pendingReviewCount: 1,
-  nextRituals: [{ id: "ritual_1", title: "Revisão semanal", scheduledFor: "2026-07-17T12:00:00.000Z" }]
+  nextRituals: [{
+    id: "ritual_1",
+    title: "Revisão semanal",
+    scheduledFor: "2026-07-17T12:30:00.000Z",
+    timezone: "America/Sao_Paulo"
+  }]
 };
 
 describe("StudioHome", () => {
@@ -59,6 +64,7 @@ describe("StudioHome", () => {
 
     expect(onOpenRitual).toHaveBeenCalledWith("ritual_1");
     expect(screen.queryByText(/atrasad|vencid/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/sexta-feira, 17 de julho.*09:30/i)).toBeInTheDocument();
   });
 
   it("invites capture in empty sections without declaring there is nothing to do", async () => {

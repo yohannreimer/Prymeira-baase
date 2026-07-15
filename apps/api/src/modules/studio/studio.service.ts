@@ -97,7 +97,7 @@ function localToUtc(parts: { year: number; month: number; day: number; hour: num
     : null;
 }
 
-function nextRitualRun(cadence: StudioRitualCadence, afterIso: string) {
+export function nextRitualRun(cadence: StudioRitualCadence, afterIso: string) {
   const after = new Date(afterIso);
   const local = zonedParts(after, cadence.timezone);
   const [hour, minute] = cadence.local_time.split(":").map(Number) as [number, number];
@@ -185,11 +185,12 @@ export function createStudioService(
 
   return {
     async readHome(scope): Promise<StudioHome> {
+      const now = currentTimestamp(clock);
       const [recentDocuments, focusedDocuments, pendingReviewCount, nextRituals] = await Promise.all([
         repository.listRecentDocuments(scope, HOME_DOCUMENT_LIMIT),
         repository.listFocusedDocuments(scope, HOME_DOCUMENT_LIMIT),
         repository.countPendingReviewDocuments(scope),
-        repository.listNextRituals(scope, 1)
+        repository.listNextRituals(scope, 1, now)
       ]);
 
       return {

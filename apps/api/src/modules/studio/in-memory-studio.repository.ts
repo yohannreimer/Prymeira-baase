@@ -587,20 +587,26 @@ export function createInMemoryStudioRepository(
         .map(cloneDocument);
     },
 
-    async listNextRituals(scope, limit): Promise<StudioNextRitual[]> {
+    async listNextRituals(scope, limit, scheduledAfter): Promise<StudioNextRitual[]> {
       return structures
         .filter((structure) => structure.workspaceId === scope.workspaceId)
         .filter((structure) => structure.ownerProfileId === scope.ownerProfileId)
         .filter((structure) => structure.kind === "ritual"
           && structure.lifecycleStatus === "active"
-          && structure.nextRunAt !== null)
+          && structure.nextRunAt !== null
+          && structure.nextRunAt > scheduledAfter)
         .flatMap((structure) => {
           const document = documents.find((candidate) => candidate.workspaceId === scope.workspaceId
             && candidate.ownerProfileId === scope.ownerProfileId
             && candidate.id === structure.documentId
             && candidate.status === "active");
-          return document && structure.nextRunAt
-            ? [{ id: structure.id, title: nextRitualTitle(document, structure), scheduledFor: structure.nextRunAt }]
+          return document && structure.nextRunAt && structure.cadenceJson
+            ? [{
+              id: structure.id,
+              title: nextRitualTitle(document, structure),
+              scheduledFor: structure.nextRunAt,
+              timezone: structure.cadenceJson.timezone
+            }]
             : [];
         })
         .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor) || left.id.localeCompare(right.id))

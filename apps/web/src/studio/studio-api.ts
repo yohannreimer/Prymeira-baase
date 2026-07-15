@@ -210,6 +210,9 @@ export function mapStudioRitualSession(raw: RawStudioRitualSession): StudioRitua
     synthesisJson: raw.synthesis_json !== undefined ? raw.synthesis_json : raw.synthesisJson ?? null,
     prepareAiRunId: raw.prepare_ai_run_id !== undefined ? raw.prepare_ai_run_id : raw.prepareAiRunId ?? null,
     synthesisAiRunId: raw.synthesis_ai_run_id !== undefined ? raw.synthesis_ai_run_id : raw.synthesisAiRunId ?? null,
+    synthesisToken: raw.synthesis_token !== undefined ? raw.synthesis_token : raw.synthesisToken ?? null,
+    synthesisLeaseExpiresAt: raw.synthesis_lease_expires_at !== undefined ? raw.synthesis_lease_expires_at : raw.synthesisLeaseExpiresAt ?? null,
+    synthesisFailureCode: raw.synthesis_failure_code !== undefined ? raw.synthesis_failure_code : raw.synthesisFailureCode ?? null,
     failureCode: raw.failure_code !== undefined ? raw.failure_code : raw.failureCode ?? null,
     createdAt: required(raw.created_at, raw.createdAt, "created_at"),
     updatedAt: required(raw.updated_at, raw.updatedAt, "updated_at"),
@@ -243,7 +246,8 @@ function mapStudioNextRitual(raw: RawStudioNextRitual): StudioNextRitual {
   return {
     id: raw.id,
     title: raw.title,
-    scheduledFor: required(raw.scheduled_for, raw.scheduledFor, "scheduled_for")
+    scheduledFor: required(raw.scheduled_for, raw.scheduledFor, "scheduled_for"),
+    timezone: raw.timezone
   };
 }
 

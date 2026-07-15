@@ -136,10 +136,10 @@ describe("StudioService documents", () => {
         focusedCalls += 1;
         return repository.listFocusedDocuments(ownerScope, limit);
       },
-      async listNextRituals(ownerScope: typeof scope, limit: number) {
+      async listNextRituals(ownerScope: typeof scope, limit: number, scheduledAfter: string) {
         nextRitualCalls += 1;
         expect(limit).toBe(1);
-        return repository.listNextRituals(ownerScope, limit);
+        return repository.listNextRituals(ownerScope, limit, scheduledAfter);
       },
       async countPendingReviewDocuments(ownerScope: typeof scope) {
         countCalls += 1;

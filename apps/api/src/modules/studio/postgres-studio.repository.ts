@@ -75,6 +75,7 @@ type StudioNextRitualRow = {
   document_title: string | null;
   intention: string | null;
   scheduled_for: string | Date;
+  timezone: string;
 };
 
 type StudioCollectionRow = {
@@ -1102,12 +1103,13 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(documentFromRow);
     },
 
-    async listNextRituals(scope, limit) {
+    async listNextRituals(scope, limit, scheduledAfter) {
       const result = await db.query<StudioNextRitualRow>(
         `SELECT structures.id,
                 documents.title AS document_title,
                 structures.properties_json->>'intention' AS intention,
-                structures.next_run_at AS scheduled_for
+                structures.next_run_at AS scheduled_for,
+                structures.cadence_json->>'timezone' AS timezone
          FROM studio_structures structures
          JOIN studio_documents documents
            ON documents.workspace_id=structures.workspace_id
@@ -1118,15 +1120,17 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            AND structures.kind='ritual'
            AND structures.lifecycle_status='active'
            AND structures.next_run_at IS NOT NULL
+           AND structures.next_run_at > $3::timestamptz
            AND documents.status='active'
          ORDER BY structures.next_run_at ASC,structures.id ASC
-         LIMIT $3`,
-        [scope.workspaceId, scope.ownerProfileId, limit]
+         LIMIT $4`,
+        [scope.workspaceId, scope.ownerProfileId, scheduledAfter, limit]
       );
       return result.rows.map((row) => ({
         id: row.id,
         title: row.document_title?.trim() || row.intention?.trim() || "Ritual privado",
-        scheduledFor: iso(row.scheduled_for)
+        scheduledFor: iso(row.scheduled_for),
+        timezone: row.timezone
       }));
     },
 

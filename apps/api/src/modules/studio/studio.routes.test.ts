@@ -165,7 +165,8 @@ describe("Studio routes", () => {
     expect(ownerHome.json().home.nextRituals).toEqual([{
       id: next.id,
       title: "Revisão semanal",
-      scheduledFor: next.nextRunAt
+      scheduledFor: next.nextRunAt,
+      timezone: "America/Sao_Paulo"
     }]);
     expect(ownerHome.json().home.nextRituals[0]).not.toHaveProperty("overdue");
 

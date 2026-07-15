@@ -89,6 +89,9 @@ export type StudioRitualSession = {
   synthesisJson: Record<string, unknown> | null;
   prepareAiRunId: string | null;
   synthesisAiRunId: string | null;
+  synthesisToken: string | null;
+  synthesisLeaseExpiresAt: string | null;
+  synthesisFailureCode: string | null;
   failureCode: string | null;
   createdAt: string;
   updatedAt: string;
@@ -119,6 +122,7 @@ export type StudioNextRitual = {
   id: string;
   title: string;
   scheduledFor: string;
+  timezone: string;
 };
 
 export type StudioHome = {
@@ -311,6 +315,12 @@ export type RawStudioRitualSession = {
   prepareAiRunId?: string | null;
   synthesis_ai_run_id?: string | null;
   synthesisAiRunId?: string | null;
+  synthesis_token?: string | null;
+  synthesisToken?: string | null;
+  synthesis_lease_expires_at?: string | null;
+  synthesisLeaseExpiresAt?: string | null;
+  synthesis_failure_code?: string | null;
+  synthesisFailureCode?: string | null;
   failure_code?: string | null;
   failureCode?: string | null;
   created_at?: string;
@@ -348,6 +358,7 @@ export type RawStudioSearchResult = {
 export type RawStudioNextRitual = {
   id: string;
   title: string;
+  timezone: string;
   scheduled_for?: string;
   scheduledFor?: string;
 };

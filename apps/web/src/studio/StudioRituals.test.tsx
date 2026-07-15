@@ -171,6 +171,138 @@ describe("StudioRituals", () => {
     await waitFor(() => expect(screen.getByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Salvo"));
   });
 
+  it("does not claim an offline answer was preserved when browser storage rejects it", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") throw new TypeError("offline");
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "Ainda não sincronizada");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mantenha esta página aberta/i);
+    expect(screen.queryByText(/ficou guardada neste navegador/i)).not.toBeInTheDocument();
+  });
+
+  it("resumes an in-progress session at the first unanswered question and moves focus on advance", async () => {
+    const user = userEvent.setup();
+    let revision = 3;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({
+        session: { ...readySession, status: "in_progress", revision, answersJson: { "O que mudou?": "A margem melhorou." } }
+      }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        revision += 1;
+        return response({ session: { ...readySession, status: "in_progress", revision, answersJson: JSON.parse(String(init.body)).answers } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+
+    const resumed = await screen.findByRole("textbox", { name: "Resposta para O que merece foco?" });
+    expect(resumed).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Pergunta anterior" }));
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    expect(await screen.findByRole("textbox", { name: "Resposta para O que merece foco?" })).toHaveFocus();
+  });
+
+  it("offers an explicit synthesis retry after answers were safely completed", async () => {
+    const user = userEvent.setup();
+    let finishCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: {
+        ...readySession,
+        status: "completed",
+        revision: 4,
+        completedAt: "2026-07-14T12:10:00.000Z",
+        synthesisFailureCode: "STUDIO_RITUAL_SYNTHESIS_FAILED"
+      } }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1/finish") && init?.method === "POST") {
+        finishCalls += 1;
+        return response({ session: {
+          ...readySession,
+          status: "completed",
+          revision: 6,
+          completedAt: "2026-07-14T12:10:00.000Z",
+          synthesisJson: { summary: "Síntese recuperada.", decisions: [], open_questions: [], suggested_next_steps: [] },
+          synthesisFailureCode: null
+        } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    await user.click(await screen.findByRole("button", { name: /tentar gerar síntese/i }));
+
+    expect(await screen.findByText("Síntese recuperada.")).toBeInTheDocument();
+    expect(finishCalls).toBe(1);
+  });
+
+  it("restores an unfinished ritual builder draft after leaving the page", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ structures: [], nextCursor: null }));
+    const first = render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Criar ritual" }));
+    await user.type(screen.getByRole("textbox", { name: "Nome do ritual" }), "Revisão do trimestre");
+    await user.type(screen.getByRole("textbox", { name: "Intenção" }), "Escolher as apostas centrais");
+    first.unmount();
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Criar ritual" }));
+    expect(screen.getByRole("textbox", { name: "Nome do ritual" })).toHaveValue("Revisão do trimestre");
+    expect(screen.getByRole("textbox", { name: "Intenção" })).toHaveValue("Escolher as apostas centrais");
+  });
+
+  it("projects the persisted document title after reload without one request per ritual", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.includes("/api/studio/documents") && !init?.method) return response({
+        documents: [{
+          id: ritual.documentId,
+          workspaceId: "workspace_1",
+          ownerProfileId: "owner_1",
+          captureKey: null,
+          title: "Revisão semanal do dono",
+          bodyJson: { type: "doc" },
+          bodyText: "Revisar prioridades",
+          revision: 1,
+          captureMode: "text",
+          inboxState: "reviewed",
+          isFocused: false,
+          status: "active",
+          createdAt: "2026-07-14T12:00:00.000Z",
+          updatedAt: "2026-07-14T12:00:00.000Z",
+          archivedAt: null
+        }],
+        nextCursor: null,
+        collectionsByDocumentId: {}
+      });
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    expect(await screen.findByText("Revisão semanal do dono")).toBeInTheDocument();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("drains a newer answer snapshot before finishing when a previous PATCH is still pending", async () => {
     const user = userEvent.setup();
     const slowPatch = deferred<Response>();
