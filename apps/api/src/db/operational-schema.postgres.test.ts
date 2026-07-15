@@ -51,6 +51,44 @@ async function createMigrationLedger(pool: Pool) {
 }
 
 describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
+  it("upgrades the released migration 17 ritual table through additive migration 22", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 17);
+      const before = await pool.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_schema=current_schema() and table_name='studio_ritual_sessions'
+           and column_name in ('synthesis_token','synthesis_lease_expires_at','synthesis_failure_code')`
+      );
+      expect(before.rows).toEqual([]);
+
+      await ensureOperationalSchema(pool);
+      await ensureOperationalSchema(pool);
+      const after = await pool.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_schema=current_schema() and table_name='studio_ritual_sessions'
+           and column_name in ('synthesis_token','synthesis_lease_expires_at','synthesis_failure_code')
+         order by column_name`
+      );
+      expect(after.rows.map((row) => row.column_name)).toEqual([
+        "synthesis_failure_code", "synthesis_lease_expires_at", "synthesis_token"
+      ]);
+      const constraints = await pool.query<{ conname: string }>(
+        `select conname from pg_constraint
+         where conrelid='studio_ritual_sessions'::regclass
+           and conname like 'studio_ritual_sessions_%_ck'
+         order by conname`
+      );
+      expect(constraints.rows.map((row) => row.conname)).toEqual([
+        "studio_ritual_sessions_preparation_state_ck",
+        "studio_ritual_sessions_ready_preparation_ck",
+        "studio_ritual_sessions_synthesis_claim_pair_ck",
+        "studio_ritual_sessions_synthesis_claim_state_ck",
+        "studio_ritual_sessions_synthesis_failure_state_ck",
+        "studio_ritual_sessions_synthesis_output_state_ck"
+      ]);
+    });
+  });
+
   it("runs against PostgreSQL major version 16", async () => {
     await withPostgresSchema(async (pool) => {
       const result = await pool.query<{ server_version_num: string }>("show server_version_num");

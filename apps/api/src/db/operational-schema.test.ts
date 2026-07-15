@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -152,7 +152,7 @@ describe("operational schema", () => {
         };
       }
     };
-    await ensureOperationalSchema(observedPool);
+    await ensureOperationalSchemaThrough(observedPool, 16);
     const sql = statements.join("\n").toLowerCase();
     expect(sql).toContain("create unique index studio_structures_active_kind_uidx");
     expect(sql).toContain("create index studio_structures_owner_cursor_idx");
@@ -177,19 +177,66 @@ describe("operational schema", () => {
         };
       }
     };
-    await ensureOperationalSchema(observedPool);
+    await ensureOperationalSchemaThrough(observedPool, 17);
     const sql = statements.join("\n").toLowerCase();
     expect(sql).toContain("create table studio_ritual_sessions");
     expect(sql).toContain("foreign key (workspace_id,owner_profile_id,ritual_id)");
     expect(sql).toContain("create unique index studio_ritual_sessions_open_uidx");
     expect(sql).toContain("where status in ('preparing','ready','in_progress','failed')");
     expect(sql).toContain("create index studio_ritual_sessions_ritual_cursor_idx");
-    expect(sql).toContain("synthesis_token text");
-    expect(sql).toContain("synthesis_lease_expires_at timestamptz");
-    expect(sql).toContain("synthesis_failure_code text");
-    expect(sql).toContain("check ((synthesis_token is null)=(synthesis_lease_expires_at is null))");
-    expect(sql).toContain("status<>'ready' or (preparation_json is not null and prepare_ai_run_id is not null)");
-    expect(sql).toContain("synthesis_json is null or (status='completed' and synthesis_ai_run_id is not null");
+    expect(sql).not.toContain("synthesis_token");
+    expect(sql).not.toContain("synthesis_lease_expires_at");
+    expect(sql).not.toContain("synthesis_failure_code");
+  });
+
+  it("upgrades the exact migration 17 ritual shape through additive migration 22", async () => {
+    await ensureOperationalSchemaThrough(db, 17);
+    const before = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_ritual_sessions'
+         and column_name in ('synthesis_token','synthesis_lease_expires_at','synthesis_failure_code')`
+    );
+    expect(before.rows).toEqual([]);
+
+    await ensureOperationalSchema(db);
+    await ensureOperationalSchema(db);
+    const after = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_ritual_sessions'
+         and column_name in ('synthesis_token','synthesis_lease_expires_at','synthesis_failure_code')
+       order by column_name`
+    );
+    expect(after.rows.map((row) => row.column_name)).toEqual([
+      "synthesis_failure_code", "synthesis_lease_expires_at", "synthesis_token"
+    ]);
+    const version = await db.query<{ name: string }>(
+      "select name from baase_schema_migrations where version=22"
+    );
+    expect(version.rows).toEqual([{ name: "studio_ritual_session_synthesis_retry" }]);
+  });
+
+  it("defines migration 22 as an idempotent additive ritual-session upgrade", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() { client.release(); }
+        };
+      }
+    };
+    await ensureOperationalSchema(observedPool);
+    const sql = statements.join("\n").toLowerCase();
+    expect(sql).toContain("add column if not exists synthesis_token text");
+    expect(sql).toContain("add column if not exists synthesis_lease_expires_at timestamptz");
+    expect(sql).toContain("add column if not exists synthesis_failure_code text");
+    expect(sql).toContain("drop constraint if exists studio_ritual_sessions_synthesis_claim_pair_ck");
+    expect(sql).toContain("add constraint studio_ritual_sessions_ready_preparation_ck");
+    expect(sql).toContain("add constraint studio_ritual_sessions_synthesis_output_state_ck");
   });
 
   it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {
@@ -269,7 +316,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio migrations 14 through 17, reserves 18 through 19, and keeps additive migrations 20 and 21", async () => {
+  it("applies Studio migrations 14 through 17, reserves 18 through 19, and keeps additive migrations 20 through 22", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -290,9 +337,12 @@ describe("operational schema", () => {
     );
     expect(documentColumns.rows).toEqual([{ column_name: "capture_key" }]);
     const versions = await db.query<{ version: number }>(
-      "select version from baase_schema_migrations where version between 14 and 21 order by version"
+      "select version from baase_schema_migrations where version between 14 and 22 order by version"
     );
-    expect(versions.rows).toEqual([{ version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 20 }, { version: 21 }]);
+    expect(versions.rows).toEqual([
+      { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 },
+      { version: 20 }, { version: 21 }, { version: 22 }
+    ]);
     const structureColumns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns where table_name='studio_structures'
        and column_name in ('revision','horizon_at','metric_json','cadence_json','next_run_at','properties_json')`
