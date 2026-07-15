@@ -44,7 +44,7 @@
 - Modify: `apps/api/src/config/runtime.ts`
 - Test: `apps/api/src/config/runtime.test.ts`
 
-- [ ] **Step 1: Write the failing runtime configuration test**
+- [x] **Step 1: Write the failing runtime configuration test**
 
 ```ts
 it("uses the approved Studio models and allows explicit overrides", () => {
@@ -65,12 +65,12 @@ it("uses the approved Studio models and allows explicit overrides", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and confirm the missing fields**
+- [x] **Step 2: Run the focused test and confirm the missing fields**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`  
 Expected: FAIL because `aiModel` and `embeddingModel` are absent.
 
-- [ ] **Step 3: Add validated model settings**
+- [x] **Step 3: Add validated model settings**
 
 ```ts
 const DEFAULT_STUDIO_AI_MODEL = "gpt-5.6-terra";
@@ -88,12 +88,12 @@ function readModelId(value: string | undefined, fallback: string) {
 
 Return both fields under `runtimeConfig.studio` and extend `BaaseRuntimeConfig` accordingly.
 
-- [ ] **Step 4: Re-run the runtime tests**
+- [x] **Step 4: Re-run the runtime tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/config/runtime.ts apps/api/src/config/runtime.test.ts

@@ -173,7 +173,7 @@ describe("runtime config", () => {
     const config = readRuntimeConfig({ BAASE_STUDIO_ENABLED: "true" });
 
     expect(config.ok).toBe(false);
-    expect(config.studio).toEqual({ enabled: true, vectorConfigured: false });
+    expect(config.studio).toMatchObject({ enabled: true, vectorConfigured: false });
     expect(config.warnings).toEqual(expect.arrayContaining([
       "BAASE Studio habilitado requer persistência durável em Postgres.",
       "BAASE Studio habilitado requer um provider real de IA.",
@@ -189,9 +189,33 @@ describe("runtime config", () => {
       OPENAI_API_KEY: "sk-test"
     });
 
-    expect(config.studio).toEqual({ enabled: true, vectorConfigured: true });
+    expect(config.studio).toMatchObject({ enabled: true, vectorConfigured: true });
     expect(config.warnings).not.toEqual(expect.arrayContaining([
       expect.stringContaining("Studio habilitado")
     ]));
+  });
+
+  it("uses the approved Studio models and allows explicit overrides", () => {
+    expect(readRuntimeConfig({ OPENAI_API_KEY: "sk-test" }).studio).toEqual({
+      enabled: false,
+      vectorConfigured: false,
+      aiModel: "gpt-5.6-terra",
+      embeddingModel: "text-embedding-3-small"
+    });
+    expect(readRuntimeConfig({
+      OPENAI_API_KEY: "sk-test",
+      BAASE_STUDIO_AI_MODEL: " studio-private-model ",
+      BAASE_STUDIO_EMBEDDING_MODEL: " text-embedding-3-large "
+    }).studio).toMatchObject({
+      aiModel: "studio-private-model",
+      embeddingModel: "text-embedding-3-large"
+    });
+  });
+
+  it.each([
+    ["BAASE_STUDIO_AI_MODEL", "not a valid id"],
+    ["BAASE_STUDIO_EMBEDDING_MODEL", "!invalid"]
+  ])("rejects invalid Studio model id from %s", (name, value) => {
+    expect(() => readRuntimeConfig({ [name]: value })).toThrow("STUDIO_MODEL_ID_INVALID");
   });
 });

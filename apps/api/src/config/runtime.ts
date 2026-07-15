@@ -7,6 +7,8 @@ export type BaaseTranscriptionProvider = "mock" | "deepgram";
 export type BaaseMultipartCleanupMode = "lifecycle" | "minio-native";
 export const INVALID_MULTIPART_CLEANUP_MODE_WARNING =
   "S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native.";
+const DEFAULT_STUDIO_AI_MODEL = "gpt-5.6-terra";
+const DEFAULT_STUDIO_EMBEDDING_MODEL = "text-embedding-3-small";
 
 export type BaaseS3Config = {
   endpoint: string | undefined;
@@ -35,9 +37,11 @@ export type BaaseRuntimeConfig = {
     provider: "memory" | "s3";
     s3: BaaseS3Config | null;
   };
-  studio?: {
+  studio: {
     enabled: boolean;
     vectorConfigured: boolean;
+    aiModel: string;
+    embeddingModel: string;
   };
   ok: boolean;
   warnings: string[];
@@ -56,6 +60,11 @@ export function readRuntimeConfig(env: RuntimeEnv): BaaseRuntimeConfig {
   const s3 = readS3Config(env);
   const studioEnabled = env.BAASE_STUDIO_ENABLED === "true";
   const studioVectorConfigured = env.BAASE_STUDIO_VECTOR_ENABLED === "true";
+  const studioAiModel = readModelId(env.BAASE_STUDIO_AI_MODEL, DEFAULT_STUDIO_AI_MODEL);
+  const studioEmbeddingModel = readModelId(
+    env.BAASE_STUDIO_EMBEDDING_MODEL,
+    DEFAULT_STUDIO_EMBEDDING_MODEL
+  );
   const demoSeedEnabled = env.BAASE_SEED_DEMO_DATA
     ? env.BAASE_SEED_DEMO_DATA !== "false"
     : persistence === "memory";
@@ -84,7 +93,9 @@ export function readRuntimeConfig(env: RuntimeEnv): BaaseRuntimeConfig {
     },
     studio: {
       enabled: studioEnabled,
-      vectorConfigured: studioVectorConfigured
+      vectorConfigured: studioVectorConfigured,
+      aiModel: studioAiModel,
+      embeddingModel: studioEmbeddingModel
     },
     ok: warnings.length === 0,
     warnings
@@ -109,6 +120,15 @@ function readS3Config(env: RuntimeEnv): BaaseS3Config | null {
 
 function readMultipartCleanupMode(input: string | undefined): BaaseMultipartCleanupMode {
   return input?.trim() === "minio-native" ? "minio-native" : "lifecycle";
+}
+
+function readModelId(value: string | undefined, fallback: string): string {
+  const normalized = value?.trim();
+  if (!normalized) return fallback;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(normalized)) {
+    throw new Error("STUDIO_MODEL_ID_INVALID");
+  }
+  return normalized;
 }
 
 function hasInvalidMultipartCleanupMode(input: string | undefined): boolean {
