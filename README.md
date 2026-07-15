@@ -18,10 +18,12 @@ são inputs externos da stack.
 
 No deploy de produção, o serviço one-shot `prymeira_baase_minio_bootstrap` executa
 `storage:bootstrap`. O comando idempotente cria o bucket quando ele não existe,
-preserva regras de lifecycle alheias, garante uma regra que aborta uploads multipart
-incompletos sob `workspaces/` após um dia e termina somente depois de verificar o
-contrato. A API tenta validar essa prontidão por até 30 tentativas durante a corrida
-inicial com o bootstrap e permanece fail-closed se o storage não ficar pronto.
+e termina depois de verificar que ele está acessível. O MinIO remove uploads
+multipart incompletos pelo mecanismo nativo do servidor: a stack fixa expiração em
+24 horas e executa a varredura a cada hora. A API tenta validar a prontidão do
+bucket por até 30 tentativas durante a corrida inicial com o bootstrap e permanece
+fail-closed se o storage não ficar pronto. Em outros provedores S3, o modo padrão
+continua exigindo uma regra de lifecycle compatível.
 
 O Swarm inicia os serviços em paralelo; o compose não usa `depends_on` como falsa
 garantia de ordenação. Nunca apague o volume externo

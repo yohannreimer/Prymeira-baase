@@ -56,6 +56,7 @@ function expectStorageContract(compose: string): void {
   expect(compose.match(/S3_ENDPOINT: http:\/\/minio:9000/g)).toHaveLength(2);
 
   expect(api).toContain(storageEndpoint);
+  expect(api).toContain("S3_MULTIPART_CLEANUP_MODE: minio-native");
   expect(web).not.toContain(storageEndpoint);
 
   expect(minio).toMatch(
@@ -63,12 +64,15 @@ function expectStorageContract(compose: string): void {
   );
   expect(minio).not.toMatch(/^    (?:ports|labels):/m);
   expect(minio).not.toContain("network_swarm_public");
+  expect(minio).toContain("MINIO_API_STALE_UPLOADS_EXPIRY: 24h");
+  expect(minio).toContain("MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL: 1h");
 
   for (const key of webForbiddenStorageKeys) {
     expect(web).not.toMatch(new RegExp(`^\\s+${key}:`, "m"));
   }
 
   expect(bootstrap).toContain(storageEndpoint);
+  expect(bootstrap).toContain("S3_MULTIPART_CLEANUP_MODE: minio-native");
   expect(bootstrap).toContain(
     'command: ["pnpm", "--filter", "@prymeira/baase-api", "storage:bootstrap"]'
   );
@@ -121,6 +125,30 @@ describe("production compose object storage contract", () => {
 
     expect(() => expectStorageContract(compose.replace(minio, publicMinio))).toThrow();
     expect(() => expectStorageContract(compose.replace(web, webWithSecret))).toThrow();
+  });
+
+  it("rejects a stack that disables native MinIO multipart cleanup", () => {
+    const compose = readFileSync(composePath, "utf8");
+    const api = serviceBlock(compose, "prymeira_baase_api");
+    const minio = serviceBlock(compose, "prymeira_baase_minio");
+    const bootstrap = serviceBlock(compose, "prymeira_baase_minio_bootstrap");
+
+    expect(() => expectStorageContract(compose.replace(
+      api,
+      api.replace("S3_MULTIPART_CLEANUP_MODE: minio-native", "S3_MULTIPART_CLEANUP_MODE: lifecycle")
+    ))).toThrow();
+    expect(() => expectStorageContract(compose.replace(
+      bootstrap,
+      bootstrap.replace("S3_MULTIPART_CLEANUP_MODE: minio-native", "S3_MULTIPART_CLEANUP_MODE: lifecycle")
+    ))).toThrow();
+    expect(() => expectStorageContract(compose.replace(
+      minio,
+      minio.replace("      MINIO_API_STALE_UPLOADS_EXPIRY: 24h\n", "")
+    ))).toThrow();
+    expect(() => expectStorageContract(compose.replace(
+      minio,
+      minio.replace("      MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL: 1h\n", "")
+    ))).toThrow();
   });
 });
 
