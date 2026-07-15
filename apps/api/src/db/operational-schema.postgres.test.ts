@@ -464,7 +464,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         return { document, version: (await repository.listVersions(scope, document.id))[0]! };
       };
       const embedder = {
-        async createEmbeddings({ inputs }: { model: string; inputs: string[] }) {
+        async createEmbeddings({ inputs }: { model: string; inputs: string[]; dimensions: number }) {
           return inputs.map((input) => input.includes("caixa") ? [1, 0, 0] : [0, 1, 0]);
         }
       };

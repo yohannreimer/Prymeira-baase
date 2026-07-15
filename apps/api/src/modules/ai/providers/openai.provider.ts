@@ -80,7 +80,8 @@ export function createOpenAiProvider(options: CreateOpenAiProviderOptions = {}):
       if (!client.embeddings) throw new Error("OPENAI_PROVIDER_EMBEDDINGS_NOT_CONFIGURED");
       const response = await client.embeddings.create({
         model: request.model,
-        input: request.inputs
+        input: request.inputs,
+        dimensions: request.dimensions
       }, { signal: request.signal });
       const indexed = [...response.data].sort((left, right) => left.index - right.index);
       if (indexed.length !== request.inputs.length

@@ -15,7 +15,7 @@ export const STUDIO_MEMORY_DEFAULT_MODEL = "text-embedding-3-small";
 export const STUDIO_MEMORY_DEFAULT_DIMENSIONS = 1_536;
 
 export type StudioMemoryEmbedder = {
-  createEmbeddings(input: { model: string; inputs: string[]; signal?: AbortSignal }): Promise<number[][]>;
+  createEmbeddings(input: { model: string; inputs: string[]; dimensions: number; signal?: AbortSignal }): Promise<number[][]>;
 };
 
 export type StudioMemoryMutationGuard = {
@@ -128,7 +128,12 @@ export async function embedStudioTexts(
   for (let offset = 0; offset < inputs.length; offset += batchSize) {
     throwIfAborted(signal);
     const batch = inputs.slice(offset, offset + batchSize);
-    const vectors = await embedder.createEmbeddings({ model, inputs: batch, signal });
+    const vectors = await embedder.createEmbeddings({
+      model,
+      inputs: batch,
+      dimensions: expectedDimensions ?? STUDIO_MEMORY_DEFAULT_DIMENSIONS,
+      signal
+    });
     throwIfAborted(signal);
     if (vectors.length !== batch.length) throw new Error("STUDIO_MEMORY_EMBEDDING_LENGTH_MISMATCH");
     for (const vector of vectors) {

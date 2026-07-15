@@ -101,8 +101,8 @@ describe("Mock AI provider", () => {
 
   it("returns deterministic embeddings in input order", async () => {
     const provider = createMockAiProvider();
-    const first = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"] });
-    const second = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"] });
+    const first = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"], dimensions: 1_536 });
+    const second = await provider.createEmbeddings({ model: "mock-embedding", inputs: ["um", "dois"], dimensions: 1_536 });
 
     expect(first).toEqual(second);
     expect(first).toHaveLength(2);
@@ -284,12 +284,13 @@ describe("OpenAI provider", () => {
 
     const controller = new AbortController();
     await expect(provider.createEmbeddings({
-      model: "text-embedding-3-small",
+      model: "text-embedding-3-large",
       inputs: ["um", "dois"],
+      dimensions: 1_536,
       signal: controller.signal
     })).resolves.toEqual([[0.1, 0.2], [0.3, 0.4]]);
     expect(calls).toEqual([{
-      payload: { model: "text-embedding-3-small", input: ["um", "dois"] },
+      payload: { model: "text-embedding-3-large", input: ["um", "dois"], dimensions: 1_536 },
       requestOptions: { signal: controller.signal }
     }]);
   });
@@ -331,7 +332,7 @@ describe("OpenAI provider", () => {
         embeddings: { create: async () => responses.shift()! }
       }
     });
-    const request = { model: "text-embedding-3-small", inputs: ["um", "dois"] };
+    const request = { model: "text-embedding-3-small", inputs: ["um", "dois"], dimensions: 1_536 };
 
     await expect(provider.createEmbeddings(request)).rejects.toThrow("OPENAI_EMBEDDING_INDEX_MISMATCH");
     await expect(provider.createEmbeddings(request)).rejects.toThrow("OPENAI_EMBEDDING_INDEX_MISMATCH");

@@ -100,6 +100,7 @@ export type AiTextStreamEvent =
 export type AiEmbeddingRequest = {
   model: string;
   inputs: string[];
+  dimensions: number;
   signal?: AbortSignal;
 };
 

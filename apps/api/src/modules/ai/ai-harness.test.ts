@@ -912,7 +912,8 @@ describe("AI harness", () => {
 
     await expect(harness.createEmbeddings({
       model: "text-embedding-3-small",
-      inputs: ["primeiro", "segundo"]
+      inputs: ["primeiro", "segundo"],
+      dimensions: 1_536
     })).resolves.toEqual([[0.1, 0.2], [0.3, 0.4]]);
   });
 
@@ -921,15 +922,15 @@ describe("AI harness", () => {
       repository: createInMemoryAiRepository(),
       provider: createMockAiProvider({ embeddings })
     });
-    const request = { model: "text-embedding-3-small", inputs: ["a", "b"] };
+    const request = { model: "text-embedding-3-small", inputs: ["a", "b"], dimensions: 1_536 };
 
     await expect(createHarness([[0.1]]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_LENGTH_MISMATCH");
     await expect(createHarness([[0.1], [0.2, 0.3]]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_DIMENSION_MISMATCH");
     await expect(createHarness([[0.1], [Number.NaN]]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_NON_FINITE_VALUE");
     await expect(createHarness([[], []]).createEmbeddings(request)).rejects.toThrow("AI_EMBEDDING_EMPTY_VECTOR");
-    await expect(createHarness([]).createEmbeddings({ model: " ", inputs: ["a"] })).rejects.toThrow("AI_EMBEDDING_MODEL_REQUIRED");
-    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [] })).rejects.toThrow("AI_EMBEDDING_INPUTS_REQUIRED");
-    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [" "] })).rejects.toThrow("AI_EMBEDDING_INPUT_INVALID");
+    await expect(createHarness([]).createEmbeddings({ model: " ", inputs: ["a"], dimensions: 1_536 })).rejects.toThrow("AI_EMBEDDING_MODEL_REQUIRED");
+    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [], dimensions: 1_536 })).rejects.toThrow("AI_EMBEDDING_INPUTS_REQUIRED");
+    await expect(createHarness([]).createEmbeddings({ model: "model", inputs: [" "], dimensions: 1_536 })).rejects.toThrow("AI_EMBEDDING_INPUT_INVALID");
   });
 });
 

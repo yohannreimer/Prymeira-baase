@@ -171,6 +171,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     : createInMemoryStudioMemoryIndex({
         embedder: aiHarness,
         model: options.studioMemoryModel ?? runtimeConfig.studio.embeddingModel,
+        dimensions: options.studioMemoryDimensions ?? STUDIO_MEMORY_DEFAULT_DIMENSIONS,
         now: options.now ? () => options.now!().toISOString() : undefined
       }));
   const studioMemoryIndexProcessor = createStudioMemoryIndexProcessor({

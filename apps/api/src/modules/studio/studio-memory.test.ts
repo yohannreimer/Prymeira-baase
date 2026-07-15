@@ -114,15 +114,18 @@ describe("Studio semantic memory", () => {
 
   it("batches embeddings and rejects provider count, dimension, and finite-value violations", async () => {
     const calls: string[][] = [];
+    const dimensions: Array<number | undefined> = [];
     const embedder: StudioMemoryEmbedder = {
       async createEmbeddings(input) {
         calls.push(input.inputs);
+        dimensions.push(input.dimensions);
         return input.inputs.map(() => [1, 0]);
       }
     };
     await expect(embedStudioTexts(embedder, "model", ["a", "b", "c", "d", "e"], 2, 2))
       .resolves.toHaveLength(5);
     expect(calls.map((batch) => batch.length)).toEqual([2, 2, 1]);
+    expect(dimensions).toEqual([2, 2, 2]);
     await expect(embedStudioTexts({ createEmbeddings: async () => [] }, "model", ["a"], 2))
       .rejects.toThrow("STUDIO_MEMORY_EMBEDDING_LENGTH_MISMATCH");
     await expect(embedStudioTexts({ createEmbeddings: async () => [[1], [1, 2]] }, "model", ["a", "b"], 2))
