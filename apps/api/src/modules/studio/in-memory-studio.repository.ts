@@ -1037,32 +1037,37 @@ export function createInMemoryStudioRepository(
 
     async claimNextAssetUploadCleanup(at, leaseMs = 120_000, excludeOwnerKeys = []) {
       const timestamp = normalizeTimestamp(at);
-      const intent = assetUploadIntents
+      const dueSnapshot = assetUploadIntents
         .filter((item) => !isExcludedOwner(item, excludeOwnerKeys))
         .filter((item) => ((item.status === "cleanup_pending" || item.status === "failed")
           && item.nextAttemptAt !== null && item.nextAttemptAt <= timestamp)
         || (item.status === "uploading" && item.uploadLeaseExpiresAt !== null
           && item.uploadLeaseExpiresAt <= timestamp)
         || (item.status === "processing" && item.leaseExpiresAt !== null && item.leaseExpiresAt <= timestamp))
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
-      if (!intent) return null;
-      const existing = assets.find((asset) => asset.workspaceId === intent.workspaceId
-        && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
-        && asset.lifecycleStatus === "active");
-      if (existing) {
-        assetUploadIntents.splice(assetUploadIntents.indexOf(intent), 1);
-        return null;
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+      // Scan only the snapshot captured at entry. Resolved rows are compacted,
+      // while a concurrently growing backlog cannot turn this into an infinite loop.
+      for (const intent of dueSnapshot) {
+        const existing = assets.find((asset) => asset.workspaceId === intent.workspaceId
+          && asset.ownerProfileId === intent.ownerProfileId && asset.objectKey === intent.objectKey
+          && asset.lifecycleStatus === "active");
+        if (existing) {
+          const index = assetUploadIntents.indexOf(intent);
+          if (index >= 0) assetUploadIntents.splice(index, 1);
+          continue;
+        }
+        intent.status = "processing";
+        intent.storageSessionState = "abort_pending";
+        intent.attemptCount += 1;
+        intent.nextAttemptAt = null;
+        intent.uploadToken = null;
+        intent.uploadLeaseExpiresAt = null;
+        intent.claimToken = randomUUID();
+        intent.leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMs).toISOString();
+        intent.updatedAt = nextTimestamp(now, intent.updatedAt);
+        return cloneUploadIntent(intent);
       }
-      intent.status = "processing";
-      intent.storageSessionState = "abort_pending";
-      intent.attemptCount += 1;
-      intent.nextAttemptAt = null;
-      intent.uploadToken = null;
-      intent.uploadLeaseExpiresAt = null;
-      intent.claimToken = randomUUID();
-      intent.leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMs).toISOString();
-      intent.updatedAt = nextTimestamp(now, intent.updatedAt);
-      return cloneUploadIntent(intent);
+      return null;
     },
 
     async resolveClaimedAssetUploadIntent(input) {

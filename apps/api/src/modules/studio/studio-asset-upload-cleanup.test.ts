@@ -7,6 +7,61 @@ import { createStudioAssetUploadCleanupProcessor } from "./studio-asset-upload-c
 const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
 
 describe("Studio durable upload intent cleanup", () => {
+  it("skips a growing resolved backlog and processes the next owner's due intent in one call", async () => {
+    let clock = "2026-07-13T10:00:00.000Z";
+    const repository = createInMemoryStudioRepository({ now: () => clock });
+    const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
+    const documentA = await repository.createDocument({
+      ...ownerA, title: "A", bodyJson: {}, bodyText: "a", captureMode: "text",
+      inboxState: "pending_review", isFocused: false, status: "active"
+    });
+    const documentB = await repository.createDocument({
+      ...ownerB, title: "B", bodyJson: {}, bodyText: "b", captureMode: "text",
+      inboxState: "pending_review", isFocused: false, status: "active"
+    });
+    for (let index = 0; index < 64; index += 1) {
+      clock = new Date(Date.parse(clock) + 1_000).toISOString();
+      const objectKey = `private/resolved-a-${index}.txt`;
+      const intent = await repository.createAssetUploadIntent({
+        ...ownerA, documentId: documentA.id, objectKey, displayName: `a-${index}.txt`,
+        kind: "file", mimeType: "text/plain", sizeBytes: 1,
+        uploadLeaseExpiresAt: "2026-07-13T11:00:00.000Z"
+      });
+      await reconcile(repository, intent, "2026-07-13T12:00:00.000Z");
+      await repository.createAsset({
+        ...ownerA, documentId: documentA.id, kind: "file", displayName: `a-${index}.txt`, objectKey,
+        sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "text/plain", sizeBytes: 1,
+        extractionStatus: "pending", extractedText: null, extractionMetadata: {}, lastErrorCode: null,
+        attemptCount: 0, nextAttemptAt: null
+      });
+    }
+    clock = "2026-07-13T11:30:00.000Z";
+    const dueB = await repository.createAssetUploadIntent({
+      ...ownerB, documentId: documentB.id, objectKey: "private/due-b.txt", displayName: "b.txt",
+      kind: "file", mimeType: "text/plain", sizeBytes: 1,
+      uploadLeaseExpiresAt: "2026-07-13T11:45:00.000Z"
+    });
+    await repository.reconcileAssetUploadFailure({
+      scope: ownerB,
+      intentId: dueB.id,
+      uploadToken: dueB.uploadToken!,
+      objectKey: dueB.objectKey,
+      now: "2026-07-13T12:00:00.000Z"
+    });
+    const storage = createInMemoryObjectStorage();
+    await storage.put({
+      key: dueB.objectKey, body: Readable.from("b"), contentType: "text/plain", sizeBytes: 1
+    });
+    clock = "2026-07-13T12:00:00.000Z";
+    const processor = createStudioAssetUploadCleanupProcessor({ repository, objectStorage: storage, now: () => clock });
+
+    await expect(processor.processNext()).resolves.toMatchObject({ id: dueB.id, ownerProfileId: "owner_b" });
+    await expect(repository.listAssetUploadIntents(ownerA)).resolves.toEqual([]);
+    await expect(repository.listAssetUploadIntents(ownerB)).resolves.toEqual([]);
+    expect(storage.keys()).toEqual([]);
+  });
+
   it("deletes an orphan object and completes its durable intent", async () => {
     const fixture = await createFixture();
     await fixture.storage.put({

@@ -1508,6 +1508,33 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("removes resolved upload intents and claims the next due owner in one skip-locked statement", async () => {
+    const statements: string[] = [];
+    const pool: OperationalPool = {
+      async query<T>() { return { rows: [] as T[] }; },
+      async connect() {
+        return {
+          async query<T>(text: string) {
+            statements.push(text);
+            return { rows: [] as T[] };
+          },
+          release() {}
+        };
+      }
+    };
+
+    await expect(createPostgresStudioRepository(pool).claimNextAssetUploadCleanup(
+      "2026-07-13T12:00:00.000Z", 1_000, ["workspace_a/owner_a"]
+    )).resolves.toBeNull();
+
+    const claim = statements.find((statement) => statement.includes("studio_asset_upload_intents")) ?? "";
+    expect(claim).toContain("DELETE FROM studio_asset_upload_intents");
+    expect(claim).toContain("USING studio_assets");
+    expect(claim).toContain("NOT EXISTS");
+    expect(claim).toContain("FOR UPDATE OF intents SKIP LOCKED");
+    expect(claim).toContain("ANY($2::text[])");
+  });
+
   it("loads structure document titles with one exact owner-scoped join", async () => {
     const calls: Array<{ text: string; params?: unknown[] }> = [];
     const pool: OperationalPool = {

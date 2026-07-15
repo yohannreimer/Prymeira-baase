@@ -1541,40 +1541,56 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async claimNextAssetUploadCleanup(now, leaseMs = 120_000, excludeOwnerKeys = []) {
       return withOperationalTransaction(db, async (client) => {
-        const candidate = await client.query<StudioAssetUploadIntentRow>(
-          `SELECT * FROM studio_asset_upload_intents
-           WHERE ((status IN ('cleanup_pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
-             OR (status='uploading' AND upload_lease_expires_at IS NOT NULL AND upload_lease_expires_at <= $1)
-             OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1))
-             AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($2::text[]))
-           ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1`,
-          [now, excludeOwnerKeys]
-        );
-        const intent = candidate.rows[0];
-        if (!intent) return null;
-        const existing = await client.query<StudioAssetRow>(
-          `SELECT * FROM studio_assets
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND object_key=$3 AND lifecycle_status='active'`,
-          [intent.workspace_id, intent.owner_profile_id, intent.object_key]
-        );
-        if (existing.rows[0]) {
-          await client.query(
-            `DELETE FROM studio_asset_upload_intents
-             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
-            [intent.workspace_id, intent.owner_profile_id, intent.id]
-          );
-          return null;
-        }
         const token = generatedId("studio_upload_cleanup_claim");
         const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
         const claimed = await client.query<StudioAssetUploadIntentRow>(
-          `UPDATE studio_asset_upload_intents SET status='processing',attempt_count=attempt_count+1,
-             next_attempt_at=NULL,upload_token=NULL,upload_lease_expires_at=NULL,
-             storage_session_state='abort_pending',claim_token=$4,lease_expires_at=$5,updated_at=NOW()
-           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
-          [intent.workspace_id, intent.owner_profile_id, intent.id, token, leaseExpiresAt]
+          `WITH resolved AS (
+             DELETE FROM studio_asset_upload_intents intents
+              USING studio_assets assets
+              WHERE ((intents.status IN ('cleanup_pending','failed') AND intents.next_attempt_at IS NOT NULL
+                        AND intents.next_attempt_at <= $1)
+                 OR (intents.status='uploading' AND intents.upload_lease_expires_at IS NOT NULL
+                       AND intents.upload_lease_expires_at <= $1)
+                 OR (intents.status='processing' AND intents.lease_expires_at IS NOT NULL
+                       AND intents.lease_expires_at <= $1))
+                AND NOT ((intents.workspace_id || '/' || intents.owner_profile_id) = ANY($2::text[]))
+                AND assets.workspace_id=intents.workspace_id
+                AND assets.owner_profile_id=intents.owner_profile_id
+                AND assets.object_key=intents.object_key
+                AND assets.lifecycle_status='active'
+              RETURNING intents.id
+           ), candidate AS (
+             SELECT intents.workspace_id,intents.owner_profile_id,intents.id
+               FROM studio_asset_upload_intents intents
+              WHERE ((intents.status IN ('cleanup_pending','failed') AND intents.next_attempt_at IS NOT NULL
+                        AND intents.next_attempt_at <= $1)
+                 OR (intents.status='uploading' AND intents.upload_lease_expires_at IS NOT NULL
+                       AND intents.upload_lease_expires_at <= $1)
+                 OR (intents.status='processing' AND intents.lease_expires_at IS NOT NULL
+                       AND intents.lease_expires_at <= $1))
+                AND NOT ((intents.workspace_id || '/' || intents.owner_profile_id) = ANY($2::text[]))
+                AND NOT EXISTS (
+                  SELECT 1 FROM studio_assets assets
+                   WHERE assets.workspace_id=intents.workspace_id
+                     AND assets.owner_profile_id=intents.owner_profile_id
+                     AND assets.object_key=intents.object_key
+                     AND assets.lifecycle_status='active'
+                )
+              ORDER BY intents.created_at ASC,intents.id ASC
+              FOR UPDATE OF intents SKIP LOCKED LIMIT 1
+           )
+           UPDATE studio_asset_upload_intents intents
+              SET status='processing',attempt_count=intents.attempt_count+1,
+                  next_attempt_at=NULL,upload_token=NULL,upload_lease_expires_at=NULL,
+                  storage_session_state='abort_pending',claim_token=$3,lease_expires_at=$4,updated_at=NOW()
+             FROM candidate
+            WHERE intents.workspace_id=candidate.workspace_id
+              AND intents.owner_profile_id=candidate.owner_profile_id
+              AND intents.id=candidate.id
+           RETURNING intents.*`,
+          [now, excludeOwnerKeys, token, leaseExpiresAt]
         );
-        return uploadIntentFromRow(claimed.rows[0]!);
+        return claimed.rows[0] ? uploadIntentFromRow(claimed.rows[0]) : null;
       });
     },
 
