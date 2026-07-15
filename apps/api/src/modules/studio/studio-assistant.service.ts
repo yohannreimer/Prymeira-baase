@@ -124,6 +124,7 @@ export type StudioAssistantService = {
 type StudioAssistantServiceOptions = {
   repository: StudioRepository;
   harness: AiHarness;
+  model: string;
   contextBuilder?: StudioContextBuilder;
   now?: () => Date;
   requestLimiter?: StudioOwnerRequestLimiter;
@@ -184,7 +185,7 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
         agentKey: "owner_studio_companion",
         promptKey: "agent/owner-studio-companion",
         promptVersion: "1",
-        model: "gpt-5.5",
+        model: options.model,
         reasoningEffort: "medium",
         input: narrativeInput,
         allowExternalResearch: input.allowExternalResearch,
@@ -346,7 +347,7 @@ async function createTextSuggestion(
     agentKey: "owner_studio_companion",
     promptKey: "agent/owner-studio-companion",
     promptVersion: "1",
-    model: "gpt-5.5",
+    model: options.model,
     reasoningEffort: "medium",
     input: {
       request: "Proponha uma versão revisável do documento, preservando o original.",

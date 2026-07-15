@@ -55,6 +55,7 @@ export type StudioRitualService = {
 type StudioRitualServiceOptions = {
   repository: StudioRepository;
   harness: Pick<AiHarness, "runStructured">;
+  model: string;
   contextBuilder: StudioContextBuilder;
   memoryIndex: StudioMemoryIndex;
   now?: () => Date;
@@ -336,7 +337,7 @@ async function prepareSession(
     agentKey: "studio_ritual_facilitator",
     promptKey: "agent/studio-ritual-facilitator",
     promptVersion: "1",
-    model: "gpt-5.5",
+    model: options.model,
     reasoningEffort: "medium",
     input: { ritual: contextJson.ritual, context: contextJson.operational, related: contextJson.related },
     outputSchema: studioRitualPrepareSchema,
@@ -393,7 +394,7 @@ async function synthesizeCompletedSession(
       agentKey: "studio_ritual_facilitator",
       promptKey: "agent/studio-ritual-facilitator",
       promptVersion: "1",
-      model: "gpt-5.5",
+      model: options.model,
       reasoningEffort: "medium",
       input: { context: completed.contextJson, preparation: completed.preparationJson, answers: completed.answersJson },
       outputSchema: ritualSynthesisSchema,

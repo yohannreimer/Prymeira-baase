@@ -24,6 +24,7 @@ describe("Studio assistant service", () => {
       repository,
       harness: createAiHarness({ repository: aiRepository, provider, citationResolver: async () => ["93.184.216.34"] }),
       contextBuilder: contextBuilder(),
+      model: "gpt-5.6-terra",
       now: () => new Date("2026-07-14T12:00:00.000Z")
     });
 
@@ -88,7 +89,8 @@ describe("Studio assistant service", () => {
       const service = createStudioAssistantService({
         repository,
         harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({ structured: output }) }),
-        contextBuilder: context
+        contextBuilder: context,
+        model: "gpt-5.6-terra"
       });
       if (missing) {
         const iterable = await service.streamTurn(owner, {
@@ -115,7 +117,8 @@ describe("Studio assistant service", () => {
       repository,
       harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({
         structured: suggestionOutput(document.id, document.revision)
-      }) })
+      }) }),
+      model: "gpt-5.6-terra"
     });
     const first = await collect(await service.streamTurn(owner, {
       conversationId: null, documentId: document.id, message: "Comece.", allowExternalResearch: false,
@@ -150,7 +153,8 @@ describe("Studio assistant service", () => {
       output.proposal.body_json = bodyJson as Record<string, unknown>;
       const service = createStudioAssistantService({
         repository,
-        harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({ structured: output }) })
+        harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: providerFor({ structured: output }) }),
+        model: "gpt-5.6-terra"
       });
       const events = await collect(await service.streamTurn(owner, {
         conversationId: null, documentId: document.id, message: "Organize.", allowExternalResearch: false,
@@ -174,7 +178,7 @@ describe("Studio assistant service", () => {
       async transcribeAudio() { return { text: "", confidence: null, durationSeconds: null }; }
     };
     const service = createStudioAssistantService({ repository,
-      harness: createAiHarness({ repository: aiRepository, provider }) });
+      harness: createAiHarness({ repository: aiRepository, provider }), model: "gpt-5.6-terra" });
     const iterable = await service.streamTurn(owner, {
       conversationId: null, documentId: null, message: "Continue.", allowExternalResearch: false,
       requestTextSuggestion: false, context: null
@@ -192,13 +196,15 @@ describe("Studio assistant service", () => {
     const aiRepository = createInMemoryAiRepository();
     const service = createStudioAssistantService({
       repository,
-      harness: createAiHarness({ repository: aiRepository, provider: providerFor({ observed }) })
+      harness: createAiHarness({ repository: aiRepository, provider: providerFor({ observed }) }),
+      model: "gpt-5.6-terra"
     });
     const events = await collect(await service.streamTurn(owner, {
       conversationId: null, documentId: null, message: "Pense comigo.",
       allowExternalResearch: false, requestTextSuggestion: false, context: null
     }));
     expect(observed[0]?.allowExternalResearch).toBe(false);
+    expect(observed[0]?.model).toBe("gpt-5.6-terra");
     expect(events.some((event) => event.event === "citation")).toBe(false);
     expect(events.at(-1)?.event).toBe("done");
   });
@@ -219,7 +225,8 @@ describe("Studio assistant service", () => {
     };
     const service = createStudioAssistantService({
       repository,
-      harness: createAiHarness({ repository: aiRepository, provider })
+      harness: createAiHarness({ repository: aiRepository, provider }),
+      model: "gpt-5.6-terra"
     });
     const iterable = await service.streamTurn(owner, {
       conversationId: null, documentId: null, message: "Salve antes de responder.",
@@ -242,7 +249,8 @@ describe("Studio assistant service", () => {
     const aiRepository = createInMemoryAiRepository();
     const service = createStudioAssistantService({
       repository,
-      harness: createAiHarness({ repository: aiRepository, provider: providerFor({ structured: { invalid: true } }) })
+      harness: createAiHarness({ repository: aiRepository, provider: providerFor({ structured: { invalid: true } }) }),
+      model: "gpt-5.6-terra"
     });
     const events = await collect(await service.streamTurn(owner, {
       conversationId: null, documentId: document.id, message: "Sugira uma revisão.",
@@ -264,7 +272,8 @@ describe("Studio assistant service", () => {
       harness: createAiHarness({
         repository: createInMemoryAiRepository(),
         provider: providerFor({ structured: suggestionOutput(document.id, document.revision) })
-      })
+      }),
+      model: "gpt-5.6-terra"
     });
     const events = await collect(await service.streamTurn(owner, {
       conversationId: null, documentId: document.id, message: "Sugira.", allowExternalResearch: false,

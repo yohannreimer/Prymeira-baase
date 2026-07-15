@@ -75,7 +75,6 @@ import {
   createInMemoryStudioMemoryIndex,
   createStudioMemoryIndexProcessor,
   STUDIO_MEMORY_DEFAULT_DIMENSIONS,
-  STUDIO_MEMORY_DEFAULT_MODEL,
   type StudioMemoryIndex
 } from "./modules/studio/studio-memory";
 import { createPostgresStudioMemoryIndex } from "./modules/studio/postgres-studio-memory";
@@ -132,6 +131,9 @@ export function buildApp(options: BuildAppOptions = {}) {
     bodyLimit: API_BODY_LIMIT_BYTES,
     requestTimeout: options.requestTimeoutMs ?? API_REQUEST_TIMEOUT_MS
   });
+  const runtimeConfig = options.runtimeConfig ?? readRuntimeConfig({
+    BAASE_SEED_DEMO_DATA: options.seedDemoData ? "true" : undefined
+  });
   const companyRepository = options.companyRepository ?? createInMemoryCompanyRepository();
   const processRepository = options.processRepository ?? createInMemoryProcessRepository({
     initialProcesses: options.seedDemoData ? createLocalDemoProcesses() : undefined
@@ -162,13 +164,13 @@ export function buildApp(options: BuildAppOptions = {}) {
   const studioMemoryIndex = options.studioMemoryIndex ?? (options.studioMemoryPool
     ? createPostgresStudioMemoryIndex(options.studioMemoryPool, {
         embedder: aiHarness,
-        model: options.studioMemoryModel ?? STUDIO_MEMORY_DEFAULT_MODEL,
+        model: options.studioMemoryModel ?? runtimeConfig.studio.embeddingModel,
         dimensions: options.studioMemoryDimensions ?? STUDIO_MEMORY_DEFAULT_DIMENSIONS,
         now: options.now ? () => options.now!().toISOString() : undefined
       })
     : createInMemoryStudioMemoryIndex({
         embedder: aiHarness,
-        model: options.studioMemoryModel ?? STUDIO_MEMORY_DEFAULT_MODEL,
+        model: options.studioMemoryModel ?? runtimeConfig.studio.embeddingModel,
         now: options.now ? () => options.now!().toISOString() : undefined
       }));
   const studioMemoryIndexProcessor = createStudioMemoryIndexProcessor({
@@ -189,12 +191,14 @@ export function buildApp(options: BuildAppOptions = {}) {
   const studioAssistantService = createStudioAssistantService({
     repository: studioRepository,
     harness: aiHarness,
+    model: runtimeConfig.studio.aiModel,
     contextBuilder: studioContextBuilder,
     now: options.now
   });
   const studioRitualService = createStudioRitualService({
     repository: studioRepository,
     harness: aiHarness,
+    model: runtimeConfig.studio.aiModel,
     contextBuilder: studioContextBuilder,
     memoryIndex: studioMemoryIndex,
     now: options.now
@@ -263,10 +267,6 @@ export function buildApp(options: BuildAppOptions = {}) {
     objectStorage,
     now: options.now ? () => options.now!().toISOString() : undefined
   });
-  const runtimeConfig = options.runtimeConfig ?? readRuntimeConfig({
-    BAASE_SEED_DEMO_DATA: options.seedDemoData ? "true" : undefined
-  });
-
   app.register(cors, {
     origin: true
   });

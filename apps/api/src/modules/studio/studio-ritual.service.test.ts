@@ -75,6 +75,7 @@ async function fixture(options: {
     harness: createAiHarness({ repository: createInMemoryAiRepository(), provider }),
     contextBuilder: { buildStudioContext } as StudioContextBuilder,
     memoryIndex: { findRelated } as unknown as StudioMemoryIndex,
+    model: "gpt-5.6-terra",
     now: () => new Date(now),
     preparationTimeoutMs: options.preparationTimeoutMs
   });
@@ -102,6 +103,25 @@ describe("Studio ritual sessions", () => {
       documentId: setup.document.id, query: "Decidir prioridades", limit: 12,
       signal: expect.any(AbortSignal)
     }));
+  });
+
+  it("uses the configured model for preparation and synthesis", async () => {
+    const observedModels: string[] = [];
+    const setup = await fixture({
+      generateStructured: async (request) => {
+        observedModels.push(request.model);
+        return request.taskKind === "studio_ritual_prepare"
+          ? preparedOutput((request.input as { ritual: { id: string } }).ritual.id)
+          : synthesisOutput();
+      }
+    });
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.finishSession(scope, started.id, {
+      expectedRevision: started.revision,
+      answers: { "O que mudou?": "A margem melhorou." },
+      requestSynthesis: true
+    });
+    expect(observedModels).toEqual(["gpt-5.6-terra", "gpt-5.6-terra"]);
   });
 
   it("keeps preparation failures retryable and never blocks manual partial answers", async () => {

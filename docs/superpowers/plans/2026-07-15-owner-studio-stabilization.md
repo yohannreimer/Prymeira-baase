@@ -109,7 +109,7 @@ git commit -m "feat(studio): configure approved AI models"
 - Test: `apps/api/src/modules/studio/studio-assistant.service.test.ts`
 - Test: `apps/api/src/modules/studio/studio-ritual.service.test.ts`
 
-- [ ] **Step 1: Write tests proving the configured model reaches the harness**
+- [x] **Step 1: Write tests proving the configured model reaches the harness**
 
 ```ts
 const service = createStudioAssistantService({
@@ -124,12 +124,12 @@ expect(harness.runText).toHaveBeenCalledWith(expect.objectContaining({ model: "g
 
 Add the equivalent expectation for ritual preparation and synthesis.
 
-- [ ] **Step 2: Run both focused suites and verify they fail**
+- [x] **Step 2: Run both focused suites and verify they fail**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts`  
 Expected: FAIL because the services still send `gpt-5.5`.
 
-- [ ] **Step 3: Add required `model` options and remove Studio hardcoding**
+- [x] **Step 3: Add required `model` options and remove Studio hardcoding**
 
 ```ts
 type StudioAssistantServiceOptions = {
@@ -146,12 +146,12 @@ model: options.model
 
 In `buildApp`, pass `runtimeConfig.studio.aiModel` to assistant and ritual services and `runtimeConfig.studio.embeddingModel` to the memory index.
 
-- [ ] **Step 4: Re-run focused tests and typecheck**
+- [x] **Step 4: Re-run focused tests and typecheck**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-api typecheck`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/app.ts apps/api/src/modules/studio/studio-assistant.service.ts apps/api/src/modules/studio/studio-ritual.service.ts apps/api/src/modules/studio/*service.test.ts

@@ -160,7 +160,8 @@ describe("Studio untrusted input boundaries", () => {
       harness: createAiHarness({
         repository: createInMemoryAiRepository(),
         provider: completingProvider(observed)
-      })
+      }),
+      model: "gpt-5.6-terra"
     });
 
     await collect(await service.streamTurn(owner, {
@@ -227,7 +228,8 @@ describe("Studio untrusted input boundaries", () => {
     const service = createStudioAssistantService({
       repository,
       contextBuilder,
-      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider(observed) })
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider(observed) }),
+      model: "gpt-5.6-terra"
     });
 
     await expect(service.streamTurn(owner, {
@@ -247,7 +249,8 @@ describe("Studio untrusted input boundaries", () => {
     const service = createStudioAssistantService({
       repository,
       requestLimiter: limiter,
-      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() })
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() }),
+      model: "gpt-5.6-terra"
     });
     const input = {
       conversationId: null,
@@ -295,6 +298,7 @@ describe("Studio untrusted input boundaries", () => {
     const service = createStudioAssistantService({
       repository: createInMemoryStudioRepository(),
       harness: createAiHarness({ repository: createInMemoryAiRepository(), provider }),
+      model: "gpt-5.6-terra",
       telemetry: safeStudioTelemetrySink((event) => telemetry.push(event))
     });
     const iterable = await service.streamTurn(owner, {
@@ -355,7 +359,8 @@ describe("Studio untrusted input boundaries", () => {
     };
     const service = createStudioAssistantService({
       repository,
-      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() })
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() }),
+      model: "gpt-5.6-terra"
     });
     const maliciousPrototype = JSON.parse('{"type":"doc","__proto__":{"polluted":true}}') as Record<string, unknown>;
     let deep: Record<string, unknown> = {};
@@ -395,7 +400,8 @@ describe("Studio untrusted input boundaries", () => {
     });
     const service = createStudioAssistantService({
       repository,
-      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() })
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() }),
+      model: "gpt-5.6-terra"
     });
 
     await expect(service.streamTurn({ ...owner, ownerProfileId: "owner_b" }, {
