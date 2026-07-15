@@ -6,7 +6,7 @@ Este procedimento move a leitura operacional de `baase_records` para as tabelas 
 
 1. Confirme que a stack possui os volumes externos `prymeira_baase_postgres_data` e `prymeira_baase_minio_data`.
 2. Deixe `BAASE_OPERATIONAL_STORE=jsonb` no arquivo de ambiente da stack durante a primeira publicacao do codigo novo.
-3. Preencha `S3_ENDPOINT=http://minio:9000`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` e `S3_FORCE_PATH_STYLE=true` para o MinIO interno.
+3. Defina `BAASE_MINIO_ACCESS_KEY` e `BAASE_MINIO_SECRET_KEY` no ambiente da stack. O compose usa essas mesmas credenciais em `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` no MinIO e em `S3_ACCESS_KEY`/`S3_SECRET_KEY` na API e no bootstrap. Nao defina as variaveis `S3_*` externamente: endpoint, regiao, bucket e path-style sao fixos no compose.
 4. Faca o deploy da stack normalmente no Portainer. O servico da API cria as tabelas de schema quando o modo relacional for ativado, mas o comando abaixo tambem e idempotente.
 
 O Swarm inicia API, MinIO e bootstrap em paralelo e nao respeita `depends_on` como garantia de ordenacao. O job one-shot `prymeira_baase_minio_bootstrap` executa o comando idempotente `storage:bootstrap`: cria o bucket apenas se estiver ausente, preserva regras de lifecycle alheias, garante o aborto de uploads multipart incompletos sob `workspaces/` em um dia e termina depois de verificar o contrato. A API aguarda a prontidao por ate 30 tentativas e continua fail-closed se o storage nao ficar pronto.
@@ -55,16 +55,14 @@ Atualize a stack. Nao apague as tabelas relacionais, o volume `prymeira_baase_po
 
 ## Variaveis da Stack
 
-O compose publica o alias DNS `minio` apenas na rede interna `prymeira_baase_internal`; o bucket nao recebe rota publica do Traefik. API e bootstrap recebem:
+O compose publica o alias DNS `minio` apenas na rede interna `prymeira_baase_internal`; o bucket nao recebe rota publica do Traefik. Para o MinIO, o operador fornece somente estas credenciais no ambiente da stack:
 
 ```env
-S3_ENDPOINT=http://minio:9000
-S3_REGION=us-east-1
-S3_BUCKET=prymeira-baase
-S3_ACCESS_KEY=${BAASE_MINIO_ACCESS_KEY}
-S3_SECRET_KEY=${BAASE_MINIO_SECRET_KEY}
-S3_FORCE_PATH_STYLE=true
+BAASE_MINIO_ACCESS_KEY=troque_este_usuario
+BAASE_MINIO_SECRET_KEY=troque_esta_senha_com_ao_menos_8_caracteres
 ```
+
+Internamente, o compose fixa `S3_ENDPOINT=http://minio:9000`, `S3_REGION=us-east-1`, `S3_BUCKET=prymeira-baase` e `S3_FORCE_PATH_STYLE=true`. Ele repassa `BAASE_MINIO_ACCESS_KEY` tanto para `MINIO_ROOT_USER` quanto para `S3_ACCESS_KEY`, e `BAASE_MINIO_SECRET_KEY` tanto para `MINIO_ROOT_PASSWORD` quanto para `S3_SECRET_KEY`.
 
 Crie os volumes externos uma unica vez no node manager antes do deploy caso ainda nao existam:
 
