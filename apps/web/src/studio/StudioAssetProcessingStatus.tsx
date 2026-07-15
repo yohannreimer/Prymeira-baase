@@ -85,6 +85,8 @@ export default function StudioAssetProcessingStatus({
   const pollControllerRef = useRef<AbortController | null>(null);
   const retryControllerRef = useRef<AbortController | null>(null);
   const fileDownloadControllerRef = useRef<AbortController | null>(null);
+  const audioPlayerRef = useRef<HTMLAudioElement>(null);
+  const pendingAudioDownloadRef = useRef<Download | null>(null);
   const retryingRef = useRef(false);
   const fileDownloadingRef = useRef(false);
   const insertingRef = useRef(false);
@@ -136,20 +138,25 @@ export default function StudioAssetProcessingStatus({
     setAudioDownloadError(false);
     void getDownload(asset.id, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
-      setDownload(result);
+      const player = audioPlayerRef.current;
+      if (player && !player.paused && !player.ended) {
+        pendingAudioDownloadRef.current = result;
+      } else {
+        pendingAudioDownloadRef.current = null;
+        setDownload(result);
+      }
       const lifetimeMs = Math.max(0, result.expiresInSeconds * 1_000);
       if (lifetimeMs > 0) {
         const renewalLeadMs = Math.min(30_000, Math.max(1_000, lifetimeMs * 0.1));
         const renewalDelayMs = Math.max(1_000, lifetimeMs - renewalLeadMs);
         renewalTimer = setTimeout(() => {
           if (controller.signal.aborted) return;
-          setDownload(null);
           setAudioDownloadCycle((cycle) => cycle + 1);
         }, renewalDelayMs);
       }
     }).catch(() => {
       if (!controller.signal.aborted) {
-        setDownload(null);
+        if (!audioPlayerRef.current) setDownload(null);
         setAudioDownloadError(true);
       }
     });
@@ -158,6 +165,13 @@ export default function StudioAssetProcessingStatus({
       if (renewalTimer !== null) clearTimeout(renewalTimer);
     };
   }, [asset.id, asset.kind, audioDownloadCycle, getDownload]);
+
+  useEffect(() => {
+    pendingAudioDownloadRef.current = null;
+    return () => {
+      pendingAudioDownloadRef.current = null;
+    };
+  }, [asset.id, asset.kind]);
 
   useEffect(() => {
     setFileDownloadError(false);
@@ -240,6 +254,14 @@ export default function StudioAssetProcessingStatus({
     }
   }
 
+  function adoptPendingAudioDownload() {
+    const pendingDownload = pendingAudioDownloadRef.current;
+    if (!pendingDownload) return;
+    pendingAudioDownloadRef.current = null;
+    setAudioDownloadError(false);
+    setDownload(pendingDownload);
+  }
+
   async function retryProcessing() {
     if (retryingRef.current) return;
     retryingRef.current = true;
@@ -305,13 +327,17 @@ export default function StudioAssetProcessingStatus({
       {isAudio && download ? (
         <div className="studio-asset-status__original">
           <audio
+            ref={audioPlayerRef}
             controls
             preload="metadata"
             src={download.url}
             onError={() => {
+              pendingAudioDownloadRef.current = null;
               setDownload(null);
               setAudioDownloadError(true);
             }}
+            onPause={adoptPendingAudioDownload}
+            onEnded={adoptPendingAudioDownload}
             aria-label={`Ouvir áudio original: ${current.displayName}`}
             data-testid="studio-audio-player"
           />

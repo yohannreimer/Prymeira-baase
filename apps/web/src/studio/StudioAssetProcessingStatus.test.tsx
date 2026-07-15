@@ -105,6 +105,110 @@ describe("StudioAssetProcessingStatus", () => {
     expect(getDownload).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the same playing audio element while an automatic renewal is pending and until pause", async () => {
+    vi.useFakeTimers();
+    const renewal = deferred<{ url: string; expiresInSeconds: number }>();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockImplementationOnce(() => renewal.promise);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player");
+    Object.defineProperty(player, "paused", { configurable: true, value: false });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(getDownload).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("studio-audio-player")).toBe(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+    await act(async () => renewal.resolve({
+      url: "https://private.example/audio-v2",
+      expiresInSeconds: 600
+    }));
+    expect(screen.queryByTestId("studio-audio-player")).toBe(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+    fireEvent.pause(player);
+    expect(screen.queryByTestId("studio-audio-player")).toBe(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+  });
+
+  it("keeps the current audio mounted when background renewal fails and recovers manually", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v3", expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(getDownload).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("studio-audio-player")).toBe(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId("studio-audio-player")).toBe(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v3");
+    expect(getDownload).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a late audio renewal from the previous asset generation", async () => {
+    vi.useFakeTimers();
+    const staleRenewal = deferred<{ url: string; expiresInSeconds: number }>();
+    let staleSignal: AbortSignal | undefined;
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/asset-a-v1", expiresInSeconds: 600 })
+      .mockImplementationOnce((_id: string, signal?: AbortSignal) => {
+        staleSignal = signal;
+        return staleRenewal.promise;
+      })
+      .mockResolvedValueOnce({ url: "https://private.example/asset-b-v1", expiresInSeconds: 600 });
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_a", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    expect(staleSignal?.aborted).toBe(false);
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ id: "asset_b", extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(staleSignal?.aborted).toBe(true);
+    expect(screen.getByTestId("studio-audio-player")).toHaveAttribute(
+      "src",
+      "https://private.example/asset-b-v1"
+    );
+
+    await act(async () => staleRenewal.resolve({
+      url: "https://private.example/asset-a-stale",
+      expiresInSeconds: 600
+    }));
+    expect(screen.getByTestId("studio-audio-player")).toHaveAttribute(
+      "src",
+      "https://private.example/asset-b-v1"
+    );
+  });
+
   it.each(["file", "image"] as const)("fetches a fresh %s download only when activated", async (kind) => {
     const clicked: HTMLAnchorElement[] = [];
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function captureClick(
