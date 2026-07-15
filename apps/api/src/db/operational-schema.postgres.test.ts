@@ -8,6 +8,7 @@ import {
 } from "./operational-schema";
 import { createPostgresStudioMemoryIndex, StudioVectorPrerequisiteError } from "../modules/studio/postgres-studio-memory";
 import { createPostgresStudioRepository } from "../modules/studio/postgres-studio.repository";
+import { createPostgresStudioProactivityStore } from "../modules/studio/postgres-studio-proactivity.store";
 
 // Use an expendable PostgreSQL 16 database; each test creates and drops an isolated schema.
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -51,6 +52,53 @@ async function createMigrationLedger(pool: Pool) {
 }
 
 describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
+  it("claims each due private ritual once across concurrent maintenance workers", async () => {
+    await withPostgresSchema(async (pool) => {
+      await ensureOperationalSchemaThrough(pool, 19);
+      await pool.query(`INSERT INTO studio_documents
+        (id,workspace_id,owner_profile_id,title,body_json,body_text,capture_mode)
+        VALUES
+          ('document_a','workspace_a','owner_a','Revisão semanal','{}'::jsonb,'','text'),
+          ('document_b','workspace_a','owner_b','Revisão privada B','{}'::jsonb,'','text')`);
+      await pool.query(`INSERT INTO studio_structures
+        (id,workspace_id,owner_profile_id,document_id,kind,cadence_json,next_run_at)
+        VALUES
+          ('ritual_a','workspace_a','owner_a','document_a','ritual','{}'::jsonb,'2026-07-14T10:00:00Z'),
+          ('ritual_b','workspace_a','owner_b','document_b','ritual','{}'::jsonb,'2026-07-14T10:00:00Z')`);
+      await pool.query(`INSERT INTO studio_proactivity_settings
+        (workspace_id,owner_profile_id,ritual_reminder_enabled)
+        VALUES ('workspace_a','owner_a',TRUE),('workspace_a','owner_b',FALSE)`);
+
+      const store = createPostgresStudioProactivityStore(pool);
+      const [left, right] = await Promise.all([
+        store.claimDueRituals({
+          now: "2026-07-14T12:00:00.000Z",
+          limit: 10,
+          claimToken: "worker_left",
+          claimLeaseExpiresAt: "2026-07-14T12:02:00.000Z"
+        }),
+        store.claimDueRituals({
+          now: "2026-07-14T12:00:00.000Z",
+          limit: 10,
+          claimToken: "worker_right",
+          claimLeaseExpiresAt: "2026-07-14T12:02:00.000Z"
+        })
+      ]);
+
+      expect([...left, ...right]).toHaveLength(1);
+      expect([...left, ...right][0]).toMatchObject({
+        workspaceId: "workspace_a",
+        ownerProfileId: "owner_a",
+        ritualId: "ritual_a",
+        attemptCount: 1
+      });
+      const persisted = await pool.query<{ owner_profile_id: string; status: string }>(
+        "SELECT owner_profile_id,status FROM studio_proactive_signals"
+      );
+      expect(persisted.rows).toEqual([{ owner_profile_id: "owner_a", status: "preparing" }]);
+    });
+  });
+
   it("upgrades released Studio operation migration 18 through additive durable identity migration 24", async () => {
     await withPostgresSchema(async (pool) => {
       await ensureOperationalSchemaThrough(pool, 18);
@@ -146,7 +194,10 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const result = await pool.query<{ version: number }>(
         "select version from baase_schema_migrations order by version"
       );
-      expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21]);
+      expect(result.rows.map((row) => row.version)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+      ]);
     });
   });
 

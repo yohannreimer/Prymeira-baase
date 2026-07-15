@@ -47,6 +47,13 @@ import { createStudioService } from "./modules/studio/studio.service";
 import { createStudioContextBuilder } from "./modules/studio/studio-context-builder";
 import { createStudioAssistantService } from "./modules/studio/studio-assistant.service";
 import { createStudioRitualService } from "./modules/studio/studio-ritual.service";
+import { registerStudioProactivityRoutes } from "./modules/studio/studio-proactivity.routes";
+import {
+  createInMemoryStudioProactivityStore,
+  createStudioProactivityService,
+  type StudioProactivityStore
+} from "./modules/studio/studio-proactivity.service";
+import { createPostgresStudioProactivityStore } from "./modules/studio/postgres-studio-proactivity.store";
 import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
 import {
   createInMemoryStudioOperationsStore,
@@ -88,6 +95,7 @@ export type BuildAppOptions = {
   studioRepository?: StudioRepository;
   studioMemoryIndex?: StudioMemoryIndex;
   studioMemoryPool?: OperationalPool;
+  studioProactivityStore?: StudioProactivityStore;
   studioMemoryModel?: string;
   studioMemoryDimensions?: number;
   studioLinkResolver?: StudioLinkResolver;
@@ -179,6 +187,16 @@ export function buildApp(options: BuildAppOptions = {}) {
     harness: aiHarness,
     contextBuilder: studioContextBuilder,
     memoryIndex: studioMemoryIndex,
+    now: options.now
+  });
+  const studioProactivityStore = options.studioProactivityStore ?? (options.studioMemoryPool
+    ? createPostgresStudioProactivityStore(options.studioMemoryPool)
+    : createInMemoryStudioProactivityStore({
+        now: options.now ? () => options.now!().toISOString() : undefined
+      }));
+  const studioProactivityService = createStudioProactivityService({
+    store: studioProactivityStore,
+    ritualService: studioRitualService,
     now: options.now
   });
   const studioOperationsStore = options.studioMemoryPool
@@ -374,6 +392,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   }));
   app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex, studioRitualService));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
+  app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,
@@ -393,6 +412,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioAssetCleanupProcessor,
     studioAssetUploadCleanupProcessor,
     studioMemoryIndex,
-    studioMemoryIndexProcessor
+    studioMemoryIndexProcessor,
+    studioProactivityService
   });
 }

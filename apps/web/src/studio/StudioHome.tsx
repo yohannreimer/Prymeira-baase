@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getStudioHome } from "./studio-api";
 import type { StudioDocument, StudioHome as StudioHomeModel, StudioNextRitual } from "./studio.types";
 import UniversalCaptureComposer, { type StudioCaptureOutcome } from "./UniversalCaptureComposer";
+import StudioProactivitySettings from "./StudioProactivitySettings";
 
 type StudioHomeProps = {
   onOpenDocument(document: StudioDocument, outcome?: StudioCaptureOutcome): void;
@@ -92,6 +93,8 @@ export default function StudioHome({ onOpenDocument, onOpenRitual, loadHome = lo
       </div>
 
       <UniversalCaptureComposer onCaptured={onOpenDocument} />
+
+      <StudioProactivitySettings />
 
       {!home && !error ? <StudioHomeSkeleton /> : null}
       {!home && error ? (

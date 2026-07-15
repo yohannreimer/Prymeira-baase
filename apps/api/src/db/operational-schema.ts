@@ -15,8 +15,7 @@ type Migration = {
   sql: string;
 };
 
-// Versions 14–18 are implemented in the approved Studio order. Version 19 remains
-// unavailable to incidental hardening work so upcoming proactivity state can land
+// Studio migrations keep their approved feature slots so parallel work can land
 // additively without renumbering released migrations.
 export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   14: "studio_relations_and_index_jobs",
@@ -1256,6 +1255,64 @@ const migrations: Migration[] = [{
       ON studio_operational_links (workspace_id,owner_profile_id,source_document_id,created_at DESC,id DESC);
     CREATE INDEX studio_operational_links_resource_idx
       ON studio_operational_links (workspace_id,owner_profile_id,resource_type,resource_id);
+  `
+}, {
+  version: 19,
+  name: "studio_proactivity_settings_and_signals",
+  sql: `
+    CREATE TABLE studio_proactivity_settings (
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      ritual_reminder_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      stale_goal_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      recurring_theme_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      decision_review_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      operational_change_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      focused_content_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      stale_goal_after_days INTEGER NOT NULL DEFAULT 30
+        CHECK (stale_goal_after_days BETWEEN 1 AND 3650),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id)
+    );
+
+    CREATE TABLE studio_proactive_signals (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      signal_type TEXT NOT NULL CHECK (signal_type IN (
+        'ritual_reminder','stale_goal','recurring_theme','decision_review','operational_change','focused_content'
+      )),
+      source_id TEXT NOT NULL,
+      source_scheduled_for TIMESTAMPTZ NOT NULL,
+      title TEXT NOT NULL CHECK (title <> ''),
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('preparing','active','failed','dismissed')),
+      next_reminder_at TIMESTAMPTZ NOT NULL,
+      claim_token TEXT,
+      claim_lease_expires_at TIMESTAMPTZ,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ,
+      last_error_code TEXT,
+      dismissed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      UNIQUE (workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for),
+      CHECK ((claim_token IS NULL)=(claim_lease_expires_at IS NULL)),
+      CHECK ((status='preparing')=(claim_token IS NOT NULL)),
+      CHECK ((status='dismissed')=(dismissed_at IS NOT NULL))
+    );
+
+    CREATE INDEX studio_proactive_signals_visible_idx
+      ON studio_proactive_signals (workspace_id,owner_profile_id,status,next_reminder_at,id)
+      WHERE status='active';
+    CREATE INDEX studio_proactive_signals_retry_idx
+      ON studio_proactive_signals (status,next_attempt_at,claim_lease_expires_at,source_scheduled_for,id)
+      WHERE status IN ('preparing','failed');
+    CREATE INDEX studio_structures_due_ritual_idx
+      ON studio_structures (next_run_at,workspace_id,owner_profile_id,id)
+      WHERE kind='ritual' AND lifecycle_status='active' AND next_run_at IS NOT NULL;
   `
 }, {
   version: 20,

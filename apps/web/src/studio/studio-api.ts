@@ -39,7 +39,9 @@ import type {
   StudioCitation,
   StudioSuggestion,
   StudioRelatedThought,
-  StudioInternalCitationTarget
+  StudioInternalCitationTarget,
+  StudioProactivitySettings,
+  StudioProactiveSignal
 } from "./studio.types";
 
 export type StudioFetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -267,6 +269,128 @@ export function mapStudioHome(raw: RawStudioHome): StudioHome {
 export async function getStudioHome(fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioHome> {
   const response = await studioRequest<RawStudioHomeResponse>("/home", { signal }, fetcher);
   return mapStudioHome(response.home);
+}
+
+export async function getStudioProactivitySettings(
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioProactivitySettings> {
+  const response = await studioRequest<{ settings: Record<string, unknown> }>(
+    "/proactivity/settings", { signal }, fetcher
+  );
+  return mapProactivitySettings(response.settings);
+}
+
+export async function updateStudioProactivitySettings(
+  input: Partial<Omit<StudioProactivitySettings, "updatedAt">>,
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioProactivitySettings> {
+  const response = await studioRequest<{ settings: Record<string, unknown> }>("/proactivity/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      ritual_reminder: input.ritualReminder,
+      stale_goal: input.staleGoal,
+      recurring_theme: input.recurringTheme,
+      decision_review: input.decisionReview,
+      operational_change: input.operationalChange,
+      focused_content: input.focusedContent,
+      stale_goal_after_days: input.staleGoalAfterDays
+    }),
+    signal
+  }, fetcher);
+  return mapProactivitySettings(response.settings);
+}
+
+export async function listStudioProactiveSignals(
+  limit = 1,
+  fetcher: StudioFetcher = fetch,
+  signal?: AbortSignal
+): Promise<StudioProactiveSignal[]> {
+  const response = await studioRequest<{ signals: Array<Record<string, unknown>> }>(
+    `/proactivity/signals?limit=${limit}`, { signal }, fetcher
+  );
+  return response.signals.map(mapProactiveSignal);
+}
+
+export async function snoozeStudioProactiveSignal(
+  signalId: string,
+  until: string,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioProactiveSignal> {
+  const response = await studioRequest<{ signal: Record<string, unknown> }>(
+    `/proactivity/signals/${encodeURIComponent(signalId)}/snooze`,
+    { method: "POST", body: JSON.stringify({ until }) }, fetcher
+  );
+  return mapProactiveSignal(response.signal);
+}
+
+export async function dismissStudioProactiveSignal(
+  signalId: string,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioProactiveSignal> {
+  const response = await studioRequest<{ signal: Record<string, unknown> }>(
+    `/proactivity/signals/${encodeURIComponent(signalId)}/dismiss`,
+    { method: "POST", body: JSON.stringify({}) }, fetcher
+  );
+  return mapProactiveSignal(response.signal);
+}
+
+function mapProactivitySettings(raw: Record<string, unknown>): StudioProactivitySettings {
+  return {
+    ritualReminder: booleanField(raw, "ritual_reminder", "ritualReminder"),
+    staleGoal: booleanField(raw, "stale_goal", "staleGoal"),
+    recurringTheme: booleanField(raw, "recurring_theme", "recurringTheme"),
+    decisionReview: booleanField(raw, "decision_review", "decisionReview"),
+    operationalChange: booleanField(raw, "operational_change", "operationalChange"),
+    focusedContent: booleanField(raw, "focused_content", "focusedContent"),
+    staleGoalAfterDays: numberField(raw, "stale_goal_after_days", "staleGoalAfterDays"),
+    updatedAt: stringField(raw, "updated_at", "updatedAt")
+  };
+}
+
+function mapProactiveSignal(raw: Record<string, unknown>): StudioProactiveSignal {
+  return {
+    id: stringField(raw, "id", "id"),
+    type: stringField(raw, "type", "type") as StudioProactiveSignal["type"],
+    sourceId: stringField(raw, "source_id", "sourceId"),
+    sourceScheduledFor: stringField(raw, "source_scheduled_for", "sourceScheduledFor"),
+    title: stringField(raw, "title", "title"),
+    reason: stringField(raw, "reason", "reason"),
+    status: stringField(raw, "status", "status") as StudioProactiveSignal["status"],
+    nextReminderAt: stringField(raw, "next_reminder_at", "nextReminderAt"),
+    createdAt: stringField(raw, "created_at", "createdAt"),
+    updatedAt: stringField(raw, "updated_at", "updatedAt"),
+    dismissedAt: nullableStringField(raw, "dismissed_at", "dismissedAt")
+  };
+}
+
+function rawField(raw: Record<string, unknown>, snake: string, camel: string) {
+  return raw[snake] === undefined ? raw[camel] : raw[snake];
+}
+
+function booleanField(raw: Record<string, unknown>, snake: string, camel: string) {
+  const value = rawField(raw, snake, camel);
+  if (typeof value !== "boolean") throw new Error(`STUDIO_WIRE_FIELD_MISSING:${snake}`);
+  return value;
+}
+
+function numberField(raw: Record<string, unknown>, snake: string, camel: string) {
+  const value = rawField(raw, snake, camel);
+  if (typeof value !== "number") throw new Error(`STUDIO_WIRE_FIELD_MISSING:${snake}`);
+  return value;
+}
+
+function stringField(raw: Record<string, unknown>, snake: string, camel: string) {
+  const value = rawField(raw, snake, camel);
+  if (typeof value !== "string") throw new Error(`STUDIO_WIRE_FIELD_MISSING:${snake}`);
+  return value;
+}
+
+function nullableStringField(raw: Record<string, unknown>, snake: string, camel: string) {
+  const value = rawField(raw, snake, camel);
+  if (value !== null && typeof value !== "string") throw new Error(`STUDIO_WIRE_FIELD_MISSING:${snake}`);
+  return value;
 }
 
 export type CreateStudioDocumentInput = {

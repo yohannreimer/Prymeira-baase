@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 24]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -346,7 +346,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio migrations 14 through 18, reserves 19, and keeps additive migrations 20 through 22", async () => {
+  it("applies Studio migrations 14 through 19 and keeps additive migrations 20 through 22 and 24", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -371,7 +371,7 @@ describe("operational schema", () => {
     );
     expect(versions.rows).toEqual([
       { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 },
-      { version: 20 }, { version: 21 }, { version: 22 }
+      { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }
     ]);
     const structureColumns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns where table_name='studio_structures'
@@ -386,6 +386,25 @@ describe("operational schema", () => {
     );
     expect(studioTables.rows.map((row) => row.table_name)).toEqual([
       "studio_index_jobs", "studio_relations"
+    ]);
+  });
+
+  it("creates private proactivity settings, retry-safe signals, and due ritual indexes in migration 19", async () => {
+    await ensureOperationalSchema(db);
+    const tables = await db.query<{ table_name: string }>(
+      `select distinct table_name from information_schema.tables
+       where table_name in ('studio_proactivity_settings','studio_proactive_signals') order by table_name`
+    );
+    expect(tables.rows.map((row) => row.table_name)).toEqual([
+      "studio_proactive_signals", "studio_proactivity_settings"
+    ]);
+    const signalColumns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_proactive_signals'
+         and column_name in ('claim_token','claim_lease_expires_at','attempt_count','next_attempt_at','next_reminder_at')`
+    );
+    expect(signalColumns.rows.map((row) => row.column_name).sort()).toEqual([
+      "attempt_count", "claim_lease_expires_at", "claim_token", "next_attempt_at", "next_reminder_at"
     ]);
   });
 

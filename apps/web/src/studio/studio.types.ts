@@ -133,6 +133,31 @@ export type StudioHome = {
   nextRituals: StudioNextRitual[];
 };
 
+export type StudioProactivitySettings = {
+  ritualReminder: boolean;
+  staleGoal: boolean;
+  recurringTheme: boolean;
+  decisionReview: boolean;
+  operationalChange: boolean;
+  focusedContent: boolean;
+  staleGoalAfterDays: number;
+  updatedAt: string;
+};
+
+export type StudioProactiveSignal = {
+  id: string;
+  type: "ritual_reminder" | "stale_goal" | "recurring_theme" | "decision_review" | "operational_change" | "focused_content";
+  sourceId: string;
+  sourceScheduledFor: string;
+  title: string;
+  reason: string;
+  status: "active" | "dismissed";
+  nextReminderAt: string;
+  createdAt: string;
+  updatedAt: string;
+  dismissedAt: string | null;
+};
+
 export type StudioDocumentPage = {
   items: StudioDocument[];
   nextCursor: string | null;
