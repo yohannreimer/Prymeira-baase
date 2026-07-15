@@ -597,16 +597,22 @@ describe("Studio asset routes", () => {
   });
 
   it("aborts multipart completion at its hard deadline and moves the intent to cleanup", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]
+    });
     const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
     const document = await repository.createDocument(documentInput());
     const memoryStorage = createInMemoryObjectStorage();
     let abortObserved = false;
+    let markCompletionStarted!: () => void;
+    const completionStarted = new Promise<void>((resolve) => { markCompletionStarted = resolve; });
     const objectStorage = {
       ...memoryStorage,
       async completeAtomicUploadFromStream(
         _input: Parameters<typeof memoryStorage.completeAtomicUploadFromStream>[0],
         options?: { signal?: AbortSignal }
       ) {
+        markCompletionStarted();
         return new Promise<void>((_resolve, reject) => {
           const abort = () => {
             abortObserved = true;
@@ -625,19 +631,30 @@ describe("Studio asset routes", () => {
       studioUploadLeaseMs: 100,
       studioUploadLeaseHeartbeatMs: 20
     });
-    const response = await upload(app, document.id, {
-      filename: "timeout.txt", mimeType: "text/plain", body: Buffer.from("private")
-    });
-    expect(response.statusCode).toBe(503);
-    expect(response.json().error).toMatchObject({
-      code: "OBJECT_STORAGE_UNAVAILABLE",
-      details: { upload_timeout: true }
-    });
-    expect(abortObserved).toBe(true);
-    await vi.waitFor(async () => {
-      expect(await repository.listAssetUploadIntents(ownerScope()))
-        .toMatchObject([{ status: "cleanup_pending" }]);
-    });
+    let pending: ReturnType<typeof upload> | undefined;
+    try {
+      pending = upload(app, document.id, {
+        filename: "timeout.txt", mimeType: "text/plain", body: Buffer.from("private")
+      });
+      await completionStarted;
+      expect(abortObserved).toBe(false);
+      await vi.advanceTimersByTimeAsync(15);
+
+      const response = await pending;
+      expect(response.statusCode).toBe(503);
+      expect(response.json().error).toMatchObject({
+        code: "OBJECT_STORAGE_UNAVAILABLE",
+        details: { upload_timeout: true }
+      });
+      expect(abortObserved).toBe(true);
+      await vi.waitFor(async () => {
+        expect(await repository.listAssetUploadIntents(ownerScope()))
+          .toMatchObject([{ status: "cleanup_pending" }]);
+      });
+    } finally {
+      vi.useRealTimers();
+      await pending?.catch(() => undefined);
+    }
   });
 
   it("returns at the deadline while an abort-ignoring begin retains ownership until late settlement", async () => {
