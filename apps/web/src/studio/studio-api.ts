@@ -41,7 +41,10 @@ import type {
   StudioRelatedThought,
   StudioInternalCitationTarget,
   StudioProactivitySettings,
-  StudioProactiveSignal
+  StudioProactiveSignal,
+  StudioOperationDraft,
+  StudioOperationPreview,
+  StudioOperationalLink
 } from "./studio.types";
 
 export type StudioFetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -860,6 +863,12 @@ export type StudioAssistantTurnInput = {
   allowExternalResearch?: boolean;
   requestTextSuggestion?: boolean;
   selectedTextContext?: string | null;
+  operationalContext?: {
+    from: string | null;
+    to: string | null;
+    resourceTypes: Array<"dashboard" | "task" | "routine" | "process" | "training" | "announcement" | "people">;
+    personIds: string[];
+  } | null;
 };
 
 export type StudioAssistantStreamHandlers = {
@@ -906,7 +915,13 @@ async function runStudioAssistantTurn(
       message: input.message,
       allow_external_research: input.allowExternalResearch ?? false,
       request_text_suggestion: input.requestTextSuggestion ?? false,
-      selected_text_context: input.selectedTextContext?.slice(0, 4_000) || null
+      selected_text_context: input.selectedTextContext?.slice(0, 4_000) || null,
+      operational_context: input.operationalContext ? {
+        from: input.operationalContext.from,
+        to: input.operationalContext.to,
+        resource_types: input.operationalContext.resourceTypes,
+        person_ids: input.operationalContext.personIds
+      } : null
     })
   }));
   if (!response.ok) {
@@ -1105,6 +1120,72 @@ export async function dismissStudioSuggestion(suggestionId: string, signal?: Abo
   await studioRequest(`/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, {
     method: "POST", body: JSON.stringify({}), signal
   });
+}
+
+export async function createStudioOperationPreview(
+  suggestionId: string,
+  draft: StudioOperationDraft,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioOperationPreview> {
+  const response = await studioRequest<{ preview: Record<string, unknown> }>(
+    `/suggestions/${encodeURIComponent(suggestionId)}/operation-preview`,
+    { method: "POST", body: JSON.stringify(draft), signal }, fetcher
+  );
+  return mapStudioOperationPreview(response.preview);
+}
+
+export async function confirmStudioOperationPreview(
+  suggestionId: string,
+  previewId: string,
+  idempotencyKey: string,
+  draft: StudioOperationDraft,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioOperationalLink> {
+  const response = await studioRequest<{ link: Record<string, unknown> }>(
+    `/suggestions/${encodeURIComponent(suggestionId)}/operation-confirm`,
+    {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify({ preview_id: previewId, draft }),
+      signal
+    }, fetcher
+  );
+  return mapStudioOperationalLink(response.link);
+}
+
+function mapStudioOperationPreview(raw: Record<string, unknown>): StudioOperationPreview {
+  return {
+    id: stringField(raw, "id", "id"),
+    sourceSuggestionId: stringField(raw, "source_suggestion_id", "sourceSuggestionId"),
+    sourceDocumentId: stringField(raw, "source_document_id", "sourceDocumentId"),
+    resourceType: stringField(raw, "resource_type", "resourceType") as StudioOperationDraft["resource_type"],
+    payload: rawField(raw, "payload", "payload") as StudioOperationDraft,
+    confirmedPayload: (rawField(raw, "confirmed_payload", "confirmedPayload") ?? null) as StudioOperationDraft | null,
+    status: stringField(raw, "status", "status") as StudioOperationPreview["status"],
+    expiresAt: stringField(raw, "expires_at", "expiresAt"),
+    idempotencyKey: nullableStringField(raw, "idempotency_key", "idempotencyKey"),
+    resultResourceId: nullableStringField(raw, "result_resource_id", "resultResourceId"),
+    createdAt: stringField(raw, "created_at", "createdAt"),
+    updatedAt: stringField(raw, "updated_at", "updatedAt"),
+    confirmedAt: nullableStringField(raw, "confirmed_at", "confirmedAt")
+  };
+}
+
+function mapStudioOperationalLink(raw: Record<string, unknown>): StudioOperationalLink {
+  return {
+    id: stringField(raw, "id", "id"),
+    previewId: stringField(raw, "preview_id", "previewId"),
+    sourceSuggestionId: stringField(raw, "source_suggestion_id", "sourceSuggestionId"),
+    sourceDocumentId: stringField(raw, "source_document_id", "sourceDocumentId"),
+    sourceStructureId: nullableStringField(raw, "source_structure_id", "sourceStructureId"),
+    resourceType: stringField(raw, "resource_type", "resourceType") as StudioOperationDraft["resource_type"],
+    resourceId: stringField(raw, "resource_id", "resourceId"),
+    relationType: stringField(raw, "relation_type", "relationType") as "created",
+    createdByProfileId: stringField(raw, "created_by_profile_id", "createdByProfileId"),
+    createdAt: stringField(raw, "created_at", "createdAt")
+  };
 }
 
 export async function getStudioRelatedThoughts(documentId: string, signal?: AbortSignal): Promise<StudioRelatedThought[]> {

@@ -40,6 +40,39 @@ describe("Studio assistant SSE", () => {
 });
 
 describe("StudioCopilot", () => {
+  it("sends an explicit operational period separately from web-research consent", async () => {
+    const user = userEvent.setup();
+    let body: Record<string, unknown> | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return sse(
+        "event: citation\ndata: {\"source_type\":\"operational_resource\",\"source_id\":\"routine:routine_7\",\"url\":null,\"label\":\"Abertura do dia\",\"excerpt\":\"Executada no período.\",\"observed_at\":\"2026-07-14T10:00:00.000Z\",\"period_from\":\"2026-07-01\",\"period_to\":\"2026-07-14\",\"metadata\":{\"resourceType\":\"routine\"}}\n\n" +
+        "event: done\ndata: {\"message_id\":\"message\"}\n\n"
+      );
+    });
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("checkbox", { name: "Usar dados da operação nesta pergunta" }));
+    await user.clear(screen.getByLabelText("Início do período operacional"));
+    await user.type(screen.getByLabelText("Início do período operacional"), "2026-07-01");
+    await user.clear(screen.getByLabelText("Fim do período operacional"));
+    await user.type(screen.getByLabelText("Fim do período operacional"), "2026-07-14");
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Analise as rotinas.");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(body).toMatchObject({
+      allow_external_research: false,
+      operational_context: {
+        from: "2026-07-01", to: "2026-07-14",
+        resource_types: ["dashboard", "task", "routine", "process", "training", "announcement", "people"],
+        person_ids: []
+      }
+    }));
+    expect(screen.getByRole("checkbox", { name: /pesquisar na internet/i })).not.toBeChecked();
+    await user.click(await screen.findByRole("button", { name: "1 fonte" }));
+    expect(screen.getByRole("complementary", { name: "Fontes da resposta" })).toHaveTextContent("2026-07-01 — 2026-07-14");
+  });
+
   beforeEach(() => {
     Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({
       matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn()
@@ -313,6 +346,35 @@ describe("StudioCopilot", () => {
     expect(decision).toHaveTextContent("Proposta dispensada");
     await waitFor(() => expect(decision).toHaveFocus());
     expect(requests.at(-1)).toContain("/suggestions/suggestion_1/dismiss");
+  });
+
+  it("opens a review-before-create operational preview without accepting the source suggestion", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      requests.push(String(input));
+      if (String(input).endsWith("/assistant/turns")) return sse(suggestionStream());
+      if (String(input).endsWith("/operation-preview")) {
+        const draft = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ preview: {
+          id: "preview_1", source_suggestion_id: "suggestion_1", source_document_id: "document_1",
+          resource_type: "task", payload: draft, confirmed_payload: null, status: "preview",
+          expires_at: "2026-07-15T10:00:00.000Z", idempotency_key: null, result_resource_id: null,
+          created_at: "2026-07-14T10:00:00.000Z", updated_at: "2026-07-14T10:00:00.000Z", confirmed_at: null
+        } }, 201);
+      }
+      return json({});
+    });
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.type(screen.getByLabelText(/o que você quer entender/i), "Sugira");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const suggestion = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(suggestion).getByRole("button", { name: "Levar para a operação" }));
+    const preview = await within(suggestion).findByRole("region", { name: "Prévia operacional" });
+    expect(within(preview).getAllByText("Plano")).toHaveLength(2);
+    expect(within(preview).getByRole("button", { name: /Confirmar e criar 1 registro/ })).toBeEnabled();
+    expect(within(suggestion).getByRole("button", { name: "Aceitar como nova versão" })).toBeEnabled();
+    expect(requests.some((url) => url.endsWith("/suggestions/suggestion_1/accept"))).toBe(false);
   });
 
   it("resizes by keyboard and pointer within persisted bounds, then restores focus after collapsing", async () => {

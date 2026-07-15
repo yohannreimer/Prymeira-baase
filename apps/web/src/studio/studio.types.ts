@@ -236,6 +236,67 @@ export type StudioRelatedThought = {
   score: number;
 };
 
+export type StudioApprovalMode = "direct" | "approval_required";
+export type StudioEvidencePolicy = "optional" | "photo_required" | "comment_required" | "photo_or_comment_required";
+export type StudioOperationDraft =
+  | { resource_type: "task"; payload: {
+    title: string; area_id: string | null; assignee_profile_id: string | null; due_date: string;
+    due_hint: string | null; approval_mode: StudioApprovalMode; evidence_policy: StudioEvidencePolicy;
+    checklist_items: string[];
+  } }
+  | { resource_type: "routine"; payload: {
+    title: string; area_id: string | null; frequency: "daily" | "weekly" | "monthly" | "on_demand";
+    weekdays: Array<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun">; due_hint: string | null;
+    assignee_profile_ids: string[]; execution_mode: "shared" | "individual"; approval_mode: StudioApprovalMode;
+    evidence_policy: StudioEvidencePolicy; task_templates: Array<{
+      title: string; process_id: string | null; assignee_profile_id: string | null; due_hint: string | null;
+      approval_mode: StudioApprovalMode; evidence_policy: StudioEvidencePolicy;
+    }>;
+  } }
+  | { resource_type: "process"; payload: {
+    title: string; body: string; area_id: string | null; summary: string | null;
+    owner: { type: "person"; person_id: string } | { type: "role"; role_template_id: string } | null;
+  } }
+  | { resource_type: "announcement"; payload: {
+    title: string; body: string; type: "simple" | "process_change" | "mandatory_training";
+    requirement: "none" | "read_confirmation" | "quiz_confirmation";
+    audience: { type: "all" } | { type: "area"; area_id: string } | { type: "role"; role_template_id: string }
+      | { type: "person"; profile_id: string };
+    related_process_id: string | null; related_training_id: string | null; quiz_questions: Array<{
+      prompt: string; options: Array<{ id: string; label: string }>; correct_option_id: string;
+      explanation: string | null;
+    }>;
+  } };
+
+export type StudioOperationPreview = {
+  id: string;
+  sourceSuggestionId: string;
+  sourceDocumentId: string;
+  resourceType: StudioOperationDraft["resource_type"];
+  payload: StudioOperationDraft;
+  confirmedPayload: StudioOperationDraft | null;
+  status: "preview" | "confirming" | "confirmed" | "expired";
+  expiresAt: string;
+  idempotencyKey: string | null;
+  resultResourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+};
+
+export type StudioOperationalLink = {
+  id: string;
+  previewId: string;
+  sourceSuggestionId: string;
+  sourceDocumentId: string;
+  sourceStructureId: string | null;
+  resourceType: StudioOperationDraft["resource_type"];
+  resourceId: string;
+  relationType: "created";
+  createdByProfileId: string;
+  createdAt: string;
+};
+
 /** Wire contracts stay separate so API casing never leaks into the view model. */
 export type RawStudioDocument = {
   id: string;

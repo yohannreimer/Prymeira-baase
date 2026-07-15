@@ -6,7 +6,14 @@ import {
   StudioAssistantStreamError
 } from "./studio-api";
 import StudioCitations from "./StudioCitations";
-import type { StudioCitation, StudioDocument, StudioInternalCitationTarget, StudioSuggestion } from "./studio.types";
+import OperationPreview from "./OperationPreview";
+import type {
+  StudioCitation,
+  StudioDocument,
+  StudioInternalCitationTarget,
+  StudioOperationDraft,
+  StudioSuggestion
+} from "./studio.types";
 
 type Props = {
   document: StudioDocument;
@@ -40,9 +47,20 @@ type AssistantTurn = {
   status: "streaming" | "complete" | "cancelled" | "error";
 };
 
+type StudioCopilotRequest = {
+  message: string;
+  research: boolean;
+  suggestion: boolean;
+  selection: string;
+  operationalContext: NonNullable<Parameters<typeof startStudioAssistantTurn>[0]["operationalContext"]> | null;
+};
+
 const WIDTH_KEY = "baase:studio:copilot-width";
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 520;
+const OPERATIONAL_RESOURCE_TYPES = [
+  "dashboard", "task", "routine", "process", "training", "announcement", "people"
+] as const;
 
 export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance }: Props) {
   const [open, setOpen] = useState(true);
@@ -50,6 +68,9 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const [width, setWidth] = useState(readWidth);
   const [prompt, setPrompt] = useState("");
   const [allowResearch, setAllowResearch] = useState(false);
+  const [useOperationalContext, setUseOperationalContext] = useState(false);
+  const [operationalFrom, setOperationalFrom] = useState(() => relativeDate(-30));
+  const [operationalTo, setOperationalTo] = useState(() => relativeDate(0));
   const [requestSuggestion, setRequestSuggestion] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<AssistantTurn[]>([]);
@@ -64,7 +85,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const generationRef = useRef(0);
   const turnIdRef = useRef(0);
   const activeRef = useRef<ReturnType<typeof startStudioAssistantTurn> | null>(null);
-  const retryRef = useRef<{ message: string; research: boolean; suggestion: boolean; selection: string } | null>(null);
+  const retryRef = useRef<StudioCopilotRequest | null>(null);
   const bufferedDeltasRef = useRef(new Map<number, string[]>());
   const deltaFrameRef = useRef<number | null>(null);
 
@@ -138,9 +159,15 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     };
   }, [compact, open]);
 
-  async function send(request = {
+  async function send(request: StudioCopilotRequest = {
     message: prompt.trim(), research: allowResearch, suggestion: requestSuggestion && !selectedText.trim(),
-    selection: selectedText.trim().slice(0, 4_000)
+    selection: selectedText.trim().slice(0, 4_000),
+    operationalContext: useOperationalContext ? {
+      from: operationalFrom || null,
+      to: operationalTo || null,
+      resourceTypes: [...OPERATIONAL_RESOURCE_TYPES],
+      personIds: []
+    } : null
   }) {
     if (!request.message || streaming) return;
     setPrompt("");
@@ -159,7 +186,11 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
       message: request.message,
       allowExternalResearch: request.research,
       requestTextSuggestion: request.suggestion,
-      selectedTextContext: request.selection || null
+      selectedTextContext: request.selection || null,
+      operationalContext: request.operationalContext ? {
+        ...request.operationalContext,
+        resourceTypes: [...request.operationalContext.resourceTypes]
+      } : null
     }, {
       onRun(run) { if (isCurrent()) setConversationId(run.conversationId); },
       onDelta(text) { if (isCurrent()) queueDelta(id, text); },
@@ -299,7 +330,8 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
           {turn.status === "cancelled" ? <p className="studio-copilot-turn__status">Resposta interrompida.</p> : null}
           <StudioCitations citations={turn.citations} onOpenInternal={onOpenInternalSource} />
           {turn.suggestion ? <SuggestionCard suggestion={turn.suggestion} onDocumentChange={onDocumentChange}
-            onOpenInternalSource={onOpenInternalSource} acceptance={suggestionAcceptance} sessionDocumentId={document.id} /> : null}
+            onOpenInternalSource={onOpenInternalSource} acceptance={suggestionAcceptance} sessionDocumentId={document.id}
+            sessionDocumentTitle={document.title} /> : null}
         </article>)}
       </div>
 
@@ -318,6 +350,13 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
         <label htmlFor="studio-copilot-prompt">O que você quer entender melhor?</label>
         <textarea ref={composerRef} id="studio-copilot-prompt" rows={3} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} disabled={streaming} />
         <div className="studio-copilot__options">
+          <label><input type="checkbox" checked={useOperationalContext} onChange={(event) => setUseOperationalContext(event.currentTarget.checked)} /> Usar dados da operação nesta pergunta</label>
+          {useOperationalContext ? <fieldset className="studio-copilot__operational-period">
+            <legend>Período consultado</legend>
+            <label htmlFor="studio-operational-from">Início do período operacional<input id="studio-operational-from" type="date" value={operationalFrom} max={operationalTo || undefined} onChange={(event) => setOperationalFrom(event.currentTarget.value)} /></label>
+            <label htmlFor="studio-operational-to">Fim do período operacional<input id="studio-operational-to" type="date" value={operationalTo} min={operationalFrom || undefined} onChange={(event) => setOperationalTo(event.currentTarget.value)} /></label>
+            <small>Tarefas, rotinas e demais fontes internas aparecerão separadas da pesquisa pública.</small>
+          </fieldset> : null}
           <label><input type="checkbox" checked={allowResearch} onChange={(event) => setAllowResearch(event.currentTarget.checked)} /> Pesquisar na internet nesta pergunta</label>
           <label><input type="checkbox" disabled={Boolean(selectedText.trim())} checked={requestSuggestion && !selectedText.trim()} onChange={(event) => setRequestSuggestion(event.currentTarget.checked)} /> {selectedText.trim() ? "Seleção ativa: proposta de documento indisponível" : "Criar proposta revisável"}</label>
         </div>
@@ -330,17 +369,20 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   </>;
 }
 
-function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, acceptance, sessionDocumentId }: {
+function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, acceptance, sessionDocumentId, sessionDocumentTitle }: {
   suggestion: StudioSuggestion;
   onDocumentChange(document: StudioDocument): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
   acceptance?: StudioSuggestionAcceptanceGuard;
   sessionDocumentId: string;
+  sessionDocumentTitle: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(suggestion.payload.proposal.title ?? "");
   const [body, setBody] = useState(suggestion.payload.proposal.bodyText);
   const [state, setState] = useState<"pending" | "accepting" | "dismissing" | "accepted" | "dismissed" | "error" | "conflict">("pending");
+  const [operationOpen, setOperationOpen] = useState(false);
+  const [operationDrafts, setOperationDrafts] = useState<StudioOperationDraft[] | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const decisionRef = useRef<HTMLParagraphElement>(null);
   const decisionGenerationRef = useRef(0);
@@ -436,14 +478,50 @@ function SuggestionCard({ suggestion, onDocumentChange, onOpenInternalSource, ac
     </div> : <div className="studio-suggestion__preview"><h4>{title || "Sem título"}</h4><p>{body}</p></div>}
     </section>
     <StudioCitations citations={suggestion.payload.citations} onOpenInternal={onOpenInternalSource} />
+    {operationOpen && operationDrafts ? <OperationPreview
+      suggestionId={suggestion.id}
+      sourceDocument={{ id: sessionDocumentId, title: sessionDocumentTitle }}
+      drafts={operationDrafts}
+      onClose={() => setOperationOpen(false)}
+      onNavigate={(link) => onOpenInternalSource?.(
+        { kind: link.resourceType, resourceId: link.resourceId },
+        {
+          sourceType: "operational_resource", sourceId: link.resourceId, url: null,
+          label: title.trim() || suggestion.payload.proposal.title || "Recurso criado",
+          excerpt: "Criado a partir de uma reflexão no Estúdio do Dono.", observedAt: link.createdAt,
+          periodFrom: null, periodTo: null, metadata: { resourceType: link.resourceType, origin: "owner_studio" }
+        }
+      )}
+    /> : null}
     {acceptance && !acceptance.canAccept && state !== "conflict" ? <p className="studio-suggestion__guard" role="status">{acceptance.status}</p> : null}
     {state === "conflict" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta chegou ao servidor, mas sua edição local mudou. Sua escrita foi preservada para você resolver o conflito.</p> : null}
     {state === "error" ? <p ref={errorRef} tabIndex={-1} role="alert">A proposta não foi aplicada. O texto original continua intacto.</p> : null}
     <footer>
+      {!operationOpen ? <button type="button" disabled={state !== "pending" && state !== "error"} onClick={() => {
+        setOperationDrafts([operationDraftFromSuggestion(suggestion, title, body)]);
+        setOperationOpen(true);
+      }}>Levar para a operação</button> : null}
       <button type="button" disabled={["accepting", "dismissing", "accepted", "conflict"].includes(state)} onClick={() => void dismiss()}>{state === "dismissing" ? "Dispensando…" : "Dispensar"}</button>
       <button className="primary" type="button" disabled={["accepting", "dismissing", "accepted", "conflict"].includes(state) || (acceptance ? !acceptance.canAccept : false)} onClick={() => void accept()}>{state === "accepted" ? "Aplicada em nova versão" : state === "accepting" ? "Aplicando…" : "Aceitar como nova versão"}</button>
     </footer>
   </section>;
+}
+
+function operationDraftFromSuggestion(suggestion: StudioSuggestion, editedTitle: string, editedBody: string): StudioOperationDraft {
+  const title = (editedTitle.trim() || suggestion.payload.proposal.title?.trim() || "Próximo passo").slice(0, 160);
+  return {
+    resource_type: "task",
+    payload: {
+      title,
+      area_id: null,
+      assignee_profile_id: null,
+      due_date: relativeDate(1),
+      due_hint: null,
+      approval_mode: "direct",
+      evidence_policy: "optional",
+      checklist_items: editedBody.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 8).map((item) => item.slice(0, 180))
+    }
+  };
 }
 
 function plainTextDocument(text: string): Record<string, unknown> {
@@ -460,3 +538,10 @@ function readWidth() {
 function persistWidth(width: number) { try { window.localStorage.setItem(WIDTH_KEY, String(clampWidth(width))); } catch { /* optional preference */ } }
 function clampWidth(width: number) { return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(width))); }
 function documentBodyUnlock() { /* compact cleanup is owned by the effect cleanup */ }
+
+function relativeDate(offsetDays: number) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
