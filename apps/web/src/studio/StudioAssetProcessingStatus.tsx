@@ -144,7 +144,14 @@ export default function StudioAssetProcessingStatus({
         pendingAudioDownloadRef.current = result;
       } else {
         pendingAudioDownloadRef.current = null;
-        pendingAudioSeekRef.current = null;
+        pendingAudioSeekRef.current = player
+          ? {
+            url: result.url,
+            position: player.ended
+              ? 0
+              : Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0
+          }
+          : null;
         setDownload(result);
       }
       const lifetimeMs = Math.max(0, result.expiresInSeconds * 1_000);
@@ -261,9 +268,15 @@ export default function StudioAssetProcessingStatus({
 
   function adoptPendingAudioDownload(ended = false) {
     const pendingDownload = pendingAudioDownloadRef.current;
-    if (!pendingDownload) return;
     const player = audioPlayerRef.current;
-    const position = ended || player?.ended
+    const playbackEnded = ended || Boolean(player?.ended);
+    if (!pendingDownload) {
+      if (playbackEnded && pendingAudioSeekRef.current) {
+        pendingAudioSeekRef.current = { ...pendingAudioSeekRef.current, position: 0 };
+      }
+      return;
+    }
+    const position = playbackEnded
       ? 0
       : player && Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0;
     pendingAudioDownloadRef.current = null;

@@ -146,6 +146,99 @@ describe("StudioAssetProcessingStatus", () => {
     expect(player.currentTime).toBe(84.25);
   });
 
+  it("restores position when automatic renewal resolves after the player is already paused", async () => {
+    vi.useFakeTimers();
+    const renewal = deferred<{ url: string; expiresInSeconds: number }>();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockImplementationOnce(() => renewal.promise);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    Object.defineProperty(player, "paused", { configurable: true, value: true });
+    Object.defineProperty(player, "ended", { configurable: true, value: false });
+    player.currentTime = 32.5;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    await act(async () => renewal.resolve({
+      url: "https://private.example/audio-v2",
+      expiresInSeconds: 600
+    }));
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+    player.currentTime = 0;
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(32.5);
+  });
+
+  it("restores position when manual recovery resolves with the player paused", async () => {
+    vi.useFakeTimers();
+    const recovery = deferred<{ url: string; expiresInSeconds: number }>();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockImplementationOnce(() => recovery.promise);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    Object.defineProperty(player, "paused", { configurable: true, value: true });
+    Object.defineProperty(player, "ended", { configurable: true, value: false });
+    player.currentTime = 43.75;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    fireEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+    await act(async () => recovery.resolve({
+      url: "https://private.example/audio-v3",
+      expiresInSeconds: 600
+    }));
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v3");
+    player.currentTime = 0;
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(43.75);
+  });
+
+  it("resets a pause seek to zero when playback ends before renewed metadata loads", async () => {
+    vi.useFakeTimers();
+    const getDownload = vi.fn()
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+      .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 });
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready" })}
+        getDownload={getDownload}
+      />
+    );
+    await act(async () => { await Promise.resolve(); });
+    const player = screen.getByTestId("studio-audio-player") as HTMLAudioElement;
+    let paused = false;
+    let ended = false;
+    Object.defineProperty(player, "paused", { configurable: true, get: () => paused });
+    Object.defineProperty(player, "ended", { configurable: true, get: () => ended });
+    player.currentTime = 51.25;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+    paused = true;
+    fireEvent.pause(player);
+    expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+    ended = true;
+    fireEvent.ended(player);
+    player.currentTime = 12;
+
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(0);
+  });
+
   it("adopts a pending audio URL at position zero after playback ends", async () => {
     vi.useFakeTimers();
     const getDownload = vi.fn()
