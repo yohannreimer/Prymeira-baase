@@ -31,6 +31,7 @@ type DocumentCursor = {
   updatedAt: string;
   id: string;
 };
+type VersionCursor = { versionNumber: number; id: string };
 
 function cloneDocument(document: StudioDocument): StudioDocument {
   return structuredClone(document);
@@ -132,6 +133,19 @@ function decodeCursor(cursor: string): DocumentCursor {
   } catch {
     throw new Error("STUDIO_DOCUMENT_CURSOR_INVALID");
   }
+}
+
+function encodeVersionCursor(version: StudioDocumentVersion) {
+  return Buffer.from(JSON.stringify({ versionNumber: version.versionNumber, id: version.id })).toString("base64url");
+}
+
+function decodeVersionCursor(cursor: string): VersionCursor {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<VersionCursor>;
+    if (!/^[A-Za-z0-9_-]+$/.test(cursor) || Buffer.from(cursor, "base64url").toString("base64url") !== cursor
+      || !Number.isInteger(value.versionNumber) || value.versionNumber! < 1 || typeof value.id !== "string" || !value.id) throw new Error();
+    return { versionNumber: value.versionNumber!, id: value.id };
+  } catch { throw new Error("STUDIO_DOCUMENT_VERSION_CURSOR_INVALID"); }
 }
 
 export function createInMemoryStudioRepository(
@@ -413,6 +427,22 @@ export function createInMemoryStudioRepository(
         .filter((version) => version.documentId === documentId)
         .sort((left, right) => left.versionNumber - right.versionNumber || left.id.localeCompare(right.id))
         .map(cloneVersion);
+    },
+
+    async listVersionPage(scope, documentId, query) {
+      const cursor = query.cursor ? decodeVersionCursor(query.cursor) : null;
+      const all = (await this.listVersions(scope, documentId)).sort((left, right) =>
+        right.versionNumber - left.versionNumber || right.id.localeCompare(left.id));
+      const after = cursor ? all.filter((item) => item.versionNumber < cursor.versionNumber
+        || (item.versionNumber === cursor.versionNumber && item.id < cursor.id)) : all;
+      const items = after.slice(0, query.limit);
+      return { items, nextCursor: after.length > items.length && items.length ? encodeVersionCursor(items[items.length - 1]!) : null };
+    },
+
+    async findVersion(scope, documentId, versionId) {
+      const version = versions.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId
+        && item.documentId === documentId && item.id === versionId);
+      return version ? cloneVersion(version) : null;
     },
 
     async findStructure(scope, structureId) {

@@ -50,6 +50,17 @@ export const studioDocumentParamsSchema = z.object({
   documentId: routeIdSchema
 }).strict();
 
+export const studioDocumentVersionParamsSchema = studioDocumentParamsSchema.extend({ versionId: routeIdSchema }).strict();
+export const studioVersionListQuerySchema = z.object({
+  cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  limit: routeLimitSchema.default(50)
+}).strict();
+export const createStudioCheckpointSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  reason: z.enum(["significant_pause", "document_exit", "structure_changed", "accepted_ai_suggestion", "transcript_inserted", "restored", "manual"])
+}).strict();
+export const restoreStudioVersionSchema = z.object({ expected_revision: z.number().int().positive() }).strict();
+
 export const studioCollectionParamsSchema = z.object({
   collectionId: routeIdSchema
 }).strict();

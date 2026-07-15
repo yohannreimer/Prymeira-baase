@@ -356,6 +356,38 @@ describe("Studio routes", () => {
     expect(versions.json().versions.map((version: { versionNumber: number }) => version.versionNumber))
       .toEqual([1]);
 
+    const checkpoint = await app.inject({
+      method: "POST",
+      url: `/studio/documents/${documentId}/checkpoints`,
+      headers: ownerA,
+      payload: { expected_revision: 2, reason: "significant_pause" }
+    });
+    expect(checkpoint.statusCode).toBe(201);
+    expect(checkpoint.json().version).toMatchObject({ checkpointReason: "significant_pause", sourceRevision: 2 });
+    expect((await app.inject({
+      method: "POST", url: `/studio/documents/${documentId}/checkpoints`, headers: ownerA,
+      payload: { expected_revision: 2, reason: "invalid" }
+    })).statusCode).toBe(400);
+
+    const versionPage = await app.inject({
+      method: "GET", url: `/studio/documents/${documentId}/versions?limit=20`, headers: ownerA
+    });
+    expect(versionPage.statusCode).toBe(200);
+    expect(versionPage.json()).toMatchObject({ versions: expect.any(Array), nextCursor: null });
+
+    const versionRestore = await app.inject({
+      method: "POST",
+      url: `/studio/documents/${documentId}/versions/${checkpoint.json().version.id}/restore`,
+      headers: ownerA,
+      payload: { expected_revision: 2 }
+    });
+    expect(versionRestore.statusCode).toBe(200);
+    expect(versionRestore.json().version).toMatchObject({ checkpointReason: "restored" });
+    expect((await app.inject({
+      method: "POST", url: `/studio/documents/${documentId}/versions/not-found/restore`, headers: ownerA,
+      payload: { expected_revision: 3 }
+    })).statusCode).toBe(404);
+
     const home = await app.inject({ method: "GET", url: "/studio/home", headers: ownerA });
     expect(home.json().home).toMatchObject({ pendingReviewCount: 0, nextRituals: [] });
     expect(home.json().home.focusedDocuments.map((document: { id: string }) => document.id)).toEqual([documentId]);

@@ -81,6 +81,48 @@ describe("StudioService documents", () => {
     expect(updated.revision).toBe(2);
   });
 
+  it("creates explicit deduplicated checkpoints and safely restores a selected checkpoint", async () => {
+    const service = createService();
+    const created = await service.createDocument(scope, "owner_a", { ...documentInput("Conteúdo para Original"), title: "Original" });
+    const checkpoint = await service.createCheckpoint(scope, "owner_a", created.id, {
+      expected_revision: created.revision,
+      reason: "manual"
+    });
+
+    expect(checkpoint).toMatchObject({
+      title: "Original",
+      bodyText: "Conteúdo para Original",
+      checkpointReason: "manual",
+      sourceRevision: created.revision,
+      isLegacy: false
+    });
+    await expect(service.createCheckpoint(scope, "owner_a", created.id, {
+      expected_revision: created.revision,
+      reason: "significant_pause"
+    })).resolves.toMatchObject({ id: checkpoint.id });
+
+    const changed = await service.updateDocument(scope, "owner_a", created.id, {
+      revision: created.revision,
+      title: "Atualizado",
+      body_json: { type: "doc", content: [] },
+      body_text: "Conteúdo atualizado"
+    });
+    const restored = await service.restoreVersion(scope, "owner_a", created.id, checkpoint.id, {
+      expected_revision: changed.revision
+    });
+
+    expect(restored.document).toMatchObject({
+      title: "Original", bodyText: "Conteúdo para Original", revision: changed.revision + 1
+    });
+    expect(restored.version).toMatchObject({ checkpointReason: "restored", sourceRevision: restored.document.revision });
+    await expect(service.restoreVersion(scope, "owner_a", created.id, checkpoint.id, {
+      expected_revision: changed.revision
+    })).rejects.toThrow("STUDIO_DOCUMENT_STALE");
+    await expect(service.restoreVersion(scope, "owner_a", created.id, "missing", {
+      expected_revision: restored.document.revision
+    })).rejects.toThrow("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
+  });
+
   it("archives and restores documents with explicit lifecycle timestamps", async () => {
     const service = createService();
     const created = await service.createDocument(scope, "owner_a", documentInput());

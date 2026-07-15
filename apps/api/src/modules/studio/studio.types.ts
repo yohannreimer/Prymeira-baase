@@ -225,10 +225,18 @@ export type StudioDocumentVersion = StudioOwnerScope & {
   aiRunId: string | null;
   createdAt: string;
   title?: string | null;
-  checkpointReason?: string;
+  checkpointReason?: StudioCheckpointReason | "legacy_autosave";
   sourceRevision?: number | null;
   isLegacy?: boolean;
 };
+
+export type StudioCheckpointReason =
+  | "significant_pause" | "document_exit" | "structure_changed"
+  | "accepted_ai_suggestion" | "transcript_inserted" | "restored" | "manual";
+
+export type StudioVersionQuery = { cursor?: string; limit: number };
+export type StudioVersionPage = { items: StudioDocumentVersion[]; nextCursor: string | null };
+export type CreateStudioCheckpoint = { expected_revision: number; reason: StudioCheckpointReason };
 
 export type StudioStructure = StudioOwnerScope & {
   id: string;
@@ -481,6 +489,9 @@ export type StudioService = {
   restoreDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
   setFocused(scope: StudioOwnerScope, actorProfileId: string, id: string, focused: boolean): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, id: string): Promise<StudioDocumentVersion[]>;
+  listVersionPage(scope: StudioOwnerScope, id: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
+  createCheckpoint(scope: StudioOwnerScope, actorProfileId: string, id: string, input: CreateStudioCheckpoint): Promise<StudioDocumentVersion>;
+  restoreVersion(scope: StudioOwnerScope, actorProfileId: string, id: string, versionId: string, input: { expected_revision: number }): Promise<{ document: StudioDocument; version: StudioDocumentVersion }>;
   search(scope: StudioOwnerScope, query: string, limit: number): Promise<StudioSearchResult[]>;
   listCollections(scope: StudioOwnerScope): Promise<StudioCollection[]>;
   createCollection(scope: StudioOwnerScope, actorProfileId: string, input: CreateStudioCollection): Promise<StudioCollection>;
@@ -510,6 +521,8 @@ export type StudioRepository = {
   > & { captureKey?: string | null }): Promise<StudioDocument>;
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
+  listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
+  findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;
   findStructure(scope: StudioOwnerScope, structureId: string): Promise<StudioStructure | null>;
   createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;
   updateStructure(input: StudioStructure, expectedRevision: number): Promise<StudioStructure>;

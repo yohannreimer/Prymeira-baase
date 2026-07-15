@@ -11,6 +11,10 @@ import {
   studioCollectionParamsSchema,
   studioDocumentListQuerySchema,
   studioDocumentParamsSchema,
+  studioDocumentVersionParamsSchema,
+  studioVersionListQuerySchema,
+  createStudioCheckpointSchema,
+  restoreStudioVersionSchema,
   studioEmptyRouteSchema,
   studioAssetIdempotencyKeySchema,
   studioSearchQuerySchema,
@@ -71,7 +75,7 @@ function studioRouteError(error: unknown) {
   if (error.message === "STUDIO_EDITOR_JSON_INVALID") {
     return new ApiError(400, "STUDIO_EDITOR_JSON_INVALID", "O conteúdo do editor excede os limites de segurança.");
   }
-  if (error.message === "STUDIO_DOCUMENT_NOT_FOUND") {
+  if (["STUDIO_DOCUMENT_NOT_FOUND", "STUDIO_DOCUMENT_VERSION_NOT_FOUND"].includes(error.message)) {
     return new ApiError(404, "STUDIO_DOCUMENT_NOT_FOUND", "Documento do Studio não encontrado.");
   }
   if (error.message === "STUDIO_STRUCTURE_NOT_FOUND") {
@@ -103,6 +107,7 @@ function studioRouteError(error: unknown) {
     "STUDIO_COLLECTION_NAME_REQUIRED",
     "STUDIO_COLLECTION_NAME_TOO_LONG",
     "STUDIO_DOCUMENT_CURSOR_INVALID",
+    "STUDIO_DOCUMENT_VERSION_CURSOR_INVALID",
     "STUDIO_STRUCTURE_CURSOR_INVALID",
     "STUDIO_STRUCTURE_DATA_INVALID",
     "STUDIO_RITUAL_NEXT_RUN_UNAVAILABLE",
@@ -399,11 +404,27 @@ export async function registerStudioRoutes(
   app.get("/studio/documents/:documentId/versions", async (request) => {
     const scope = requireStudioScope(request);
     const params = studioDocumentParamsSchema.parse(request.params);
-    readNoQuery(request);
+    const query = studioVersionListQuerySchema.parse(request.query);
     readNoBody(request);
-    return {
-      versions: await runStudioOperation(() => service.listVersions(scope, params.documentId))
-    };
+    const page = await runStudioOperation(() => service.listVersionPage(scope, params.documentId, query));
+    return { versions: page.items, nextCursor: page.nextCursor };
+  });
+
+  app.post("/studio/documents/:documentId/checkpoints", async (request, reply) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    const body = createStudioCheckpointSchema.parse(request.body);
+    const version = await runStudioOperation(() => service.createCheckpoint(scope, scope.ownerProfileId, params.documentId, body));
+    return reply.status(201).send({ version });
+  });
+
+  app.post("/studio/documents/:documentId/versions/:versionId/restore", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentVersionParamsSchema.parse(request.params);
+    readNoQuery(request);
+    const body = restoreStudioVersionSchema.parse(request.body);
+    return runStudioOperation(() => service.restoreVersion(scope, scope.ownerProfileId, params.documentId, params.versionId, body));
   });
 
   app.get("/studio/search", async (request) => {

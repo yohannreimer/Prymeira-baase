@@ -6,6 +6,7 @@ import type {
   StudioCollection,
   StudioDocument,
   StudioDocumentQuery,
+  StudioVersionQuery,
   StudioHome,
   StudioOwnerScope,
   StudioRepository,
@@ -38,6 +39,15 @@ function assertActor(scope: StudioOwnerScope, actorProfileId: string) {
 
 function normalizeBodyText(value: string) {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+function normalizedJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(normalizedJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${normalizedJson(object[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function normalizeCollectionName(input: CreateStudioCollection | UpdateStudioCollection) {
@@ -297,6 +307,43 @@ export function createStudioService(
     async listVersions(scope, id) {
       await requireDocument(repository, scope, id);
       return repository.listVersions(scope, id);
+    },
+
+    async listVersionPage(scope, id, query: StudioVersionQuery) {
+      await requireDocument(repository, scope, id);
+      return repository.listVersionPage(scope, id, query);
+    },
+
+    async createCheckpoint(scope, actorProfileId, id, input) {
+      assertActor(scope, actorProfileId);
+      const document = await requireDocument(repository, scope, id);
+      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+      const latest = (await repository.listVersions(scope, id)).at(-1);
+      if (latest && !latest.isLegacy && latest.title?.trim() === document.title?.trim()
+        && normalizeBodyText(latest.bodyText) === normalizeBodyText(document.bodyText)
+        && normalizedJson(latest.bodyJson) === normalizedJson(document.bodyJson)) return latest;
+      return repository.appendVersion({
+        ...scope, documentId: id, title: document.title, bodyJson: structuredClone(document.bodyJson), bodyText: document.bodyText,
+        origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason,
+        sourceRevision: document.revision, isLegacy: false
+      });
+    },
+
+    async restoreVersion(scope, actorProfileId, id, versionId, input) {
+      assertActor(scope, actorProfileId);
+      const document = await requireDocument(repository, scope, id);
+      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+      const version = await repository.findVersion(scope, id, versionId);
+      if (!version) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
+      assertStudioEditorJson(version.bodyJson);
+      const restored = await repository.updateDocument({
+        ...document, title: version.title ?? null, bodyJson: structuredClone(version.bodyJson), bodyText: normalizeBodyText(version.bodyText)
+      }, document.revision);
+      const checkpoint = await repository.appendVersion({
+        ...scope, documentId: id, title: restored.title, bodyJson: structuredClone(restored.bodyJson), bodyText: restored.bodyText,
+        origin: "user", actorProfileId, aiRunId: null, checkpointReason: "restored", sourceRevision: restored.revision, isLegacy: false
+      });
+      return { document: restored, version: checkpoint };
     },
 
     search(scope, query, limit) {

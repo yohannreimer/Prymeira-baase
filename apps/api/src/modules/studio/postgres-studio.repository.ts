@@ -71,10 +71,11 @@ type StudioDocumentVersionRow = {
   ai_run_id: string | null;
   created_at: string | Date;
   title: string | null;
-  checkpoint_reason: string;
+  checkpoint_reason: StudioDocumentVersion["checkpointReason"];
   source_revision: number | null;
   is_legacy: boolean;
 };
+type VersionCursor = { versionNumber: number; id: string };
 
 type StudioNextRitualRow = {
   id: string;
@@ -553,6 +554,19 @@ function decodeCursor(cursor: string): DocumentCursor {
   }
 }
 
+function encodeVersionCursor(version: StudioDocumentVersion) {
+  return Buffer.from(JSON.stringify({ versionNumber: version.versionNumber, id: version.id })).toString("base64url");
+}
+
+function decodeVersionCursor(cursor: string): VersionCursor {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<VersionCursor>;
+    if (!/^[A-Za-z0-9_-]+$/.test(cursor) || Buffer.from(cursor, "base64url").toString("base64url") !== cursor
+      || !Number.isInteger(value.versionNumber) || value.versionNumber! < 1 || typeof value.id !== "string" || !value.id) throw new Error();
+    return { versionNumber: value.versionNumber!, id: value.id };
+  } catch { throw new Error("STUDIO_DOCUMENT_VERSION_CURSOR_INVALID"); }
+}
+
 async function findDocument(
   db: OperationalPool | OperationalClient,
   scope: StudioOwnerScope,
@@ -855,6 +869,33 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, documentId]
       );
       return result.rows.map(versionFromRow);
+    },
+
+    async listVersionPage(scope, documentId, query) {
+      const params: unknown[] = [scope.workspaceId, scope.ownerProfileId, documentId];
+      const conditions = ["workspace_id=$1", "owner_profile_id=$2", "document_id=$3"];
+      if (query.cursor) {
+        const cursor = decodeVersionCursor(query.cursor);
+        params.push(cursor.versionNumber, cursor.id);
+        conditions.push(`(version_number,id) < ($${params.length - 1},$${params.length})`);
+      }
+      params.push(query.limit + 1);
+      const result = await db.query<StudioDocumentVersionRow>(
+        `SELECT * FROM studio_document_versions WHERE ${conditions.join(" AND ")}
+         ORDER BY version_number DESC,id DESC LIMIT $${params.length}`,
+        params
+      );
+      const rows = result.rows.map(versionFromRow);
+      const items = rows.slice(0, query.limit);
+      return { items, nextCursor: rows.length > items.length && items.length ? encodeVersionCursor(items[items.length - 1]!) : null };
+    },
+
+    async findVersion(scope, documentId, versionId) {
+      const result = await db.query<StudioDocumentVersionRow>(
+        `SELECT * FROM studio_document_versions WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3 AND id=$4`,
+        [scope.workspaceId, scope.ownerProfileId, documentId, versionId]
+      );
+      return result.rows[0] ? versionFromRow(result.rows[0]) : null;
     },
 
     async findStructure(scope, structureId) {

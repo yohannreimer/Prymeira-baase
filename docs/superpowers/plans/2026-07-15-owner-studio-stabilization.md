@@ -414,7 +414,7 @@ git commit -m "fix(studio): separate draft saves from versions"
 - Test: `apps/api/src/modules/studio/studio.routes.test.ts`
 - Test: `apps/api/src/modules/studio/studio.service.test.ts`
 
-- [ ] **Step 1: Write failing checkpoint route tests**
+- [x] **Step 1: Write failing checkpoint route tests**
 
 ```ts
 const checkpoint = await app.inject({
@@ -442,12 +442,12 @@ expect(restored.statusCode).toBe(200);
 expect(restored.json().version.checkpointReason).toBe("restored");
 ```
 
-- [ ] **Step 2: Run and observe 404/schema failure**
+- [x] **Step 2: Run and observe 404/schema failure**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement checkpoint rules and pagination**
+- [x] **Step 3: Implement checkpoint rules and pagination**
 
 ```ts
 export type StudioCheckpointReason =
@@ -477,12 +477,12 @@ async createCheckpoint(scope, actorProfileId, id, input) {
 Deduplicate against the latest checkpoint by normalized title/body JSON/body text. Enqueue an index job only when a checkpoint is inserted.
 Add `POST /studio/documents/:documentId/versions/:versionId/restore`; it copies the selected checkpoint into the current draft under optimistic revision control and appends a new `restored` checkpoint without deleting later history.
 
-- [ ] **Step 4: Run route, service, and memory tests**
+- [x] **Step 4: Run route, service, and memory tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts src/modules/studio/studio-memory.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio
