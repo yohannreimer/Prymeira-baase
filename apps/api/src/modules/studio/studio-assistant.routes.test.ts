@@ -10,6 +10,35 @@ const manager = { ...ownerA, "x-baase-role": "manager", "x-baase-profile-id": "m
 const employee = { ...ownerA, "x-baase-role": "employee", "x-baase-profile-id": "employee_a" };
 
 describe("Studio assistant routes", () => {
+  it("reports mock AI as ready and streams in pilot without an OpenAI key", async () => {
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const app = buildApp({
+        runtimeConfig: readRuntimeConfig({
+          BAASE_RUNTIME_MODE: "pilot",
+          BAASE_AUTH_MODE: "local",
+          BAASE_STUDIO_ENABLED: "true"
+        })
+      });
+      const readiness = await app.inject({ method: "GET", url: "/studio/readiness", headers: ownerA });
+      const response = await app.inject({
+        method: "POST", url: "/studio/assistant/turns", headers: ownerA,
+        payload: { message: "Use o provider local." }
+      });
+
+      expect(readiness.json()).toMatchObject({
+        ai: { status: "ready", code: null },
+        embeddings: { status: "ready", code: null }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/event-stream");
+    } finally {
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+    }
+  });
+
   it("returns safe HTTP 503 before opening SSE when production Studio AI is unavailable", async () => {
     const response = await buildApp({
       runtimeConfig: readRuntimeConfig({

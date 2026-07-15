@@ -158,8 +158,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const onboardingRepository = options.onboardingRepository ?? createInMemoryOnboardingRepository();
   const aiRepository = options.aiRepository ?? createInMemoryAiRepository();
   const openAiApiKey = process.env.OPENAI_API_KEY;
-  const studioAiUnavailable = runtimeConfig.mode === "production"
-    && runtimeConfig.studio.enabled
+  const selectedAiProviderUnavailable = runtimeConfig.mode === "production"
     && !options.aiProvider
     && !openAiApiKey;
   const aiProvider = options.aiProvider ?? createDefaultAiProvider({
@@ -193,7 +192,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
   const studioReadiness = buildStudioReadiness({
     runtimeConfig,
-    aiAvailable: Boolean(options.aiProvider) || Boolean(openAiApiKey),
+    aiAvailable: !selectedAiProviderUnavailable,
     hasPersistentVectorIndex: options.studioVectorPersistent ?? Boolean(options.studioMemoryPool),
     maintenanceAvailable: options.studioMaintenanceAvailable ?? true
   });
@@ -211,7 +210,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     repository: studioRepository,
     harness: aiHarness,
     model: runtimeConfig.studio.aiModel,
-    aiAvailable: !studioAiUnavailable,
+    aiAvailable: !selectedAiProviderUnavailable,
     contextBuilder: studioContextBuilder,
     now: options.now
   });
