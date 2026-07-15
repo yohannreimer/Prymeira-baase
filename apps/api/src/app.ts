@@ -55,6 +55,15 @@ import {
 } from "./modules/studio/studio-proactivity.service";
 import { createPostgresStudioProactivityStore } from "./modules/studio/postgres-studio-proactivity.store";
 import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
+import { registerStudioPortabilityRoutes } from "./modules/studio/studio-portability.routes";
+import {
+  createInMemoryStudioPortabilityStore,
+  createStudioPortabilityService,
+  type StudioPortabilityProactivityHooks,
+  type StudioPortabilityRepositoryHooks,
+  type StudioPortabilityStore
+} from "./modules/studio/studio-portability.service";
+import { createPostgresStudioPortabilityStore } from "./modules/studio/postgres-studio-portability.store";
 import {
   createInMemoryStudioOperationsStore,
   createPostgresStudioOperationsStore,
@@ -96,6 +105,7 @@ export type BuildAppOptions = {
   studioMemoryIndex?: StudioMemoryIndex;
   studioMemoryPool?: OperationalPool;
   studioProactivityStore?: StudioProactivityStore;
+  studioPortabilityStore?: StudioPortabilityStore;
   studioMemoryModel?: string;
   studioMemoryDimensions?: number;
   studioLinkResolver?: StudioLinkResolver;
@@ -212,6 +222,32 @@ export function buildApp(options: BuildAppOptions = {}) {
     trainingRepository,
     now: options.now
   });
+  const studioPortabilityStore = options.studioPortabilityStore ?? (options.studioMemoryPool
+    ? createPostgresStudioPortabilityStore(options.studioMemoryPool)
+    : createInMemoryStudioPortabilityStore({
+        repository: hasStudioPortabilityHooks(studioRepository) ? studioRepository : undefined,
+        proactivity: hasStudioProactivityPortabilityHooks(studioProactivityStore) ? studioProactivityStore : undefined,
+        removeMemory: async (scope, documentIds) => {
+          for (const documentId of documentIds) await studioMemoryIndex.removeDocument(scope, documentId);
+        },
+        markOperationalOriginsDeleted: (scope, deletedAt) => studioOperationsStore.markOwnerOriginsDeleted?.(scope, deletedAt) ?? Promise.resolve()
+      }));
+  const studioPortabilityService = createStudioPortabilityService({
+    store: studioPortabilityStore,
+    objectStorage,
+    now: options.now,
+    verifyOwner: async (actor) => {
+      const member = await companyRepository.findTeamMember(actor.workspaceId, actor.profileId);
+      if (!member && actor.workspaceId === "local_workspace" && actor.profileId === "local_profile") return true;
+      return member?.role === "owner" && member.status === "active";
+    }
+  });
+  const studioPortabilityReconciliationProcessor = {
+    async processNext() {
+      const result = await studioPortabilityService.reconcileObjectDeletions(1);
+      return result.attempted > 0 ? result : null;
+    }
+  };
   const studioAssetProcessor = createStudioAssetProcessor({
     repository: studioRepository,
     objectStorage,
@@ -393,6 +429,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex, studioRitualService));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
+  app.register((routes) => registerStudioPortabilityRoutes(routes, studioPortabilityService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,
@@ -413,6 +450,19 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioAssetUploadCleanupProcessor,
     studioMemoryIndex,
     studioMemoryIndexProcessor,
-    studioProactivityService
+    studioProactivityService,
+    studioPortabilityService,
+    studioPortabilityReconciliationProcessor
   });
+}
+
+function hasStudioPortabilityHooks(repository: StudioRepository): repository is StudioRepository & StudioPortabilityRepositoryHooks {
+  const candidate = repository as Partial<StudioPortabilityRepositoryHooks>;
+  return typeof candidate.readPortabilitySnapshot === "function" && typeof candidate.deletePortabilityData === "function";
+}
+
+function hasStudioProactivityPortabilityHooks(
+  store: StudioProactivityStore
+): store is StudioProactivityStore & StudioPortabilityProactivityHooks {
+  return typeof store.readPortabilityRows === "function" && typeof store.deleteOwnerData === "function";
 }

@@ -21,6 +21,7 @@ import type {
 } from "./studio.types";
 import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
 import { studioSearchScore } from "./studio-search";
+import type { StudioPortabilityRepositoryHooks, StudioPortabilitySnapshot } from "./studio-portability.service";
 
 type InMemoryStudioRepositoryOptions = {
   now?: () => string;
@@ -135,7 +136,7 @@ function decodeCursor(cursor: string): DocumentCursor {
 
 export function createInMemoryStudioRepository(
   options: InMemoryStudioRepositoryOptions = {}
-): StudioRepository {
+): StudioRepository & StudioPortabilityRepositoryHooks {
   const documents: StudioDocument[] = [];
   const versions: StudioDocumentVersion[] = [];
   const collections: StudioCollection[] = [];
@@ -239,6 +240,48 @@ export function createInMemoryStudioRepository(
   }
 
   return {
+    async readPortabilitySnapshot(scope) {
+      const scoped = <T extends { workspaceId: string; ownerProfileId: string }>(values: T[]) => values
+        .filter((value) => value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId)
+        .map((value) => structuredClone(value));
+      return {
+        ...scope,
+        documents: scoped(documents),
+        versions: scoped(versions),
+        assets: scoped(assets),
+        structures: scoped(structures),
+        collections: scoped(collections),
+        collectionItems: scoped(memberships),
+        ritualSessions: scoped(ritualSessions),
+        conversations: scoped(conversations),
+        messages: scoped(messages),
+        suggestions: scoped(suggestions),
+        citations: scoped(citations),
+        relations: scoped(relations),
+        memoryRows: [],
+        privateObjectKeys: [
+          ...scoped(assets).flatMap((asset) => asset.objectKey ? [asset.objectKey] : []),
+          ...scoped(assetUploadIntents).map((intent) => intent.objectKey),
+          ...scoped(assetCleanupJobs).flatMap((job) => job.objectKey ? [job.objectKey] : [])
+        ],
+        activeUploads: scoped(assetUploadIntents).flatMap((intent) => intent.storageUploadId
+          ? [{ objectKey: intent.objectKey, storageUploadId: intent.storageUploadId }]
+          : [])
+      } satisfies StudioPortabilitySnapshot;
+    },
+
+    async deletePortabilityData(scope) {
+      for (const values of [
+        citations, messages, suggestions, conversations, ritualSessions, structures, relations, indexJobs,
+        memberships, collections, assetCleanupJobs, assetUploadIntents, assets, versions, documents
+      ]) {
+        for (let index = values.length - 1; index >= 0; index -= 1) {
+          const value = values[index] as { workspaceId: string; ownerProfileId: string };
+          if (value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId) values.splice(index, 1);
+        }
+      }
+    },
+
     async listDocuments(scope, input) {
       const cursor = input.cursor ? decodeCursor(input.cursor) : null;
       const matches = documents

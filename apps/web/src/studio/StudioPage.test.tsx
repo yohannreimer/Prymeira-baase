@@ -32,7 +32,8 @@ describe("StudioPage", () => {
       "Planos",
       "Rituais",
       "Coleções",
-      "Arquivo"
+      "Arquivo",
+      "Privacidade"
     ];
 
     expect(within(navigation).getAllByRole("button").map((button) => button.textContent?.trim())).toEqual(expectedSections);
@@ -214,7 +215,7 @@ describe("StudioPage", () => {
 
     const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
     expect(navigation).not.toHaveAttribute("aria-hidden");
-    expect(within(navigation).getAllByRole("button")).toHaveLength(9);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(10);
     expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeVisible();
     expect(studioStyles).toMatch(/@media \(max-width: 760px\)[\s\S]*overflow-x: auto/);
   });

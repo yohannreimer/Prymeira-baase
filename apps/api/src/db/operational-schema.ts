@@ -23,7 +23,8 @@ export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   16: "studio_structures",
   17: "studio_ritual_sessions",
   18: "studio_operation_previews_and_links",
-  19: "studio_proactivity_settings_and_signals"
+  19: "studio_proactivity_settings_and_signals",
+  23: "studio_owner_portability_and_erasure"
 } as const);
 
 const operationalSchemaLock = [1111574853, 1869636978];
@@ -1382,6 +1383,60 @@ const migrations: Migration[] = [{
       ADD CONSTRAINT studio_ritual_sessions_synthesis_output_state_ck
         CHECK (synthesis_json IS NULL OR (status='completed' AND synthesis_ai_run_id IS NOT NULL
           AND synthesis_token IS NULL AND synthesis_failure_code IS NULL));
+  `
+}, {
+  version: 23,
+  name: "studio_owner_portability_and_erasure",
+  sql: `
+    ALTER TABLE studio_operational_links
+      ADD COLUMN IF NOT EXISTS source_deleted_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS studio_portability_exports (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('preparing','ready','failed')),
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (workspace_id,owner_profile_id,object_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS studio_portability_delete_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('processing','reconciliation_pending','completed')),
+      requested_at TIMESTAMPTZ NOT NULL,
+      completed_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK ((status='completed' AND completed_at IS NOT NULL) OR status<>'completed')
+    );
+
+    CREATE TABLE IF NOT EXISTS studio_portability_object_deletions (
+      request_id TEXT NOT NULL REFERENCES studio_portability_delete_requests(id) ON DELETE CASCADE,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      storage_upload_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status='pending'),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_error_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (request_id,object_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS studio_portability_exports_owner_idx
+      ON studio_portability_exports (workspace_id,owner_profile_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS studio_portability_delete_requests_owner_idx
+      ON studio_portability_delete_requests (workspace_id,owner_profile_id,requested_at DESC);
+    CREATE INDEX IF NOT EXISTS studio_portability_object_deletions_pending_idx
+      ON studio_portability_object_deletions (status,updated_at,request_id);
+    CREATE INDEX IF NOT EXISTS studio_operational_links_source_deleted_idx
+      ON studio_operational_links (workspace_id,owner_profile_id,source_deleted_at)
+      WHERE source_deleted_at IS NOT NULL;
   `
 }, {
   version: 24,

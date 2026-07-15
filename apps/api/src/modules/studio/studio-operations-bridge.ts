@@ -167,6 +167,8 @@ export type StudioOperationalLink = StudioOwnerScope & {
   relationType: "created";
   createdByProfileId: string;
   createdAt: string;
+  sourceDeletedAt: string | null;
+  originLabel: "Estúdio do Dono" | "origem excluída";
 };
 
 type ClaimInput = {
@@ -213,6 +215,7 @@ export type StudioOperationsStore = {
     errorCode: string;
   }): Promise<void>;
   expirePreview(scope: StudioOwnerScope, previewId: string, now: string): Promise<void>;
+  markOwnerOriginsDeleted?(scope: StudioOwnerScope, deletedAt: string): Promise<void>;
 };
 
 type InMemoryStoreOptions = { now?: () => string };
@@ -315,7 +318,9 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
         resourceId: input.resourceId,
         relationType: "created",
         createdByProfileId: input.actorProfileId,
-        createdAt: input.now
+        createdAt: input.now,
+        sourceDeletedAt: null,
+        originLabel: "Estúdio do Dono"
       };
       if (!links.includes(link)) links.push(link);
       preview.status = "confirmed";
@@ -346,6 +351,15 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
       if (preview && preview.status === "preview") {
         preview.status = "expired";
         preview.updatedAt = timestamp;
+      }
+    },
+
+    async markOwnerOriginsDeleted(scope, deletedAt) {
+      for (const link of links) {
+        if (sameScope(link, scope)) {
+          link.sourceDeletedAt = deletedAt;
+          link.originLabel = "origem excluída";
+        }
       }
     }
   };
@@ -512,6 +526,14 @@ export function createPostgresStudioOperationsStore(db: OperationalPool): Studio
         );
         if (result.rows[0]) await audit(client, scope.workspaceId, "studio_operation_preview", previewId, "expire", scope.ownerProfileId);
       });
+    },
+
+    async markOwnerOriginsDeleted(scope, deletedAt) {
+      await db.query(
+        `UPDATE studio_operational_links SET source_deleted_at=$3
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND source_deleted_at IS NULL`,
+        [scope.workspaceId, scope.ownerProfileId, deletedAt]
+      );
     }
   };
 }
@@ -878,6 +900,7 @@ type StudioOperationalLinkRow = {
   id: string; workspace_id: string; owner_profile_id: string; preview_id: string; source_suggestion_id: string;
   source_document_id: string; source_structure_id: string | null; resource_type: StudioOperationResourceType;
   resource_id: string; relation_type: "created"; created_by_profile_id: string; created_at: string | Date;
+  source_deleted_at: string | Date | null;
 };
 
 function previewFromRow(row: StudioOperationPreviewRow): StudioOperationPreview {
@@ -901,7 +924,9 @@ function linkFromRow(row: StudioOperationalLinkRow): StudioOperationalLink {
     previewId: row.preview_id, sourceSuggestionId: row.source_suggestion_id,
     sourceDocumentId: row.source_document_id, sourceStructureId: row.source_structure_id,
     resourceType: row.resource_type, resourceId: row.resource_id, relationType: row.relation_type,
-    createdByProfileId: row.created_by_profile_id, createdAt: iso(row.created_at)
+    createdByProfileId: row.created_by_profile_id, createdAt: iso(row.created_at),
+    sourceDeletedAt: row.source_deleted_at ? iso(row.source_deleted_at) : null,
+    originLabel: row.source_deleted_at ? "origem excluída" : "Estúdio do Dono"
   };
 }
 

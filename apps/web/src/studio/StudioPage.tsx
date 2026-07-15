@@ -13,8 +13,9 @@ import "./studio.css";
 
 const StudioEditor = lazy(() => import("./StudioEditor"));
 const StudioRituals = lazy(() => import("./StudioRituals"));
+const StudioPrivacySettings = lazy(() => import("./StudioPrivacySettings"));
 
-type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "document";
+type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "privacy" | "document";
 
 type StudioNavItem = {
   key: StudioSection;
@@ -43,7 +44,8 @@ const studioNavigation: StudioNavItem[] = [
   { key: "plans", label: "Planos", icon: "ph-map-trifold", title: "Planos", description: "Dê forma a caminhos possíveis antes de levá-los para a operação.", instruction: "Reúna planos em elaboração e próximos passos neste espaço." },
   { key: "rituals", label: "Rituais", icon: "ph-calendar-check", title: "Rituais", description: "Reserve momentos de revisão para manter prioridades e decisões vivas.", instruction: "Seus rituais de reflexão aparecerão aqui quando forem definidos." },
   { key: "collections", label: "Coleções", icon: "ph-folder-simple", title: "Coleções", description: "Agrupe documentos que pertencem ao mesmo contexto ou frente de pensamento.", instruction: "Escolha ou crie uma coleção para reunir documentos relacionados." },
-  { key: "archive", label: "Arquivo", icon: "ph-archive", title: "Arquivo", description: "Registros preservados fora da sua mesa principal.", instruction: "Documentos arquivados podem ser restaurados quando voltarem a importar." }
+  { key: "archive", label: "Arquivo", icon: "ph-archive", title: "Arquivo", description: "Registros preservados fora da sua mesa principal.", instruction: "Documentos arquivados podem ser restaurados quando voltarem a importar." },
+  { key: "privacy", label: "Privacidade", icon: "ph-shield-check", title: "Privacidade do Estúdio", description: "Leve uma cópia ou remova apenas o conteúdo deste espaço privado.", instruction: "" }
 ];
 
 export default function StudioPage({ onOpenInternalSource }: {
@@ -290,6 +292,10 @@ export default function StudioPage({ onOpenInternalSource }: {
               <StudioSectionHeading item={active} />
               <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} />
             </>
+          ) : section === "privacy" ? (
+            <Suspense fallback={<StudioPrivacySkeleton />}>
+              <StudioPrivacySettings />
+            </Suspense>
           ) : (
             <>
               <StudioSectionHeading item={active} />
@@ -360,6 +366,16 @@ function StudioEditorSkeleton() {
 function StudioRitualsSkeleton() {
   return (
     <div className="studio-ritual-loading" role="status" aria-label="Abrindo seus rituais">
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+      <span aria-hidden="true" />
+    </div>
+  );
+}
+
+function StudioPrivacySkeleton() {
+  return (
+    <div className="studio-editor-skeleton" role="status" aria-label="Abrindo privacidade">
       <span aria-hidden="true" />
       <span aria-hidden="true" />
       <span aria-hidden="true" />

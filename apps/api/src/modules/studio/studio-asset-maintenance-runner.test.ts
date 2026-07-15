@@ -4,18 +4,21 @@ import { createStudioAssetMaintenanceRunner } from "./studio-asset-maintenance-r
 const idle = { processNext: vi.fn(async () => null) };
 
 describe("Studio asset maintenance runner", () => {
-  it("drains the optional semantic-memory processor with the other Studio maintenance", async () => {
+  it("drains optional semantic-memory and private-data reconciliation with Studio maintenance", async () => {
     const memoryProcessor = { processNext: vi.fn(async () => null) };
+    const portabilityProcessor = { processNext: vi.fn(async () => null) };
     const runner = createStudioAssetMaintenanceRunner({
       assetProcessor: idle,
       cleanupProcessor: idle,
       uploadCleanupProcessor: idle,
       memoryProcessor,
+      portabilityProcessor,
       logger: { error: vi.fn() },
       scavenge: vi.fn(async () => undefined)
     });
     await runner.runOnce();
     expect(memoryProcessor.processNext).toHaveBeenCalledTimes(1);
+    expect(portabilityProcessor.processNext).toHaveBeenCalledTimes(1);
   });
 
   it("runs single-flight drains with a bounded item count", async () => {
