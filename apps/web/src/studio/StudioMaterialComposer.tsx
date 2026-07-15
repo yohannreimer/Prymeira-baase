@@ -345,15 +345,20 @@ function StudioMaterialComposerSession({
   const competingActionUnavailable = unavailable || audioActive;
 
   return (
-    <section aria-labelledby={actionsLabelId}>
-      <p id={actionsLabelId}>Adicionar material</p>
+    <section className="studio-material-composer" aria-labelledby={actionsLabelId}>
+      <p className="studio-material-composer__label" id={actionsLabelId}>
+        Adicionar material
+      </p>
       <div
+        className="studio-material-composer__actions"
         ref={actionsRef}
         role="group"
         aria-labelledby={actionsLabelId}
         aria-busy={busy}
       >
         <StudioAudioRecorder
+          className="studio-material-composer__action"
+          iconClassName="studio-material-composer__action-icon"
           variant="label"
           inputTestId="studio-material-audio-input"
           disabled={unavailable}
@@ -362,30 +367,33 @@ function StudioMaterialComposerSession({
           onActiveChange={setAudioActive}
         />
         <button
+          className="studio-material-composer__action"
           ref={fileTriggerRef}
           type="button"
           disabled={competingActionUnavailable}
           onClick={() => fileInputRef.current?.click()}
         >
-          <i aria-hidden="true" className="ph-light ph-paperclip" />
+          <i aria-hidden="true" className="studio-material-composer__action-icon ph-light ph-paperclip" />
           <span>Adicionar arquivo</span>
         </button>
         <button
+          className="studio-material-composer__action"
           ref={imageTriggerRef}
           type="button"
           disabled={competingActionUnavailable}
           onClick={() => imageInputRef.current?.click()}
         >
-          <i aria-hidden="true" className="ph-light ph-image" />
+          <i aria-hidden="true" className="studio-material-composer__action-icon ph-light ph-image" />
           <span>Adicionar imagem</span>
         </button>
         <button
+          className="studio-material-composer__action"
           ref={linkTriggerRef}
           type="button"
           disabled={competingActionUnavailable}
           onClick={openLinkMode}
         >
-          <i aria-hidden="true" className="ph-light ph-link" />
+          <i aria-hidden="true" className="studio-material-composer__action-icon ph-light ph-link" />
           <span>Capturar link</span>
         </button>
       </div>
@@ -411,9 +419,19 @@ function StudioMaterialComposerSession({
       />
 
       {linkMode ? (
-        <form onSubmit={submitLink} aria-label="Captura de link">
-          <label htmlFor={`${actionsLabelId}-link`}>Endereço do link</label>
+        <form
+          className="studio-material-composer__link"
+          onSubmit={submitLink}
+          aria-label="Captura de link"
+        >
+          <label
+            className="studio-material-composer__link-label"
+            htmlFor={`${actionsLabelId}-link`}
+          >
+            Endereço do link
+          </label>
           <input
+            className="studio-material-composer__link-input"
             id={`${actionsLabelId}-link`}
             ref={linkInputRef}
             type="url"
@@ -424,10 +442,15 @@ function StudioMaterialComposerSession({
             disabled={unavailable}
             onChange={(event) => setLink(event.target.value)}
           />
-          <button type="submit" disabled={unavailable || !link.trim()}>
+          <button
+            className="studio-material-composer__link-action studio-material-composer__link-action--primary"
+            type="submit"
+            disabled={unavailable || !link.trim()}
+          >
             Capturar este link
           </button>
           <button
+            className="studio-material-composer__link-action"
             type="button"
             aria-label="Fechar captura de link"
             disabled={unavailable}
@@ -440,6 +463,7 @@ function StudioMaterialComposerSession({
 
       {message ? (
         <p
+          className={`studio-material-composer__status studio-material-composer__status--${message.kind}`}
           role={message.kind === "error" ? "alert" : "status"}
           aria-live={message.kind === "error" ? "assertive" : "polite"}
         >
@@ -448,15 +472,25 @@ function StudioMaterialComposerSession({
       ) : null}
 
       {failed && pendingMaterial ? (
-        <div role="group" aria-label="Recuperar material">
+        <div
+          className="studio-material-composer__recovery"
+          role="group"
+          aria-label="Recuperar material"
+        >
           <button
+            className="studio-material-composer__recovery-action studio-material-composer__recovery-action--primary"
             type="button"
             disabled={busy}
             onClick={() => void submitMaterial(pendingMaterial)}
           >
             Tentar novamente
           </button>
-          <button type="button" disabled={busy} onClick={discardFailedMaterial}>
+          <button
+            className="studio-material-composer__recovery-action"
+            type="button"
+            disabled={busy}
+            onClick={discardFailedMaterial}
+          >
             Descartar
           </button>
         </div>

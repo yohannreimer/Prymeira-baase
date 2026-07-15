@@ -1412,13 +1412,13 @@
   overflow-wrap: anywhere;
 }
 
-.studio-document-assets > section:first-child {
+.studio-material-composer {
   border-top: 1px solid var(--line);
   min-width: 0;
   padding: 18px 0;
 }
 
-.studio-document-assets > section:first-child > p:first-child {
+.studio-material-composer__label {
   color: var(--faint);
   font-size: 10.5px;
   font-weight: 650;
@@ -1427,13 +1427,13 @@
   text-transform: uppercase;
 }
 
-.studio-document-assets > section:first-child > [role="group"][aria-busy] {
+.studio-material-composer__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.studio-document-assets > section:first-child > [role="group"][aria-busy] > button {
+.studio-material-composer__action {
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1449,22 +1449,18 @@
   padding: 8px 11px;
 }
 
-.studio-document-assets > section:first-child > [role="group"][aria-busy] > button i {
-  color: var(--faint);
+.studio-material-composer__action-icon {
+  color: currentColor;
   font-size: 16px;
 }
 
-.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"] {
+.studio-material-composer__action[aria-pressed="true"] {
   background: var(--accent-bg);
   border-color: var(--accent-line);
   color: var(--accent-ink);
 }
 
-.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"] i {
-  color: currentColor;
-}
-
-.studio-document-assets > section:first-child > form {
+.studio-material-composer__link {
   align-items: end;
   display: grid;
   gap: 8px;
@@ -1473,14 +1469,14 @@
   padding-top: 12px;
 }
 
-.studio-document-assets > section:first-child > form label {
+.studio-material-composer__link-label {
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
   grid-column: 1 / -1;
 }
 
-.studio-document-assets > section:first-child > form input {
+.studio-material-composer__link-input {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1492,8 +1488,8 @@
   width: 100%;
 }
 
-.studio-document-assets > section:first-child > form button,
-.studio-document-assets > section:first-child > [aria-label="Recuperar material"] button {
+.studio-material-composer__link-action,
+.studio-material-composer__recovery-action {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1505,57 +1501,60 @@
   padding: 8px 11px;
 }
 
-.studio-document-assets > section:first-child > form button[type="submit"],
-.studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:first-child {
+.studio-material-composer__link-action--primary,
+.studio-material-composer__recovery-action--primary {
   background: var(--accent-bg);
   border-color: var(--accent-line);
   color: var(--accent-ink);
 }
 
-.studio-document-assets > section:first-child > [role="status"],
-.studio-document-assets > section:first-child > [role="alert"] {
+.studio-material-composer__status {
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.5;
   margin: 10px 0 0;
 }
 
-.studio-document-assets > section:first-child > [role="alert"] {
+.studio-material-composer__status--error {
   color: var(--danger-ink);
 }
 
-.studio-document-assets > section:first-child > [aria-label="Recuperar material"] {
+.studio-material-composer__recovery {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
 }
 
-.studio-document-assets > section:first-child button:focus-visible,
-.studio-document-assets > section:first-child input:focus-visible,
+.studio-material-composer__action:focus-visible,
+.studio-material-composer__link-input:focus-visible,
+.studio-material-composer__link-action:focus-visible,
+.studio-material-composer__recovery-action:focus-visible,
 .studio-document-assets .studio-asset-status audio:focus-visible,
 .studio-document-assets__error button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.studio-document-assets > section:first-child button:disabled,
-.studio-document-assets > section:first-child input:disabled {
+.studio-material-composer__action:disabled,
+.studio-material-composer__link-input:disabled,
+.studio-material-composer__link-action:disabled,
+.studio-material-composer__recovery-action:disabled {
   cursor: default;
   opacity: 0.48;
 }
 
 @media (hover: hover) {
-  .studio-document-assets > section:first-child > [role="group"][aria-busy] > button:hover:not(:disabled):not([aria-pressed="true"]),
-  .studio-document-assets > section:first-child > form button:hover:not(:disabled),
-  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:hover:not(:disabled) {
+  .studio-material-composer__action:hover:not(:disabled):not([aria-pressed="true"]),
+  .studio-material-composer__link-action:hover:not(:disabled),
+  .studio-material-composer__recovery-action:hover:not(:disabled) {
     background: var(--panel2);
     border-color: var(--line2);
     color: var(--ink);
   }
 
-  .studio-document-assets > section:first-child > form button[type="submit"]:hover:not(:disabled),
-  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:first-child:hover:not(:disabled) {
+  .studio-material-composer__link-action--primary:hover:not(:disabled),
+  .studio-material-composer__recovery-action--primary:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent-ink);
   }
@@ -2650,21 +2649,21 @@
     min-width: 0;
   }
 
-  .studio-document-assets > section:first-child > [role="group"][aria-busy] > button {
+  .studio-material-composer__action {
     flex: 1 1 150px;
     min-width: 0;
   }
 
-  .studio-document-assets > section:first-child > form {
+  .studio-material-composer__link {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .studio-document-assets > section:first-child > form label,
-  .studio-document-assets > section:first-child > form input {
+  .studio-material-composer__link-label,
+  .studio-material-composer__link-input {
     grid-column: 1 / -1;
   }
 
-  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button {
+  .studio-material-composer__recovery-action {
     flex: 1 1 140px;
   }
 
@@ -2871,10 +2870,18 @@
     min-height: 44px;
   }
 
-  .studio-document-assets > section:first-child button,
-  .studio-document-assets > section:first-child input,
+  .studio-material-composer__action,
+  .studio-material-composer__link-input,
+  .studio-material-composer__link-action,
+  .studio-material-composer__recovery-action,
   .studio-document-assets .studio-asset-status button,
   .studio-document-assets .studio-asset-status a {
+    min-height: 44px;
+  }
+
+  .studio-asset-status__original audio {
+    height: 44px;
+    max-width: 100%;
     min-height: 44px;
   }
 }

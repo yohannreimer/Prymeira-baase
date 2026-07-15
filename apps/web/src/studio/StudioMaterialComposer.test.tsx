@@ -120,7 +120,9 @@ describe("StudioMaterialComposer", () => {
     renderComposer({ attachLink, onAttached });
 
     await user.click(screen.getByRole("button", { name: "Capturar link" }));
+    expect(screen.getByRole("form", { name: "Captura de link" })).toHaveClass("studio-material-composer__link");
     await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com/referencia");
+    expect(screen.getByRole("textbox", { name: "Endereço do link" })).toHaveClass("studio-material-composer__link-input");
     await user.click(screen.getByRole("button", { name: "Capturar este link" }));
 
     await waitFor(() => expect(attachLink).toHaveBeenCalledTimes(1));
@@ -157,9 +159,15 @@ describe("StudioMaterialComposer", () => {
 
     const actions = screen.getByRole("group", { name: "Adicionar material" });
     const label = screen.getByText("Adicionar material");
+    const composer = actions.closest(".studio-material-composer");
+    expect(composer).not.toBeNull();
+    expect(actions).toHaveClass("studio-material-composer__actions");
+    expect(label).toHaveClass("studio-material-composer__label");
     expect(actions).toHaveAttribute("aria-labelledby", label.id);
     expect(label).toBeVisible();
-    expect(within(actions).getAllByRole("button").map((button) => button.textContent?.trim())).toEqual([
+    const actionButtons = within(actions).getAllByRole("button");
+    expect(actionButtons.every((button) => button.classList.contains("studio-material-composer__action"))).toBe(true);
+    expect(actionButtons.map((button) => button.textContent?.trim())).toEqual([
       "Gravar áudio",
       "Adicionar arquivo",
       "Adicionar imagem",
@@ -179,6 +187,7 @@ describe("StudioMaterialComposer", () => {
     const file = new File(["plano"], "plano.txt", { type: "text/plain" });
     await user.upload(screen.getByTestId("studio-material-file-input"), file);
     expect(await screen.findByRole("alert")).toHaveTextContent("não foi adicionado");
+    expect(screen.getByRole("group", { name: "Recuperar material" })).toHaveClass("studio-material-composer__recovery");
 
     await user.click(screen.getByRole("button", { name: "Tentar novamente" }));
 
@@ -599,6 +608,7 @@ describe("StudioMaterialComposer", () => {
     const status = screen.getByRole("status");
     const actionGroup = screen.getByRole("group", { name: "Adicionar material" });
     expect(status).toHaveTextContent("Adicionando material");
+    expect(status).toHaveClass("studio-material-composer__status");
     expect(actionGroup).toHaveAttribute("aria-busy", "true");
     expect(status.closest('[aria-busy="true"]')).toBeNull();
     await act(async () => request.reject(new Error("offline")));

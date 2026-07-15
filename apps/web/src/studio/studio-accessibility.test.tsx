@@ -124,46 +124,52 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
   });
 
   it("styles document materials as a quiet, wrapping, token-based action strip", () => {
-    const strip = cssRule(studioStyles, ".studio-document-assets > section:first-child");
+    const strip = cssRule(studioStyles, ".studio-material-composer");
     expect(strip).toMatch(/border-top:\s*1px solid var\(--line\)/u);
     expect(strip).toMatch(/padding:\s*18px 0/u);
 
-    const actions = cssRule(
-      studioStyles,
-      '.studio-document-assets > section:first-child > [role="group"][aria-busy]'
-    );
+    const actions = cssRule(studioStyles, ".studio-material-composer__actions");
     expect(actions).toMatch(/display:\s*flex/u);
     expect(actions).toMatch(/flex-wrap:\s*wrap/u);
     expect(actions).toMatch(/gap:\s*8px/u);
 
-    const actionButton = cssRule(
-      studioStyles,
-      '.studio-document-assets > section:first-child > [role="group"][aria-busy] > button'
-    );
+    const actionButton = cssRule(studioStyles, ".studio-material-composer__action");
     expect(actionButton).toMatch(/min-height:\s*40px/u);
     expect(actionButton).toMatch(/background:\s*var\(--panel\)/u);
     expect(actionButton).toMatch(/border:\s*1px solid var\(--line\)/u);
 
     const recording = cssRule(
       studioStyles,
-      '.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"]'
+      '.studio-material-composer__action[aria-pressed="true"]'
     );
     expect(recording).toMatch(/background:\s*var\(--accent-bg\)/u);
     expect(recording).toMatch(/color:\s*var\(--accent-ink\)/u);
+    expect(cssRule(studioStyles, ".studio-material-composer__link")).toMatch(/display:\s*grid/u);
+    expect(cssRule(studioStyles, ".studio-material-composer__recovery")).toMatch(/display:\s*flex/u);
+    expect(cssRule(studioStyles, ".studio-material-composer__status")).toMatch(/color:\s*var\(--muted\)/u);
     expect(studioStyles).toMatch(
-      /\.studio-document-assets\s*>\s*section:first-child[\s\S]*?:focus-visible[\s\S]*?outline:\s*2px solid var\(--accent\)/u
+      /\.studio-material-composer__action:focus-visible[\s\S]*?outline:\s*2px solid var\(--accent\)/u
     );
     expect(studioStyles).toMatch(
-      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-document-assets\s*>\s*section:first-child[\s\S]*?min-height:\s*44px/u
+      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-material-composer__action[\s\S]*?min-height:\s*44px/u
     );
     expect(studioStyles).toMatch(
-      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets[\s\S]*?min-width:\s*0[\s\S]*?\.studio-document-assets\s*>\s*section:first-child\s*>\s*form/u
+      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets[\s\S]*?min-width:\s*0[\s\S]*?\.studio-material-composer__link/u
     );
     expect(studioStyles).toMatch(
       /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets\s*\{[^}]*max-width:\s*100%[^}]*min-width:\s*0/u
     );
     expect(studioStyles).not.toMatch(
       /\.studio-document-assets[^}]*?(?:linear-gradient|#[0-9a-f]{3,8}|\brgba?\()/iu
+    );
+    expect(studioStyles).not.toMatch(
+      /\.studio-document-assets\s*>\s*section:first-child|\.studio-document-assets[^,{]*\[role=/u
+    );
+  });
+
+  it("gives preserved audio a 44px player on coarse pointers without overflow", () => {
+    expect(studioStyles).toMatch(
+      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-asset-status__original audio\s*\{[^}]*height:\s*44px[^}]*max-width:\s*100%[^}]*min-height:\s*44px/u
     );
   });
 

@@ -3,7 +3,9 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 export type StudioRecordedAudio = { blob: Blob; filename: string };
 
 export type StudioAudioRecorderProps = {
+  className?: string;
   disabled?: boolean;
+  iconClassName?: string;
   variant?: "icon" | "label";
   inputTestId?: string;
   onCaptured(audio: StudioRecordedAudio): void;
@@ -19,7 +21,9 @@ type RecordingSession = {
 };
 
 export default function StudioAudioRecorder({
+  className,
   disabled = false,
+  iconClassName,
   variant = "icon",
   inputTestId,
   onCaptured,
@@ -154,17 +158,23 @@ export default function StudioAudioRecorder({
   }
 
   const accessibleName = recording ? "Parar gravação" : "Gravar áudio";
+  const iconClasses = [
+    iconClassName,
+    "ph-light",
+    recording ? "ph-stop-circle" : "ph-microphone"
+  ].filter(Boolean).join(" ");
 
   return (
     <>
       <button
+        className={className}
         type="button"
         aria-label={accessibleName}
         aria-pressed={recording}
         onClick={() => void toggleRecording()}
         disabled={disabled}
       >
-        <i aria-hidden="true" className={`ph-light ${recording ? "ph-stop-circle" : "ph-microphone"}`} />
+        <i aria-hidden="true" className={iconClasses} />
         {variant === "label" ? <span>{accessibleName}</span> : null}
       </button>
       <input
