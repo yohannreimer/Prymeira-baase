@@ -44,6 +44,19 @@ export type StudioTelemetryEvent =
 export type StudioTelemetrySink = (event: StudioTelemetryEvent) => void;
 
 const studioTelemetryChannel = channel("baase.studio.telemetry");
+const CAPTURE_MODES = ["text", "audio", "file", "image", "link", "mixed"] as const satisfies readonly StudioCaptureMode[];
+const ASSET_MODALITIES = ["audio", "image", "file", "link_snapshot"] as const satisfies readonly StudioAssetKind[];
+const ASSET_STATUSES = ["accepted", "replayed"] as const;
+const AI_TASK_KINDS = [
+  "onboarding_setup", "onboarding_diagnosis", "process_draft", "routine_draft", "training_draft",
+  "announcement_draft", "ops_review", "transcript_cleanup", "classification", "proactive_suggestion",
+  "studio_assist", "studio_organize", "studio_synthesize", "studio_connect", "studio_strategic_review",
+  "studio_ritual_prepare", "studio_operational_draft", "studio_external_research", "studio_memory_embedding"
+] as const satisfies readonly AiTaskKind[];
+const AI_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
+const SUGGESTION_KINDS = ["goal", "decision", "plan", "ritual", "text", "operation"] as const satisfies
+  readonly (StudioStructureKind | "text" | "operation")[];
+const SUGGESTION_DECISIONS = ["accepted", "dismissed"] as const;
 
 const publishRawStudioTelemetry: StudioTelemetrySink = (event) => {
   studioTelemetryChannel.publish(event);
@@ -79,7 +92,7 @@ function projectStudioTelemetryEvent(raw: StudioTelemetryEvent): StudioTelemetry
         workspaceId: requiredString(raw.workspaceId),
         ownerProfileId: requiredString(raw.ownerProfileId),
         documentId: requiredString(raw.documentId),
-        mode: raw.mode,
+        mode: requiredLiteral(raw.mode, CAPTURE_MODES),
         assetCount: safeCount(raw.assetCount)
       };
     case "studio_asset_received":
@@ -89,9 +102,9 @@ function projectStudioTelemetryEvent(raw: StudioTelemetryEvent): StudioTelemetry
         ownerProfileId: requiredString(raw.ownerProfileId),
         documentId: requiredString(raw.documentId),
         assetId: requiredString(raw.assetId),
-        modality: raw.modality,
+        modality: requiredLiteral(raw.modality, ASSET_MODALITIES),
         sizeBytes: safeCount(raw.sizeBytes),
-        status: raw.status
+        status: requiredLiteral(raw.status, ASSET_STATUSES)
       };
     case "studio_ai_run_finished":
       return {
@@ -99,8 +112,8 @@ function projectStudioTelemetryEvent(raw: StudioTelemetryEvent): StudioTelemetry
         workspaceId: requiredString(raw.workspaceId),
         ownerProfileId: requiredString(raw.ownerProfileId),
         aiRunId: requiredString(raw.aiRunId),
-        taskKind: raw.taskKind,
-        status: raw.status,
+        taskKind: requiredLiteral(raw.taskKind, AI_TASK_KINDS),
+        status: requiredLiteral(raw.status, AI_RUN_STATUSES),
         latencyMs: safeCount(raw.latencyMs),
         citationCount: safeCount(raw.citationCount),
         model: requiredString(raw.model)
@@ -111,10 +124,22 @@ function projectStudioTelemetryEvent(raw: StudioTelemetryEvent): StudioTelemetry
         workspaceId: requiredString(raw.workspaceId),
         ownerProfileId: requiredString(raw.ownerProfileId),
         suggestionId: requiredString(raw.suggestionId),
-        kind: raw.kind,
-        decision: raw.decision
+        kind: requiredLiteral(raw.kind, SUGGESTION_KINDS),
+        decision: requiredLiteral(raw.decision, SUGGESTION_DECISIONS)
       };
+    default:
+      throw new Error("STUDIO_TELEMETRY_EVENT_INVALID");
   }
+}
+
+function requiredLiteral<const Values extends readonly string[]>(
+  value: unknown,
+  allowed: Values
+): Values[number] {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw new Error("STUDIO_TELEMETRY_EVENT_INVALID");
+  }
+  return value as Values[number];
 }
 
 function requiredString(value: string) {

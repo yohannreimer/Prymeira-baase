@@ -57,6 +57,35 @@ describe("Studio content-safe telemetry", () => {
     expect(JSON.stringify(events)).not.toMatch(/SEGREDO|body|transcript|prompt|extracted|message/iu);
   });
 
+  it("drops every event with an invalid runtime enum before it reaches the sink", () => {
+    const events: StudioTelemetryEvent[] = [];
+    const emit = safeStudioTelemetrySink((event) => events.push(event));
+    const validEvents = [
+      { name: "studio_capture_created", ...owner, documentId: "document_a", mode: "text", assetCount: 0 },
+      { name: "studio_asset_received", ...owner, documentId: "document_a", assetId: "asset_a",
+        modality: "audio", sizeBytes: 1, status: "accepted" },
+      { name: "studio_ai_run_finished", ...owner, aiRunId: "run_a", taskKind: "studio_assist",
+        status: "completed", latencyMs: 1, citationCount: 0, model: "gpt-5.5" },
+      { name: "studio_suggestion_decided", ...owner, suggestionId: "suggestion_a", kind: "goal",
+        decision: "accepted" }
+    ] satisfies StudioTelemetryEvent[];
+    expect(validEvents).toHaveLength(4);
+
+    const invalidEvents = [
+      { ...validEvents[0], mode: "private_mode" },
+      { ...validEvents[1], modality: "private_modality" },
+      { ...validEvents[1], status: "private_status" },
+      { ...validEvents[2], taskKind: "private_task" },
+      { ...validEvents[2], status: "private_status" },
+      { ...validEvents[3], kind: "private_kind" },
+      { ...validEvents[3], decision: "private_decision" },
+      { ...validEvents[0], name: "private_event" }
+    ];
+    for (const event of invalidEvents) emit(event as unknown as StudioTelemetryEvent);
+
+    expect(events).toEqual([]);
+  });
+
   it("redacts sensitive fields recursively without mutating the source", () => {
     const source = {
       id: "asset_a",
@@ -235,6 +264,21 @@ describe("Studio untrusted input boundaries", () => {
     await expect(service.streamTurn({ ...owner, ownerProfileId: "owner_b" }, input)).resolves.toBeDefined();
   });
 
+  it("keeps at most 10,000 active owner windows with deterministic fair eviction", () => {
+    const limiter = createStudioOwnerRequestLimiter({ maxRequests: 2, windowMs: 60_000, now: () => 1_000 });
+    for (let index = 0; index < 10_000; index += 1) {
+      limiter.take({ ...owner, ownerProfileId: `owner_${index}` });
+    }
+    expect(limiter.trackedOwnerCount()).toBe(10_000);
+
+    limiter.take({ ...owner, ownerProfileId: "owner_0" });
+    limiter.take({ ...owner, ownerProfileId: "owner_new" });
+    expect(limiter.trackedOwnerCount()).toBe(10_000);
+    expect(() => limiter.take({ ...owner, ownerProfileId: "owner_0" })).toThrow("STUDIO_OWNER_RATE_LIMITED");
+    expect(() => limiter.take({ ...owner, ownerProfileId: "owner_1" })).not.toThrow();
+    expect(limiter.trackedOwnerCount()).toBe(10_000);
+  });
+
   it("audits cancellation of an incomplete stream without leaking malformed content", async () => {
     const telemetry: StudioTelemetryEvent[] = [];
     const controller = new AbortController();
@@ -299,6 +343,42 @@ describe("Studio untrusted input boundaries", () => {
       capture_mode: "text"
     })).rejects.toThrow("STUDIO_EDITOR_JSON_INVALID");
     expect((await repository.listDocuments(owner, { status: "active", limit: 10 })).items).toEqual([]);
+  });
+
+  it("rejects malicious accepted-suggestion overrides before repository persistence", async () => {
+    const repository = createInMemoryStudioRepository();
+    let persistenceCalls = 0;
+    const acceptSuggestion = repository.acceptSuggestion.bind(repository);
+    repository.acceptSuggestion = async (...args) => {
+      persistenceCalls += 1;
+      return acceptSuggestion(...args);
+    };
+    const service = createStudioAssistantService({
+      repository,
+      harness: createAiHarness({ repository: createInMemoryAiRepository(), provider: completingProvider() })
+    });
+    const maliciousPrototype = JSON.parse('{"type":"doc","__proto__":{"polluted":true}}') as Record<string, unknown>;
+    let deep: Record<string, unknown> = {};
+    const maliciousDepth = deep;
+    for (let index = 0; index < 40; index += 1) {
+      const next: Record<string, unknown> = {};
+      deep.child = next;
+      deep = next;
+    }
+    const maliciousNodes = {
+      chunks: Array.from({ length: 11 }, () => Array.from({ length: 2_000 }, () => null))
+    };
+
+    for (const body_json of [maliciousPrototype, maliciousDepth, maliciousNodes]) {
+      await expect(service.acceptSuggestion(owner, "suggestion_a", {
+        document_id: "document_a",
+        expected_revision: 1,
+        title: null,
+        body_json,
+        body_text: "Tentativa"
+      })).rejects.toThrow("STUDIO_EDITOR_JSON_INVALID");
+    }
+    expect(persistenceCalls).toBe(0);
   });
 
   it("does not let a client-supplied document id cross the authenticated owner scope", async () => {

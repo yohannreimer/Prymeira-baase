@@ -10,10 +10,12 @@ const MAX_EDITOR_ARRAY_LENGTH = 2_000;
 const MAX_ASSISTANT_CONTEXT_BYTES = 128_000;
 const MAX_ASSISTANT_CONTEXT_DEPTH = 24;
 const MAX_ASSISTANT_CONTEXT_NODES = 20_000;
+const MAX_TRACKED_OWNER_WINDOWS = 10_000;
 const FORBIDDEN_EDITOR_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 export type StudioOwnerRequestLimiter = {
   take(scope: StudioOwnerScope): void;
+  trackedOwnerCount(): number;
 };
 
 export function createStudioOwnerRequestLimiter(options: {
@@ -32,13 +34,17 @@ export function createStudioOwnerRequestLimiter(options: {
       const key = `${scope.workspaceId}\u0000${scope.ownerProfileId}`;
       const current = windows.get(key);
       if (!current || timestamp - current.startedAt >= windowMs || timestamp < current.startedAt) {
+        if (current) windows.delete(key);
+        else evictOldestOwnerWindowAtCapacity(windows);
         windows.set(key, { startedAt: timestamp, count: 1 });
-        pruneExpiredWindows(windows, timestamp, windowMs);
         return;
       }
       if (current.count >= maxRequests) throw new Error("STUDIO_OWNER_RATE_LIMITED");
       current.count += 1;
-    }
+      windows.delete(key);
+      windows.set(key, current);
+    },
+    trackedOwnerCount() { return windows.size; }
   };
 }
 
@@ -135,14 +141,8 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   return candidate;
 }
 
-function pruneExpiredWindows(
-  windows: Map<string, { startedAt: number; count: number }>,
-  timestamp: number,
-  windowMs: number
-) {
-  if (windows.size < 10_000) return;
-  for (const [key, value] of windows) {
-    if (timestamp - value.startedAt >= windowMs) windows.delete(key);
-    if (windows.size < 8_000) break;
-  }
+function evictOldestOwnerWindowAtCapacity(windows: Map<string, { startedAt: number; count: number }>) {
+  if (windows.size < MAX_TRACKED_OWNER_WINDOWS) return;
+  const oldestKey = windows.keys().next().value;
+  if (oldestKey !== undefined) windows.delete(oldestKey);
 }

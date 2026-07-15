@@ -20,6 +20,7 @@ import type {
 import type { StudioContextBuilder } from "./studio-context-builder";
 import {
   assertStudioAssistantContext,
+  assertStudioEditorJson,
   createStudioOwnerRequestLimiter,
   studioAllowedTools,
   type StudioOwnerRequestLimiter
@@ -206,6 +207,7 @@ export function createStudioAssistantService(options: StudioAssistantServiceOpti
     },
 
     async acceptSuggestion(scope, suggestionId, proposalOverride) {
+      if (proposalOverride) assertStudioEditorJson(proposalOverride.body_json);
       const decision = await options.repository.acceptSuggestion(scope, suggestionId, scope.ownerProfileId, proposalOverride);
       telemetry({
         name: "studio_suggestion_decided",

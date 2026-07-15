@@ -113,6 +113,29 @@ describe("Studio assistant routes", () => {
     expect(repeated.json().version.bodyText).toBe("Texto revisado por mim");
   });
 
+  it("returns 400 before accepting a suggestion with malicious editor JSON", async () => {
+    const repository = createInMemoryStudioRepository();
+    const app = buildApp({ studioRepository: repository });
+    let malicious: Record<string, unknown> = {};
+    const body_json = malicious;
+    for (let index = 0; index < 40; index += 1) {
+      const next: Record<string, unknown> = {};
+      malicious.child = next;
+      malicious = next;
+    }
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/studio/suggestions/suggestion_a/accept",
+      headers: ownerA,
+      payload: { proposal: { document_id: "document_a", expected_revision: 1, title: null,
+        body_json, body_text: "Tentativa" } }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "STUDIO_EDITOR_JSON_INVALID" } });
+  });
+
   it("uses bounded selected text instead of leaking the complete document to the narrative provider", async () => {
     let providerInput = "";
     const scopedProvider: AiProvider = {
