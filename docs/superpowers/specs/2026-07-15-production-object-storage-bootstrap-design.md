@@ -1,6 +1,6 @@
 # Production object-storage bootstrap design
 
-**Date:** 2026-07-15  
+**Date:** 2026-07-15
 **Status:** Approved for implementation
 
 ## Incident
