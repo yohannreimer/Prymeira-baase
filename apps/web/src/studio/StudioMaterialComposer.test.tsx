@@ -182,7 +182,7 @@ describe("StudioMaterialComposer", () => {
     expect(onAttached).toHaveBeenCalledWith(attached);
   });
 
-  it("isolates an in-flight upload when the open document changes", async () => {
+  it("reports a server-owned upload to its original owner while isolating the next document session", async () => {
     const user = userEvent.setup();
     const request = deferred<StudioAsset>();
     const attachFile = vi.fn(() => request.promise);
@@ -218,12 +218,20 @@ describe("StudioMaterialComposer", () => {
     );
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeEnabled();
+    const nextDocumentFile = screen.getByRole("button", { name: "Adicionar arquivo" });
+    expect(nextDocumentFile).toBeEnabled();
+    nextDocumentFile.focus();
+    expect(nextDocumentFile).toHaveFocus();
 
     await act(async () => request.resolve(asset({ documentId: "document_A" })));
-    expect(onAttachedA).not.toHaveBeenCalled();
+    expect(onAttachedA).toHaveBeenCalledOnce();
+    expect(onAttachedA).toHaveBeenCalledWith(expect.objectContaining({ documentId: "document_A" }));
     expect(onAttachedB).not.toHaveBeenCalled();
     expect(attachFile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(nextDocumentFile).toBeEnabled();
+    expect(nextDocumentFile).toHaveFocus();
   });
 
   it("drops a failed attempt when the open document changes instead of retrying it in the new document", async () => {
@@ -592,7 +600,7 @@ describe("StudioMaterialComposer", () => {
     expect(screen.getByRole("button", { name: "Descartar" })).toBeEnabled();
   });
 
-  it("lets a server-owned request finish after unmount without firing local callbacks", async () => {
+  it("delivers a server-owned attachment after unmount without updating the local session", async () => {
     const request = deferred<StudioAsset>();
     const attachFile = vi.fn(() => request.promise);
     const onAttached = vi.fn();
@@ -605,7 +613,10 @@ describe("StudioMaterialComposer", () => {
     view.unmount();
     await act(async () => request.resolve(asset()));
 
-    expect(onAttached).not.toHaveBeenCalled();
+    expect(onAttached).toHaveBeenCalledOnce();
+    expect(onAttached).toHaveBeenCalledWith(expect.objectContaining({ documentId: "document_1" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 

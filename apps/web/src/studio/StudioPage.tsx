@@ -36,10 +36,40 @@ type DocumentAssetState = {
 
 type DocumentOpenError = { kind: "unavailable" | "temporary"; documentId: string };
 
-function mergeAssets(current: StudioAsset[], incoming: StudioAsset[]): StudioAsset[] {
-  const byId = new Map(current.map((asset) => [asset.id, asset]));
-  for (const asset of incoming) byId.set(asset.id, asset);
-  return [...byId.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+function validTimestamp(value: string | null | undefined) {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function retainFreshestAsset(byId: Map<string, StudioAsset>, asset: StudioAsset) {
+  const known = byId.get(asset.id);
+  if (!known) {
+    byId.set(asset.id, asset);
+    return;
+  }
+  const knownUpdatedAt = validTimestamp(known.updatedAt);
+  const incomingUpdatedAt = validTimestamp(asset.updatedAt);
+  if (knownUpdatedAt !== null && incomingUpdatedAt !== null && incomingUpdatedAt > knownUpdatedAt) {
+    byId.set(asset.id, asset);
+  }
+}
+
+export function mergeAssets(current: StudioAsset[], incoming: StudioAsset[]): StudioAsset[] {
+  const byId = new Map<string, StudioAsset>();
+  for (const asset of current) retainFreshestAsset(byId, asset);
+  for (const asset of incoming) retainFreshestAsset(byId, asset);
+  return [...byId.values()]
+    .map((asset, index) => ({ asset, index, createdAt: validTimestamp(asset.createdAt) }))
+    .sort((left, right) => {
+      if (left.createdAt !== null && right.createdAt !== null) {
+        return left.createdAt - right.createdAt || left.index - right.index;
+      }
+      if (left.createdAt !== null) return -1;
+      if (right.createdAt !== null) return 1;
+      return left.index - right.index;
+    })
+    .map(({ asset }) => asset);
 }
 
 const studioNavigation: StudioNavItem[] = [

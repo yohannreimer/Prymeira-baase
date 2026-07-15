@@ -264,7 +264,7 @@ function StudioMaterialComposerSession({
       if (mountedRef.current) setBusy(false);
     }
 
-    if (attached && mountedRef.current) onAttachedRef.current(attached);
+    if (attached) onAttachedRef.current(attached);
   }
 
   function captureSelectedFile(

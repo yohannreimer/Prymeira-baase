@@ -1,7 +1,101 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import StudioPage from "./StudioPage";
+import StudioPage, { mergeAssets } from "./StudioPage";
+import type { StudioAsset } from "./studio.types";
+
+describe("mergeAssets", () => {
+  it("preserves a ready current asset when an older pending version arrives", () => {
+    const current = studioAssetWith({
+      id: "asset_same",
+      extractionStatus: "ready",
+      updatedAt: "2026-07-15T15:00:00.000Z"
+    });
+    const incoming = studioAssetWith({
+      id: "asset_same",
+      extractionStatus: "pending",
+      updatedAt: "2026-07-15T14:00:00.000Z"
+    });
+
+    expect(mergeAssets([current], [incoming])).toEqual([current]);
+  });
+
+  it("replaces an older pending current asset with a newer ready version", () => {
+    const current = studioAssetWith({
+      id: "asset_same",
+      extractionStatus: "pending",
+      updatedAt: "2026-07-15T14:00:00.000Z"
+    });
+    const incoming = studioAssetWith({
+      id: "asset_same",
+      extractionStatus: "ready",
+      updatedAt: "2026-07-15T15:00:00.000Z"
+    });
+
+    expect(mergeAssets([current], [incoming])).toEqual([incoming]);
+  });
+
+  it("preserves the current asset when updated timestamps tie", () => {
+    const current = studioAssetWith({ id: "asset_same", displayName: "current", updatedAt: "2026-07-15T15:00:00.000Z" });
+    const incoming = studioAssetWith({ id: "asset_same", displayName: "incoming", updatedAt: "2026-07-15T12:00:00.000-03:00" });
+
+    expect(mergeAssets([current], [incoming])).toEqual([current]);
+  });
+
+  it("preserves the current asset when either updated timestamp is invalid or absent", () => {
+    const current = studioAssetWith({ id: "asset_same", displayName: "current" });
+    const invalid = studioAssetWith({ id: "asset_same", displayName: "invalid", updatedAt: "not-a-date" });
+    const absent = studioAssetWith({
+      id: "asset_same",
+      displayName: "absent",
+      updatedAt: undefined as unknown as string
+    });
+
+    expect(mergeAssets([current], [invalid, absent])).toEqual([current]);
+
+    const invalidCurrent = studioAssetWith({ id: "asset_same", displayName: "invalid current", updatedAt: "not-a-date" });
+    const validIncoming = studioAssetWith({ id: "asset_same", displayName: "valid incoming", updatedAt: "2026-07-15T18:00:00.000Z" });
+    expect(mergeAssets([invalidCurrent], [validIncoming])).toEqual([invalidCurrent]);
+  });
+
+  it("orders valid creation instants before invalid values with stable ties and one entry per id", () => {
+    const equivalentOffset = studioAssetWith({
+      id: "asset_offset",
+      createdAt: "2026-07-15T09:00:00.000-03:00"
+    });
+    const invalidCurrent = studioAssetWith({ id: "asset_invalid_a", createdAt: "invalid-a" });
+    const duplicateCurrent = studioAssetWith({
+      id: "asset_duplicate",
+      createdAt: "2026-07-15T13:00:00.000Z",
+      updatedAt: "2026-07-15T13:00:00.000Z"
+    });
+    const equivalentZulu = studioAssetWith({
+      id: "asset_zulu",
+      createdAt: "2026-07-15T12:00:00.000Z"
+    });
+    const invalidIncoming = studioAssetWith({ id: "asset_invalid_b", createdAt: "invalid-b" });
+    const duplicateNewer = studioAssetWith({
+      id: "asset_duplicate",
+      displayName: "newer duplicate",
+      createdAt: "2026-07-15T11:00:00.000Z",
+      updatedAt: "2026-07-15T14:00:00.000Z"
+    });
+
+    const merged = mergeAssets(
+      [equivalentOffset, invalidCurrent, duplicateCurrent],
+      [equivalentZulu, invalidIncoming, duplicateNewer]
+    );
+
+    expect(merged.map((asset) => asset.id)).toEqual([
+      "asset_duplicate",
+      "asset_offset",
+      "asset_zulu",
+      "asset_invalid_a",
+      "asset_invalid_b"
+    ]);
+    expect(merged.find((asset) => asset.id === "asset_duplicate")).toBe(duplicateNewer);
+  });
+});
 
 describe("StudioPage", () => {
   beforeEach(() => {
@@ -440,6 +534,86 @@ describe("StudioPage", () => {
     expect(screen.queryByRole("heading", { name: "reflexao.wav" })).not.toBeInTheDocument();
   });
 
+  it("does not show a server-owned A upload when it resolves while B remains selected", async () => {
+    const user = userEvent.setup();
+    const uploadA = deferred<Response>();
+    const attachedA = rawAssetWith({
+      id: "asset_late_a",
+      kind: "file",
+      display_name: "tardio-a.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-15T15:00:00.000Z",
+      updated_at: "2026-07-15T15:00:00.000Z"
+    });
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) return Promise.resolve(jsonResponse({
+        home: { recent_documents: [rawDocument, rawDocumentB], focused_documents: [], pending_review_count: 0, next_rituals: [] }
+      }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") return uploadA.promise;
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    render(<StudioPage />);
+
+    await user.click((await screen.findAllByRole("button", { name: /Reflexão estratégica/u })).at(-1)!);
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["A"], "tardio-a.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    await user.click((await screen.findAllByRole("button", { name: /Plano comercial/u })).at(-1)!);
+
+    await act(async () => uploadA.resolve(jsonResponse({ asset: attachedA }, 201)));
+
+    expect(screen.getByRole("heading", { name: "Plano comercial" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "tardio-a.pdf" })).not.toBeInTheDocument();
+  });
+
+  it("shows a server-owned A upload that resolves after navigating A to B and back to A", async () => {
+    const user = userEvent.setup();
+    const uploadA = deferred<Response>();
+    const returnedAAssets = deferred<Response>();
+    const attachedA = rawAssetWith({
+      id: "asset_returned_a",
+      kind: "file",
+      display_name: "retornado-a.pdf",
+      mime_type: "application/pdf",
+      created_at: "2026-07-15T15:00:00.000Z",
+      updated_at: "2026-07-15T15:00:00.000Z"
+    });
+    let aAssetLists = 0;
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/home")) return Promise.resolve(jsonResponse({
+        home: { recent_documents: [rawDocument, rawDocumentB], focused_documents: [], pending_review_count: 0, next_rituals: [] }
+      }));
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`) && init?.method === "POST") return uploadA.promise;
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) {
+        aAssetLists += 1;
+        return aAssetLists === 1 ? Promise.resolve(jsonResponse({ assets: [] })) : returnedAAssets.promise;
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocumentB.id}/assets`)) return Promise.resolve(jsonResponse({ assets: [] }));
+      if (url.endsWith(`/api/studio/assets/${attachedA.id}/download`)) {
+        return Promise.resolve(jsonResponse({ url: "https://private.example/retornado-a.pdf", expires_in_seconds: 600 }));
+      }
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
+    render(<StudioPage />);
+
+    await user.click((await screen.findAllByRole("button", { name: /Reflexão estratégica/u })).at(-1)!);
+    await user.upload(screen.getByTestId("studio-material-file-input"), new File(["A"], "retornado-a.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    await user.click((await screen.findAllByRole("button", { name: /Plano comercial/u })).at(-1)!);
+    await user.click(screen.getByRole("button", { name: "Início" }));
+    await user.click((await screen.findAllByRole("button", { name: /Reflexão estratégica/u })).at(-1)!);
+    await waitFor(() => expect(aAssetLists).toBe(2));
+    await act(async () => returnedAAssets.resolve(jsonResponse({ assets: [] })));
+
+    await act(async () => uploadA.resolve(jsonResponse({ asset: attachedA }, 201)));
+
+    expect(await screen.findByRole("heading", { name: "retornado-a.pdf" })).toBeInTheDocument();
+    expect(aAssetLists).toBe(2);
+  });
+
   it("merges a late initial list with a newly attached material for the same document", async () => {
     const user = userEvent.setup();
     const initialAssets = deferred<Response>();
@@ -507,7 +681,7 @@ describe("StudioPage", () => {
     expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
   });
 
-  it("deduplicates assets by id and lets each incoming merge replace the known version", async () => {
+  it("deduplicates assets by id while preserving the freshest known version", async () => {
     const user = userEvent.setup();
     const initialAssets = deferred<Response>();
     const firstAttached = rawAssetWith({
@@ -515,21 +689,24 @@ describe("StudioPage", () => {
       kind: "file",
       display_name: "retornado-primeiro.pdf",
       mime_type: "application/pdf",
-      created_at: "2026-07-13T14:00:00.000Z"
+      created_at: "2026-07-13T14:00:00.000Z",
+      updated_at: "2026-07-13T16:00:00.000Z"
     });
     const listedVersion = rawAssetWith({
       id: "asset_same",
       kind: "file",
       display_name: "listado-depois.pdf",
       mime_type: "application/pdf",
-      created_at: "2026-07-13T14:00:00.000Z"
+      created_at: "2026-07-13T14:00:00.000Z",
+      updated_at: "2026-07-13T15:00:00.000Z"
     });
     const finalAttached = rawAssetWith({
       id: "asset_same",
       kind: "file",
       display_name: "retornado-por-ultimo.pdf",
       mime_type: "application/pdf",
-      created_at: "2026-07-13T14:00:00.000Z"
+      created_at: "2026-07-13T14:00:00.000Z",
+      updated_at: "2026-07-13T17:00:00.000Z"
     });
     let attachments = 0;
     vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
@@ -551,8 +728,8 @@ describe("StudioPage", () => {
     expect(await screen.findByRole("heading", { name: "retornado-primeiro.pdf" })).toBeInTheDocument();
 
     await act(async () => initialAssets.resolve(jsonResponse({ assets: [listedVersion] })));
-    expect(await screen.findByRole("heading", { name: "listado-depois.pdf" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "retornado-primeiro.pdf" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "retornado-primeiro.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "listado-depois.pdf" })).not.toBeInTheDocument();
 
     await user.upload(input, new File(["last"], "ultimo.pdf", { type: "application/pdf" }));
     expect(await screen.findByRole("heading", { name: "retornado-por-ultimo.pdf" })).toBeInTheDocument();
@@ -729,6 +906,30 @@ const rawDocumentB = {
 
 function rawAssetWith(overrides: Record<string, unknown>) {
   return { ...rawAsset, ...overrides };
+}
+
+function studioAssetWith(overrides: Partial<StudioAsset> = {}): StudioAsset {
+  return {
+    id: "asset_default",
+    workspaceId: "workspace_a",
+    ownerProfileId: "profile_owner",
+    documentId: rawDocument.id,
+    idempotencyKey: null,
+    kind: "file",
+    displayName: "material.pdf",
+    sourceUrl: null,
+    finalUrl: null,
+    mimeType: "application/pdf",
+    sizeBytes: 10,
+    extractionStatus: "pending",
+    extractedText: null,
+    lastErrorCode: null,
+    attemptCount: 0,
+    nextAttemptAt: null,
+    createdAt: "2026-07-15T12:00:00.000Z",
+    updatedAt: "2026-07-15T12:00:00.000Z",
+    ...overrides
+  };
 }
 
 function jsonResponse(body: unknown, status = 200) {
