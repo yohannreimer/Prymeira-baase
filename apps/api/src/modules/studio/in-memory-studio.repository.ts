@@ -394,16 +394,6 @@ export function createInMemoryStudioRepository(
         updatedAt: nextTimestamp(now, persisted.updatedAt)
       };
       documents[index] = updated;
-      appendStoredVersion({
-        workspaceId: updated.workspaceId,
-        ownerProfileId: updated.ownerProfileId,
-        documentId: updated.id,
-        bodyJson: updated.bodyJson,
-        bodyText: updated.bodyText,
-        origin: "user",
-        actorProfileId: updated.ownerProfileId,
-        aiRunId: null
-      }, updated.updatedAt);
       return cloneDocument(updated);
     },
 

@@ -362,7 +362,7 @@ git commit -m "feat(studio): add checkpoint and trash schema"
 - Test: `apps/api/src/modules/studio/studio.repository.test.ts`
 - Test: `apps/api/src/db/postgres.repositories.test.ts`
 
-- [ ] **Step 1: Add the repository invariant test**
+- [x] **Step 1: Add the repository invariant test**
 
 ```ts
 const created = await repository.createDocument(documentInput);
@@ -372,12 +372,12 @@ await repository.updateDocument({ ...updated!, bodyText: "draft 2" }, updated!.r
 expect(await repository.listVersions(scope, created.id)).toHaveLength(1);
 ```
 
-- [ ] **Step 2: Run and confirm excess versions**
+- [x] **Step 2: Run and confirm excess versions**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts`  
 Expected: FAIL because each update inserts a version.
 
-- [ ] **Step 3: Remove `insertVersion` from ordinary update transactions**
+- [x] **Step 3: Remove `insertVersion` from ordinary update transactions**
 
 ```ts
 async updateDocument(input, expectedRevision) {
@@ -391,12 +391,12 @@ async updateDocument(input, expectedRevision) {
 
 Keep the initial imported checkpoint on document creation and explicit version appends for accepted AI suggestions.
 
-- [ ] **Step 4: Run in-memory and PostgreSQL repository suites**
+- [x] **Step 4: Run in-memory and PostgreSQL repository suites**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts src/db/postgres.repositories.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio/*studio.repository.ts apps/api/src/modules/studio/studio.repository.test.ts apps/api/src/db/postgres.repositories.test.ts

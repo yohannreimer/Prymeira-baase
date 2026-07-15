@@ -101,6 +101,24 @@ function repositoryContract(
       });
     });
 
+    it("keeps only the initial immutable version across ordinary draft saves", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const created = await repository.createDocument(documentInput());
+        await repository.updateDocument(
+          { ...created, bodyText: "draft 1" },
+          created.revision
+        );
+        const updated = await repository.findDocument(scope, created.id);
+        await repository.updateDocument(
+          { ...updated!, bodyText: "draft 2" },
+          updated!.revision
+        );
+
+        expect(await repository.listVersions(scope, created.id)).toHaveLength(1);
+      });
+    });
+
     it("creates one active document and one initial version per owner capture key", async () => {
       await withRepository(async (repository) => {
         const captureKey = "12121212-1212-4212-8212-121212121212";
@@ -206,7 +224,7 @@ function repositoryContract(
       });
     });
 
-    it("updates atomically at the current revision and appends one ordered version", async () => {
+    it("updates atomically at the current revision without appending a version", async () => {
       await withRepository(async (repository) => {
         const created = await repository.createDocument(documentInput());
         const archivedAt = "2026-07-13T12:00:00.000Z";
@@ -236,15 +254,14 @@ function repositoryContract(
           { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
           created.id
         );
-        expect(versions.map((version) => version.versionNumber)).toEqual([1, 2]);
-        expect(versions[1]).toMatchObject({ bodyJson: updated.bodyJson, bodyText: "mudou" });
+        expect(versions.map((version) => version.versionNumber)).toEqual([1]);
 
         await expect(repository.updateDocument({ ...updated, bodyText: "stale" }, 1))
           .rejects.toThrow("STUDIO_DOCUMENT_STALE");
         expect(await repository.listVersions(
           { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
           created.id
-        )).toHaveLength(2);
+        )).toHaveLength(1);
       });
     });
 
@@ -266,7 +283,7 @@ function repositoryContract(
         expect((await repository.listVersions(
           { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId },
           created.id
-        )).map((version) => version.versionNumber)).toEqual([1, 2]);
+        )).map((version) => version.versionNumber)).toEqual([1]);
       });
     });
 
@@ -1390,8 +1407,7 @@ describe("in-memory StudioRepository clock behavior", () => {
     );
     expect(versions.map((version) => version.createdAt)).toEqual([
       "2026-07-13T12:00:00.000Z",
-      "2026-07-13T12:00:00.001Z",
-      "2026-07-13T12:00:00.002Z"
+      "2026-07-13T12:00:00.001Z"
     ]);
     expect(versions[1]!.createdAt >= updated.updatedAt).toBe(true);
   });

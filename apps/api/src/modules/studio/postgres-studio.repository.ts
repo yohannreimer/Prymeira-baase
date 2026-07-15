@@ -830,18 +830,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           const exists = await findDocument(client, document, document.id);
           throw new Error(exists ? "STUDIO_DOCUMENT_STALE" : "STUDIO_DOCUMENT_NOT_FOUND");
         }
-        const updated = documentFromRow(result.rows[0]);
-        await insertVersion(client, {
-          workspaceId: updated.workspaceId,
-          ownerProfileId: updated.ownerProfileId,
-          documentId: updated.id,
-          bodyJson: updated.bodyJson,
-          bodyText: updated.bodyText,
-          origin: "user",
-          actorProfileId: updated.ownerProfileId,
-          aiRunId: null
-        });
-        return updated;
+        return documentFromRow(result.rows[0]);
       }).catch((error: unknown) => {
         const postgresError = error as { code?: string; constraint?: string };
         if (postgresError.code === "23505" && postgresError.constraint === "studio_documents_capture_uidx") {
