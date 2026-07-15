@@ -40,7 +40,8 @@ export function createMockAiProvider(options: MockAiProviderOptions = {}): AiPro
     },
 
     async createEmbeddings(request) {
-      return options.embeddings ?? request.inputs.map(createDeterministicEmbedding);
+      assertEmbeddingDimensions(request.dimensions);
+      return options.embeddings ?? request.inputs.map((input) => createDeterministicEmbedding(input, request.dimensions));
     },
 
     async transcribeAudio() {
@@ -53,10 +54,21 @@ export function createMockAiProvider(options: MockAiProviderOptions = {}): AiPro
   };
 }
 
-function createDeterministicEmbedding(input: string) {
-  const vector = [0, 0, 0, 0];
+function assertEmbeddingDimensions(dimensions: number) {
+  if (!Number.isSafeInteger(dimensions) || dimensions <= 0) {
+    throw new Error("MOCK_AI_EMBEDDING_DIMENSIONS_INVALID");
+  }
+}
+
+function createDeterministicEmbedding(input: string, dimensions: number) {
+  const vector = new Array<number>(dimensions);
+  let state = 2_166_136_261;
   for (let index = 0; index < input.length; index += 1) {
-    vector[index % vector.length] = (vector[index % vector.length] ?? 0) + (input.codePointAt(index) ?? 0);
+    state = Math.imul(state ^ (input.codePointAt(index) ?? 0), 16_777_619) >>> 0;
+  }
+  for (let index = 0; index < dimensions; index += 1) {
+    state = Math.imul(state ^ index, 1_664_525) + 1_013_904_223 >>> 0;
+    vector[index] = state / 2 ** 31 - 1;
   }
   const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
   return vector.map((value) => Number((value / magnitude).toFixed(8)));

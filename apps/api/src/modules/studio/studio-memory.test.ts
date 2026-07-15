@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
+import { createMockAiProvider } from "../ai/providers/mock-ai.provider";
 import type { OperationalPool } from "../../db/operational-repository-support";
 import { createPostgresStudioMemoryIndex, StudioVectorPrerequisiteError } from "./postgres-studio-memory";
 import {
@@ -134,6 +135,16 @@ describe("Studio semantic memory", () => {
       .rejects.toThrow("STUDIO_MEMORY_EMBEDDING_NON_FINITE");
     await expect(embedStudioTexts({ createEmbeddings: async () => [[0, 0]] }, "model", ["a"], 2))
       .rejects.toThrow("STUDIO_MEMORY_EMBEDDING_ZERO_VECTOR");
+  });
+
+  it("indexes a version with 1536-dimensional mock embeddings", async () => {
+    const memory = createInMemoryStudioMemoryIndex({
+      embedder: createMockAiProvider(),
+      dimensions: 1_536
+    });
+    const item = fixture(ownerA, "mock-1536", "conteúdo indexável", 1);
+
+    await expect(memory.indexVersion(ownerA, item.document, item.version)).resolves.toBe(true);
   });
 
   it("enqueues every committed version and records index failure independently from saved content", async () => {

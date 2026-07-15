@@ -106,7 +106,10 @@ describe("Mock AI provider", () => {
 
     expect(first).toEqual(second);
     expect(first).toHaveLength(2);
+    expect(first[0]).toHaveLength(1_536);
     expect(first[0]).toHaveLength(first[1]!.length);
+    await expect(provider.createEmbeddings({ model: "mock-embedding", inputs: ["um"], dimensions: 0 }))
+      .rejects.toThrow("MOCK_AI_EMBEDDING_DIMENSIONS_INVALID");
   });
 });
 
