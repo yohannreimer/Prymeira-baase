@@ -56,9 +56,10 @@ export function assertRuntimeStoragePolicy(runtimeConfig: BaaseRuntimeConfig): v
     && (runtimeConfig.objectStorage.provider !== "s3" || !runtimeConfig.objectStorage.s3)) {
     throw new Error("PRODUCTION_OBJECT_STORAGE_REQUIRED");
   }
+  const endpoint = runtimeConfig.objectStorage.s3?.endpoint;
   if (runtimeConfig.mode === "production"
-    && runtimeConfig.objectStorage.s3?.endpoint
-    && !hasValidEndpointHostname(runtimeConfig.objectStorage.s3.endpoint)) {
+    && endpoint !== undefined
+    && !hasValidEndpointHostname(endpoint)) {
     throw new Error("S3_ENDPOINT_HOSTNAME_INVALID");
   }
 }

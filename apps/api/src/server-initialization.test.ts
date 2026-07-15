@@ -120,6 +120,7 @@ describe("PostgreSQL server initialization", () => {
   });
 
   it.each([
+    "",
     "http://prymeira_baase_minio:9000",
     "http://-minio:9000",
     "http://minio-:9000",
@@ -135,7 +136,7 @@ describe("PostgreSQL server initialization", () => {
   it("rejects an invalid production endpoint before constructing storage", async () => {
     const events: string[] = [];
 
-    await expect(initializeRuntimeObjectStorage(productionS3Config("http://invalid_host:9000"), {
+    await expect(initializeRuntimeObjectStorage(productionS3Config(""), {
       createMemoryObjectStorage() {
         events.push("memory-factory");
         return createInMemoryObjectStorage();
