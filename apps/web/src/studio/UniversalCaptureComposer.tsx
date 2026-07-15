@@ -5,6 +5,7 @@ import {
   createStudioDocument,
   type CreateStudioDocumentInput
 } from "./studio-api";
+import StudioAudioRecorder from "./StudioAudioRecorder";
 import type { StudioAsset, StudioCaptureMode, StudioDocument } from "./studio.types";
 
 export type StudioCaptureOutcome = {
@@ -39,14 +40,6 @@ type CaptureInput = {
   filename?: string;
   url?: string;
   idempotencyKey?: string;
-};
-
-type RecordingSession = {
-  recorder: MediaRecorder;
-  stream: MediaStream;
-  chunks: Blob[];
-  failed: boolean;
-  terminal: boolean;
 };
 
 type RetryAttachment = {
@@ -101,18 +94,14 @@ export default function UniversalCaptureComposer({
   const [linkMode, setLinkMode] = useState(false);
   const [link, setLink] = useState("");
   const [saving, setSaving] = useState(false);
-  const [recording, setRecording] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [retryAttachment, setRetryAttachment] = useState<RetryAttachment | null>(null);
   const busyRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const audioInputRef = useRef<HTMLInputElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
   const linkTriggerRef = useRef<HTMLButtonElement>(null);
-  const recordingSessionRef = useRef<RecordingSession | null>(null);
-  const acquiringMicrophoneRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -120,15 +109,6 @@ export default function UniversalCaptureComposer({
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
-      const session = recordingSessionRef.current;
-      if (session && !session.terminal) {
-        if (session.recorder.state === "recording") session.recorder.stop();
-        if (!session.terminal) {
-          session.terminal = true;
-          session.stream.getTracks().forEach((track) => track.stop());
-        }
-      }
-      recordingSessionRef.current = null;
     };
   }, []);
 
@@ -275,7 +255,7 @@ export default function UniversalCaptureComposer({
     void capture({ mode: "text", bodyText, captureKey: globalThis.crypto.randomUUID() });
   }
 
-  function captureSelectedFile(event: ChangeEvent<HTMLInputElement>, mode: "audio" | "file" | "image") {
+  function captureSelectedFile(event: ChangeEvent<HTMLInputElement>, mode: "file" | "image") {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -288,92 +268,6 @@ export default function UniversalCaptureComposer({
       filename: file.name,
       idempotencyKey: globalThis.crypto.randomUUID()
     });
-  }
-
-  function releaseRecording(session: RecordingSession) {
-    if (session.terminal) return;
-    session.terminal = true;
-    session.stream.getTracks().forEach((track) => track.stop());
-    if (recordingSessionRef.current === session) {
-      recordingSessionRef.current = null;
-      if (mountedRef.current) setRecording(false);
-    }
-  }
-
-  async function toggleRecording() {
-    const currentSession = recordingSessionRef.current;
-    if (currentSession && !currentSession.terminal) {
-      if (!currentSession.failed && currentSession.recorder.state === "recording") {
-        currentSession.recorder.stop();
-      }
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      audioInputRef.current?.click();
-      return;
-    }
-    if (acquiringMicrophoneRef.current) return;
-    acquiringMicrophoneRef.current = true;
-    let grantedStream: MediaStream | null = null;
-    let setupSession: RecordingSession | null = null;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      grantedStream = stream;
-      acquiringMicrophoneRef.current = false;
-      if (!mountedRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        grantedStream = null;
-        return;
-      }
-      const recorder = new MediaRecorder(stream);
-      const session: RecordingSession = { recorder, stream, chunks: [], failed: false, terminal: false };
-      setupSession = session;
-      recordingSessionRef.current = session;
-      grantedStream = null;
-      recorder.addEventListener("dataavailable", (event) => {
-        if (!session.terminal && event.data.size) session.chunks.push(event.data);
-      });
-      recorder.addEventListener("stop", () => {
-        if (session.terminal) return;
-        const type = recorder.mimeType || "audio/webm";
-        const audio = new Blob(session.chunks, { type });
-        const failed = session.failed;
-        releaseRecording(session);
-        if (!mountedRef.current || failed) return;
-        if (!audio.size) {
-          setMessage("Não foi possível registrar áudio desta vez.");
-          return;
-        }
-        const extension = type.includes("mp4") ? "m4a" : "webm";
-        void capture({
-          mode: "audio",
-          captureKey: globalThis.crypto.randomUUID(),
-          bodyText: text.trim(),
-          title: "Registro em áudio",
-          file: audio,
-          filename: `registro-${new Date().toISOString().replaceAll(":", "-")}.${extension}`,
-          idempotencyKey: globalThis.crypto.randomUUID()
-        });
-      }, { once: true });
-      recorder.addEventListener("error", () => {
-        if (session.terminal) return;
-        session.failed = true;
-        if (recordingSessionRef.current === session && mountedRef.current) {
-          setRecording(false);
-          setMessage("Não foi possível registrar áudio desta vez.");
-        }
-      }, { once: true });
-      recorder.start();
-      setRecording(true);
-      setMessage("Gravação em andamento. Seu áudio só será enviado quando você parar.");
-    } catch {
-      acquiringMicrophoneRef.current = false;
-      if (setupSession) releaseRecording(setupSession);
-      else grantedStream?.getTracks().forEach((track) => track.stop());
-      if (mountedRef.current) {
-        setMessage("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
-      }
-    }
   }
 
   function showLinkMode() {
@@ -418,33 +312,38 @@ export default function UniversalCaptureComposer({
 
       <div className="studio-composer-actions">
         <div className="studio-composer-tools" aria-label="Formatos de captura">
-          <button
-            type="button"
-            aria-label={recording ? "Parar gravação" : "Gravar áudio"}
-            aria-pressed={recording}
-            onClick={() => void toggleRecording()}
+          <StudioAudioRecorder
+            variant="icon"
+            inputTestId="studio-audio-input"
             disabled={saving || Boolean(retryAttachment)}
-          >
-            <i aria-hidden="true" className={`ph-light ${recording ? "ph-stop-circle" : "ph-microphone"}`} />
-          </button>
-          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || recording || Boolean(retryAttachment)}>
+            onStatus={setMessage}
+            onCaptured={({ blob, filename }) => void capture({
+              mode: "audio",
+              captureKey: globalThis.crypto.randomUUID(),
+              bodyText: text.trim(),
+              title: "Registro em áudio",
+              file: blob,
+              filename,
+              idempotencyKey: globalThis.crypto.randomUUID()
+            })}
+          />
+          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-paperclip" />
           </button>
-          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || recording || Boolean(retryAttachment)}>
+          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-image" />
           </button>
-          <button ref={linkTriggerRef} type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || recording || Boolean(retryAttachment)}>
+          <button ref={linkTriggerRef} type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-link" />
           </button>
         </div>
-        <button className="studio-composer__submit" type="submit" disabled={saving || recording || Boolean(retryAttachment) || (linkMode ? !link.trim() : !text.trim())}>
+        <button className="studio-composer__submit" type="submit" disabled={saving || Boolean(retryAttachment) || (linkMode ? !link.trim() : !text.trim())}>
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>
 
       <input hidden tabIndex={-1} ref={fileInputRef} type="file" onChange={(event) => captureSelectedFile(event, "file")} />
       <input hidden tabIndex={-1} ref={imageInputRef} type="file" accept="image/*" onChange={(event) => captureSelectedFile(event, "image")} />
-      <input hidden tabIndex={-1} data-testid="studio-audio-input" ref={audioInputRef} type="file" accept="audio/*" onChange={(event) => captureSelectedFile(event, "audio")} />
 
       {message ? <p className="studio-composer__status" role="status" aria-live="polite">{message}</p> : null}
       {retryAttachment ? (
