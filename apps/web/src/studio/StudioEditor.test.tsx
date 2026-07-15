@@ -1,11 +1,11 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioDocument } from "./studio.types";
-import StudioEditor from "./StudioEditor";
+import StudioEditor, { type StudioEditorHandle } from "./StudioEditor";
 
 const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
@@ -48,6 +48,134 @@ describe("StudioEditor", () => {
     expect(editableBody.compareDocumentPosition(materialRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(materialRegion.compareDocumentPosition(relatedThoughts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(relatedThoughts.compareDocumentPosition(copilot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("inserts trimmed multiline text as paragraphs at the saved cursor and queues autosave", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const source = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Antes depois" }] }]
+      },
+      bodyText: "Antes depois"
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      return response({ document: {
+        ...rawDocument,
+        revision: 5,
+        body_json: payload.body_json,
+        body_text: payload.body_text
+      } });
+    });
+    render(<StudioEditor ref={editorRef} document={source} onDocumentChange={vi.fn()} debounceMs={0} />);
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+
+    await setTipTapSelection(body, 5);
+    let inserted = false;
+    act(() => { inserted = editorRef.current?.insertTextAtLastSelection("  Primeira  \r\n\r\n Segunda ") ?? false; });
+
+    expect(inserted).toBe(true);
+    expect(body).toHaveFocus();
+    expect(within(body).getAllByText(/Antes|Primeira|Segunda|depois/u).map((node) => node.textContent)).toEqual([
+      "Antes", "Primeira", "Segunda", " depois"
+    ]);
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const patchCall = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
+    expect(JSON.parse(String(patchCall?.[1]?.body)).body_text).toBe("Antes\nPrimeira\nSegunda\n depois");
+  });
+
+  it("falls back to the document end without a saved selection and ignores empty text", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ document: { ...rawDocument, revision: 5 } }));
+    render(<StudioEditor ref={editorRef} document={document} onDocumentChange={vi.fn()} debounceMs={0} />);
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+
+    let emptyResult = true;
+    act(() => { emptyResult = editorRef.current?.insertTextAtLastSelection(" \n\r\n ") ?? true; });
+    expect(emptyResult).toBe(false);
+    expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+
+    let inserted = false;
+    act(() => { inserted = editorRef.current?.insertTextAtLastSelection("No fim") ?? false; });
+    expect(inserted).toBe(true);
+    expect(body).toHaveTextContent("No fim");
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH")?.[1]?.body)).body_text)
+      .toBe("No fim");
+  });
+
+  it("binds the imperative handle to the current keyed document session", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const documentA = { ...document, id: "document_a", bodyText: "A" };
+    const documentB = { ...document, id: "document_b", title: "Documento B", bodyText: "B" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      return response({ document: {
+        ...rawDocument,
+        id: String(input).endsWith("document_b") ? "document_b" : "document_a",
+        revision: 5,
+        body_json: payload.body_json,
+        body_text: payload.body_text
+      } });
+    });
+    const view = render(<StudioEditor ref={editorRef} document={documentA} onDocumentChange={vi.fn()} debounceMs={0} />);
+    const oldHandle = editorRef.current;
+
+    view.rerender(<StudioEditor ref={editorRef} document={documentB} onDocumentChange={vi.fn()} debounceMs={0} />);
+    await waitFor(() => expect(editorRef.current).not.toBe(oldHandle));
+    act(() => { editorRef.current?.insertTextAtLastSelection("Somente B"); });
+
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const patchUrls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH").map(([url]) => String(url));
+    expect(patchUrls).toEqual([expect.stringContaining("document_b")]);
+    expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Somente B");
+  });
+
+  it("falls back to the new document end when a saved selection is stale after a restore", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const longDocument: StudioDocument = {
+      ...document,
+      bodyJson: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Conteúdo bastante longo" }] }]
+      },
+      bodyText: "Conteúdo bastante longo"
+    };
+    const restoredDocument: StudioDocument = {
+      ...longDocument,
+      revision: longDocument.revision + 1,
+      bodyJson: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Curto" }] }]
+      },
+      bodyText: "Curto"
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body));
+      return response({ document: {
+        ...rawDocument,
+        revision: restoredDocument.revision + 1,
+        body_json: payload.body_json,
+        body_text: payload.body_text
+      } });
+    });
+    const view = render(
+      <StudioEditor ref={editorRef} document={longDocument} onDocumentChange={vi.fn()} debounceMs={0} />
+    );
+    await setTipTapSelection(screen.getByRole("textbox", { name: "Conteúdo do documento" }), 20);
+
+    view.rerender(
+      <StudioEditor ref={editorRef} document={restoredDocument} onDocumentChange={vi.fn()} debounceMs={0} />
+    );
+    const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
+    await waitFor(() => expect(body).toHaveTextContent("Curto"));
+    act(() => { editorRef.current?.insertTextAtLastSelection("Depois da restauração"); });
+
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const payload = JSON.parse(String(fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH")?.[1]?.body));
+    expect(payload.body_text).toBe("Curto\nDepois da restauração");
   });
 
   it("blocks an AI suggestion while the editor has a locally persisted dirty draft", async () => {
@@ -749,7 +877,7 @@ describe("StudioEditor", () => {
 
     const bold = screen.getByRole("button", { name: "Negrito" });
     const italic = screen.getByRole("button", { name: "Itálico" });
-    const link = screen.getByRole("button", { name: "Adicionar ou remover link" });
+    const link = screen.getByRole("button", { name: "Formatar hyperlink no texto" });
     expect(bold).toHaveAttribute("aria-pressed", "false");
     expect(italic).toHaveAttribute("aria-pressed", "false");
     expect(link).toHaveAttribute("aria-pressed", "false");
@@ -943,6 +1071,20 @@ function installTipTapDomGeometry() {
     configurable: true,
     value: () => ({ item: () => null, length: 0, [Symbol.iterator]: function* () {} })
   });
+}
+
+async function setTipTapSelection(editor: HTMLElement, offset: number) {
+  const textNode = editor.querySelector("p")?.firstChild;
+  if (!textNode) throw new Error("Expected a paragraph text node");
+  editor.focus();
+  const range = globalThis.document.createRange();
+  range.setStart(textNode, offset);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  fireEvent(globalThis.document, new Event("selectionchange"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
 function storeDraftEnvelope(draft: { title: string | null; bodyJson: Record<string, unknown>; bodyText: string }, baseRevision: number) {

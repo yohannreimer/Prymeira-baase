@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import StudioHome from "./StudioHome";
 import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
 import StudioMaterialComposer from "./StudioMaterialComposer";
@@ -10,6 +10,7 @@ import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { useStudioCollections } from "./useStudioCollections";
 import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
+import type { StudioEditorHandle } from "./StudioEditor";
 import "./studio.css";
 
 const StudioEditor = lazy(() => import("./StudioEditor"));
@@ -104,9 +105,13 @@ export default function StudioPage({ onOpenInternalSource }: {
   const documentRequestGeneration = useRef(0);
   const selectedDocumentId = useRef<string | null>(null);
   const documentErrorActionRef = useRef<HTMLButtonElement | null>(null);
+  const editorRef = useRef<StudioEditorHandle>(null);
   const navigationRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const collectionStore = useStudioCollections();
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
+  const insertTranscript = useCallback((text: string) => (
+    editorRef.current?.insertTextAtLastSelection(text) ?? false
+  ), []);
 
   useEffect(() => {
     pageMountedRef.current = true;
@@ -311,6 +316,7 @@ export default function StudioPage({ onOpenInternalSource }: {
               <Suspense fallback={<StudioEditorSkeleton />}>
                 <StudioEditor
                   key={selectedDocument.id}
+                  ref={editorRef}
                   document={selectedDocument}
                   focusHeadingOnMount
                   onDocumentChange={(document) => {
@@ -328,6 +334,7 @@ export default function StudioPage({ onOpenInternalSource }: {
                       error={assetState.documentId === selectedDocument.id ? assetState.error : false}
                       onAttached={attachDocumentAsset}
                       onRetry={() => setAssetsReloadKey((key) => key + 1)}
+                      onInsertTranscript={insertTranscript}
                     />
                   )}
                 />
@@ -492,7 +499,8 @@ function DocumentAssets({
   loading,
   error,
   onAttached,
-  onRetry
+  onRetry,
+  onInsertTranscript
 }: {
   documentId: string;
   documentTitle: string;
@@ -501,11 +509,18 @@ function DocumentAssets({
   error: boolean;
   onAttached(asset: StudioAsset): void;
   onRetry(): void;
+  onInsertTranscript(text: string): boolean | Promise<boolean>;
 }) {
   return (
     <div className="studio-document-assets" role="region" aria-label="Materiais do documento">
       <StudioMaterialComposer documentId={documentId} onAttached={onAttached} />
-      {assets.map((asset) => <StudioAssetProcessingStatus key={asset.id} asset={asset} />)}
+      {assets.map((asset) => (
+        <StudioAssetProcessingStatus
+          key={asset.id}
+          asset={asset}
+          onInsertTranscript={onInsertTranscript}
+        />
+      ))}
       {loading && assets.length === 0 ? (
         <p
           className="studio-document-assets__status"

@@ -1,5 +1,15 @@
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  forwardRef,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
 import {
   createStudioDocument,
   getStudioDocument,
@@ -22,6 +32,10 @@ type StudioEditorProps = {
   onOpenDocument?(documentId: string): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
   materialRegion?: ReactNode;
+};
+
+export type StudioEditorHandle = {
+  insertTextAtLastSelection(text: string): boolean;
 };
 
 const saveLabels: Record<AutosaveState, string> = {
@@ -49,11 +63,15 @@ function formatVersionDate(value: string) {
   }).format(new Date(value));
 }
 
-export default function StudioEditor(props: StudioEditorProps) {
-  return <StudioEditorSession key={props.document.id} {...props} />;
-}
+const StudioEditor = forwardRef<StudioEditorHandle, StudioEditorProps>((props, ref) => (
+  <StudioEditorSession key={props.document.id} ref={ref} {...props} />
+));
 
-function StudioEditorSession({
+StudioEditor.displayName = "StudioEditor";
+
+export default StudioEditor;
+
+const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(function StudioEditorSession({
   document: sourceDocument,
   onDocumentChange,
   focusHeadingOnMount = false,
@@ -61,7 +79,7 @@ function StudioEditorSession({
   onOpenDocument,
   onOpenInternalSource,
   materialRegion
-}: StudioEditorProps) {
+}: StudioEditorProps, ref) {
   const save = useCallback((draft: StudioDocumentDraft, expectedRevision: number, signal?: AbortSignal) => (
     updateStudioDocument(sourceDocument.id, {
       expected_revision: expectedRevision,
@@ -84,6 +102,7 @@ function StudioEditorSession({
   const focusVersionAfterRetryRef = useRef(false);
   const conflictCopyOperationRef = useRef<{ signature: string; key: string } | null>(null);
   const editGenerationRef = useRef(0);
+  const lastSelectionRef = useRef<{ from: number; to: number } | null>(null);
   const asyncActionTokenRef = useRef(0);
   const sourceDocumentIdRef = useRef(sourceDocument.id);
   const [linkFieldOpen, setLinkFieldOpen] = useState(false);
@@ -122,9 +141,45 @@ function StudioEditorSession({
     },
     onSelectionUpdate({ editor: currentEditor }) {
       const { from, to } = currentEditor.state.selection;
+      lastSelectionRef.current = { from, to };
       setSelectedText(from === to ? "" : currentEditor.state.doc.textBetween(from, Math.min(to, from + 4_000), "\n"));
     }
   });
+
+  useImperativeHandle(ref, () => ({
+    insertTextAtLastSelection(text: string) {
+      const normalizedText = text.trim();
+      if (!editor || editor.isDestroyed || !normalizedText) return false;
+      const paragraphs = normalizedText
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => ({
+          type: "paragraph",
+          content: [{ type: "text", text: line }]
+        }));
+      if (paragraphs.length === 0) return false;
+
+      const documentSize = editor.state.doc.content.size;
+      const savedSelection = lastSelectionRef.current;
+      const hasValidSelectionBounds = savedSelection !== null
+        && Number.isInteger(savedSelection.from)
+        && Number.isInteger(savedSelection.to)
+        && savedSelection.from > 0
+        && savedSelection.to >= savedSelection.from
+        && savedSelection.to < documentSize;
+      const hasValidSelection = hasValidSelectionBounds
+        && editor.state.doc.resolve(savedSelection.from).parent.inlineContent
+        && editor.state.doc.resolve(savedSelection.to).parent.inlineContent;
+      const documentEnd = Math.max(1, documentSize - 1);
+      const selection = hasValidSelection
+        ? savedSelection!
+        : { from: documentEnd, to: documentEnd };
+      const chain = editor.chain().focus();
+      if (documentSize > 0) chain.setTextSelection(selection);
+      return chain.insertContent(paragraphs).run();
+    }
+  }), [editor]);
 
   const toolbarState = useEditorState({
     editor,
@@ -459,7 +514,7 @@ function StudioEditorSession({
         <button type="button" aria-label="Lista com marcadores" aria-pressed={toolbarState?.bulletList ?? false} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
           <i aria-hidden="true" className="ph-bold ph-list-bullets" />
         </button>
-        <button type="button" aria-label="Adicionar ou remover link" aria-expanded={linkFieldOpen} aria-pressed={toolbarState?.link ?? false} onClick={() => setLinkFieldOpen((open) => !open)}>
+        <button type="button" aria-label="Formatar hyperlink no texto" aria-expanded={linkFieldOpen} aria-pressed={toolbarState?.link ?? false} onClick={() => setLinkFieldOpen((open) => !open)}>
           <i aria-hidden="true" className="ph-bold ph-link" />
         </button>
       </div>
@@ -601,4 +656,4 @@ function StudioEditorSession({
     </Suspense>
     </div>
   );
-}
+});

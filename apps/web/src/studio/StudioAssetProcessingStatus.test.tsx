@@ -131,6 +131,95 @@ describe("StudioAssetProcessingStatus", () => {
     expect(await screen.findByText("Transcrição reprocessada.")).toBeInTheDocument();
     expect(getStatus).toHaveBeenCalledWith("asset_1", expect.any(AbortSignal));
   });
+
+  it("offers transcript insertion only for ready audio with non-empty text and a callback", () => {
+    const onInsertTranscript = vi.fn(() => true);
+    const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "  Original preservado.  " })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={getDownload}
+      />
+    );
+    expect(screen.getByRole("button", { name: "Adicionar transcrição ao documento" })).toBeInTheDocument();
+
+    for (const hiddenAsset of [
+      asset({ extractionStatus: "pending", extractedText: "Texto" }),
+      asset({ extractionStatus: "processing", extractedText: "Texto" }),
+      asset({ extractionStatus: "failed", extractedText: "Texto" }),
+      asset({ kind: "file", extractionStatus: "ready", extractedText: "Texto" }),
+      asset({ extractionStatus: "ready", extractedText: "  \n " })
+    ]) {
+      view.rerender(
+        <StudioAssetProcessingStatus
+          asset={hiddenAsset}
+          onInsertTranscript={onInsertTranscript}
+          getDownload={getDownload}
+        />
+      );
+      expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
+    }
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "Texto" })}
+        getDownload={getDownload}
+      />
+    );
+    expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
+  });
+
+  it("preserves the original transcript, suppresses concurrent activation, and permits explicit repetition", async () => {
+    const insertion = deferred<boolean>();
+    const original = "  Linha original\nsem mutação.  ";
+    const onInsertTranscript = vi.fn(() => insertion.promise);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: original })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined))}
+      />
+    );
+    const button = screen.getByRole("button", { name: "Adicionar transcrição ao documento" });
+
+    await userEvent.click(button);
+    button.click();
+    expect(onInsertTranscript).toHaveBeenCalledTimes(1);
+    expect(onInsertTranscript).toHaveBeenCalledWith(original);
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Adicionando…");
+
+    insertion.resolve(true);
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+    expect(button).toBeEnabled();
+    await userEvent.click(button);
+    expect(onInsertTranscript).toHaveBeenCalledTimes(2);
+    expect(screen.getByText((_content, element) => element?.tagName === "P" && element.textContent === original))
+      .toBeInTheDocument();
+  });
+
+  it.each([
+    ["false", () => false],
+    ["rejection", () => Promise.reject(new Error("editor unavailable"))]
+  ])("keeps insertion retryable after a quiet %s result", async (_label, result) => {
+    const onInsertTranscript = vi.fn(result);
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ extractionStatus: "ready", extractedText: "Tentar novamente." })}
+        onInsertTranscript={onInsertTranscript}
+        getDownload={vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined))}
+      />
+    );
+
+    const button = screen.getByRole("button", { name: "Adicionar transcrição ao documento" });
+    await userEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(screen.queryByText("Transcrição adicionada ao documento")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.click(button);
+    expect(onInsertTranscript).toHaveBeenCalledTimes(2);
+  });
 });
 
 function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
@@ -155,4 +244,10 @@ function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
     updatedAt: "2026-07-13T12:00:00.000Z",
     ...overrides
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }

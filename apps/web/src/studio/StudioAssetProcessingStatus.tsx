@@ -10,6 +10,7 @@ type Download = { url: string; expiresInSeconds: number };
 
 type StudioAssetProcessingStatusProps = {
   asset: StudioAsset;
+  onInsertTranscript?: (text: string) => boolean | Promise<boolean>;
   getStatus?: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
   retry?: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
   getDownload?: (assetId: string, signal?: AbortSignal) => Promise<Download>;
@@ -44,6 +45,7 @@ function wait(delay: number, signal: AbortSignal) {
 
 export default function StudioAssetProcessingStatus({
   asset,
+  onInsertTranscript,
   getStatus = getStudioAsset,
   retry = retryStudioAsset,
   getDownload = getStudioAssetDownload,
@@ -59,9 +61,11 @@ export default function StudioAssetProcessingStatus({
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState(false);
   const [pollCycle, setPollCycle] = useState(0);
+  const [insertionState, setInsertionState] = useState<"idle" | "inserting" | "inserted" | "error">("idle");
   const pollControllerRef = useRef<AbortController | null>(null);
   const retryControllerRef = useRef<AbortController | null>(null);
   const retryingRef = useRef(false);
+  const insertingRef = useRef(false);
   const currentRef = useRef(asset);
 
   useEffect(() => {
@@ -147,6 +151,20 @@ export default function StudioAssetProcessingStatus({
     }
   }
 
+  async function insertTranscript() {
+    if (insertingRef.current || !onInsertTranscript || !current.extractedText) return;
+    insertingRef.current = true;
+    setInsertionState("inserting");
+    try {
+      const inserted = await onInsertTranscript(current.extractedText);
+      setInsertionState(inserted ? "inserted" : "error");
+    } catch {
+      setInsertionState("error");
+    } finally {
+      insertingRef.current = false;
+    }
+  }
+
   const isAudio = current.kind === "audio";
   const originalLabel = isAudio ? "Baixar áudio original" : "Baixar arquivo original";
 
@@ -227,6 +245,23 @@ export default function StudioAssetProcessingStatus({
           </div>
         ) : null}
         {retryError ? <p className="studio-asset-status__error">Não foi possível solicitar a nova tentativa agora.</p> : null}
+        {isAudio
+          && current.extractionStatus === "ready"
+          && current.extractedText?.trim()
+          && onInsertTranscript ? (
+            <div className="studio-asset-transcript__insert">
+              <button
+                type="button"
+                disabled={insertionState === "inserting"}
+                onClick={() => void insertTranscript()}
+              >
+                {insertionState === "inserting" ? "Adicionando…" : "Adicionar transcrição ao documento"}
+              </button>
+              {insertionState === "inserted" ? (
+                <p role="status" aria-live="polite">Transcrição adicionada ao documento</p>
+              ) : null}
+            </div>
+          ) : null}
       </div>
     </section>
   );

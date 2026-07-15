@@ -111,6 +111,7 @@ describe("StudioPage", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/#estudio");
     installLocalStorage();
+    installTipTapDomGeometry();
     vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
   });
 
@@ -503,6 +504,120 @@ describe("StudioPage", () => {
     expect(materialRegion.closest("article.studio-editor")).not.toBeNull();
     expect(container.querySelector(".studio-writing-layout + .studio-document-assets")).toBeNull();
     expect(assetLists).toBe(1);
+  });
+
+  it("inserts a ready audio transcript at the editor's last cursor and autosaves the document", async () => {
+    const user = userEvent.setup();
+    const sourceDocument = {
+      ...rawDocument,
+      body_json: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Antes depois" }] }]
+      },
+      body_text: "Antes depois"
+    };
+    const fetchSpy = vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && !init?.method) {
+        return jsonResponse({ document: sourceDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) {
+        return jsonResponse({ assets: [rawAsset] });
+      }
+      if (url.endsWith(`/api/studio/assets/${rawAsset.id}/download`)) {
+        return jsonResponse({ url: "https://private.example/reflexao.wav", expires_in_seconds: 600 });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return jsonResponse({ document: {
+          ...sourceDocument,
+          revision: 2,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        } });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+    const body = await screen.findByRole("textbox", { name: "Conteúdo do documento" });
+
+    await setTipTapSelection(body, 5);
+    await user.click(await screen.findByRole("button", { name: "Adicionar transcrição ao documento" }));
+
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+    expect(within(body).getAllByText(/Antes|Escolher uma direção com calma|depois/u).map((node) => node.textContent)).toEqual([
+      "Antes", "Escolher uma direção com calma.", " depois"
+    ]);
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => (
+      String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
+    ))).toBe(true));
+    const patch = fetchSpy.mock.calls.find(([url, init]) => (
+      String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
+    ));
+    expect(JSON.parse(String(patch?.[1]?.body)).body_text).toBe("Antes\nEscolher uma direção com calma.\n depois");
+  });
+
+  it("uses the new keyed editor handle after switching documents", async () => {
+    const user = userEvent.setup();
+    const documentA = {
+      ...rawDocument,
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Documento A" }] }] },
+      body_text: "Documento A"
+    };
+    const documentB = {
+      ...rawDocumentB,
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Documento B" }] }] },
+      body_text: "Documento B"
+    };
+    const assetB = rawAssetWith({
+      id: "asset_b_audio",
+      document_id: documentB.id,
+      extracted_text: "Transcrição somente B."
+    });
+    const fetchSpy = vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/studio/documents/${documentA.id}`) && method === "GET") {
+        return jsonResponse({ document: documentA });
+      }
+      if (url.endsWith(`/api/studio/documents/${documentB.id}`) && method === "GET") {
+        return jsonResponse({ document: documentB });
+      }
+      if (url.endsWith(`/api/studio/documents/${documentA.id}/assets`)) return jsonResponse({ assets: [] });
+      if (url.endsWith(`/api/studio/documents/${documentB.id}/assets`)) return jsonResponse({ assets: [assetB] });
+      if (url.endsWith(`/api/studio/assets/${assetB.id}/download`)) {
+        return jsonResponse({ url: "https://private.example/b.wav", expires_in_seconds: 600 });
+      }
+      if (url.endsWith(`/api/studio/documents/${documentB.id}`) && method === "PATCH") {
+        const payload = JSON.parse(String(init?.body));
+        return jsonResponse({ document: {
+          ...documentB,
+          revision: 2,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        } });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${documentA.id}`);
+    render(<StudioPage />);
+    expect(await screen.findByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Documento A");
+
+    window.history.replaceState(null, "", `/#estudio/document/${documentB.id}`);
+    fireEvent(window, new PopStateEvent("popstate"));
+    const bodyB = await screen.findByRole("textbox", { name: "Conteúdo do documento" });
+    await waitFor(() => expect(bodyB).toHaveTextContent("Documento B"));
+    await user.click(await screen.findByRole("button", { name: "Adicionar transcrição ao documento" }));
+
+    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => (
+      String(url).endsWith(`/api/studio/documents/${documentB.id}`) && init?.method === "PATCH"
+    ))).toBe(true));
+    expect(fetchSpy.mock.calls.some(([url, init]) => (
+      String(url).endsWith(`/api/studio/documents/${documentA.id}`) && init?.method === "PATCH"
+    ))).toBe(false);
+    expect(bodyB).toHaveTextContent("Documento BTranscrição somente B.");
   });
 
   it("keeps a document B attachment when document A's obsolete asset list resolves", async () => {
@@ -1015,4 +1130,38 @@ function installLocalStorage() {
       get length() { return values.size; }
     }
   });
+}
+
+function installTipTapDomGeometry() {
+  const rectangle = { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) };
+  Object.defineProperty(globalThis.document, "elementFromPoint", {
+    configurable: true,
+    value: () => globalThis.document.body
+  });
+  Object.defineProperty(Document.prototype, "elementFromPoint", {
+    configurable: true,
+    value: () => globalThis.document.body
+  });
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: () => rectangle
+  });
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: () => ({ item: () => null, length: 0, [Symbol.iterator]: function* () {} })
+  });
+}
+
+async function setTipTapSelection(editor: HTMLElement, offset: number) {
+  const textNode = editor.querySelector("p")?.firstChild;
+  if (!textNode) throw new Error("Expected a paragraph text node");
+  editor.focus();
+  const range = document.createRange();
+  range.setStart(textNode, offset);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  fireEvent(document, new Event("selectionchange"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
