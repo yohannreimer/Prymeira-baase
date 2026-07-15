@@ -4,6 +4,7 @@ export type BaasePersistenceMode = "memory" | "postgres";
 export type BaaseOperationalStore = "jsonb" | "relational";
 export type BaaseStructuredAiProvider = "mock" | "openai";
 export type BaaseTranscriptionProvider = "mock" | "deepgram";
+export type BaaseMultipartCleanupMode = "lifecycle" | "minio-native";
 
 export type BaaseS3Config = {
   endpoint: string | undefined;
@@ -12,6 +13,7 @@ export type BaaseS3Config = {
   accessKeyId: string;
   secretAccessKey: string;
   forcePathStyle: boolean;
+  multipartCleanupMode: BaaseMultipartCleanupMode;
 };
 
 export type BaaseRuntimeConfig = {
@@ -57,7 +59,8 @@ export function readRuntimeConfig(env: RuntimeEnv): BaaseRuntimeConfig {
     : persistence === "memory";
   const warnings = readRuntimeWarnings({
     mode, authMode, accountApiUrl, persistence, operationalStoreInput: env.BAASE_OPERATIONAL_STORE,
-    structured, transcription, s3Configured: Boolean(s3), studioEnabled, studioVectorConfigured
+    structured, transcription, s3Configured: Boolean(s3), studioEnabled, studioVectorConfigured,
+    multipartCleanupModeInput: env.S3_MULTIPART_CLEANUP_MODE
   });
 
   return {
@@ -97,8 +100,19 @@ function readS3Config(env: RuntimeEnv): BaaseS3Config | null {
     bucket,
     accessKeyId,
     secretAccessKey,
-    forcePathStyle: env.S3_FORCE_PATH_STYLE === "true"
+    forcePathStyle: env.S3_FORCE_PATH_STYLE === "true",
+    multipartCleanupMode: readMultipartCleanupMode(env.S3_MULTIPART_CLEANUP_MODE)
   };
+}
+
+function readMultipartCleanupMode(input: string | undefined): BaaseMultipartCleanupMode {
+  return input?.trim() === "minio-native" ? "minio-native" : "lifecycle";
+}
+
+function hasInvalidMultipartCleanupMode(input: string | undefined): boolean {
+  if (input === undefined) return false;
+  const value = input.trim();
+  return value !== "lifecycle" && value !== "minio-native";
 }
 
 function readOperationalStore(input: string | undefined): BaaseOperationalStore {
@@ -131,8 +145,12 @@ function readRuntimeWarnings(input: {
   s3Configured: boolean;
   studioEnabled: boolean;
   studioVectorConfigured: boolean;
+  multipartCleanupModeInput: string | undefined;
 }) {
   const warnings: string[] = [];
+  if (hasInvalidMultipartCleanupMode(input.multipartCleanupModeInput)) {
+    warnings.push("S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native.");
+  }
   if (input.operationalStoreInput === "relational" && input.persistence !== "postgres") {
     warnings.push("BAASE_OPERATIONAL_STORE=relational requer DATABASE_URL.");
   }

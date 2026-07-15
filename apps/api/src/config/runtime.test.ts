@@ -135,9 +135,38 @@ describe("runtime config", () => {
         bucket: "prymeira-baase",
         accessKeyId: "minio-user",
         secretAccessKey: "minio-secret",
-        forcePathStyle: true
+        forcePathStyle: true,
+        multipartCleanupMode: "lifecycle"
       }
     });
+  });
+
+  it("reads the native multipart cleanup mode for MinIO", () => {
+    const config = readRuntimeConfig({
+      S3_BUCKET: "prymeira-baase",
+      S3_ACCESS_KEY: "minio-user",
+      S3_SECRET_KEY: "minio-secret",
+      S3_MULTIPART_CLEANUP_MODE: "minio-native"
+    });
+
+    expect(config.objectStorage.s3?.multipartCleanupMode).toBe("minio-native");
+    expect(config.warnings).not.toContain(
+      "S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native."
+    );
+  });
+
+  it.each(["disabled", ""])("rejects the explicit multipart cleanup mode %j", (value) => {
+    const config = readRuntimeConfig({
+      S3_BUCKET: "prymeira-baase",
+      S3_ACCESS_KEY: "minio-user",
+      S3_SECRET_KEY: "minio-secret",
+      S3_MULTIPART_CLEANUP_MODE: value
+    });
+
+    expect(config.ok).toBe(false);
+    expect(config.warnings).toContain(
+      "S3_MULTIPART_CLEANUP_MODE deve ser lifecycle ou minio-native."
+    );
   });
 
   it("warns when the Studio is enabled without durable data, real AI, or vector capability", () => {
