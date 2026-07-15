@@ -299,6 +299,7 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const revisionRef = useRef(initialSession.revision);
   const answersRef = useRef(answers);
   const lastSavedRef = useRef(JSON.stringify(initialSession.answersJson));
@@ -308,8 +309,11 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
 
   useEffect(() => {
     answersRef.current = answers;
-    writeRitualDraft(session.id, answers);
-    if (session.status !== "completed" && JSON.stringify(answers) !== lastSavedRef.current) setSaveState("dirty");
+    const serialized = JSON.stringify(answers);
+    if (session.status !== "completed" && serialized !== lastSavedRef.current) {
+      writeRitualDraft(session.id, answers);
+      setSaveState("dirty");
+    }
   }, [answers, session.id, session.status]);
 
   useEffect(() => {
@@ -326,39 +330,41 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
 
   async function persistAnswers() {
     if (session.status === "completed") return true;
-    if (JSON.stringify(answersRef.current) === lastSavedRef.current) return true;
     if (savePromiseRef.current) return savePromiseRef.current;
-    const snapshot = { ...answersRef.current };
-    setSaveState("saving");
-    const pending = updateStudioRitualSession(session.id, {
-      expected_revision: revisionRef.current,
-      answers: snapshot
-    }).then((updated) => {
-      acceptSession(updated);
-      lastSavedRef.current = JSON.stringify(snapshot);
-      if (JSON.stringify(answersRef.current) === lastSavedRef.current) {
-        removeRitualDraft(session.id);
-        setSaveState("saved");
-      } else {
-        setSaveState("dirty");
-      }
-      setActionError(null);
-      return true;
-    }).catch((error: unknown) => {
-      if (isRitualConflict(error)) {
-        setSaveState("conflict");
-        setActionError("Esta sessão mudou em outra aba. Recarregue antes de continuar.");
-      } else if (isOfflineError(error)) {
-        setSaveState("offline");
-        setActionError("Sua resposta ficou guardada neste navegador e ainda não chegou ao servidor.");
-      } else {
-        setSaveState("error");
-        setActionError(ritualErrorMessage(error));
-      }
-      return false;
-    }).finally(() => { savePromiseRef.current = null; });
+    const pending = drainAnswerSnapshots().finally(() => { savePromiseRef.current = null; });
     savePromiseRef.current = pending;
     return pending;
+  }
+
+  async function drainAnswerSnapshots() {
+    setSaveState("saving");
+    while (JSON.stringify(answersRef.current) !== lastSavedRef.current) {
+      const snapshot = { ...answersRef.current };
+      try {
+        const updated = await updateStudioRitualSession(session.id, {
+          expected_revision: revisionRef.current,
+          answers: snapshot
+        });
+        acceptSession(updated);
+        lastSavedRef.current = JSON.stringify(snapshot);
+        setActionError(null);
+      } catch (error) {
+        if (isRitualConflict(error)) {
+          setSaveState("conflict");
+          setActionError("Esta sessão mudou em outra aba. Seu rascunho continua guardado; escolha qual versão deseja manter.");
+        } else if (isOfflineError(error)) {
+          setSaveState("offline");
+          setActionError("Sua resposta ficou guardada neste navegador e ainda não chegou ao servidor.");
+        } else {
+          setSaveState("error");
+          setActionError(ritualErrorMessage(error));
+        }
+        return false;
+      }
+    }
+    removeRitualDraft(session.id);
+    setSaveState("saved");
+    return true;
   }
 
   async function continueSession() {
@@ -367,12 +373,14 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
   }
 
   async function finish() {
+    if (finishing) return;
     if (!await persistAnswers()) return;
+    setFinishing(true);
     setSaveState("saving");
     try {
       const completed = await finishStudioRitualSession(session.id, {
         expected_revision: revisionRef.current,
-        answers: {},
+        answers: { ...answersRef.current },
         request_synthesis: true
       });
       acceptSession(completed);
@@ -381,6 +389,7 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
       setSaveState("saved");
       setActionError(null);
     } catch (error) {
+      setFinishing(false);
       if (isRitualConflict(error)) setSaveState("conflict");
       else if (isOfflineError(error)) setSaveState("offline");
       else setSaveState("error");
@@ -390,22 +399,56 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
     }
   }
 
-  async function reloadSession() {
+  async function loadLatestSession() {
+    const page = await listStudioRitualSessions(ritual.id, { limit: 1 });
+    const latest = page.items.find((item) => item.id === session.id) ?? page.items[0];
+    if (!latest) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+    return latest;
+  }
+
+  async function keepLocalDraft() {
+    setSaveState("saving");
+    const localDraft = { ...readRitualDraft(session.id), ...answersRef.current };
+    try {
+      const latest = await loadLatestSession();
+      if (latest.status === "completed") {
+        setSaveState("conflict");
+        setActionError("A sessão já foi concluída em outra aba. Seu rascunho continua guardado neste navegador.");
+        return;
+      }
+      acceptSession(latest);
+      lastSavedRef.current = JSON.stringify(latest.answersJson);
+      const merged = { ...latest.answersJson, ...localDraft };
+      answersRef.current = merged;
+      setAnswers(merged);
+      writeRitualDraft(session.id, merged);
+      setSaveState("dirty");
+      setActionError(null);
+      await persistAnswers();
+    } catch (error) {
+      setSaveState("conflict");
+      setActionError(isOfflineError(error)
+        ? "Sem conexão para comparar as versões. Seu rascunho continua guardado neste navegador."
+        : ritualErrorMessage(error));
+    }
+  }
+
+  async function discardLocalDraft() {
     setSaveState("saving");
     try {
-      const page = await listStudioRitualSessions(ritual.id, { limit: 1 });
-      const latest = page.items.find((item) => item.id === session.id) ?? page.items[0];
-      if (!latest) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+      const latest = await loadLatestSession();
       acceptSession(latest);
-      setAnswers(latest.answersJson);
       answersRef.current = latest.answersJson;
+      setAnswers(latest.answersJson);
       lastSavedRef.current = JSON.stringify(latest.answersJson);
       removeRitualDraft(session.id);
       setSaveState("saved");
       setActionError(null);
     } catch (error) {
-      setSaveState(isOfflineError(error) ? "offline" : "error");
-      setActionError(ritualErrorMessage(error));
+      setSaveState("conflict");
+      setActionError(isOfflineError(error)
+        ? "Sem conexão para carregar a versão do servidor. Seu rascunho continua guardado neste navegador."
+        : ritualErrorMessage(error));
     }
   }
 
@@ -430,10 +473,15 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
           <span className="sr-only">Resposta para {question.prompt}</span>
           <textarea
             aria-label={`Resposta para ${question.prompt}`}
+            disabled={finishing}
             value={answers[question.prompt] ?? ""}
             onChange={(event) => {
               const value = event.currentTarget.value;
-              setAnswers((current) => ({ ...current, [question.prompt]: value }));
+              const next = { ...answersRef.current, [question.prompt]: value };
+              answersRef.current = next;
+              writeRitualDraft(session.id, next);
+              setSaveState("dirty");
+              setAnswers(next);
             }}
             rows={7}
             placeholder="Escreva no seu ritmo. Sua resposta é salva enquanto você avança."
@@ -445,16 +493,19 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
         <div className="studio-ritual-save-error" role="alert">
           <p>{actionError}</p>
           {saveState === "conflict"
-            ? <button type="button" onClick={() => void reloadSession()}>Recarregar sessão</button>
+            ? <div className="studio-ritual-save-error__actions">
+              <button className="primary" type="button" onClick={() => void keepLocalDraft()}>Manter meu rascunho</button>
+              <button type="button" onClick={() => void discardLocalDraft()}>Descartar rascunho local</button>
+            </div>
             : <button type="button" onClick={() => void persistAnswers()}>Tentar salvar novamente</button>}
         </div>
       ) : null}
 
       <footer>
-        {questionIndex > 0 ? <button type="button" onClick={() => setQuestionIndex((index) => index - 1)}>Pergunta anterior</button> : <span />}
+        {questionIndex > 0 ? <button type="button" disabled={finishing} onClick={() => setQuestionIndex((index) => index - 1)}>Pergunta anterior</button> : <span />}
         {questionIndex < questions.length - 1
-          ? <button className="primary" type="button" onClick={() => void continueSession()}>Salvar e continuar</button>
-          : <button className="primary" type="button" onClick={() => void finish()}>Concluir ritual</button>}
+          ? <button className="primary" type="button" disabled={finishing} onClick={() => void continueSession()}>Salvar e continuar</button>
+          : <button className="primary" type="button" disabled={finishing} onClick={() => void finish()}>{finishing ? "Concluindo…" : "Concluir ritual"}</button>}
       </footer>
     </article>
   );

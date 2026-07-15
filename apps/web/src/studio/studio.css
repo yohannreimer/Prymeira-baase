@@ -2120,6 +2120,7 @@
 .studio-ritual-question h4 { font-family: var(--font-serif, Georgia, serif); font-size: clamp(24px, 4vw, 36px); font-weight: 400; line-height: 1.2; margin: 0 0 12px; }
 .studio-ritual-save-error { align-items: center; background: var(--danger-bg); border: 1px solid var(--danger-line); border-radius: 8px; display: flex; gap: 12px; justify-content: space-between; padding: 10px 12px; }
 .studio-ritual-save-error p { color: var(--danger-ink); font-size: 12px; line-height: 1.5; margin: 0; }
+.studio-ritual-save-error__actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
 .studio-ritual-complete { display: grid; gap: 10px; padding: 18px 0; }
 .studio-ritual-complete > i { color: var(--accent-ink); font-size: 30px; }

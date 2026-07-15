@@ -171,6 +171,125 @@ describe("StudioRituals", () => {
     await waitFor(() => expect(screen.getByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Salvo"));
   });
 
+  it("drains a newer answer snapshot before finishing when a previous PATCH is still pending", async () => {
+    const user = userEvent.setup();
+    const slowPatch = deferred<Response>();
+    const calls: Array<{ kind: "patch" | "finish"; body: Record<string, unknown> }> = [];
+    let revision = 1;
+    let patchCount = 0;
+    let storedAnswers: Record<string, string> = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as { answers: Record<string, string> };
+        calls.push({ kind: "patch", body });
+        patchCount += 1;
+        if (patchCount === 2) return slowPatch.promise;
+        storedAnswers = { ...storedAnswers, ...body.answers };
+        revision += 1;
+        return response({ session: { ...readySession, status: "in_progress", revision, answersJson: storedAnswers } });
+      }
+      if (url.endsWith("/api/studio/ritual-sessions/session_1/finish") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        calls.push({ kind: "finish", body });
+        revision += 1;
+        return response({ session: {
+          ...readySession,
+          status: "completed",
+          revision,
+          answersJson: storedAnswers,
+          synthesisJson: null,
+          completedAt: "2026-07-14T12:20:00.000Z"
+        } });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "Primeira resposta");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    await screen.findByRole("heading", { name: "O que merece foco?" });
+
+    const finalAnswer = screen.getByRole("textbox", { name: "Resposta para O que merece foco?" });
+    await user.type(finalAnswer, "Versão inicial");
+    await waitFor(() => expect(patchCount).toBe(2), { timeout: 1_500 });
+    await user.type(finalAnswer, " e final");
+    await user.click(screen.getByRole("button", { name: "Concluir ritual" }));
+    expect(calls.some((call) => call.kind === "finish")).toBe(false);
+
+    storedAnswers = { ...storedAnswers, "O que merece foco?": "Versão inicial" };
+    revision += 1;
+    slowPatch.resolve(response({ session: {
+      ...readySession,
+      status: "in_progress",
+      revision,
+      answersJson: storedAnswers
+    } }));
+
+    await screen.findByRole("heading", { name: "Ritual concluído" });
+    const finalPatchIndex = calls.findIndex((call) => call.kind === "patch"
+      && (call.body.answers as Record<string, string>)["O que merece foco?"] === "Versão inicial e final");
+    const finishIndex = calls.findIndex((call) => call.kind === "finish");
+    expect(finalPatchIndex).toBeGreaterThan(1);
+    expect(finishIndex).toBeGreaterThan(finalPatchIndex);
+    expect(calls[finishIndex]!.body.answers).toMatchObject({ "O que merece foco?": "Versão inicial e final" });
+    expect(storedAnswers["O que merece foco?"]).toBe("Versão inicial e final");
+  });
+
+  it("keeps a stale local draft until the owner explicitly merges and saves it", async () => {
+    const user = userEvent.setup();
+    const recoveredPatch = deferred<Response>();
+    let patchCount = 0;
+    let recoveredPayload: { expected_revision: number; answers: Record<string, string> } | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions?limit=1`) && !init?.method) return response({
+        sessions: [{ ...readySession, status: "in_progress", revision: 2, answersJson: { "O que mudou?": "Versão do servidor" } }],
+        nextCursor: null
+      });
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        patchCount += 1;
+        if (patchCount === 1) return response({
+          error: { code: "STUDIO_RITUAL_SESSION_CHANGED", message: "Sessão alterada." }
+        }, 409);
+        recoveredPayload = JSON.parse(String(init.body));
+        return recoveredPatch.promise;
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "Meu rascunho local");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+
+    expect(await screen.findByRole("button", { name: "Manter meu rascunho" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Descartar rascunho local" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toHaveValue("Meu rascunho local");
+    expect(window.localStorage.getItem("baase:studio:ritual-draft:session_1")).toContain("Meu rascunho local");
+
+    await user.click(screen.getByRole("button", { name: "Manter meu rascunho" }));
+    await waitFor(() => expect(recoveredPayload).toEqual({
+      expected_revision: 2,
+      answers: { "O que mudou?": "Meu rascunho local" }
+    }));
+    expect(window.localStorage.getItem("baase:studio:ritual-draft:session_1")).toContain("Meu rascunho local");
+
+    recoveredPatch.resolve(response({ session: {
+      ...readySession,
+      status: "in_progress",
+      revision: 3,
+      answersJson: { "O que mudou?": "Meu rascunho local" }
+    } }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Estado do salvamento do ritual" })).toHaveTextContent("Salvo"));
+    expect(window.localStorage.getItem("baase:studio:ritual-draft:session_1")).toBeNull();
+  });
+
   it("creates a free ritual and only reveals cadence when requested", async () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -236,4 +355,14 @@ function installLocalStorage() {
       get length() { return store.size; }
     }
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
