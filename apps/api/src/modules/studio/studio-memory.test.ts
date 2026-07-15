@@ -172,8 +172,9 @@ describe("Studio semantic memory", () => {
       }),
       now: () => clock
     });
+    await processor.processNext();
     await expect(processor.processNext()).rejects.toThrow("PROVIDER_DOWN");
-    expect((await repository.listIndexJobs(ownerA))[0]).toMatchObject({
+    expect((await repository.listIndexJobs(ownerA))[1]).toMatchObject({
       status: "failed",
       attemptCount: 1,
       lastErrorCode: "PROVIDER_DOWN"
@@ -181,6 +182,34 @@ describe("Studio semantic memory", () => {
     await expect(repository.findDocument(ownerA, document.id)).resolves.toMatchObject({
       bodyText: "continua salvo após edição"
     });
+  });
+
+  it("supersedes an older queued revision before snapshotting the current document", async () => {
+    let clock = fixedNow;
+    const repository = createInMemoryStudioRepository({ now: () => clock });
+    const service = createStudioService(repository, { now: () => clock });
+    const createEmbeddings = vi.fn(constantEmbedder().createEmbeddings);
+    const memory = createInMemoryStudioMemoryIndex({ embedder: { createEmbeddings }, now: () => clock });
+    const document = await service.createDocument(ownerA, "owner_a", input("revisão um obsoleta"));
+    await service.updateDocument(ownerA, "owner_a", document.id, {
+      revision: document.revision,
+      body_text: "revisão dois atual"
+    });
+    await createStudioMemoryIndexProcessor({ repository, memoryIndex: memory, now: () => clock }).processNext();
+    expect(createEmbeddings).not.toHaveBeenCalled();
+    clock = "2026-07-14T12:00:00.001Z";
+    await createStudioMemoryIndexProcessor({ repository, memoryIndex: memory, now: () => clock }).processNext();
+
+    expect(createEmbeddings).toHaveBeenCalledTimes(1);
+    await expect(memory.findRelated(ownerA, { query: "revisão dois", limit: 10 }))
+      .resolves.toEqual([expect.objectContaining({ documentId: document.id })]);
+    expect((await repository.listIndexJobs(ownerA)).map((job) => ({
+      documentRevision: job.documentRevision,
+      status: job.status
+    }))).toEqual([
+      { documentRevision: 1, status: "completed" },
+      { documentRevision: 2, status: "completed" }
+    ]);
   });
 
   it("prevents a stale archive generation from deleting a newer restored index", async () => {

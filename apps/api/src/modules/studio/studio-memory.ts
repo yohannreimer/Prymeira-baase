@@ -288,6 +288,15 @@ export function createStudioMemoryIndexProcessor(options: {
     try {
       const document = await options.repository.findDocument(scope, claimed.documentId);
       if (!document) throw new Error("STUDIO_MEMORY_SOURCE_NOT_FOUND");
+      if (document.revision !== claimed.documentRevision) {
+        const completed = await options.repository.completeIndexJob({
+          ...scope,
+          jobId: claimed.id,
+          claimToken: claimed.claimToken!
+        });
+        if (!completed) throw new Error("STUDIO_MEMORY_INDEX_LEASE_LOST");
+        return { ...claimed, status: "completed", claimToken: null, leaseExpiresAt: null };
+      }
       const snapshot: StudioDocumentVersion = {
         ...scope,
         id: claimed.snapshotId,
