@@ -6,6 +6,12 @@ import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import type { StudioOwnerScope } from "./studio.types";
 import type { StudioAssistantService, StudioSseEvent } from "./studio-assistant.service";
+import {
+  studioOperationDraftSchema,
+  type StudioOperationalLink,
+  type StudioOperationPreview,
+  type StudioOperationsBridge
+} from "./studio-operations-bridge";
 
 const routeId = z.string().trim().min(1).max(200);
 const contextSchema = z.object({
@@ -35,6 +41,10 @@ const suggestionProposalSchema = z.object({
   body_text: z.string().max(200_000)
 }).strict();
 const acceptSuggestionSchema = z.object({ proposal: suggestionProposalSchema.optional() }).strict();
+const operationConfirmSchema = z.object({
+  preview_id: routeId,
+  draft: studioOperationDraftSchema
+}).strict();
 
 function requireStudioScope(request: FastifyRequest): StudioOwnerScope {
   const context = readRequestContext(request);
@@ -42,7 +52,11 @@ function requireStudioScope(request: FastifyRequest): StudioOwnerScope {
   return { workspaceId: context.workspaceId, ownerProfileId: context.profileId };
 }
 
-export async function registerStudioAssistantRoutes(app: FastifyInstance, service: StudioAssistantService) {
+export async function registerStudioAssistantRoutes(
+  app: FastifyInstance,
+  service: StudioAssistantService,
+  operationsBridge?: StudioOperationsBridge
+) {
   app.post("/studio/assistant/turns", async (request, reply) => {
     const scope = requireStudioScope(request);
     emptySchema.parse(request.params);
@@ -112,6 +126,86 @@ export async function registerStudioAssistantRoutes(app: FastifyInstance, servic
       throw assistantRouteError(error);
     }
   });
+
+  if (operationsBridge) {
+    app.post("/studio/suggestions/:suggestionId/operation-preview", async (request, reply) => {
+      const scope = requireStudioScope(request);
+      const params = suggestionParamsSchema.parse(request.params);
+      emptySchema.parse(request.query);
+      const draft = studioOperationDraftSchema.parse(request.body);
+      try {
+        const preview = await operationsBridge.preview(scope, scope.ownerProfileId, params.suggestionId, draft);
+        return reply.status(201).send({ preview: operationPreviewDto(preview) });
+      } catch (error) {
+        throw assistantRouteError(error);
+      }
+    });
+
+    app.post("/studio/suggestions/:suggestionId/operation-confirm", async (request, reply) => {
+      const scope = requireStudioScope(request);
+      const params = suggestionParamsSchema.parse(request.params);
+      emptySchema.parse(request.query);
+      const body = operationConfirmSchema.parse(request.body);
+      const idempotencyKey = readOperationIdempotencyKey(request);
+      try {
+        const current = await operationsBridge.getPreview(scope, body.preview_id);
+        if (current.sourceSuggestionId !== params.suggestionId) throw new Error("STUDIO_OPERATION_PREVIEW_NOT_FOUND");
+        const wasConfirmed = current.status === "confirmed";
+        const link = await operationsBridge.confirm(
+          scope,
+          scope.ownerProfileId,
+          body.preview_id,
+          idempotencyKey,
+          body.draft
+        );
+        return reply.status(wasConfirmed ? 200 : 201).send({ link: operationalLinkDto(link) });
+      } catch (error) {
+        throw assistantRouteError(error);
+      }
+    });
+  }
+}
+
+function readOperationIdempotencyKey(request: FastifyRequest) {
+  const raw = request.headers["idempotency-key"];
+  if (typeof raw !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(raw)) {
+    throw new ApiError(400, "STUDIO_OPERATION_IDEMPOTENCY_KEY_INVALID", "Informe uma chave de confirmação válida.");
+  }
+  return raw;
+}
+
+function operationPreviewDto(preview: StudioOperationPreview) {
+  return {
+    id: preview.id,
+    source_suggestion_id: preview.sourceSuggestionId,
+    source_document_id: preview.sourceDocumentId,
+    resource_type: preview.resourceType,
+    payload: preview.payload,
+    confirmed_payload: preview.confirmedPayload,
+    status: preview.status,
+    expires_at: preview.expiresAt,
+    idempotency_key: preview.idempotencyKey,
+    result_resource_id: preview.resultResourceId,
+    created_at: preview.createdAt,
+    updated_at: preview.updatedAt,
+    confirmed_at: preview.confirmedAt
+  };
+}
+
+function operationalLinkDto(link: StudioOperationalLink) {
+  return {
+    id: link.id,
+    preview_id: link.previewId,
+    source_suggestion_id: link.sourceSuggestionId,
+    source_document_id: link.sourceDocumentId,
+    source_structure_id: link.sourceStructureId,
+    resource_type: link.resourceType,
+    resource_id: link.resourceId,
+    relation_type: link.relationType,
+    created_by_profile_id: link.createdByProfileId,
+    created_at: link.createdAt
+  };
 }
 
 async function* withCleanup<T>(iterable: AsyncIterable<T>, cleanup: () => void) {
@@ -167,15 +261,32 @@ function publicStreamErrorCode(error: unknown) {
 
 function assistantRouteError(error: unknown) {
   if (!(error instanceof Error)) return error;
-  if (["STUDIO_DOCUMENT_NOT_FOUND", "STUDIO_CONVERSATION_NOT_FOUND", "STUDIO_SUGGESTION_NOT_FOUND"].includes(error.message)) {
+  if (["STUDIO_DOCUMENT_NOT_FOUND", "STUDIO_CONVERSATION_NOT_FOUND", "STUDIO_SUGGESTION_NOT_FOUND",
+    "STUDIO_OPERATION_PREVIEW_NOT_FOUND"].includes(error.message)) {
     return new ApiError(404, error.message, "Conteúdo privado do Estúdio não encontrado.");
   }
   if (["STUDIO_DOCUMENT_STALE", "STUDIO_SUGGESTION_ALREADY_DECIDED", "STUDIO_CONVERSATION_DOCUMENT_MISMATCH"].includes(error.message)) {
     return new ApiError(409, error.message, "O conteúdo mudou durante a operação. Atualize e tente novamente.");
   }
   if (["STUDIO_MESSAGE_REQUIRED", "STUDIO_MESSAGE_TOO_LONG", "STUDIO_SUGGESTION_DOCUMENT_REQUIRED",
-    "STUDIO_SELECTED_TEXT_SUGGESTION_UNSUPPORTED"].includes(error.message)) {
+    "STUDIO_SELECTED_TEXT_SUGGESTION_UNSUPPORTED", "STUDIO_OPERATION_PAYLOAD_INVALID",
+    "STUDIO_OPERATION_IDEMPOTENCY_KEY_INVALID"].includes(error.message)) {
     return new ApiError(400, error.message, "Dados inválidos para o copiloto do Estúdio.");
+  }
+  if (error.message === "STUDIO_OPERATION_PREVIEW_EXPIRED") {
+    return new ApiError(410, error.message, "Esta prévia expirou. Gere uma nova antes de confirmar.");
+  }
+  if (["STUDIO_OPERATION_SOURCE_SUGGESTION_NOT_PENDING", "STUDIO_OPERATION_PREVIEW_ALREADY_CONFIRMED",
+    "STUDIO_OPERATION_CONFIRMATION_KEY_CONFLICT", "STUDIO_OPERATION_CONFIRMATION_IN_PROGRESS",
+    "STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED", "STUDIO_OPERATION_CONFIRMATION_FENCE_LOST",
+    "STUDIO_OPERATION_RESOURCE_TYPE_CHANGED"].includes(error.message)) {
+    return new ApiError(409, error.message, "A prévia mudou durante a confirmação. Atualize e tente novamente.");
+  }
+  if (["STUDIO_OPERATION_SOURCE_DOCUMENT_REQUIRED", "STUDIO_OPERATION_AREA_NOT_FOUND",
+    "STUDIO_OPERATION_PERSON_NOT_FOUND", "STUDIO_OPERATION_PERSON_AREA_MISMATCH",
+    "STUDIO_OPERATION_ROLE_NOT_FOUND", "STUDIO_OPERATION_ROLE_AREA_MISMATCH",
+    "STUDIO_OPERATION_PROCESS_NOT_FOUND", "STUDIO_OPERATION_TRAINING_NOT_FOUND"].includes(error.message)) {
+    return new ApiError(422, error.message, "Revise os vínculos operacionais antes de confirmar.");
   }
   if (error.message === "STUDIO_ACTOR_SCOPE_MISMATCH") return forbiddenError();
   return error;

@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -239,6 +239,34 @@ describe("operational schema", () => {
     expect(sql).toContain("add constraint studio_ritual_sessions_synthesis_output_state_ck");
   });
 
+  it("adds owner-scoped idempotent operation previews and durable origin links in migration 18", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() { client.release(); }
+        };
+      }
+    };
+    await ensureOperationalSchema(observedPool);
+    const sql = statements.join("\n").toLowerCase();
+    expect(sql).toContain("create table studio_operation_previews");
+    expect(sql).toContain("create table studio_operational_links");
+    expect(sql).toContain("source_suggestion_id text not null");
+    expect(sql).toContain("confirmed_payload_json jsonb");
+    expect(sql).toContain("idempotency_key text");
+    expect(sql).toContain("result_resource_id text");
+    expect(sql).toContain("claim_token text");
+    expect(sql).toContain("create unique index studio_operation_previews_idempotency_uidx");
+    expect(sql).toContain("unique (workspace_id,owner_profile_id,preview_id)");
+    expect(sql).toContain("create index studio_operational_links_resource_idx");
+  });
+
   it("keeps Studio asset extraction and link snapshot state in migration 9", async () => {
     await ensureOperationalSchema(db);
     const columns = await db.query<{ column_name: string }>(
@@ -316,7 +344,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies Studio migrations 14 through 17, reserves 18 through 19, and keeps additive migrations 20 through 22", async () => {
+  it("applies Studio migrations 14 through 18, reserves 19, and keeps additive migrations 20 through 22", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",
@@ -340,7 +368,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations where version between 14 and 22 order by version"
     );
     expect(versions.rows).toEqual([
-      { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 },
+      { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 },
       { version: 20 }, { version: 21 }, { version: 22 }
     ]);
     const structureColumns = await db.query<{ column_name: string }>(

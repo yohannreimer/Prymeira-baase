@@ -15,9 +15,9 @@ type Migration = {
   sql: string;
 };
 
-// Versions 14–16 are implemented in the approved Studio order. Versions 17–19 remain
-// unavailable to incidental hardening work so upcoming ritual/operations/proactivity state
-// can land additively without renumbering released migrations.
+// Versions 14–18 are implemented in the approved Studio order. Version 19 remains
+// unavailable to incidental hardening work so upcoming proactivity state can land
+// additively without renumbering released migrations.
 export const STUDIO_MIGRATION_LEDGER_RESERVATIONS = Object.freeze({
   14: "studio_relations_and_index_jobs",
   15: "studio_conversations_messages_suggestions_citations",
@@ -1184,6 +1184,78 @@ const migrations: Migration[] = [{
       ON studio_ritual_sessions (workspace_id,owner_profile_id,ritual_id,created_at DESC,id DESC);
     CREATE INDEX studio_ritual_sessions_owner_status_idx
       ON studio_ritual_sessions (workspace_id,owner_profile_id,status,updated_at DESC,id DESC);
+  `
+}, {
+  version: 18,
+  name: "studio_operation_previews_and_links",
+  sql: `
+    CREATE TABLE studio_operation_previews (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      source_suggestion_id TEXT NOT NULL,
+      source_document_id TEXT NOT NULL,
+      resource_type TEXT NOT NULL CHECK (resource_type IN ('task','routine','process','announcement')),
+      payload_json JSONB NOT NULL CHECK (jsonb_typeof(payload_json)='object'),
+      confirmed_payload_json JSONB,
+      status TEXT NOT NULL DEFAULT 'preview'
+        CHECK (status IN ('preview','confirming','confirmed','expired')),
+      expires_at TIMESTAMPTZ NOT NULL,
+      idempotency_key TEXT,
+      result_resource_id TEXT,
+      claim_token TEXT,
+      claim_lease_expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      confirmed_at TIMESTAMPTZ,
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      FOREIGN KEY (workspace_id,owner_profile_id,source_suggestion_id)
+        REFERENCES studio_suggestions(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,owner_profile_id,source_document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE,
+      CHECK (jsonb_typeof(confirmed_payload_json)='object' OR confirmed_payload_json IS NULL),
+      CHECK ((claim_token IS NULL)=(claim_lease_expires_at IS NULL)),
+      CHECK (expires_at > created_at),
+      CHECK (
+        (status='preview' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
+          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
+        OR (status='confirming' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
+          AND result_resource_id IS NULL AND claim_token IS NOT NULL AND confirmed_at IS NULL)
+        OR (status='confirmed' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
+          AND result_resource_id IS NOT NULL AND claim_token IS NULL AND confirmed_at IS NOT NULL)
+        OR (status='expired' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
+          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
+      )
+    );
+
+    CREATE TABLE studio_operational_links (
+      id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      preview_id TEXT NOT NULL,
+      source_suggestion_id TEXT NOT NULL,
+      source_document_id TEXT NOT NULL,
+      source_structure_id TEXT,
+      resource_type TEXT NOT NULL CHECK (resource_type IN ('task','routine','process','announcement')),
+      resource_id TEXT NOT NULL,
+      relation_type TEXT NOT NULL DEFAULT 'created'
+        CHECK (relation_type IN ('references','informed','created')),
+      created_by_profile_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (workspace_id,owner_profile_id,id),
+      UNIQUE (workspace_id,owner_profile_id,preview_id),
+      UNIQUE (workspace_id,owner_profile_id,resource_type,resource_id,relation_type)
+    );
+
+    CREATE UNIQUE INDEX studio_operation_previews_idempotency_uidx
+      ON studio_operation_previews (workspace_id,owner_profile_id,idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX studio_operation_previews_owner_status_idx
+      ON studio_operation_previews (workspace_id,owner_profile_id,status,expires_at,id);
+    CREATE INDEX studio_operational_links_source_idx
+      ON studio_operational_links (workspace_id,owner_profile_id,source_document_id,created_at DESC,id DESC);
+    CREATE INDEX studio_operational_links_resource_idx
+      ON studio_operational_links (workspace_id,owner_profile_id,resource_type,resource_id);
   `
 }, {
   version: 20,

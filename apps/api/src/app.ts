@@ -48,6 +48,11 @@ import { createStudioContextBuilder } from "./modules/studio/studio-context-buil
 import { createStudioAssistantService } from "./modules/studio/studio-assistant.service";
 import { createStudioRitualService } from "./modules/studio/studio-ritual.service";
 import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
+import {
+  createInMemoryStudioOperationsStore,
+  createPostgresStudioOperationsStore,
+  createStudioOperationsBridge
+} from "./modules/studio/studio-operations-bridge";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import type { OperationalPool } from "./db/operational-repository-support";
 import {
@@ -174,6 +179,19 @@ export function buildApp(options: BuildAppOptions = {}) {
     harness: aiHarness,
     contextBuilder: studioContextBuilder,
     memoryIndex: studioMemoryIndex,
+    now: options.now
+  });
+  const studioOperationsStore = options.studioMemoryPool
+    ? createPostgresStudioOperationsStore(options.studioMemoryPool)
+    : createInMemoryStudioOperationsStore({ now: options.now ? () => options.now!().toISOString() : undefined });
+  const studioOperationsBridge = createStudioOperationsBridge({
+    studioRepository,
+    operationsStore: studioOperationsStore,
+    companyRepository,
+    routineRepository,
+    processRepository,
+    announcementRepository,
+    trainingRepository,
     now: options.now
   });
   const studioAssetProcessor = createStudioAssetProcessor({
@@ -355,7 +373,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     trainingRepository
   }));
   app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex, studioRitualService));
-  app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService));
+  app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,
