@@ -21,7 +21,7 @@ export function createDefaultAiProvider(options: CreateDefaultAiProviderOptions 
     ? createDeepgramProvider({ apiKey: deepgramApiKey })
     : createMockAiProvider();
 
-  if (options.mode === "production" && options.studioEnabled && !openAiApiKey) {
+  if (options.mode === "production" && !openAiApiKey) {
     return createUnavailableAiProvider();
   }
 

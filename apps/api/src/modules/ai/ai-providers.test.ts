@@ -115,10 +115,9 @@ describe("Mock AI provider", () => {
 });
 
 describe("Default AI provider", () => {
-  it("rejects Studio AI work in production when OpenAI is unavailable", async () => {
+  it("rejects all AI work in production when OpenAI is unavailable", async () => {
     const provider = createDefaultAiProvider({
       mode: "production",
-      studioEnabled: true,
       openAiApiKey: undefined
     });
 
