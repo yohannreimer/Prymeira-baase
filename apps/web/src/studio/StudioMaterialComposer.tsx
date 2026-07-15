@@ -241,6 +241,10 @@ function StudioMaterialComposerSession({
 
   function shouldManageTerminalFocus() {
     const active = document.activeElement;
+    const initialFocus = operationFocusRef.current?.initialFocus;
+    if (active && active === initialFocus && active !== document.body && !composerRef.current?.contains(active)) {
+      return false;
+    }
     return !active || active === document.body || Boolean(composerRef.current?.contains(active));
   }
 
@@ -276,7 +280,10 @@ function StudioMaterialComposerSession({
         );
       if (mountedRef.current) {
         if (shouldManageTerminalFocus()) {
-          terminalFocusIntentRef.current = { kind: "origin", origin: material.kind };
+          terminalFocusIntentRef.current = {
+            kind: "origin",
+            origin: operationFocusRef.current?.origin ?? material.kind
+          };
         }
         setPendingMaterial(null);
         setFailed(false);

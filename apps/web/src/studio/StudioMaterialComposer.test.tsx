@@ -577,6 +577,23 @@ describe("StudioMaterialComposer", () => {
     expect(editor).toHaveFocus();
   });
 
+  it("focuses recovery after a failed link capture when focus was lost", async () => {
+    const user = userEvent.setup();
+    const request = deferred<StudioAsset>();
+    renderComposer({ attachLink: vi.fn(() => request.promise) });
+
+    await user.click(screen.getByRole("button", { name: "Capturar link" }));
+    await user.type(screen.getByRole("textbox", { name: "Endereço do link" }), "https://example.com");
+    await user.click(screen.getByRole("button", { name: "Capturar este link" }));
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.body).toHaveFocus();
+    await act(async () => request.reject(new Error("offline")));
+
+    expect(await screen.findByRole("button", { name: "Tentar novamente" })).toHaveFocus();
+    document.body.removeAttribute("tabindex");
+  });
+
   it.each([
     ["file", "studio-material-file-input", "Adicionar arquivo", "material.txt", "text/plain"],
     ["image", "studio-material-image-input", "Adicionar imagem", "quadro.png", "image/png"],

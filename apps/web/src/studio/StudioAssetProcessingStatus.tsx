@@ -92,6 +92,7 @@ export default function StudioAssetProcessingStatus({
   const insertionCallbackRef = useRef(onInsertTranscript);
   const assetChangeCallbackRef = useRef(onAssetChange);
   const currentRef = useRef(asset);
+  assetChangeCallbackRef.current = onAssetChange;
 
   function resetInsertion() {
     insertionGenerationRef.current += 1;
@@ -117,10 +118,6 @@ export default function StudioAssetProcessingStatus({
   useEffect(() => {
     adoptCurrent(asset);
   }, [asset]);
-
-  useEffect(() => {
-    assetChangeCallbackRef.current = onAssetChange;
-  }, [onAssetChange]);
 
   useEffect(() => {
     if (insertionCallbackRef.current === onInsertTranscript) return;

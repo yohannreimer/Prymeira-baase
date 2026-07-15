@@ -364,6 +364,45 @@ describe("StudioAssetProcessingStatus", () => {
     expect(onAssetChange).toHaveBeenCalledWith(ready);
   });
 
+  it("uses the latest asset change callback when an in-flight poll resolves", async () => {
+    const request = deferred<StudioAsset>();
+    const firstCallback = vi.fn();
+    const latestCallback = vi.fn();
+    const pending = asset({ updatedAt: "2026-07-13T12:01:00.000Z" });
+    const ready = asset({
+      extractionStatus: "ready",
+      extractedText: "Atualizado.",
+      updatedAt: "2026-07-13T12:02:00.000Z"
+    });
+    const getStatus = vi.fn(() => request.promise);
+    const getDownload = vi.fn(async () => ({ url: "https://private.example/audio", expiresInSeconds: 600 }));
+    const pollDelays = [0] as const;
+    const view = render(
+      <StudioAssetProcessingStatus
+        asset={pending}
+        getStatus={getStatus}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+        onAssetChange={firstCallback}
+      />
+    );
+    await waitFor(() => expect(getStatus).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <StudioAssetProcessingStatus
+        asset={pending}
+        getStatus={getStatus}
+        getDownload={getDownload}
+        pollDelays={pollDelays}
+        onAssetChange={latestCallback}
+      />
+    );
+    await act(async () => request.resolve(ready));
+
+    expect(firstCallback).not.toHaveBeenCalled();
+    expect(latestCallback).toHaveBeenCalledWith(ready);
+  });
+
   it("offers transcript insertion only for ready audio with non-empty text and a callback", () => {
     const onInsertTranscript = vi.fn(() => true);
     const getDownload = vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined));
