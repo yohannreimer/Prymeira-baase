@@ -44,7 +44,7 @@ describe("Studio proactivity service", () => {
         { ...ownerB, ritualId: "ritual_disabled", title: "Outro dono", scheduledFor: "2026-07-14T10:00:00.000Z" }
       ]
     });
-    const startSession = vi.fn(async () => ({ status: "ready" as const }));
+    const startSession = vi.fn(async (_scope: typeof ownerA, _ritualId: string) => ({ status: "ready" as const }));
     const service = createStudioProactivityService({ store, ritualService: { startSession }, now: () => now });
     await service.updateSettings(ownerA, { ritualReminder: true });
 
@@ -90,6 +90,75 @@ describe("Studio proactivity service", () => {
     await expect(service.runDuePreparations(current, 10)).resolves.toEqual({ claimed: 0, prepared: 0, failed: 0 });
     current = new Date("2026-07-14T12:06:00.000Z");
     await expect(service.runDuePreparations(current, 10)).resolves.toEqual({ claimed: 1, prepared: 0, failed: 1 });
+  });
+
+  it("gives each owner one ritual claim before consuming another owner's backlog", async () => {
+    const store = createInMemoryStudioProactivityStore({
+      now: () => now.toISOString(),
+      dueRituals: [
+        { ...ownerA, ritualId: "ritual_a1", title: "A1", scheduledFor: "2026-07-14T09:00:00.000Z" },
+        { ...ownerA, ritualId: "ritual_a2", title: "A2", scheduledFor: "2026-07-14T09:01:00.000Z" },
+        { ...ownerB, ritualId: "ritual_b1", title: "B1", scheduledFor: "2026-07-14T10:00:00.000Z" }
+      ]
+    });
+    const startSession = vi.fn(async (_scope: typeof ownerA, _ritualId: string) => ({ status: "ready" as const }));
+    const service = createStudioProactivityService({ store, ritualService: { startSession }, now: () => now });
+    await service.updateSettings(ownerA, { ritualReminder: true });
+    await service.updateSettings(ownerB, { ritualReminder: true });
+
+    await expect(service.runDuePreparations(now, 2)).resolves.toEqual({ claimed: 2, prepared: 2, failed: 0 });
+    expect(startSession.mock.calls.map(([scope]) => scope.ownerProfileId)).toEqual(["owner_a", "owner_b"]);
+  });
+
+  it("immediately invalidates active work and never reclaims failed work after its signal is disabled", async () => {
+    let current = new Date(now);
+    const store = createInMemoryStudioProactivityStore({
+      now: () => current.toISOString(),
+      dueRituals: [
+        { ...ownerA, ritualId: "ritual_active", title: "Ativo", scheduledFor: "2026-07-14T10:00:00.000Z" },
+        { ...ownerA, ritualId: "ritual_failed", title: "Falho", scheduledFor: "2026-07-14T10:01:00.000Z" }
+      ]
+    });
+    const startSession = vi.fn(async (_scope, ritualId: string) => {
+      if (ritualId === "ritual_failed") throw new Error("provider unavailable");
+      return { status: "ready" as const };
+    });
+    const service = createStudioProactivityService({ store, ritualService: { startSession }, now: () => current });
+    await service.updateSettings(ownerA, { ritualReminder: true });
+    await service.runDuePreparations(current, 2);
+    await service.runDuePreparations(current, 2);
+    await expect(service.listSignals(ownerA, 10)).resolves.toHaveLength(1);
+
+    await service.updateSettings(ownerA, { ritualReminder: false });
+    await expect(service.listSignals(ownerA, 10)).resolves.toEqual([]);
+    current = new Date("2026-07-14T13:00:00.000Z");
+    await expect(service.runDuePreparations(current, 10)).resolves.toEqual({ claimed: 0, prepared: 0, failed: 0 });
+    expect(startSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("cannot publish a preparation that finishes after ritual reminders are disabled", async () => {
+    let release!: () => void;
+    const preparation = new Promise<void>((resolve) => { release = resolve; });
+    const store = createInMemoryStudioProactivityStore({
+      now: () => now.toISOString(),
+      dueRituals: [
+        { ...ownerA, ritualId: "ritual_in_flight", title: "Em preparo", scheduledFor: "2026-07-14T10:00:00.000Z" }
+      ]
+    });
+    const startSession = vi.fn(async () => {
+      await preparation;
+      return { status: "ready" as const };
+    });
+    const service = createStudioProactivityService({ store, ritualService: { startSession }, now: () => now });
+    await service.updateSettings(ownerA, { ritualReminder: true });
+
+    const running = service.runDuePreparations(now, 1);
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
+    await service.updateSettings(ownerA, { ritualReminder: false });
+    release();
+
+    await expect(running).resolves.toEqual({ claimed: 1, prepared: 0, failed: 0 });
+    await expect(service.listSignals(ownerA, 10)).resolves.toEqual([]);
   });
 
   it("snoozes and dismisses only the owner's signal without changing ritual cadence", async () => {

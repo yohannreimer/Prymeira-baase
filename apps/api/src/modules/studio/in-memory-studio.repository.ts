@@ -1035,10 +1035,11 @@ export function createInMemoryStudioRepository(
         && intent.ownerProfileId === scope.ownerProfileId).map(cloneUploadIntent);
     },
 
-    async claimNextAssetUploadCleanup(at, leaseMs = 120_000) {
+    async claimNextAssetUploadCleanup(at, leaseMs = 120_000, excludeOwnerKeys = []) {
       const timestamp = normalizeTimestamp(at);
-      const intent = assetUploadIntents.filter((item) =>
-        ((item.status === "cleanup_pending" || item.status === "failed")
+      const intent = assetUploadIntents
+        .filter((item) => !isExcludedOwner(item, excludeOwnerKeys))
+        .filter((item) => ((item.status === "cleanup_pending" || item.status === "failed")
           && item.nextAttemptAt !== null && item.nextAttemptAt <= timestamp)
         || (item.status === "uploading" && item.uploadLeaseExpiresAt !== null
           && item.uploadLeaseExpiresAt <= timestamp)
@@ -1100,7 +1101,7 @@ export function createInMemoryStudioRepository(
       return true;
     },
 
-    async claimNextAsset(at, leaseMs = 120_000) {
+    async claimNextAsset(at, leaseMs = 120_000, excludeOwnerKeys = []) {
       const timestamp = normalizeTimestamp(at);
       for (const item of assets) {
         if (item.lifecycleStatus === "active" && item.extractionStatus === "processing"
@@ -1115,6 +1116,7 @@ export function createInMemoryStudioRepository(
         }
       }
       const asset = assets
+        .filter((item) => !isExcludedOwner(item, excludeOwnerKeys))
         .filter((item) => item.lifecycleStatus === "active")
         .filter((item) => item.attemptCount < STUDIO_ASSET_MAX_ATTEMPTS)
         .filter((item) => item.extractionStatus === "pending"
@@ -1257,9 +1259,10 @@ export function createInMemoryStudioRepository(
         .map(cloneCleanupJob);
     },
 
-    async claimNextAssetCleanup(at, leaseMs = 120_000) {
+    async claimNextAssetCleanup(at, leaseMs = 120_000, excludeOwnerKeys = []) {
       const timestamp = normalizeTimestamp(at);
       const job = assetCleanupJobs
+        .filter((item) => !isExcludedOwner(item, excludeOwnerKeys))
         .filter((item) => item.status === "pending"
           || (item.status === "failed" && item.nextAttemptAt !== null && item.nextAttemptAt <= timestamp)
           || (item.status === "processing" && item.leaseExpiresAt !== null && item.leaseExpiresAt <= timestamp))
@@ -1383,7 +1386,7 @@ export function createInMemoryStudioRepository(
         .map(cloneIndexJob);
     },
 
-    async claimNextIndexJob(at, leaseMs = 60_000, maxAttempts = 5) {
+    async claimNextIndexJob(at, leaseMs = 60_000, maxAttempts = 5, excludeOwnerKeys = []) {
       const timestamp = normalizeTimestamp(at);
       const timestampMs = new Date(timestamp).getTime();
       for (const job of indexJobs) {
@@ -1401,6 +1404,7 @@ export function createInMemoryStudioRepository(
         }
       }
       const eligible = indexJobs
+        .filter((job) => !isExcludedOwner(job, excludeOwnerKeys))
         .filter((job) => job.attemptCount < maxAttempts)
         .filter((job) => (job.status === "pending" || job.status === "failed")
           ? job.nextAttemptAt !== null && new Date(job.nextAttemptAt).getTime() <= timestampMs
@@ -1638,4 +1642,11 @@ export function createInMemoryStudioRepository(
       return { suggestion: cloneSuggestion(suggestion), version: null };
     }
   };
+}
+
+function isExcludedOwner(
+  value: { workspaceId: string; ownerProfileId: string },
+  excludeOwnerKeys: readonly string[]
+) {
+  return excludeOwnerKeys.includes(`${value.workspaceId}/${value.ownerProfileId}`);
 }

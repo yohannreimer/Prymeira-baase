@@ -1539,15 +1539,16 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(uploadIntentFromRow);
     },
 
-    async claimNextAssetUploadCleanup(now, leaseMs = 120_000) {
+    async claimNextAssetUploadCleanup(now, leaseMs = 120_000, excludeOwnerKeys = []) {
       return withOperationalTransaction(db, async (client) => {
         const candidate = await client.query<StudioAssetUploadIntentRow>(
           `SELECT * FROM studio_asset_upload_intents
            WHERE ((status IN ('cleanup_pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
              OR (status='uploading' AND upload_lease_expires_at IS NOT NULL AND upload_lease_expires_at <= $1)
              OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1))
+             AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($2::text[]))
            ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1`,
-          [now]
+          [now, excludeOwnerKeys]
         );
         const intent = candidate.rows[0];
         if (!intent) return null;
@@ -1624,7 +1625,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return Boolean(result.rows[0]);
     },
 
-    async claimNextAsset(now, leaseMs = 120_000) {
+    async claimNextAsset(now, leaseMs = 120_000, excludeOwnerKeys = []) {
       const claimToken = generatedId("studio_asset_claim");
       const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioAssetRow>(
@@ -1641,7 +1642,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
              extraction_status='pending'
              OR (extraction_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
              OR (extraction_status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
-           )
+           ) AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($5::text[]))
            ORDER BY created_at ASC,id ASC
            FOR UPDATE SKIP LOCKED
            LIMIT 1
@@ -1658,7 +1659,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            AND asset.owner_profile_id=candidate.owner_profile_id
            AND asset.id=candidate.id
          RETURNING asset.*`,
-        [now, claimToken, leaseExpiresAt, STUDIO_ASSET_MAX_ATTEMPTS]
+        [now, claimToken, leaseExpiresAt, STUDIO_ASSET_MAX_ATTEMPTS, excludeOwnerKeys]
       );
       return result.rows[0] ? assetFromRow(result.rows[0]) : null;
     },
@@ -1770,15 +1771,16 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(cleanupJobFromRow);
     },
 
-    async claimNextAssetCleanup(now, leaseMs = 120_000) {
+    async claimNextAssetCleanup(now, leaseMs = 120_000, excludeOwnerKeys = []) {
       const claimToken = generatedId("studio_cleanup_claim");
       const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioAssetCleanupJobRow>(
         `WITH candidate AS (
            SELECT workspace_id,owner_profile_id,id FROM studio_asset_cleanup_jobs
-           WHERE status='pending'
+           WHERE (status='pending'
              OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
              OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
+           ) AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($4::text[]))
            ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
          )
          UPDATE studio_asset_cleanup_jobs job SET status='processing',attempt_count=job.attempt_count+1,
@@ -1787,7 +1789,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
          WHERE job.workspace_id=candidate.workspace_id AND job.owner_profile_id=candidate.owner_profile_id
            AND job.id=candidate.id
          RETURNING job.*`,
-        [now, claimToken, leaseExpiresAt]
+        [now, claimToken, leaseExpiresAt, excludeOwnerKeys]
       );
       return result.rows[0] ? cleanupJobFromRow(result.rows[0]) : null;
     },
@@ -1906,7 +1908,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return result.rows.map(indexJobFromRow);
     },
 
-    async claimNextIndexJob(now, leaseMs = 60_000, maxAttempts = 5) {
+    async claimNextIndexJob(now, leaseMs = 60_000, maxAttempts = 5, excludeOwnerKeys = []) {
       const claimToken = generatedId("studio_index_claim");
       const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
       const result = await db.query<StudioIndexJobRow>(
@@ -1923,7 +1925,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            WHERE attempt_count < $4 AND (
              (status IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
              OR (status='processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1)
-           )
+           ) AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($5::text[]))
            ORDER BY created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT 1
          )
          UPDATE studio_index_jobs job SET status='processing',attempt_count=job.attempt_count+1,
@@ -1932,7 +1934,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
          WHERE job.workspace_id=candidate.workspace_id AND job.owner_profile_id=candidate.owner_profile_id
            AND job.id=candidate.id
          RETURNING job.*`,
-        [now, claimToken, leaseExpiresAt, maxAttempts]
+        [now, claimToken, leaseExpiresAt, maxAttempts, excludeOwnerKeys]
       );
       return result.rows[0] ? indexJobFromRow(result.rows[0]) : null;
     },

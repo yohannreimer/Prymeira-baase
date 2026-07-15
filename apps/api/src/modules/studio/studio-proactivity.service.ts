@@ -145,13 +145,13 @@ export function createStudioProactivityService(options: {
           if (!["ready", "in_progress", "completed"].includes(session.status)) {
             throw new Error("STUDIO_RITUAL_PREPARATION_NOT_READY");
           }
-          await options.store.completeRitualPreparation({
+          const signal = await options.store.completeRitualPreparation({
             claim,
             title: `${claim.title} pronta para você`,
             reason: "Este sinal apareceu porque você habilitou lembretes de ritual e chegou o horário configurado.",
             now: nowIso
           });
-          prepared += 1;
+          if (signal.status === "active") prepared += 1;
         } catch (error) {
           failed += 1;
           await options.store.failRitualPreparation({
@@ -233,11 +233,20 @@ export function createInMemoryStudioProactivityStore(options: {
     async saveSettings(input) {
       const value = structuredClone(input);
       settings.set(scopeKey(input), value);
+      const at = clock();
+      for (const signal of signals) {
+        if (sameScope(signal, input) && signal.status === "active" && !signalEnabled(value, signal.type)) {
+          signal.status = "dismissed";
+          signal.dismissedAt = at;
+          signal.updatedAt = at;
+        }
+      }
       return structuredClone(value);
     },
 
     async claimDueRituals(input) {
       const claimed: StudioDueRitualClaim[] = [];
+      const claimedOwners = new Set<string>();
       const ordered = [...dueRituals].sort((left, right) => (
         left.scheduledFor.localeCompare(right.scheduledFor)
         || scopeKey(left).localeCompare(scopeKey(right))
@@ -247,6 +256,7 @@ export function createInMemoryStudioProactivityStore(options: {
         if (claimed.length >= input.limit) break;
         const ownerSettings = settings.get(scopeKey(ritual));
         if (!ownerSettings?.ritualReminder) continue;
+        if (claimedOwners.has(scopeKey(ritual))) continue;
         if (Date.parse(ritual.scheduledFor) > Date.parse(input.now)) continue;
         if (ritual.nextAttemptAt && Date.parse(ritual.nextAttemptAt) > Date.parse(input.now)) continue;
         if (ritual.claimLeaseExpiresAt && Date.parse(ritual.claimLeaseExpiresAt) > Date.parse(input.now)) continue;
@@ -263,6 +273,7 @@ export function createInMemoryStudioProactivityStore(options: {
           claimToken: input.claimToken,
           attemptCount: ritual.attemptCount
         });
+        claimedOwners.add(scopeKey(ritual));
       }
       return structuredClone(claimed);
     },
@@ -271,6 +282,7 @@ export function createInMemoryStudioProactivityStore(options: {
       const ritual = requireClaimedDueRitual(dueRituals, input.claim);
       const existing = signals.find((signal) => sameRitualSignal(signal, input.claim));
       if (existing) return structuredClone(existing);
+      const enabled = settings.get(scopeKey(input.claim))?.ritualReminder === true;
       const signal: StudioProactiveSignal = {
         workspaceId: input.claim.workspaceId,
         ownerProfileId: input.claim.ownerProfileId,
@@ -280,11 +292,11 @@ export function createInMemoryStudioProactivityStore(options: {
         sourceScheduledFor: input.claim.scheduledFor,
         title: input.title,
         reason: input.reason,
-        status: "active",
+        status: enabled ? "active" : "dismissed",
         nextReminderAt: input.now,
         createdAt: input.now,
         updatedAt: input.now,
-        dismissedAt: null
+        dismissedAt: enabled ? null : input.now
       };
       signals.push(signal);
       ritual.claimToken = null;
@@ -303,8 +315,10 @@ export function createInMemoryStudioProactivityStore(options: {
     },
 
     async listSignals(scope, input) {
+      const ownerSettings = settings.get(scopeKey(scope));
       return signals
         .filter((signal) => sameScope(signal, scope))
+        .filter((signal) => Boolean(ownerSettings) && signalEnabled(ownerSettings!, signal.type))
         .filter((signal) => signal.status === "active" && Date.parse(signal.nextReminderAt) <= Date.parse(input.now))
         .sort((left, right) => left.nextReminderAt.localeCompare(right.nextReminderAt) || left.id.localeCompare(right.id))
         .slice(0, input.limit)
@@ -312,7 +326,9 @@ export function createInMemoryStudioProactivityStore(options: {
     },
 
     async findSignal(scope, signalId) {
-      const signal = signals.find((candidate) => candidate.id === signalId && sameScope(candidate, scope));
+      const ownerSettings = settings.get(scopeKey(scope));
+      const signal = signals.find((candidate) => candidate.id === signalId && sameScope(candidate, scope)
+        && candidate.status === "active" && Boolean(ownerSettings) && signalEnabled(ownerSettings!, candidate.type));
       return signal ? structuredClone(signal) : null;
     },
 
@@ -386,6 +402,17 @@ function scopeOf(value: StudioOwnerScope): StudioOwnerScope {
 
 function scopeKey(value: StudioOwnerScope) {
   return `${value.workspaceId}\u0000${value.ownerProfileId}`;
+}
+
+function signalEnabled(settings: StudioProactivitySettings, type: StudioProactivitySignalType) {
+  switch (type) {
+    case "ritual_reminder": return settings.ritualReminder;
+    case "stale_goal": return settings.staleGoal;
+    case "recurring_theme": return settings.recurringTheme;
+    case "decision_review": return settings.decisionReview;
+    case "operational_change": return settings.operationalChange;
+    case "focused_content": return settings.focusedContent;
+  }
 }
 
 function sameScope(left: StudioOwnerScope, right: StudioOwnerScope) {

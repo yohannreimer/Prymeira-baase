@@ -572,7 +572,7 @@ export type StudioRepository = {
     now: string;
   }): Promise<StudioAsset | null>;
   listAssetUploadIntents(scope: StudioOwnerScope): Promise<StudioAssetUploadIntent[]>;
-  claimNextAssetUploadCleanup(now: string, leaseMs?: number): Promise<StudioAssetUploadIntent | null>;
+  claimNextAssetUploadCleanup(now: string, leaseMs?: number, excludeOwnerKeys?: readonly string[]): Promise<StudioAssetUploadIntent | null>;
   resolveClaimedAssetUploadIntent(input: {
     scope: StudioOwnerScope;
     intentId: string;
@@ -590,13 +590,13 @@ export type StudioRepository = {
     intentId: string;
     claimToken: string;
   }): Promise<boolean>;
-  claimNextAsset(now: string, leaseMs?: number): Promise<StudioAsset | null>;
+  claimNextAsset(now: string, leaseMs?: number, excludeOwnerKeys?: readonly string[]): Promise<StudioAsset | null>;
   finishAssetProcessing(input: FinishStudioAssetProcessing): Promise<StudioAsset | null>;
   retryAssetProcessing(scope: StudioOwnerScope, assetId: string): Promise<StudioAsset | null>;
   tombstoneAssetForCleanup(scope: StudioOwnerScope, assetId: string): Promise<StudioAssetCleanupJob | null>;
   enqueueOrphanAssetCleanup(input: StudioOwnerScope & { objectKey: string }): Promise<StudioAssetCleanupJob>;
   listAssetCleanupJobs(scope: StudioOwnerScope): Promise<StudioAssetCleanupJob[]>;
-  claimNextAssetCleanup(now: string, leaseMs?: number): Promise<StudioAssetCleanupJob | null>;
+  claimNextAssetCleanup(now: string, leaseMs?: number, excludeOwnerKeys?: readonly string[]): Promise<StudioAssetCleanupJob | null>;
   claimAssetCleanup(scope: StudioOwnerScope, jobId: string, now: string, leaseMs?: number): Promise<StudioAssetCleanupJob | null>;
   failAssetCleanup(input: {
     scope: StudioOwnerScope;
@@ -618,7 +618,7 @@ export type StudioRepository = {
   }): Promise<StudioRelation>;
   listRelations(scope: StudioOwnerScope, documentId?: string): Promise<StudioRelation[]>;
   listIndexJobs(scope: StudioOwnerScope): Promise<StudioIndexJob[]>;
-  claimNextIndexJob(now: string, leaseMs?: number, maxAttempts?: number): Promise<StudioIndexJob | null>;
+  claimNextIndexJob(now: string, leaseMs?: number, maxAttempts?: number, excludeOwnerKeys?: readonly string[]): Promise<StudioIndexJob | null>;
   renewIndexJobLease(input: StudioOwnerScope & {
     jobId: string;
     claimToken: string;

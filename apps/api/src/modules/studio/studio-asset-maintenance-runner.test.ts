@@ -1,9 +1,69 @@
 import { describe, expect, it, vi } from "vitest";
 import { createStudioAssetMaintenanceRunner } from "./studio-asset-maintenance-runner";
+import { tagStudioMaintenanceFailure } from "./studio-maintenance-budget";
 
 const idle = { processNext: vi.fn(async () => null) };
 
 describe("Studio asset maintenance runner", () => {
+  it("gives every owner a turn in every private queue before filling the batch", async () => {
+    const claimed: Record<string, string[]> = {};
+    const fairProcessor = (name: string) => {
+      const backlog = ["owner_a", "owner_a", "owner_a", "owner_b"];
+      claimed[name] = [];
+      return {
+        async processNext(_signal?: AbortSignal, budget?: { excludeOwnerKeys?: readonly string[] }) {
+          const index = backlog.findIndex((ownerProfileId) => !budget?.excludeOwnerKeys?.includes(`workspace/${ownerProfileId}`));
+          if (index < 0) return null;
+          const [ownerProfileId] = backlog.splice(index, 1);
+          claimed[name]!.push(ownerProfileId!);
+          return { workspaceId: "workspace", ownerProfileId };
+        }
+      };
+    };
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: fairProcessor("asset"),
+      cleanupProcessor: fairProcessor("cleanup"),
+      uploadCleanupProcessor: fairProcessor("upload-cleanup"),
+      memoryProcessor: fairProcessor("index"),
+      logger: { error: vi.fn() },
+      maxItemsPerProcessor: 3,
+      scavenge: vi.fn(async () => undefined)
+    });
+
+    await runner.runOnce();
+    for (const queue of Object.values(claimed)) expect(queue.slice(0, 2)).toEqual(["owner_a", "owner_b"]);
+  });
+
+  it("isolates a failed owner and still gives the next owner a turn", async () => {
+    const backlog = ["owner_a", "owner_a", "owner_b"];
+    const claimed: string[] = [];
+    const processor = {
+      async processNext(_signal?: AbortSignal, budget?: { excludeOwnerKeys?: readonly string[] }) {
+        const index = backlog.findIndex((ownerProfileId) => !budget?.excludeOwnerKeys?.includes(`workspace/${ownerProfileId}`));
+        if (index < 0) return null;
+        const [ownerProfileId] = backlog.splice(index, 1) as [string];
+        claimed.push(ownerProfileId);
+        const scope = { workspaceId: "workspace", ownerProfileId };
+        if (claimed.length === 1) throw tagStudioMaintenanceFailure(new Error("broken owner item"), scope);
+        return scope;
+      }
+    };
+    const logger = { error: vi.fn() };
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: processor,
+      cleanupProcessor: idle,
+      uploadCleanupProcessor: idle,
+      logger,
+      maxItemsPerProcessor: 2,
+      scavenge: vi.fn(async () => undefined)
+    });
+
+    await runner.runOnce();
+
+    expect(claimed).toEqual(["owner_a", "owner_b"]);
+    expect(logger.error).toHaveBeenCalledWith(expect.any(Error), "Studio asset extraction maintenance failed");
+  });
+
   it("drains optional semantic-memory and private-data reconciliation with Studio maintenance", async () => {
     const memoryProcessor = { processNext: vi.fn(async () => null) };
     const portabilityProcessor = { processNext: vi.fn(async () => null) };

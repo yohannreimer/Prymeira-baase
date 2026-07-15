@@ -1,4 +1,5 @@
 import type { ObjectStorage } from "../../storage/object-storage";
+import { tagStudioMaintenanceFailure, type StudioMaintenanceClaimBudget } from "./studio-maintenance-budget";
 import type { StudioAssetCleanupJob, StudioOwnerScope, StudioRepository } from "./studio.types";
 
 export function createStudioAssetCleanupProcessor(options: {
@@ -10,9 +11,9 @@ export function createStudioAssetCleanupProcessor(options: {
   const now = options.now ?? (() => new Date().toISOString());
   const leaseMs = options.leaseMs ?? 120_000;
   return {
-    async processNext(signal?: AbortSignal): Promise<StudioAssetCleanupJob | null> {
+    async processNext(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<StudioAssetCleanupJob | null> {
       throwIfAborted(signal);
-      const job = await options.repository.claimNextAssetCleanup(now(), leaseMs);
+      const job = await options.repository.claimNextAssetCleanup(now(), leaseMs, budget?.excludeOwnerKeys);
       if (!job) return null;
       return await runClaimedJob(job, false, signal) ? job : null;
     },
@@ -57,7 +58,7 @@ export function createStudioAssetCleanupProcessor(options: {
       return completed;
     } catch (error) {
       if (suppressErrors) return false;
-      throw error;
+      throw tagStudioMaintenanceFailure(error, scope);
     }
   }
 }

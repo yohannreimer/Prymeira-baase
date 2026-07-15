@@ -1,6 +1,7 @@
 import type { AiHarness } from "../ai/ai.types";
 import type { ObjectStorage } from "../../storage/object-storage";
 import { STUDIO_EXTRACTED_TEXT_MAX_CHARACTERS } from "./studio-link-fetcher";
+import { tagStudioMaintenanceFailure, type StudioMaintenanceClaimBudget } from "./studio-maintenance-budget";
 import { createIsolatedPdfExtractor, type StudioPdfExtraction } from "./studio-pdf-worker";
 import { STUDIO_ASSET_MAX_ATTEMPTS, type StudioAsset, type StudioRepository } from "./studio.types";
 
@@ -20,7 +21,7 @@ type StudioAssetProcessorOptions = {
 };
 
 export type StudioAssetProcessor = {
-  processNext(signal?: AbortSignal): Promise<StudioAsset | null>;
+  processNext(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<StudioAsset | null>;
 };
 
 export function createStudioAssetProcessor(options: StudioAssetProcessorOptions): StudioAssetProcessor {
@@ -30,9 +31,9 @@ export function createStudioAssetProcessor(options: StudioAssetProcessorOptions)
   const processingTimeoutMs = options.processingTimeoutMs ?? 30_000;
 
   return {
-    async processNext(signal) {
+    async processNext(signal, budget) {
       throwIfAborted(signal);
-      const claimed = await options.repository.claimNextAsset(now(), leaseMs);
+      const claimed = await options.repository.claimNextAsset(now(), leaseMs, budget?.excludeOwnerKeys);
       if (!claimed) return null;
       const scope = { workspaceId: claimed.workspaceId, ownerProfileId: claimed.ownerProfileId };
       try {
@@ -73,7 +74,7 @@ export function createStudioAssetProcessor(options: StudioAssetProcessorOptions)
           lastErrorCode: errorCode,
           nextAttemptAt: retryAt
         });
-        throw error;
+        throw tagStudioMaintenanceFailure(error, scope);
       }
     }
   };

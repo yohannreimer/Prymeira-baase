@@ -1,6 +1,10 @@
 import { scavengeStaleStudioUploadDirectories } from "./studio-asset-upload";
+import {
+  readStudioMaintenanceOwnerKey,
+  type StudioMaintenanceClaimBudget
+} from "./studio-maintenance-budget";
 
-type Processor = { processNext(signal?: AbortSignal): Promise<unknown | null> };
+type Processor = { processNext(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<unknown | null> };
 type MaintenanceLogger = { error(error: unknown, message?: string): void };
 type ScavengeResult = { nextCursor?: string | null } | unknown;
 type Scavenge = (options?: { signal?: AbortSignal; cursor?: string | null }) => Promise<ScavengeResult>;
@@ -78,16 +82,38 @@ export function createStudioAssetMaintenanceRunner(options: {
     if (options.memoryProcessor) processors.push(["memory indexing", options.memoryProcessor]);
     if (options.portabilityProcessor) processors.push(["private data reconciliation", options.portabilityProcessor]);
     for (const [name, processor] of processors) {
-      for (let index = 0; index < maxItems && !signal.aborted; index += 1) {
+      let processed = 0;
+      let fairnessPass = true;
+      const ownersSeen = new Set<string>();
+      while (processed < maxItems && !signal.aborted) {
         try {
           const result = await withAbortDeadline(
-            (itemSignal) => processor.processNext(itemSignal),
+            (itemSignal) => processor.processNext(itemSignal, {
+              excludeOwnerKeys: fairnessPass ? [...ownersSeen] : []
+            }),
             signal,
             perItemTimeoutMs,
             "STUDIO_ASSET_MAINTENANCE_ITEM_TIMEOUT"
           );
-          if (result === null) break;
+          if (result === null) {
+            if (fairnessPass && ownersSeen.size > 0) {
+              fairnessPass = false;
+              ownersSeen.clear();
+              continue;
+            }
+            break;
+          }
+          processed += 1;
+          if (fairnessPass) {
+            const owner = readStudioMaintenanceOwnerKey(result);
+            if (owner) ownersSeen.add(owner);
+          }
         } catch (error) {
+          processed += 1;
+          if (fairnessPass) {
+            const owner = readStudioMaintenanceOwnerKey(error);
+            if (owner) ownersSeen.add(owner);
+          }
           if (!signal.aborted) reportError(error, `Studio ${name} maintenance failed`);
         }
       }

@@ -36,14 +36,32 @@ describe("Postgres Studio proactivity store", () => {
       (id,workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for,title,reason,status,next_reminder_at)
       values ('signal_a','workspace_a','owner_a','ritual_reminder','ritual_due','2026-07-14T11:00:00Z',
         'Revisão pronta','Lembrete habilitado','active','2026-07-14T12:00:00Z')`);
+    await db.query(`insert into studio_proactive_signals
+      (id,workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for,title,reason,status,
+       next_reminder_at,claim_token,claim_lease_expires_at)
+      values ('signal_preparing','workspace_a','owner_a','ritual_reminder','ritual_in_flight','2026-07-14T11:30:00Z',
+        'Revisão em preparo','Lembrete habilitado','preparing','2026-07-14T12:00:00Z','claim_a','2026-07-14T12:02:00Z')`);
     await expect(service.listSignals(ownerA, 10)).resolves.toEqual([
       expect.objectContaining({ sourceId: "ritual_due", status: "active" })
     ]);
     await expect(service.listSignals(ownerB, 10)).resolves.toEqual([]);
 
+    await service.updateSettings(ownerA, { ritualReminder: false });
+    await expect(service.listSignals(ownerA, 10)).resolves.toEqual([]);
+    await expect(service.snoozeSignal(ownerA, "signal_a", "2026-07-15T12:00:00.000Z"))
+      .rejects.toThrow("STUDIO_PROACTIVE_SIGNAL_NOT_FOUND");
+    const invalidated = await db.query<{ status: string; claim_token: string | null }>(`
+      select status,claim_token from studio_proactive_signals
+      where workspace_id='workspace_a' and owner_profile_id='owner_a'
+      order by id`);
+    expect(invalidated.rows).toEqual([
+      { status: "dismissed", claim_token: null },
+      { status: "dismissed", claim_token: null }
+    ]);
+
     const portable = await store.readPortabilityRows!(ownerA);
-    expect(portable.settings).toMatchObject({ ritualReminder: true, focusedContent: true });
-    expect(portable.signals).toHaveLength(1);
+    expect(portable.settings).toMatchObject({ ritualReminder: false, focusedContent: true });
+    expect(portable.signals).toHaveLength(2);
     await store.deleteOwnerData!(ownerA);
     await expect(store.readPortabilityRows!(ownerA)).resolves.toEqual({ settings: null, signals: [] });
   });
@@ -78,8 +96,10 @@ describe("Postgres Studio proactivity store", () => {
       claimLeaseExpiresAt: "2026-07-14T12:02:00.000Z"
     })).resolves.toEqual([expect.objectContaining({ ritualId: "ritual_due", claimToken: "claim_a" })]);
 
-    expect(statements.join("\n")).toContain("FOR UPDATE SKIP LOCKED");
+    expect(statements.join("\n")).toContain("FOR UPDATE OF signals SKIP LOCKED");
     expect(statements.join("\n")).toContain("FOR UPDATE OF structures SKIP LOCKED");
+    expect(statements.join("\n")).toContain("ROW_NUMBER() OVER (PARTITION BY");
+    expect(statements.join("\n")).toContain("ritual_reminder_enabled=TRUE");
     expect(statements.join("\n")).toContain("claim_lease_expires_at");
     expect(statements.join("\n")).toContain("ON CONFLICT (workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for)");
   });

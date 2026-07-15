@@ -1,4 +1,5 @@
 import type { ObjectStorage } from "../../storage/object-storage";
+import { tagStudioMaintenanceFailure, type StudioMaintenanceClaimBudget } from "./studio-maintenance-budget";
 import type { StudioAssetUploadIntent, StudioRepository } from "./studio.types";
 
 export function createStudioAssetUploadCleanupProcessor(options: {
@@ -10,9 +11,9 @@ export function createStudioAssetUploadCleanupProcessor(options: {
   const now = options.now ?? (() => new Date().toISOString());
   const leaseMs = options.leaseMs ?? 120_000;
   return {
-    async processNext(signal?: AbortSignal): Promise<StudioAssetUploadIntent | null> {
+    async processNext(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<StudioAssetUploadIntent | null> {
       throwIfAborted(signal);
-      const intent = await options.repository.claimNextAssetUploadCleanup(now(), leaseMs);
+      const intent = await options.repository.claimNextAssetUploadCleanup(now(), leaseMs, budget?.excludeOwnerKeys);
       if (!intent) return null;
       const scope = { workspaceId: intent.workspaceId, ownerProfileId: intent.ownerProfileId };
       const existing = await options.repository.resolveClaimedAssetUploadIntent({
@@ -48,7 +49,7 @@ export function createStudioAssetUploadCleanupProcessor(options: {
           lastErrorCode: "STUDIO_ASSET_UPLOAD_CLEANUP_FAILED",
           nextAttemptAt
         });
-        throw error;
+        throw tagStudioMaintenanceFailure(error, scope);
       }
       throwIfAborted(signal);
       const completed = await options.repository.completeAssetUploadCleanup({

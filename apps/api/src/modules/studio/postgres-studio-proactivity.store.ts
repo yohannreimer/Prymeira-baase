@@ -53,8 +53,9 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
     },
 
     async saveSettings(settings) {
-      const result = await db.query<SettingsRow>(
-        `INSERT INTO studio_proactivity_settings
+      return withOperationalTransaction(db, async (client) => {
+        const result = await client.query<SettingsRow>(
+          `INSERT INTO studio_proactivity_settings
           (workspace_id,owner_profile_id,ritual_reminder_enabled,stale_goal_enabled,
            recurring_theme_enabled,decision_review_enabled,operational_change_enabled,
            focused_content_enabled,stale_goal_after_days,updated_at)
@@ -69,26 +70,58 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
            stale_goal_after_days=EXCLUDED.stale_goal_after_days,
            updated_at=EXCLUDED.updated_at
          RETURNING *`,
-        [settings.workspaceId, settings.ownerProfileId, settings.ritualReminder, settings.staleGoal,
-          settings.recurringTheme, settings.decisionReview, settings.operationalChange,
-          settings.focusedContent, settings.staleGoalAfterDays, settings.updatedAt]
-      );
-      return settingsFromRow(result.rows[0]!);
+          [settings.workspaceId, settings.ownerProfileId, settings.ritualReminder, settings.staleGoal,
+            settings.recurringTheme, settings.decisionReview, settings.operationalChange,
+            settings.focusedContent, settings.staleGoalAfterDays, settings.updatedAt]
+        );
+        await client.query(
+          `UPDATE studio_proactive_signals
+            SET status='dismissed',dismissed_at=$10,claim_token=NULL,claim_lease_expires_at=NULL,
+                next_attempt_at=NULL,last_error_code='STUDIO_PROACTIVITY_DISABLED',updated_at=$10
+          WHERE workspace_id=$1 AND owner_profile_id=$2 AND status IN ('preparing','active','failed')
+            AND (
+              (signal_type='ritual_reminder' AND $3=FALSE)
+              OR (signal_type='stale_goal' AND $4=FALSE)
+              OR (signal_type='recurring_theme' AND $5=FALSE)
+              OR (signal_type='decision_review' AND $6=FALSE)
+              OR (signal_type='operational_change' AND $7=FALSE)
+              OR (signal_type='focused_content' AND $8=FALSE)
+            )`,
+          [settings.workspaceId, settings.ownerProfileId, settings.ritualReminder, settings.staleGoal,
+            settings.recurringTheme, settings.decisionReview, settings.operationalChange,
+            settings.focusedContent, settings.staleGoalAfterDays, settings.updatedAt]
+        );
+        return settingsFromRow(result.rows[0]!);
+      });
     },
 
     async claimDueRituals(input) {
       return withOperationalTransaction(db, async (client) => {
         const reclaimed = await client.query<SignalRow>(
-          `WITH candidates AS (
-             SELECT workspace_id,owner_profile_id,id
-               FROM studio_proactive_signals
-              WHERE signal_type='ritual_reminder'
+          `WITH ranked AS (
+             SELECT signals.workspace_id,signals.owner_profile_id,signals.id,
+                    COALESCE(signals.next_attempt_at,signals.claim_lease_expires_at) AS due_at,
+                    ROW_NUMBER() OVER (PARTITION BY signals.workspace_id,signals.owner_profile_id
+                      ORDER BY COALESCE(signals.next_attempt_at,signals.claim_lease_expires_at),
+                               signals.source_scheduled_for,signals.id) AS owner_rank
+               FROM studio_proactive_signals signals
+               JOIN studio_proactivity_settings settings
+                 ON settings.workspace_id=signals.workspace_id
+                AND settings.owner_profile_id=signals.owner_profile_id
+                AND settings.ritual_reminder_enabled=TRUE
+              WHERE signals.signal_type='ritual_reminder'
                 AND (
-                  (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1)
-                  OR (status='preparing' AND claim_lease_expires_at <= $1)
+                  (signals.status='failed' AND signals.next_attempt_at IS NOT NULL AND signals.next_attempt_at <= $1)
+                  OR (signals.status='preparing' AND signals.claim_lease_expires_at <= $1)
                 )
-              ORDER BY COALESCE(next_attempt_at,claim_lease_expires_at),source_scheduled_for,id
-              FOR UPDATE SKIP LOCKED
+           ), candidates AS (
+             SELECT signals.workspace_id,signals.owner_profile_id,signals.id
+               FROM studio_proactive_signals signals
+               JOIN ranked ON ranked.workspace_id=signals.workspace_id
+                AND ranked.owner_profile_id=signals.owner_profile_id AND ranked.id=signals.id
+              WHERE ranked.owner_rank=1
+              ORDER BY ranked.due_at,signals.id
+              FOR UPDATE OF signals SKIP LOCKED
               LIMIT $2
            )
            UPDATE studio_proactive_signals signals
@@ -106,12 +139,14 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
         let inserted: SignalRow[] = [];
         if (remaining > 0) {
           const result = await client.query<SignalRow>(
-            `WITH candidates AS (
+            `WITH ranked AS (
                SELECT structures.workspace_id,structures.owner_profile_id,structures.id AS ritual_id,
                       structures.next_run_at AS scheduled_for,
                       COALESCE(NULLIF(BTRIM(documents.title),''),
                                NULLIF(BTRIM(structures.properties_json->>'intention'),''),
-                               'Ritual privado') AS ritual_title
+                               'Ritual privado') AS ritual_title,
+                      ROW_NUMBER() OVER (PARTITION BY structures.workspace_id,structures.owner_profile_id
+                        ORDER BY structures.next_run_at,structures.id) AS owner_rank
                  FROM studio_structures structures
                  JOIN studio_documents documents
                    ON documents.workspace_id=structures.workspace_id
@@ -133,7 +168,15 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
                   AND structures.next_run_at <= $1
                   AND documents.status='active'
                   AND existing.id IS NULL
-                ORDER BY structures.next_run_at,structures.workspace_id,structures.owner_profile_id,structures.id
+             ), candidates AS (
+               SELECT structures.workspace_id,structures.owner_profile_id,structures.id AS ritual_id,
+                      ranked.scheduled_for,ranked.ritual_title
+                 FROM studio_structures structures
+                 JOIN ranked ON ranked.workspace_id=structures.workspace_id
+                  AND ranked.owner_profile_id=structures.owner_profile_id AND ranked.ritual_id=structures.id
+                WHERE ranked.owner_rank=1
+                  AND NOT ((ranked.workspace_id || '/' || ranked.owner_profile_id) = ANY($5::text[]))
+                ORDER BY ranked.scheduled_for,structures.workspace_id,structures.owner_profile_id,structures.id
                 FOR UPDATE OF structures SKIP LOCKED
                 LIMIT $2
              )
@@ -148,7 +191,8 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
              ON CONFLICT (workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for)
                DO NOTHING
              RETURNING *`,
-            [input.now, remaining, input.claimToken, input.claimLeaseExpiresAt]
+            [input.now, remaining, input.claimToken, input.claimLeaseExpiresAt,
+              reclaimed.rows.map((row) => `${row.workspace_id}/${row.owner_profile_id}`)]
           );
           inserted = result.rows;
         }
@@ -159,14 +203,17 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
     async completeRitualPreparation(input) {
       return withOperationalTransaction(db, async (client) => {
         const result = await client.query<SignalRow>(
-          `UPDATE studio_proactive_signals
+          `UPDATE studio_proactive_signals signals
               SET title=$7,reason=$8,status='active',next_reminder_at=$9,
                   claim_token=NULL,claim_lease_expires_at=NULL,next_attempt_at=NULL,
                   last_error_code=NULL,dismissed_at=NULL,updated_at=$9
-            WHERE workspace_id=$1 AND owner_profile_id=$2
-              AND signal_type='ritual_reminder' AND source_id=$3 AND source_scheduled_for=$4
-              AND status='preparing' AND claim_token=$5 AND attempt_count=$6
-          RETURNING *`,
+             FROM studio_proactivity_settings settings
+            WHERE signals.workspace_id=$1 AND signals.owner_profile_id=$2
+              AND settings.workspace_id=signals.workspace_id AND settings.owner_profile_id=signals.owner_profile_id
+              AND settings.ritual_reminder_enabled=TRUE
+              AND signals.signal_type='ritual_reminder' AND signals.source_id=$3 AND signals.source_scheduled_for=$4
+              AND signals.status='preparing' AND signals.claim_token=$5 AND signals.attempt_count=$6
+          RETURNING signals.*`,
           [input.claim.workspaceId, input.claim.ownerProfileId, input.claim.ritualId,
             input.claim.scheduledFor, input.claim.claimToken, input.claim.attemptCount,
             input.title, input.reason, input.now]
@@ -202,10 +249,13 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
 
     async listSignals(scope, input) {
       const result = await db.query<SignalRow>(
-        `SELECT * FROM studio_proactive_signals
-          WHERE workspace_id=$1 AND owner_profile_id=$2
-            AND status='active' AND next_reminder_at <= $3
-          ORDER BY next_reminder_at,id LIMIT $4`,
+        `SELECT signals.* FROM studio_proactive_signals signals
+          JOIN studio_proactivity_settings settings
+            ON settings.workspace_id=signals.workspace_id AND settings.owner_profile_id=signals.owner_profile_id
+          WHERE signals.workspace_id=$1 AND signals.owner_profile_id=$2
+            AND signals.status='active' AND signals.next_reminder_at <= $3
+            AND ${enabledSignalSql("signals", "settings")}
+          ORDER BY signals.next_reminder_at,signals.id LIMIT $4`,
         [scope.workspaceId, scope.ownerProfileId, input.now, input.limit]
       );
       return result.rows.map(signalFromRow);
@@ -213,8 +263,11 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
 
     async findSignal(scope, signalId) {
       const result = await db.query<SignalRow>(
-        `SELECT * FROM studio_proactive_signals
-          WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        `SELECT signals.* FROM studio_proactive_signals signals
+          JOIN studio_proactivity_settings settings
+            ON settings.workspace_id=signals.workspace_id AND settings.owner_profile_id=signals.owner_profile_id
+          WHERE signals.workspace_id=$1 AND signals.owner_profile_id=$2 AND signals.id=$3
+            AND signals.status='active' AND ${enabledSignalSql("signals", "settings")}`,
         [scope.workspaceId, scope.ownerProfileId, signalId]
       );
       return result.rows[0] ? signalFromRow(result.rows[0]) : null;
@@ -259,6 +312,17 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
       });
     }
   };
+}
+
+function enabledSignalSql(signalAlias: string, settingsAlias: string) {
+  return `(
+    (${signalAlias}.signal_type='ritual_reminder' AND ${settingsAlias}.ritual_reminder_enabled=TRUE)
+    OR (${signalAlias}.signal_type='stale_goal' AND ${settingsAlias}.stale_goal_enabled=TRUE)
+    OR (${signalAlias}.signal_type='recurring_theme' AND ${settingsAlias}.recurring_theme_enabled=TRUE)
+    OR (${signalAlias}.signal_type='decision_review' AND ${settingsAlias}.decision_review_enabled=TRUE)
+    OR (${signalAlias}.signal_type='operational_change' AND ${settingsAlias}.operational_change_enabled=TRUE)
+    OR (${signalAlias}.signal_type='focused_content' AND ${settingsAlias}.focused_content_enabled=TRUE)
+  )`;
 }
 
 function settingsFromRow(row: SettingsRow): StudioProactivitySettings {

@@ -709,6 +709,44 @@ function repositoryContract(
       });
     });
 
+    it("honors owner claim budgets across asset, cleanup, upload-cleanup, and index queues", async () => {
+      await withRepository(async (repository) => {
+        const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
+        const documentA = await repository.createDocument(documentInput(ownerA));
+        const documentB = await repository.createDocument(documentInput(ownerB));
+        const createAsset = (scope: typeof ownerA, documentId: string, suffix: string) => repository.createAsset({
+          ...scope, documentId, kind: "file" as const, displayName: `${suffix}.txt`, objectKey: `private/${suffix}.txt`,
+          sourceUrl: null, finalUrl: null, fetchedAt: null, mimeType: "text/plain", sizeBytes: 1,
+          extractionStatus: "pending" as const, extractedText: null, extractionMetadata: {}, lastErrorCode: null,
+          attemptCount: 0, nextAttemptAt: null
+        });
+        await createAsset(ownerA, documentA.id, "a1");
+        await createAsset(ownerA, documentA.id, "a2");
+        await createAsset(ownerB, documentB.id, "b1");
+        await repository.enqueueOrphanAssetCleanup({ ...ownerA, objectKey: "private/orphan-a1" });
+        await repository.enqueueOrphanAssetCleanup({ ...ownerA, objectKey: "private/orphan-a2" });
+        await repository.enqueueOrphanAssetCleanup({ ...ownerB, objectKey: "private/orphan-b1" });
+        const createIntent = (scope: typeof ownerA, documentId: string, suffix: string) => repository.createAssetUploadIntent({
+          ...scope, documentId, objectKey: `private/upload-${suffix}`, displayName: `${suffix}.txt`, kind: "file",
+          mimeType: "text/plain", sizeBytes: 1, uploadLeaseExpiresAt: "2026-07-14T11:00:00.000Z"
+        });
+        await createIntent(ownerA, documentA.id, "a1");
+        await createIntent(ownerA, documentA.id, "a2");
+        await createIntent(ownerB, documentB.id, "b1");
+        const excluded = ["workspace_a/owner_a"];
+
+        await expect(repository.claimNextAsset("2027-07-14T12:00:00.000Z", 1_000, excluded))
+          .resolves.toMatchObject(ownerB);
+        await expect(repository.claimNextAssetCleanup("2027-07-14T12:00:00.000Z", 1_000, excluded))
+          .resolves.toMatchObject(ownerB);
+        await expect(repository.claimNextAssetUploadCleanup("2027-07-14T12:00:00.000Z", 1_000, excluded))
+          .resolves.toMatchObject(ownerB);
+        await expect(repository.claimNextIndexJob("2027-07-14T12:00:00.000Z", 1_000, 5, excluded))
+          .resolves.toMatchObject(ownerB);
+      });
+    });
+
     it("rejects assets whose document is outside the full owner scope", async () => {
       await withRepository(async (repository) => {
         const privateDocument = await repository.createDocument(documentInput({ ownerProfileId: "owner_b" }));

@@ -17,10 +17,16 @@ describe("Studio proactivity routes", () => {
     const now = new Date("2026-07-14T12:00:00.000Z");
     const store = createInMemoryStudioProactivityStore({
       now: () => now.toISOString(),
-      dueRituals: [{
-        workspaceId: "workspace_a", ownerProfileId: "owner_a", ritualId: "ritual_a",
-        title: "Revisão semanal", scheduledFor: "2026-07-14T11:00:00.000Z"
-      }]
+      dueRituals: [
+        {
+          workspaceId: "workspace_a", ownerProfileId: "owner_a", ritualId: "ritual_a",
+          title: "Revisão semanal", scheduledFor: "2026-07-14T11:00:00.000Z"
+        },
+        {
+          workspaceId: "workspace_a", ownerProfileId: "owner_a", ritualId: "ritual_b",
+          title: "Revisão mensal", scheduledFor: "2026-07-14T11:01:00.000Z"
+        }
+      ]
     });
     const service = createStudioProactivityService({
       store,
@@ -59,6 +65,22 @@ describe("Studio proactivity routes", () => {
     });
     expect(dismissed.statusCode).toBe(200);
     expect(dismissed.json().signal.status).toBe("dismissed");
+
+    await service.runDuePreparations(now, 10);
+    const next = await app.inject({ method: "GET", url: "/studio/proactivity/signals?limit=1", headers });
+    const nextSignalId = next.json().signals[0].id as string;
+    const disabled = await app.inject({
+      method: "PATCH", url: "/studio/proactivity/settings", headers,
+      payload: { ritual_reminder: false }
+    });
+    expect(disabled.statusCode).toBe(200);
+    const hidden = await app.inject({ method: "GET", url: "/studio/proactivity/signals?limit=1", headers });
+    expect(hidden.json().signals).toEqual([]);
+    const invalidated = await app.inject({
+      method: "POST", url: `/studio/proactivity/signals/${nextSignalId}/snooze`, headers,
+      payload: { until: "2026-07-15T12:00:00.000Z" }
+    });
+    expect(invalidated.statusCode).toBe(404);
     await app.close();
   });
 });

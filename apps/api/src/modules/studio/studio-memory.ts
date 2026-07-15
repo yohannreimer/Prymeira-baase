@@ -1,3 +1,4 @@
+import { tagStudioMaintenanceFailure, type StudioMaintenanceClaimBudget } from "./studio-maintenance-budget";
 import type {
   StudioDocument,
   StudioDocumentVersion,
@@ -249,9 +250,9 @@ export function createStudioMemoryIndexProcessor(options: {
   const leaseMs = options.leaseMs ?? 60_000;
   let active: Promise<StudioIndexJob | null> | null = null;
 
-  async function run(signal?: AbortSignal): Promise<StudioIndexJob | null> {
+  async function run(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<StudioIndexJob | null> {
     throwIfAborted(signal);
-    const claimed = await options.repository.claimNextIndexJob(now(), leaseMs, maxAttempts);
+    const claimed = await options.repository.claimNextIndexJob(now(), leaseMs, maxAttempts, budget?.excludeOwnerKeys);
     if (!claimed) return null;
     const scope: StudioOwnerScope = {
       workspaceId: claimed.workspaceId,
@@ -333,7 +334,7 @@ export function createStudioMemoryIndexProcessor(options: {
         lastErrorCode: safeErrorCode(error),
         nextAttemptAt: retryAt
       });
-      throw error;
+      throw tagStudioMaintenanceFailure(error, scope);
     } finally {
       heartbeatStopped = true;
       clearInterval(heartbeat);
@@ -343,9 +344,9 @@ export function createStudioMemoryIndexProcessor(options: {
   }
 
   return {
-    processNext(signal?: AbortSignal): Promise<StudioIndexJob | null> {
+    processNext(signal?: AbortSignal, budget?: StudioMaintenanceClaimBudget): Promise<StudioIndexJob | null> {
       if (active) return active;
-      const running = run(signal);
+      const running = run(signal, budget);
       let tracked!: Promise<StudioIndexJob | null>;
       tracked = running.finally(() => {
         if (active === tracked) active = null;
