@@ -2,7 +2,7 @@ import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira
 
 export type StudioOwnerScope = { workspaceId: string; ownerProfileId: string };
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
-export type StudioDocumentStatus = "active" | "archived";
+export type StudioDocumentStatus = "active" | "archived" | "trashed";
 export type StudioStructureKind = SharedStudioStructureKind;
 export type StudioStructureLifecycleStatus = "active" | "archived";
 export type StudioGoalMetric = {
@@ -210,6 +210,8 @@ export type StudioDocument = StudioOwnerScope & {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  trashedAt?: string | null;
+  preTrashStatus?: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
 export type StudioDocumentVersion = StudioOwnerScope & {
@@ -222,6 +224,10 @@ export type StudioDocumentVersion = StudioOwnerScope & {
   actorProfileId: string;
   aiRunId: string | null;
   createdAt: string;
+  title?: string | null;
+  checkpointReason?: string;
+  sourceRevision?: number | null;
+  isLegacy?: boolean;
 };
 
 export type StudioStructure = StudioOwnerScope & {

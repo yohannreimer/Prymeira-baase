@@ -1528,6 +1528,26 @@ const migrations: Migration[] = [{
       ON studio_portability_delete_requests (workspace_id,owner_profile_id)
       WHERE status IN ('processing','reconciliation_pending');
   `
+}, {
+  version: 27,
+  name: "studio_checkpoint_and_trash_fields",
+  sql: `
+    ALTER TABLE studio_documents
+      ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS pre_trash_status TEXT;
+
+    ALTER TABLE studio_documents
+      DROP CONSTRAINT IF EXISTS studio_documents_status_check;
+    ALTER TABLE studio_documents
+      ADD CONSTRAINT studio_documents_status_check
+      CHECK (status IN ('active','archived','trashed'));
+
+    ALTER TABLE studio_document_versions
+      ADD COLUMN IF NOT EXISTS title TEXT,
+      ADD COLUMN IF NOT EXISTS checkpoint_reason TEXT NOT NULL DEFAULT 'legacy_autosave',
+      ADD COLUMN IF NOT EXISTS source_revision INTEGER,
+      ADD COLUMN IF NOT EXISTS is_legacy BOOLEAN NOT NULL DEFAULT TRUE;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

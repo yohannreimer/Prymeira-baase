@@ -307,7 +307,7 @@ git commit -m "fix(studio): require pgvector in production"
 - Test: `apps/api/src/db/operational-schema.test.ts`
 - Test: `apps/api/src/db/operational-schema.postgres.test.ts`
 
-- [ ] **Step 1: Write migration contract tests**
+- [x] **Step 1: Write migration contract tests**
 
 ```ts
 expect(columns("studio_document_versions")).toEqual(expect.arrayContaining([
@@ -318,12 +318,12 @@ expect(columns("studio_documents")).toEqual(expect.arrayContaining([
 ]));
 ```
 
-- [ ] **Step 2: Run schema tests and verify missing columns**
+- [x] **Step 2: Run schema tests and verify missing columns**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts`  
 Expected: FAIL.
 
-- [ ] **Step 3: Add the next migration and compatible types**
+- [x] **Step 3: Add the next migration and compatible types**
 
 ```sql
 ALTER TABLE studio_documents
@@ -342,12 +342,12 @@ ALTER TABLE studio_document_versions
 
 Extend statuses and wire types with `trashed`, checkpoint `title`, `checkpointReason`, `sourceRevision`, and `isLegacy`.
 
-- [ ] **Step 4: Run schema suites**
+- [x] **Step 4: Run schema suites**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts src/db/operational-schema.postgres.test.ts`  
 Expected: PASS; PostgreSQL test may skip only with the explicit vector prerequisite code.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/db/operational-schema.ts apps/api/src/db/operational-schema*.test.ts apps/api/src/modules/studio/studio.types.ts apps/web/src/studio/studio.types.ts

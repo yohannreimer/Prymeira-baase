@@ -1,7 +1,7 @@
 import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira/baase-shared";
 
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
-export type StudioDocumentStatus = "active" | "archived";
+export type StudioDocumentStatus = "active" | "archived" | "trashed";
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioStructureKind = SharedStudioStructureKind;
@@ -40,6 +40,8 @@ export type StudioDocument = {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  trashedAt?: string | null;
+  preTrashStatus?: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
 export type StudioDocumentVersion = {
@@ -54,6 +56,10 @@ export type StudioDocumentVersion = {
   actorProfileId: string;
   aiRunId: string | null;
   createdAt: string;
+  title?: string | null;
+  checkpointReason?: string;
+  sourceRevision?: number | null;
+  isLegacy?: boolean;
 };
 
 export type StudioStructure = {
@@ -325,6 +331,10 @@ export type RawStudioDocument = {
   updatedAt?: string;
   archived_at?: string | null;
   archivedAt?: string | null;
+  trashed_at?: string | null;
+  trashedAt?: string | null;
+  pre_trash_status?: Exclude<StudioDocumentStatus, "trashed"> | null;
+  preTrashStatus?: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
 export type RawStudioDocumentVersion = {
@@ -348,6 +358,13 @@ export type RawStudioDocumentVersion = {
   aiRunId?: string | null;
   created_at?: string;
   createdAt?: string;
+  title?: string | null;
+  checkpoint_reason?: string;
+  checkpointReason?: string;
+  source_revision?: number | null;
+  sourceRevision?: number | null;
+  is_legacy?: boolean;
+  isLegacy?: boolean;
 };
 
 export type RawStudioStructure = {

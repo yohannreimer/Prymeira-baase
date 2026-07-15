@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -110,6 +110,46 @@ describe("operational schema", () => {
       "search_title_folded",
       "search_tokens"
     ]);
+  });
+
+  it("adds checkpoint metadata and trash lifecycle columns in migration 27", async () => {
+    await ensureOperationalSchema(db);
+
+    const [versionColumns, documentColumns] = await Promise.all([
+      db.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_name='studio_document_versions'
+           and column_name in ('title','checkpoint_reason','source_revision','is_legacy')`
+      ),
+      db.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_name='studio_documents'
+           and column_name in ('trashed_at','pre_trash_status')`
+      )
+    ]);
+
+    expect(versionColumns.rows.map((row) => row.column_name)).toEqual(expect.arrayContaining([
+      "title", "checkpoint_reason", "source_revision", "is_legacy"
+    ]));
+    expect(documentColumns.rows.map((row) => row.column_name)).toEqual(expect.arrayContaining([
+      "trashed_at", "pre_trash_status"
+    ]));
+
+    await db.query(`insert into studio_documents
+      (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode)
+      values ('checkpoint_document','workspace','owner','{}','', 'text')`);
+    await db.query(`insert into studio_document_versions
+      (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id)
+      values ('legacy_checkpoint','workspace','owner','checkpoint_document',1,'{}','', 'user','owner')`);
+    const defaults = await db.query<{ checkpoint_reason: string; is_legacy: boolean }>(
+      "select checkpoint_reason,is_legacy from studio_document_versions where id='legacy_checkpoint'"
+    );
+    expect(defaults.rows).toEqual([{ checkpoint_reason: "legacy_autosave", is_legacy: true }]);
+
+    const source = readFileSync(resolve(__dirname, "operational-schema.ts"), "utf8");
+    const migration27 = source.slice(source.indexOf("  version: 27,"));
+    expect(migration27).toContain("DROP CONSTRAINT IF EXISTS studio_documents_status_check");
+    expect(migration27).toContain("CHECK (status IN ('active','archived','trashed'))");
   });
 
   it("keeps the owner Studio lexical GIN index in migration 9", async () => {
@@ -347,7 +387,7 @@ describe("operational schema", () => {
     ]);
   });
 
-  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 26", async () => {
+  it("applies reserved Studio migrations 14 through 19 and keeps additive migrations 20 through 27", async () => {
     expect(STUDIO_MIGRATION_LEDGER_RESERVATIONS).toEqual({
       14: "studio_relations_and_index_jobs",
       15: "studio_conversations_messages_suggestions_citations",

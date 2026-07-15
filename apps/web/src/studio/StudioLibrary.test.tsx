@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import StudioLibrary from "./StudioLibrary";
-import type { StudioCollection, StudioDocument, StudioDocumentPage } from "./studio.types";
+import type { StudioCollection, StudioDocument, StudioDocumentPage, StudioDocumentStatus } from "./studio.types";
 
 const documents = [document("document_1", "Plano de expansão"), document("document_2", "Decisão de margem")];
 const collections: StudioCollection[] = [
@@ -35,7 +35,7 @@ describe("StudioLibrary", () => {
   it("isolates pagination state by query while an obsolete page is still pending", async () => {
     const user = userEvent.setup();
     const oldPage = deferred<StudioDocumentPage>();
-    const loadDocuments = vi.fn(async (query: { status: "active" | "archived"; cursor?: string }) => {
+    const loadDocuments = vi.fn(async (query: { status: StudioDocumentStatus; limit: number; cursor?: string }) => {
       if (query.status === "active" && query.cursor) return oldPage.promise;
       if (query.status === "active") return { items: [documents[0]!], nextCursor: "active_2", collectionsByDocumentId: {} };
       if (query.cursor) return { items: [{ ...documents[1]!, status: "archived" as const }], nextCursor: null, collectionsByDocumentId: {} };
