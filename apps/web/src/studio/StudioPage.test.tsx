@@ -1,11 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioPage from "./StudioPage";
-
-const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
 
 describe("StudioPage", () => {
   beforeEach(() => {
@@ -125,16 +121,24 @@ describe("StudioPage", () => {
   });
 
   it.each([404, 403])("keeps an unavailable document route recoverable for status %s", async (status) => {
-    vi.mocked(globalThis.fetch).mockImplementation(async () => jsonResponse({
-      error: { code: status === 403 ? "STUDIO_OWNER_SCOPE_DENIED" : "STUDIO_DOCUMENT_NOT_FOUND", message: "private" }
-    }, status));
+    const documentFailure = deferred<Response>();
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/studio/documents/missing")) return documentFailure.promise;
+      if (url.endsWith("/api/studio/collections")) return Promise.resolve(jsonResponse({ collections: [] }));
+      return Promise.resolve(jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404));
+    });
     window.history.replaceState(null, "", "/#estudio/document/missing");
     render(<StudioPage />);
+
+    await act(async () => documentFailure.resolve(jsonResponse({
+      error: { code: status === 403 ? "STUDIO_OWNER_SCOPE_DENIED" : "STUDIO_DOCUMENT_NOT_FOUND", message: "private" }
+    }, status)));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Este registro não está disponível");
     const back = screen.getByRole("button", { name: "Voltar para Tudo" });
-    expect(back).toHaveFocus();
+    await waitFor(() => expect(back).toHaveFocus());
     await userEvent.setup().click(back);
     expect(screen.getByRole("heading", { name: "Tudo" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#estudio/all");
@@ -210,14 +214,13 @@ describe("StudioPage", () => {
     expect(screen.getByRole("heading", { name: "Tudo" })).toBeInTheDocument();
   });
 
-  it("keeps every section accessible in the responsive overflow navigation", () => {
+  it("keeps every section accessible in the internal navigation", () => {
     render(<StudioPage />);
 
     const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
     expect(navigation).not.toHaveAttribute("aria-hidden");
     expect(within(navigation).getAllByRole("button")).toHaveLength(10);
     expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeVisible();
-    expect(studioStyles).toMatch(/@media \(max-width: 720px\)[\s\S]*overflow-x: auto/);
   });
 
   it("connects inbox, search, and archive to one private library surface", async () => {

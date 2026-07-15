@@ -58,13 +58,14 @@ type StudioCopilotRequest = {
 const WIDTH_KEY = "baase:studio:copilot-width";
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 520;
+const COMPACT_MEDIA_QUERY = "(max-width: 1200px)";
 const OPERATIONAL_RESOURCE_TYPES = [
   "dashboard", "task", "routine", "process", "training", "announcement", "people"
 ] as const;
 
 export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance }: Props) {
   const [open, setOpen] = useState(true);
-  const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 900px)").matches ?? false);
+  const [compact, setCompact] = useState(() => window.matchMedia?.(COMPACT_MEDIA_QUERY).matches ?? false);
   const [width, setWidth] = useState(readWidth);
   const [prompt, setPrompt] = useState("");
   const [allowResearch, setAllowResearch] = useState(false);
@@ -90,7 +91,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const deltaFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const media = window.matchMedia?.("(max-width: 900px)");
+    const media = window.matchMedia?.(COMPACT_MEDIA_QUERY);
     if (!media) return;
     const update = () => setCompact(media.matches);
     media.addEventListener?.("change", update);

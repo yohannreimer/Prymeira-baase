@@ -385,7 +385,7 @@
 .studio-related__error button,
 .studio-related__relation-error button { background: transparent; border: 0; color: var(--accent-ink); min-height: 44px; padding: 4px 0; }
 
-@media (max-width: 900px) {
+@media (max-width: 1200px) {
   .studio-writing-layout { display: block; }
   .studio-editor__context { margin-top: 28px; }
   .studio-copilot-skeleton { margin-top: 24px; min-height: 200px; width: 100%; }
