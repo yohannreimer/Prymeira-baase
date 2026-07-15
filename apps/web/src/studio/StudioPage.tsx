@@ -310,7 +310,7 @@ export default function StudioPage({ onOpenInternalSource }: {
           ))}
         </nav>
 
-        <section className="studio-content" aria-label="Conteúdo da seção" aria-live="polite">
+        <section className="studio-content" aria-label="Conteúdo da seção">
           {section === "home" ? <StudioHome onOpenDocument={openDocument} onOpenRitual={openRitual} /> : section === "document" ? (
             selectedDocument ? <>
               <Suspense fallback={<StudioEditorSkeleton />}>

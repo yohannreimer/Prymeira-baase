@@ -82,9 +82,14 @@ describe("StudioMaterialComposer", () => {
     try {
       renderComposer({ attachFile });
 
-      await user.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      const record = screen.getByRole("button", { name: "Gravar áudio" });
+      expect(record).toHaveAttribute("aria-pressed", "false");
+      expect(record).toHaveTextContent("Gravar áudio");
+      await user.click(record);
       const stop = await screen.findByRole("button", { name: "Parar gravação" });
       expect(stop).toBeEnabled();
+      expect(stop).toHaveAttribute("aria-pressed", "true");
+      expect(stop).toHaveTextContent("Parar gravação");
       expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "Adicionar imagem" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "Capturar link" })).toBeDisabled();
@@ -151,6 +156,9 @@ describe("StudioMaterialComposer", () => {
     renderComposer();
 
     const actions = screen.getByRole("group", { name: "Adicionar material" });
+    const label = screen.getByText("Adicionar material");
+    expect(actions).toHaveAttribute("aria-labelledby", label.id);
+    expect(label).toBeVisible();
     expect(within(actions).getAllByRole("button").map((button) => button.textContent?.trim())).toEqual([
       "Gravar áudio",
       "Adicionar arquivo",

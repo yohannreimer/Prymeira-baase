@@ -1399,20 +1399,174 @@
 }
 
 .studio-asset-status {
-  border-top: 1px solid var(--line);
-  margin-top: 30px;
-  padding-top: 22px;
+  border-top: 1px solid var(--line2);
+  margin: 0;
+  min-width: 0;
+  padding: 18px 0;
 }
 
 .studio-document-assets {
   display: grid;
-  gap: 12px;
+  gap: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.studio-document-assets > section:first-child {
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  padding: 18px 0;
+}
+
+.studio-document-assets > section:first-child > p:first-child {
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  margin: 0 0 9px;
+  text-transform: uppercase;
+}
+
+.studio-document-assets > section:first-child > [role="group"][aria-busy] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.studio-document-assets > section:first-child > [role="group"][aria-busy] > button {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 7px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 11px;
+}
+
+.studio-document-assets > section:first-child > [role="group"][aria-busy] > button i {
+  color: var(--faint);
+  font-size: 16px;
+}
+
+.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"] {
+  background: var(--accent-bg);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+
+.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"] i {
+  color: currentColor;
+}
+
+.studio-document-assets > section:first-child > form {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-width: 0;
+  padding-top: 12px;
+}
+
+.studio-document-assets > section:first-child > form label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  grid-column: 1 / -1;
+}
+
+.studio-document-assets > section:first-child > form input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 40px;
+  min-width: 0;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.studio-document-assets > section:first-child > form button,
+.studio-document-assets > section:first-child > [aria-label="Recuperar material"] button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 40px;
+  padding: 8px 11px;
+}
+
+.studio-document-assets > section:first-child > form button[type="submit"],
+.studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:first-child {
+  background: var(--accent-bg);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+
+.studio-document-assets > section:first-child > [role="status"],
+.studio-document-assets > section:first-child > [role="alert"] {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin: 10px 0 0;
+}
+
+.studio-document-assets > section:first-child > [role="alert"] {
+  color: var(--danger-ink);
+}
+
+.studio-document-assets > section:first-child > [aria-label="Recuperar material"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.studio-document-assets > section:first-child button:focus-visible,
+.studio-document-assets > section:first-child input:focus-visible,
+.studio-document-assets .studio-asset-status audio:focus-visible,
+.studio-document-assets__error button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.studio-document-assets > section:first-child button:disabled,
+.studio-document-assets > section:first-child input:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+@media (hover: hover) {
+  .studio-document-assets > section:first-child > [role="group"][aria-busy] > button:hover:not(:disabled):not([aria-pressed="true"]),
+  .studio-document-assets > section:first-child > form button:hover:not(:disabled),
+  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:hover:not(:disabled) {
+    background: var(--panel2);
+    border-color: var(--line2);
+    color: var(--ink);
+  }
+
+  .studio-document-assets > section:first-child > form button[type="submit"]:hover:not(:disabled),
+  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button:first-child:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
 }
 
 .studio-document-assets__status,
 .studio-document-assets__error {
   color: var(--muted);
   font-size: 13px;
+  margin: 0;
+  padding: 12px 0;
 }
 
 .studio-document-assets__error {
@@ -1503,13 +1657,11 @@
 }
 
 .studio-asset-status__processing {
-  background: var(--panel2);
-  border: 1px solid var(--line2);
-  border-radius: 9px;
+  border-top: 1px solid var(--line2);
   color: var(--muted);
   line-height: 1.6;
   margin-top: 16px;
-  padding: 14px 16px;
+  padding: 12px 0 0;
 }
 
 .studio-asset-status__processing p {
@@ -2493,6 +2645,52 @@
     grid-column: 1 / -1;
   }
 
+  .studio-document-assets {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .studio-document-assets > section:first-child > [role="group"][aria-busy] > button {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+
+  .studio-document-assets > section:first-child > form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .studio-document-assets > section:first-child > form label,
+  .studio-document-assets > section:first-child > form input {
+    grid-column: 1 / -1;
+  }
+
+  .studio-document-assets > section:first-child > [aria-label="Recuperar material"] button {
+    flex: 1 1 140px;
+  }
+
+  .studio-document-assets__error,
+  .studio-asset-status__heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .studio-asset-status__heading > div {
+    min-width: 0;
+  }
+
+  .studio-asset-status__heading h3 {
+    overflow-wrap: anywhere;
+  }
+
+  .studio-asset-status__refresh {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .studio-asset-status__refresh button {
+    align-self: flex-start;
+  }
+
   .studio-skeleton-grid {
     grid-template-columns: 1fr;
   }
@@ -2670,6 +2868,13 @@
   .studio-ritual-state button,
   .studio-rituals__back,
   .studio-ritual-preview {
+    min-height: 44px;
+  }
+
+  .studio-document-assets > section:first-child button,
+  .studio-document-assets > section:first-child input,
+  .studio-document-assets .studio-asset-status button,
+  .studio-document-assets .studio-asset-status a {
     min-height: 44px;
   }
 }

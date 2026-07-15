@@ -8,6 +8,7 @@ import StudioPage from "./StudioPage";
 import type { StudioDocument } from "./studio.types";
 
 const studioStyles = readFileSync(resolve(process.cwd(), "src/studio/studio.css"), "utf8");
+const studioPageSource = readFileSync(resolve(process.cwd(), "src/studio/StudioPage.tsx"), "utf8");
 const proactivityStyles = readFileSync(resolve(process.cwd(), "src/studio/studio-proactivity.css"), "utf8");
 
 describe("Owner Studio accessibility and adaptive quiet ops", () => {
@@ -116,6 +117,56 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
     expect(studioStyles).not.toMatch(/\.studio-composer\s*\{[^}]*transition:/);
   });
 
+  it("keeps material feedback out of a page-wide live region", () => {
+    expect(studioPageSource).not.toMatch(
+      /className="studio-content"[^>]*aria-live=/u
+    );
+  });
+
+  it("styles document materials as a quiet, wrapping, token-based action strip", () => {
+    const strip = cssRule(studioStyles, ".studio-document-assets > section:first-child");
+    expect(strip).toMatch(/border-top:\s*1px solid var\(--line\)/u);
+    expect(strip).toMatch(/padding:\s*18px 0/u);
+
+    const actions = cssRule(
+      studioStyles,
+      '.studio-document-assets > section:first-child > [role="group"][aria-busy]'
+    );
+    expect(actions).toMatch(/display:\s*flex/u);
+    expect(actions).toMatch(/flex-wrap:\s*wrap/u);
+    expect(actions).toMatch(/gap:\s*8px/u);
+
+    const actionButton = cssRule(
+      studioStyles,
+      '.studio-document-assets > section:first-child > [role="group"][aria-busy] > button'
+    );
+    expect(actionButton).toMatch(/min-height:\s*40px/u);
+    expect(actionButton).toMatch(/background:\s*var\(--panel\)/u);
+    expect(actionButton).toMatch(/border:\s*1px solid var\(--line\)/u);
+
+    const recording = cssRule(
+      studioStyles,
+      '.studio-document-assets > section:first-child > [role="group"][aria-busy] > button[aria-pressed="true"]'
+    );
+    expect(recording).toMatch(/background:\s*var\(--accent-bg\)/u);
+    expect(recording).toMatch(/color:\s*var\(--accent-ink\)/u);
+    expect(studioStyles).toMatch(
+      /\.studio-document-assets\s*>\s*section:first-child[\s\S]*?:focus-visible[\s\S]*?outline:\s*2px solid var\(--accent\)/u
+    );
+    expect(studioStyles).toMatch(
+      /@media \(pointer:\s*coarse\)[\s\S]*?\.studio-document-assets\s*>\s*section:first-child[\s\S]*?min-height:\s*44px/u
+    );
+    expect(studioStyles).toMatch(
+      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets[\s\S]*?min-width:\s*0[\s\S]*?\.studio-document-assets\s*>\s*section:first-child\s*>\s*form/u
+    );
+    expect(studioStyles).toMatch(
+      /@media \(max-width:\s*720px\)[\s\S]*?\.studio-document-assets\s*\{[^}]*max-width:\s*100%[^}]*min-width:\s*0/u
+    );
+    expect(studioStyles).not.toMatch(
+      /\.studio-document-assets[^}]*?(?:linear-gradient|#[0-9a-f]{3,8}|\brgba?\()/iu
+    );
+  });
+
   it("keeps proactive signals inside the shared quiet-ops visual system", () => {
     expect(proactivityStyles).not.toMatch(/linear-gradient|#[0-9a-f]{3,8}|\brgba?\(/i);
     expect(proactivityStyles).toMatch(/background:\s*var\(--accent-bg\)/);
@@ -153,4 +204,11 @@ function installLocalStorage() {
       setItem: (key: string, value: string) => values.set(key, String(value))
     }
   });
+}
+
+function cssRule(styles: string, selector: string) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = styles.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "u"));
+  expect(match, `missing CSS rule: ${selector}`).not.toBeNull();
+  return match?.[1] ?? "";
 }
