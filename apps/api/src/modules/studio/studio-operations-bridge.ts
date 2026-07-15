@@ -147,6 +147,7 @@ export type StudioOperationPreview = StudioOwnerScope & {
   status: StudioOperationPreviewStatus;
   expiresAt: string;
   idempotencyKey: string | null;
+  intendedResourceId: string | null;
   resultResourceId: string | null;
   claimToken: string | null;
   claimLeaseExpiresAt: string | null;
@@ -173,6 +174,7 @@ type ClaimInput = {
   actorProfileId: string;
   previewId: string;
   idempotencyKey: string;
+  intendedResourceId: string;
   payload: StudioOperationDraft;
   claimToken: string;
   claimLeaseExpiresAt: string;
@@ -187,7 +189,7 @@ type ClaimResult =
 
 export type StudioOperationsStore = {
   createPreview(input: Omit<StudioOperationPreview,
-    "id" | "confirmedPayload" | "status" | "idempotencyKey" | "resultResourceId" | "claimToken"
+    "id" | "confirmedPayload" | "status" | "idempotencyKey" | "intendedResourceId" | "resultResourceId" | "claimToken"
     | "claimLeaseExpiresAt" | "createdAt" | "updatedAt" | "confirmedAt"
   > & { actorProfileId: string; now?: string }): Promise<StudioOperationPreview>;
   findPreview(scope: StudioOwnerScope, previewId: string): Promise<StudioOperationPreview | null>;
@@ -235,6 +237,7 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
         status: "preview",
         expiresAt: input.expiresAt,
         idempotencyKey: null,
+        intendedResourceId: null,
         resultResourceId: null,
         claimToken: null,
         claimLeaseExpiresAt: null,
@@ -269,7 +272,11 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
       if (preview.status === "confirming") {
         if (preview.idempotencyKey !== input.idempotencyKey) throw new Error("STUDIO_OPERATION_CONFIRMATION_KEY_CONFLICT");
         if (preview.claimLeaseExpiresAt && Date.parse(preview.claimLeaseExpiresAt) > Date.parse(input.now)) return { type: "busy" };
-        return { type: "indeterminate" };
+        if (!preview.intendedResourceId) return { type: "indeterminate" };
+        preview.claimToken = input.claimToken;
+        preview.claimLeaseExpiresAt = input.claimLeaseExpiresAt;
+        preview.updatedAt = input.now;
+        return { type: "claimed", preview: clone(preview) };
       }
       const reusedKey = previews.find((item) => sameScope(item, input.scope)
         && item.id !== preview.id && item.idempotencyKey === input.idempotencyKey);
@@ -277,6 +284,7 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
       preview.status = "confirming";
       preview.confirmedPayload = clone(input.payload);
       preview.idempotencyKey = input.idempotencyKey;
+      preview.intendedResourceId = input.intendedResourceId;
       preview.claimToken = input.claimToken;
       preview.claimLeaseExpiresAt = input.claimLeaseExpiresAt;
       preview.updatedAt = input.now;
@@ -327,6 +335,7 @@ export function createInMemoryStudioOperationsStore(options: InMemoryStoreOption
       preview.status = "preview";
       preview.confirmedPayload = null;
       preview.idempotencyKey = null;
+      preview.intendedResourceId = null;
       preview.claimToken = null;
       preview.claimLeaseExpiresAt = null;
       preview.updatedAt = input.now;
@@ -398,7 +407,18 @@ export function createPostgresStudioOperationsStore(db: OperationalPool): Studio
           if (preview.claimLeaseExpiresAt && Date.parse(preview.claimLeaseExpiresAt) > Date.parse(input.now)) {
             return { type: "busy" } as const;
           }
-          return { type: "indeterminate" } as const;
+          if (!preview.intendedResourceId) return { type: "indeterminate" } as const;
+          const reclaimed = await client.query<StudioOperationPreviewRow>(
+            `UPDATE studio_operation_previews
+               SET claim_token=$4,claim_lease_expires_at=$5,updated_at=$6
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+             RETURNING *`,
+            [input.scope.workspaceId, input.scope.ownerProfileId, preview.id,
+              input.claimToken, input.claimLeaseExpiresAt, input.now]
+          );
+          await audit(client, input.scope.workspaceId, "studio_operation_preview", preview.id,
+            "confirm_recover", input.actorProfileId, { idempotencyKey: input.idempotencyKey });
+          return { type: "claimed", preview: previewFromRow(reclaimed.rows[0]!) } as const;
         }
         const reusedKey = await client.query<{ id: string }>(
           `SELECT id FROM studio_operation_previews
@@ -410,11 +430,11 @@ export function createPostgresStudioOperationsStore(db: OperationalPool): Studio
         const updated = await client.query<StudioOperationPreviewRow>(
           `UPDATE studio_operation_previews
              SET status='confirming',confirmed_payload_json=$4::jsonb,idempotency_key=$5,
-                 claim_token=$6,claim_lease_expires_at=$7,updated_at=$8
+                 intended_resource_id=$6,claim_token=$7,claim_lease_expires_at=$8,updated_at=$9
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
            RETURNING *`,
           [input.scope.workspaceId, input.scope.ownerProfileId, preview.id, JSON.stringify(input.payload),
-            input.idempotencyKey, input.claimToken, input.claimLeaseExpiresAt, input.now]
+            input.idempotencyKey, input.intendedResourceId, input.claimToken, input.claimLeaseExpiresAt, input.now]
         );
         await audit(client, input.scope.workspaceId, "studio_operation_preview", preview.id, "confirm_claim",
           input.actorProfileId, { idempotencyKey: input.idempotencyKey });
@@ -471,7 +491,7 @@ export function createPostgresStudioOperationsStore(db: OperationalPool): Studio
         const result = await client.query<{ id: string }>(
           `UPDATE studio_operation_previews
              SET status='preview',confirmed_payload_json=NULL,idempotency_key=NULL,claim_token=NULL,
-                 claim_lease_expires_at=NULL,updated_at=$6
+                 intended_resource_id=NULL,claim_lease_expires_at=NULL,updated_at=$6
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND status='confirming'
              AND idempotency_key=$4 AND claim_token=$5
            RETURNING id`,
@@ -603,6 +623,7 @@ export function createStudioOperationsBridge(options: StudioOperationsBridgeOpti
       actorProfileId,
       previewId,
       idempotencyKey,
+      intendedResourceId: `${draft.resource_type}_${randomUUID()}`,
       payload: draft,
       claimToken,
       claimLeaseExpiresAt: new Date(timestamp.getTime() + claimLeaseMs).toISOString(),
@@ -613,32 +634,49 @@ export function createStudioOperationsBridge(options: StudioOperationsBridgeOpti
     if (claim.type === "busy") throw new Error("STUDIO_OPERATION_CONFIRMATION_IN_PROGRESS");
     if (claim.type === "indeterminate") throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED");
 
-    let resourceId: string | null = null;
+    const intendedResourceId = claim.preview.intendedResourceId;
+    if (!intendedResourceId) throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED");
+    let domainAttempted = false;
+    let finalizeAttempted = false;
     try {
+      const recovered = await findOperationalResource(options, scope.workspaceId, draft.resource_type, intendedResourceId);
+      if (recovered) {
+        return await finalizeWithRetry(intendedResourceId);
+      }
       const currentSuggestion = await options.studioRepository.findSuggestion(scope, preview.sourceSuggestionId);
       if (!currentSuggestion || currentSuggestion.status !== "pending") {
         throw new Error("STUDIO_OPERATION_SOURCE_SUGGESTION_NOT_PENDING");
       }
       await validateReferences(options, scope.workspaceId, draft);
-      resourceId = await createOperationalResource({
+      domainAttempted = true;
+      const resourceId = await createOperationalResource({
         draft,
         workspaceId: scope.workspaceId,
         actorProfileId,
+        resourceId: intendedResourceId,
         routineService,
         processService,
         announcementService
       });
-      const finalizeInput = {
-        scope, actorProfileId, previewId, idempotencyKey, claimToken, resourceId, now: validNow(now).toISOString()
-      };
-      try {
-        return await options.operationsStore.finalizeConfirmation(finalizeInput);
-      } catch {
-        // A committed finalize may surface as an I/O failure. A second fenced read/write recovers it without a domain retry.
-        return await options.operationsStore.finalizeConfirmation(finalizeInput);
-      }
+      if (resourceId !== intendedResourceId) throw new Error("STUDIO_OPERATION_DOMAIN_IDENTITY_MISMATCH");
+      return await finalizeWithRetry(resourceId);
     } catch (error) {
-      if (resourceId) throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED", { cause: error });
+      if (finalizeAttempted) {
+        throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED", { cause: error });
+      }
+      if (domainAttempted) {
+        const recovered = await findOperationalResource(
+          options, scope.workspaceId, draft.resource_type, intendedResourceId
+        ).catch(() => null);
+        if (recovered) {
+          try {
+            return await finalizeWithRetry(intendedResourceId);
+          } catch (finalizeError) {
+            throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED", { cause: finalizeError });
+          }
+        }
+        throw new Error("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED", { cause: error });
+      }
       await options.operationsStore.releaseConfirmation({
         scope,
         actorProfileId,
@@ -649,6 +687,19 @@ export function createStudioOperationsBridge(options: StudioOperationsBridgeOpti
         errorCode: publicErrorCode(error)
       }).catch(() => undefined);
       throw error;
+    }
+
+    async function finalizeWithRetry(resourceId: string) {
+      finalizeAttempted = true;
+      const finalizeInput = {
+        scope, actorProfileId, previewId, idempotencyKey, claimToken,
+        resourceId, now: validNow(now).toISOString()
+      };
+      try {
+        return await options.operationsStore.finalizeConfirmation(finalizeInput);
+      } catch {
+        return options.operationsStore.finalizeConfirmation(finalizeInput);
+      }
     }
   }
 }
@@ -730,6 +781,7 @@ async function createOperationalResource(input: {
   draft: StudioOperationDraft;
   workspaceId: string;
   actorProfileId: string;
+  resourceId: string;
   routineService: ReturnType<typeof createRoutineService>;
   processService: ReturnType<typeof createProcessService>;
   announcementService: ReturnType<typeof createAnnouncementService>;
@@ -745,7 +797,7 @@ async function createOperationalResource(input: {
       approvalMode: draft.payload.approval_mode,
       evidencePolicy: draft.payload.evidence_policy,
       checklistItems: draft.payload.checklist_items
-    })).id;
+    }, { resourceId: input.resourceId })).id;
   }
   if (draft.resource_type === "routine") {
     return (await input.routineService.createRoutine(input.workspaceId, input.actorProfileId, {
@@ -766,7 +818,7 @@ async function createOperationalResource(input: {
         approvalMode: item.approval_mode,
         evidencePolicy: item.evidence_policy
       }))
-    })).id;
+    }, { resourceId: input.resourceId })).id;
   }
   if (draft.resource_type === "process") {
     return (await input.processService.createProcess(input.workspaceId, input.actorProfileId, {
@@ -779,7 +831,7 @@ async function createOperationalResource(input: {
         : draft.payload.owner?.type === "role"
           ? { type: "role", roleTemplateId: draft.payload.owner.role_template_id }
           : null
-    })).id;
+    }, { resourceId: input.resourceId })).id;
   }
   const audience = draft.payload.audience;
   return (await input.announcementService.createAnnouncement(input.workspaceId, input.actorProfileId, {
@@ -799,14 +851,26 @@ async function createOperationalResource(input: {
       correctOptionId: question.correct_option_id,
       explanation: question.explanation
     }))
-  })).id;
+  }, { resourceId: input.resourceId })).id;
+}
+
+async function findOperationalResource(
+  options: Pick<StudioOperationsBridgeOptions, "routineRepository" | "processRepository" | "announcementRepository">,
+  workspaceId: string,
+  resourceType: StudioOperationResourceType,
+  resourceId: string
+) {
+  if (resourceType === "task") return options.routineRepository.findTaskOccurrence(workspaceId, resourceId);
+  if (resourceType === "routine") return options.routineRepository.findRoutine(workspaceId, resourceId);
+  if (resourceType === "process") return options.processRepository.findProcess(workspaceId, resourceId);
+  return options.announcementRepository.findAnnouncement(workspaceId, resourceId);
 }
 
 type StudioOperationPreviewRow = {
   id: string; workspace_id: string; owner_profile_id: string; source_suggestion_id: string;
   source_document_id: string; resource_type: StudioOperationResourceType; payload_json: unknown;
   confirmed_payload_json: unknown | null; status: StudioOperationPreviewStatus; expires_at: string | Date;
-  idempotency_key: string | null; result_resource_id: string | null; claim_token: string | null;
+  idempotency_key: string | null; intended_resource_id: string | null; result_resource_id: string | null; claim_token: string | null;
   claim_lease_expires_at: string | Date | null; created_at: string | Date; updated_at: string | Date;
   confirmed_at: string | Date | null;
 };
@@ -823,6 +887,7 @@ function previewFromRow(row: StudioOperationPreviewRow): StudioOperationPreview 
     resourceType: row.resource_type, payload: parseDraft(parseJson(row.payload_json)),
     confirmedPayload: row.confirmed_payload_json ? parseDraft(parseJson(row.confirmed_payload_json)) : null,
     status: row.status, expiresAt: iso(row.expires_at), idempotencyKey: row.idempotency_key,
+    intendedResourceId: row.intended_resource_id,
     resultResourceId: row.result_resource_id, claimToken: row.claim_token,
     claimLeaseExpiresAt: row.claim_lease_expires_at ? iso(row.claim_lease_expires_at) : null,
     createdAt: iso(row.created_at), updatedAt: iso(row.updated_at),

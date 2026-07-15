@@ -3,6 +3,46 @@ import { createInMemoryRoutineRepository } from "./in-memory-routine.repository"
 import { createRoutineService } from "./routine.service";
 
 describe("routine service", () => {
+  it("recovers manual tasks and routines by a caller-provided durable identity", async () => {
+    const repository = createInMemoryRoutineRepository();
+    let throwAfterTaskCreate = true;
+    const service = createRoutineService({
+      ...repository,
+      async createTaskOccurrence(input) {
+        const created = await repository.createTaskOccurrence(input);
+        if (throwAfterTaskCreate) {
+          throwAfterTaskCreate = false;
+          throw new Error("lost response after commit");
+        }
+        return created;
+      }
+    });
+
+    const task = await service.createManualTask("workspace_a", "profile_owner", {
+      title: "Ação estratégica",
+      dueDate: "2026-07-20"
+    }, { resourceId: "task_studio_durable" });
+    const repeatedTask = await createRoutineService(repository).createManualTask(
+      "workspace_a", "profile_owner", { title: "Não sobrescrever", dueDate: "2026-07-21" },
+      { resourceId: "task_studio_durable" }
+    );
+    const routine = await service.createRoutine("workspace_a", "profile_owner", {
+      title: "Ritual operacional",
+      taskTemplates: [{ title: "Revisar" }]
+    }, { resourceId: "routine_studio_durable" });
+    const repeatedRoutine = await createRoutineService(repository).createRoutine(
+      "workspace_a", "profile_owner", { title: "Não duplicar", taskTemplates: [{ title: "Outra" }] },
+      { resourceId: "routine_studio_durable" }
+    );
+
+    expect(task.id).toBe("task_studio_durable");
+    expect(repeatedTask).toEqual(task);
+    expect(routine.id).toBe("routine_studio_durable");
+    expect(repeatedRoutine).toEqual(routine);
+    await expect(repository.listTaskOccurrences("workspace_a")).resolves.toHaveLength(1);
+    await expect(repository.listRoutines("workspace_a")).resolves.toHaveLength(1);
+  });
+
   it.each([undefined, [], ["mon", "tue"] as const])(
     "rejects weekly routines unless exactly one weekday is supplied: %j",
     async (weekdays) => {

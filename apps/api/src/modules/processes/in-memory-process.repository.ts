@@ -33,7 +33,10 @@ export function createInMemoryProcessRepository(
 
     async createProcess(input) {
       const timestamp = now();
-      const processId = `process_${processes.length + 1}`;
+      const processId = input.id ?? `process_${processes.length + 1}`;
+      if (processes.some((process) => process.workspaceId === input.workspaceId && process.id === processId)) {
+        throw new Error("PROCESS_ALREADY_EXISTS");
+      }
       const versions = input.versions.map((version) => ({
         ...version,
         id: `version_${processId}_${version.version}`,

@@ -1202,6 +1202,7 @@ const migrations: Migration[] = [{
         CHECK (status IN ('preview','confirming','confirmed','expired')),
       expires_at TIMESTAMPTZ NOT NULL,
       idempotency_key TEXT,
+      intended_resource_id TEXT,
       result_resource_id TEXT,
       claim_token TEXT,
       claim_lease_expires_at TIMESTAMPTZ,
@@ -1218,13 +1219,17 @@ const migrations: Migration[] = [{
       CHECK (expires_at > created_at),
       CHECK (
         (status='preview' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
-          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
+          AND intended_resource_id IS NULL AND result_resource_id IS NULL
+          AND claim_token IS NULL AND confirmed_at IS NULL)
         OR (status='confirming' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
-          AND result_resource_id IS NULL AND claim_token IS NOT NULL AND confirmed_at IS NULL)
+          AND intended_resource_id IS NOT NULL AND result_resource_id IS NULL
+          AND claim_token IS NOT NULL AND confirmed_at IS NULL)
         OR (status='confirmed' AND confirmed_payload_json IS NOT NULL AND idempotency_key IS NOT NULL
-          AND result_resource_id IS NOT NULL AND claim_token IS NULL AND confirmed_at IS NOT NULL)
+          AND intended_resource_id=result_resource_id AND result_resource_id IS NOT NULL
+          AND claim_token IS NULL AND confirmed_at IS NOT NULL)
         OR (status='expired' AND confirmed_payload_json IS NULL AND idempotency_key IS NULL
-          AND result_resource_id IS NULL AND claim_token IS NULL AND confirmed_at IS NULL)
+          AND intended_resource_id IS NULL AND result_resource_id IS NULL
+          AND claim_token IS NULL AND confirmed_at IS NULL)
       )
     );
 

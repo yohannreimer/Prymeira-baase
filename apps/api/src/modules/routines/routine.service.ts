@@ -258,11 +258,20 @@ export function createRoutineService(repository: RoutineRepository) {
       return readRoutineOrThrow(repository, workspaceId, routineId);
     },
 
-    async createRoutine(workspaceId: string, actorProfileId: string, input: CreateRoutineInput): Promise<CompanyRoutine> {
+    async createRoutine(
+      workspaceId: string,
+      actorProfileId: string,
+      input: CreateRoutineInput,
+      identity: { resourceId?: string } = {}
+    ): Promise<CompanyRoutine> {
       const title = requiredText(input.title, "ROUTINE_TITLE_REQUIRED");
       if (input.taskTemplates.length === 0) throw new Error("ROUTINE_TASKS_REQUIRED");
-
-      return repository.createRoutine({
+      if (identity.resourceId) {
+        const existing = await repository.findRoutine(workspaceId, identity.resourceId);
+        if (existing) return existing;
+      }
+      const createInput: Parameters<RoutineRepository["createRoutine"]>[0] = {
+        ...(identity.resourceId ? { id: identity.resourceId } : {}),
         workspaceId,
         areaId: input.areaId ?? null,
         title,
@@ -271,10 +280,19 @@ export function createRoutineService(repository: RoutineRepository) {
         createdByProfileId: actorProfileId,
         taskTemplates: buildTemplates(
           workspaceId,
-          "__routine__",
+          identity.resourceId ?? "__routine__",
           input.taskTemplates.map(({ id: _id, ...template }) => template)
         )
-      });
+      };
+      try {
+        return await repository.createRoutine(createInput);
+      } catch (error) {
+        if (identity.resourceId) {
+          const existing = await repository.findRoutine(workspaceId, identity.resourceId);
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     async updateRoutine(workspaceId: string, routineId: string, input: UpdateRoutineInput): Promise<CompanyRoutine> {
@@ -331,9 +349,15 @@ export function createRoutineService(repository: RoutineRepository) {
     async createManualTask(
       workspaceId: string,
       actorProfileId: string,
-      input: CreateManualTaskInput
+      input: CreateManualTaskInput,
+      identity: { resourceId?: string } = {}
     ): Promise<TaskOccurrence> {
-      return repository.createTaskOccurrence({
+      if (identity.resourceId) {
+        const existing = await repository.findTaskOccurrence(workspaceId, identity.resourceId);
+        if (existing) return existing;
+      }
+      const createInput: Parameters<RoutineRepository["createTaskOccurrence"]>[0] = {
+        ...(identity.resourceId ? { id: identity.resourceId } : {}),
         workspaceId,
         origin: "manual",
         routineId: null,
@@ -354,7 +378,16 @@ export function createRoutineService(repository: RoutineRepository) {
         reviewedByProfileId: null,
         reviewedAt: null,
         reviewComment: null
-      });
+      };
+      try {
+        return await repository.createTaskOccurrence(createInput);
+      } catch (error) {
+        if (identity.resourceId) {
+          const existing = await repository.findTaskOccurrence(workspaceId, identity.resourceId);
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     async listApprovalTasks(workspaceId: string): Promise<TaskOccurrence[]> {

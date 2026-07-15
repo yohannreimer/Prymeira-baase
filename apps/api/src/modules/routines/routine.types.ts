@@ -153,7 +153,7 @@ export type RoutineOccurrenceReconciliation = {
 export type RoutineRepository = {
   listRoutines(workspaceId: string, filters?: { limit?: number }): Promise<CompanyRoutine[]>;
   findRoutine(workspaceId: string, routineId: string): Promise<CompanyRoutine | null>;
-  createRoutine(input: Omit<CompanyRoutine, "id" | "createdAt" | "updatedAt">): Promise<CompanyRoutine>;
+  createRoutine(input: Omit<CompanyRoutine, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<CompanyRoutine>;
   updateRoutine(routine: CompanyRoutine): Promise<CompanyRoutine>;
   deleteRoutine(workspaceId: string, routineId: string): Promise<void>;
   listTaskOccurrences(workspaceId: string, filters?: {
@@ -170,7 +170,7 @@ export type RoutineRepository = {
     taskTemplateId: string,
     dueDate: string
   ): Promise<TaskOccurrence | null>;
-  createTaskOccurrence(input: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt">): Promise<TaskOccurrence>;
+  createTaskOccurrence(input: Omit<TaskOccurrence, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<TaskOccurrence>;
   reconcileRoutineOccurrences(
     routine: CompanyRoutine,
     dueDate: string,

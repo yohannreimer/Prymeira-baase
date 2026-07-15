@@ -24,7 +24,10 @@ export function createInMemoryAnnouncementRepository(
 
     async createAnnouncement(input) {
       const timestamp = now();
-      const announcementId = `announcement_${announcements.length + 1}`;
+      const announcementId = input.id ?? `announcement_${announcements.length + 1}`;
+      if (announcements.some((announcement) => (
+        announcement.workspaceId === input.workspaceId && announcement.id === announcementId
+      ))) throw new Error("ANNOUNCEMENT_ALREADY_EXISTS");
       const announcement: Announcement = {
         ...input,
         id: announcementId,

@@ -75,9 +75,10 @@ describe("Postgres Studio operations store", () => {
       roleTemplateId: null, createdByProfileId: scope.ownerProfileId
     });
     const routineRepository = createInMemoryRoutineRepository();
+    const operationsStore = createPostgresStudioOperationsStore(db);
     const bridge = createStudioOperationsBridge({
       studioRepository,
-      operationsStore: createPostgresStudioOperationsStore(db),
+      operationsStore,
       companyRepository,
       routineRepository,
       processRepository: createInMemoryProcessRepository(),
@@ -104,11 +105,34 @@ describe("Postgres Studio operations store", () => {
     expect((await db.query("select id from studio_operation_previews")).rows).toHaveLength(1);
     expect((await db.query("select id from studio_operational_links")).rows).toHaveLength(1);
     expect(await bridge.getPreview(scope, preview.id)).toMatchObject({
-      status: "confirmed", idempotencyKey: key, resultResourceId: first.resourceId
+      status: "confirmed", idempotencyKey: key, intendedResourceId: first.resourceId,
+      resultResourceId: first.resourceId
     });
     const audit = await db.query<{ action: string }>(
       "select action from operational_audit_log where entity_type in ('studio_operation_preview','studio_operational_link') order by created_at,id"
     );
     expect(audit.rows.map((row) => row.action).sort()).toEqual(["confirm", "confirm_claim", "create", "create"]);
+
+    const recoveryPreview = await bridge.preview(scope, scope.ownerProfileId, suggestionId, draft);
+    const recoveryKey = "22222222-2222-4222-8222-222222222222";
+    await operationsStore.claimConfirmation({
+      scope, actorProfileId: scope.ownerProfileId, previewId: recoveryPreview.id,
+      idempotencyKey: recoveryKey, intendedResourceId: "task_pg_durable",
+      payload: draft, claimToken: "claim_before_crash",
+      claimLeaseExpiresAt: "2026-07-14T12:05:00.000Z", now: "2026-07-14T12:00:00.000Z"
+    });
+    const restartedStore = createPostgresStudioOperationsStore(db);
+    await expect(restartedStore.claimConfirmation({
+      scope, actorProfileId: scope.ownerProfileId, previewId: recoveryPreview.id,
+      idempotencyKey: recoveryKey, intendedResourceId: "task_must_not_replace",
+      payload: draft, claimToken: "claim_after_crash",
+      claimLeaseExpiresAt: "2026-07-14T12:11:00.000Z", now: "2026-07-14T12:06:00.000Z"
+    })).resolves.toMatchObject({
+      type: "claimed",
+      preview: {
+        status: "confirming", idempotencyKey: recoveryKey,
+        intendedResourceId: "task_pg_durable", claimToken: "claim_after_crash"
+      }
+    });
   });
 });

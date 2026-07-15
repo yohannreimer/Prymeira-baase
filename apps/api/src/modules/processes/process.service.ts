@@ -76,14 +76,23 @@ export function createProcessService(repository: ProcessRepository, dependencies
       return repository.listProcesses(workspaceId);
     },
 
-    async createProcess(workspaceId: string, editorProfileId: string, input: CreateProcessInput) {
+    async createProcess(
+      workspaceId: string,
+      editorProfileId: string,
+      input: CreateProcessInput,
+      identity: { resourceId?: string } = {}
+    ) {
       const title = requiredText(input.title, "PROCESS_TITLE_REQUIRED");
       const body = requiredText(input.body, "PROCESS_BODY_REQUIRED");
       const owner = input.owner === undefined
         ? input.ownerProfileId ? { type: "person" as const, personId: input.ownerProfileId } : null
         : input.owner;
       await validateReferences(workspaceId, input.areaId, owner);
-      const temporaryProcessId = "new";
+      if (identity.resourceId) {
+        const existing = await repository.findProcess(workspaceId, identity.resourceId);
+        if (existing) return existing;
+      }
+      const temporaryProcessId = identity.resourceId ?? "new";
       const currentVersion = createVersion({
         processId: temporaryProcessId,
         workspaceId,
@@ -94,7 +103,8 @@ export function createProcessService(repository: ProcessRepository, dependencies
         version: 1
       });
 
-      return repository.createProcess({
+      const createInput: Parameters<ProcessRepository["createProcess"]>[0] = {
+        ...(identity.resourceId ? { id: identity.resourceId } : {}),
         workspaceId,
         areaId: input.areaId ?? null,
         title,
@@ -102,13 +112,22 @@ export function createProcessService(repository: ProcessRepository, dependencies
         status: "draft",
         ownerProfileId: owner?.type === "person" ? owner.personId : null,
         owner,
-        materials: toProcessMaterials("new", workspaceId, normalizeMaterials(input.materials)),
+        materials: toProcessMaterials(temporaryProcessId, workspaceId, normalizeMaterials(input.materials)),
         currentVersion,
         versions: [currentVersion],
         createdByProfileId: editorProfileId,
         publishedAt: null,
         archivedAt: null
-      });
+      };
+      try {
+        return await repository.createProcess(createInput);
+      } catch (error) {
+        if (identity.resourceId) {
+          const existing = await repository.findProcess(workspaceId, identity.resourceId);
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     async createProcessVersion(

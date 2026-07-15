@@ -8,7 +8,8 @@ import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import {
   createInMemoryStudioOperationsStore,
   createStudioOperationsBridge,
-  type StudioOperationDraft
+  type StudioOperationDraft,
+  type StudioOperationsStore
 } from "./studio-operations-bridge";
 
 const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -174,6 +175,7 @@ describe("Studio strategic-to-operational bridge", () => {
       actorProfileId: scope.ownerProfileId,
       previewId: preview.id,
       idempotencyKey: IDEMPOTENCY_KEY,
+      intendedResourceId: "task_intended_a",
       payload: draft,
       claimToken: "claim_a",
       claimLeaseExpiresAt: "2026-07-16T13:00:00.000Z",
@@ -186,6 +188,7 @@ describe("Studio strategic-to-operational bridge", () => {
       actorProfileId: scope.ownerProfileId,
       previewId: preview.id,
       idempotencyKey: IDEMPOTENCY_KEY,
+      intendedResourceId: "task_intended_b",
       payload: draft,
       claimToken: "claim_b",
       claimLeaseExpiresAt: "2026-07-16T14:00:00.000Z",
@@ -193,18 +196,132 @@ describe("Studio strategic-to-operational bridge", () => {
     })).resolves.toEqual({ type: "busy" });
     await expect(fixture.operationsStore.findPreview(scope, preview.id)).resolves.toMatchObject({ status: "confirming" });
   });
+
+  it("reconciles across bridge processes when the domain creates the task and then throws", async () => {
+    let now = new Date("2026-07-14T12:00:00.000Z");
+    const baseRepository = createInMemoryRoutineRepository();
+    let failAfterCreate = true;
+    const routineRepository: RoutineRepository = {
+      ...baseRepository,
+      async createTaskOccurrence(input) {
+        const created = await baseRepository.createTaskOccurrence(input);
+        if (failAfterCreate) {
+          failAfterCreate = false;
+          throw new Error("connection dropped after commit");
+        }
+        return created;
+      }
+    };
+    const fixture = await createFixture(() => now, routineRepository);
+    const draft = draftFor("task", fixture.areaId, fixture.personId);
+    const preview = await fixture.bridge.preview(scope, scope.ownerProfileId, fixture.suggestionId, draft);
+
+    const first = await fixture.bridge.confirm(scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft);
+    await expect(fixture.operationalCount("task")).resolves.toBe(1);
+    await expect(fixture.bridge.getPreview(scope, preview.id)).resolves.toMatchObject({
+      status: "confirmed",
+      idempotencyKey: IDEMPOTENCY_KEY,
+      intendedResourceId: first.resourceId
+    });
+
+    now = new Date("2026-07-14T12:06:00.000Z");
+    const restarted = fixture.createBridge();
+    const link = await restarted.confirm(scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft);
+
+    await expect(fixture.operationalCount("task")).resolves.toBe(1);
+    expect(link).toEqual(first);
+    expect(link.resourceId).toBe((await fixture.bridge.getPreview(scope, preview.id)).intendedResourceId);
+  });
+
+  it("recovers a crash between domain creation and finalize without creating a duplicate", async () => {
+    let now = new Date("2026-07-14T12:00:00.000Z");
+    const baseStore = createInMemoryStudioOperationsStore({ now: () => now.toISOString() });
+    const unavailableFinalize: StudioOperationsStore = {
+      ...baseStore,
+      finalizeConfirmation: vi.fn(async () => {
+        throw new Error("link store unavailable");
+      })
+    };
+    const fixture = await createFixture(() => now, createInMemoryRoutineRepository(), unavailableFinalize);
+    const draft = draftFor("routine", fixture.areaId, fixture.personId);
+    const preview = await fixture.bridge.preview(scope, scope.ownerProfileId, fixture.suggestionId, draft);
+
+    await expect(fixture.bridge.confirm(scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft))
+      .rejects.toThrow("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED");
+    await expect(fixture.operationalCount("routine")).resolves.toBe(1);
+    expect(unavailableFinalize.finalizeConfirmation).toHaveBeenCalledTimes(2);
+
+    now = new Date("2026-07-14T12:01:00.000Z");
+    await expect(fixture.createBridge(baseStore).confirm(
+      scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft
+    )).rejects.toThrow("STUDIO_OPERATION_CONFIRMATION_IN_PROGRESS");
+
+    now = new Date("2026-07-14T12:06:00.000Z");
+    const recovered = await fixture.createBridge(baseStore).confirm(
+      scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft
+    );
+    await expect(fixture.operationalCount("routine")).resolves.toBe(1);
+    await expect(baseStore.findPreview(scope, preview.id)).resolves.toMatchObject({
+      status: "confirmed",
+      resultResourceId: recovered.resourceId,
+      intendedResourceId: recovered.resourceId
+    });
+  });
+
+  it("keeps an indeterminate key fenced through prolonged finalize failure and later returns the existing link", async () => {
+    let now = new Date("2026-07-14T12:00:00.000Z");
+    const baseStore = createInMemoryStudioOperationsStore({ now: () => now.toISOString() });
+    const failingStore = (failures: { remaining: number }): StudioOperationsStore => ({
+      ...baseStore,
+      async finalizeConfirmation(input) {
+        if (failures.remaining > 0) {
+          failures.remaining -= 1;
+          throw new Error("finalize unavailable");
+        }
+        return baseStore.finalizeConfirmation(input);
+      }
+    });
+    const failures = { remaining: 4 };
+    const fixture = await createFixture(() => now, createInMemoryRoutineRepository(), failingStore(failures));
+    const draft = draftFor("announcement", fixture.areaId, fixture.personId);
+    const preview = await fixture.bridge.preview(scope, scope.ownerProfileId, fixture.suggestionId, draft);
+
+    await expect(fixture.bridge.confirm(scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft))
+      .rejects.toThrow("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED");
+    now = new Date("2026-07-14T12:06:00.000Z");
+    await expect(fixture.createBridge(failingStore(failures)).confirm(
+      scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft
+    )).rejects.toThrow("STUDIO_OPERATION_CONFIRMATION_RECOVERY_REQUIRED");
+    await expect(baseStore.findPreview(scope, preview.id)).resolves.toMatchObject({
+      status: "confirming",
+      idempotencyKey: IDEMPOTENCY_KEY,
+      intendedResourceId: expect.any(String)
+    });
+
+    now = new Date("2026-07-14T12:12:00.000Z");
+    const bridge = fixture.createBridge(baseStore);
+    const recovered = await bridge.confirm(scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft);
+    const repeated = await fixture.createBridge(baseStore).confirm(
+      scope, scope.ownerProfileId, preview.id, IDEMPOTENCY_KEY, draft
+    );
+
+    expect(repeated).toEqual(recovered);
+    await expect(fixture.operationalCount("announcement")).resolves.toBe(1);
+  });
 });
 
 async function createFixture(
   now: (() => Date) | undefined = undefined,
-  routineRepository: RoutineRepository = createInMemoryRoutineRepository()
+  routineRepository: RoutineRepository = createInMemoryRoutineRepository(),
+  operationsStore: StudioOperationsStore = createInMemoryStudioOperationsStore({
+    now: () => (now?.() ?? new Date("2026-07-14T12:00:00.000Z")).toISOString()
+  })
 ) {
   const isoNow = () => (now?.() ?? new Date("2026-07-14T12:00:00.000Z")).toISOString();
   const studioRepository = createInMemoryStudioRepository({ now: isoNow });
   const companyRepository = createInMemoryCompanyRepository({ now: isoNow });
   const processRepository = createInMemoryProcessRepository({ now: isoNow });
   const announcementRepository = createInMemoryAnnouncementRepository({ now: isoNow });
-  const operationsStore = createInMemoryStudioOperationsStore({ now: isoNow });
   const area = await companyRepository.createArea({
     workspaceId: scope.workspaceId,
     name: "Operações",
@@ -250,15 +367,16 @@ async function createFixture(
     },
     citations: []
   });
-  const bridge = createStudioOperationsBridge({
-    studioRepository,
-    operationsStore,
-    companyRepository,
-    routineRepository,
-    processRepository,
-    announcementRepository,
-    now
-  });
+  const createBridge = (store: StudioOperationsStore = operationsStore) => createStudioOperationsBridge({
+      studioRepository,
+      operationsStore: store,
+      companyRepository,
+      routineRepository,
+      processRepository,
+      announcementRepository,
+      now
+    });
+  const bridge = createBridge();
 
   return {
     bridge,
@@ -268,6 +386,7 @@ async function createFixture(
     personId: person.id,
     documentId: document.id,
     suggestionId: suggestion.id,
+    createBridge,
     async operationalCount(resourceType: StudioOperationDraft["resource_type"]) {
       if (resourceType === "task") return (await routineRepository.listTaskOccurrences(scope.workspaceId)).length;
       if (resourceType === "routine") return (await routineRepository.listRoutines(scope.workspaceId)).length;

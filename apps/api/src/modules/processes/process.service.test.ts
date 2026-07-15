@@ -3,6 +3,35 @@ import { createProcessService } from "./process.service";
 import { createInMemoryProcessRepository } from "./in-memory-process.repository";
 
 describe("process service", () => {
+  it("recovers a draft process by its durable creation identity", async () => {
+    const repository = createInMemoryProcessRepository();
+    let throwAfterCreate = true;
+    const service = createProcessService({
+      ...repository,
+      async createProcess(input) {
+        const created = await repository.createProcess(input);
+        if (throwAfterCreate) {
+          throwAfterCreate = false;
+          throw new Error("lost response after commit");
+        }
+        return created;
+      }
+    });
+
+    const created = await service.createProcess("workspace_a", "profile_owner", {
+      title: "Processo estratégico",
+      body: "Corpo inicial"
+    }, { resourceId: "process_studio_durable" });
+    const repeated = await createProcessService(repository).createProcess(
+      "workspace_a", "profile_owner", { title: "Não sobrescrever", body: "Outro corpo" },
+      { resourceId: "process_studio_durable" }
+    );
+
+    expect(created.id).toBe("process_studio_durable");
+    expect(repeated).toEqual(created);
+    await expect(repository.listProcesses("workspace_a")).resolves.toHaveLength(1);
+  });
+
   it("creates draft processes with an initial version", async () => {
     const service = createProcessService(createInMemoryProcessRepository());
 

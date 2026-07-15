@@ -67,7 +67,7 @@ export function createPostgresProcessRepository(db: OperationalPool): ProcessRep
         const owner = ownerColumns(input);
         await lockActivePersonReference(client, input.workspaceId, owner.ownerProfileId);
         await lockActiveRoleTemplateReference(client, input.workspaceId, input.areaId, owner.ownerRoleTemplateId);
-        const id = generatedId("process");
+        const id = input.id ?? generatedId("process");
         const versions = input.versions.map((version) => ({ ...version, id: `version_${id}_${version.version}`, processId:id }));
         await client.query(`INSERT INTO processes
           (id,workspace_id,area_id,title,summary,status,owner_profile_id,owner_role_template_id,current_version,created_by_profile_id,published_at,archived_at)

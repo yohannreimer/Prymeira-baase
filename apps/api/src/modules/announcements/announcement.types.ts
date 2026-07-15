@@ -98,7 +98,7 @@ export type AnnouncementListContext = {
 export type AnnouncementRepository = {
   listAnnouncements(workspaceId: string, filters?: { limit?: number }): Promise<Announcement[]>;
   findAnnouncement(workspaceId: string, announcementId: string): Promise<Announcement | null>;
-  createAnnouncement(input: Omit<Announcement, "id" | "createdAt" | "updatedAt">): Promise<Announcement>;
+  createAnnouncement(input: Omit<Announcement, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<Announcement>;
   updateAnnouncement(announcement: Announcement): Promise<Announcement>;
   deleteAnnouncement(workspaceId: string, announcementId: string): Promise<void>;
   listAnnouncementReceipts(workspaceId: string, filters?: {

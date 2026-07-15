@@ -25,7 +25,10 @@ export function createInMemoryRoutineRepository(
 
     async createRoutine(input) {
       const timestamp = now();
-      const routineId = `routine_${routines.length + 1}`;
+      const routineId = input.id ?? `routine_${routines.length + 1}`;
+      if (routines.some((routine) => routine.workspaceId === input.workspaceId && routine.id === routineId)) {
+        throw new Error("ROUTINE_ALREADY_EXISTS");
+      }
       const recurrence = normalizeRoutineRecurrence(input);
       const routine: CompanyRoutine = {
         ...input,
@@ -105,10 +108,13 @@ export function createInMemoryRoutineRepository(
         routineRevisionSnapshot: input.routineRevisionSnapshot ?? (input.routineId
           ? routines.find((routine) => routine.workspaceId === input.workspaceId && routine.id === input.routineId)?.updatedAt ?? null
           : null),
-        id: `task_${tasks.length + 1}`,
+        id: input.id ?? `task_${tasks.length + 1}`,
         createdAt: timestamp,
         updatedAt: timestamp
       };
+      if (tasks.some((item) => item.workspaceId === input.workspaceId && item.id === task.id)) {
+        throw new Error("TASK_ALREADY_EXISTS");
+      }
       tasks.push(task);
       return task;
     },

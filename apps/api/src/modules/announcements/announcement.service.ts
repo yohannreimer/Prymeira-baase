@@ -45,12 +45,22 @@ function buildQuizQuestion(workspaceId: string, index: number, input: CreateAnno
 
 export function createAnnouncementService(repository: AnnouncementRepository) {
   return {
-    async createAnnouncement(workspaceId: string, actorProfileId: string, input: CreateAnnouncementInput) {
+    async createAnnouncement(
+      workspaceId: string,
+      actorProfileId: string,
+      input: CreateAnnouncementInput,
+      identity: { resourceId?: string } = {}
+    ) {
       if (input.requirement === "quiz_confirmation" && (input.quizQuestions ?? []).length === 0) {
         throw new Error("ANNOUNCEMENT_QUIZ_REQUIRED");
       }
 
-      return repository.createAnnouncement({
+      if (identity.resourceId) {
+        const existing = await repository.findAnnouncement(workspaceId, identity.resourceId);
+        if (existing) return existing;
+      }
+      const createInput: Parameters<AnnouncementRepository["createAnnouncement"]>[0] = {
+        ...(identity.resourceId ? { id: identity.resourceId } : {}),
         workspaceId,
         title: requiredText(input.title, "ANNOUNCEMENT_TITLE_REQUIRED"),
         body: requiredText(input.body, "ANNOUNCEMENT_BODY_REQUIRED"),
@@ -64,7 +74,16 @@ export function createAnnouncementService(repository: AnnouncementRepository) {
         createdByProfileId: actorProfileId,
         publishedAt: null,
         archivedAt: null
-      });
+      };
+      try {
+        return await repository.createAnnouncement(createInput);
+      } catch (error) {
+        if (identity.resourceId) {
+          const existing = await repository.findAnnouncement(workspaceId, identity.resourceId);
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     listAnnouncements(workspaceId: string) {

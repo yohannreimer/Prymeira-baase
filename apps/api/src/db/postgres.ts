@@ -909,7 +909,7 @@ function createJsonbProcessRepository(store: JsonbRecordStore): ProcessRepositor
         if (owner?.type === "person") await assertJsonbActivePerson(lockedStore, input.workspaceId, owner.personId);
         if (owner?.type === "role") await assertJsonbActiveRoleTemplate(lockedStore, input.workspaceId, input.areaId, owner.roleTemplateId);
         const timestamp = now();
-        const processId = await lockedStore.nextId("process", input.workspaceId, "process");
+        const processId = input.id ?? await lockedStore.nextId("process", input.workspaceId, "process");
         const versions = input.versions.map((version) => ({
           ...version,
           id: `version_${processId}_${version.version}`,
@@ -1027,7 +1027,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
       return store.withWorkspaceOperationalMutation(input.workspaceId, async (lockedStore) => {
         await assertJsonbActiveArea(lockedStore, input.workspaceId, input.areaId);
         const timestamp = now();
-        const routineId = await lockedStore.nextId("routine", input.workspaceId, "routine");
+        const routineId = input.id ?? await lockedStore.nextId("routine", input.workspaceId, "routine");
         const recurrence = normalizeRoutineRecurrence(input);
         const routine: CompanyRoutine = {
           ...input,
@@ -1095,7 +1095,7 @@ function createJsonbRoutineRepository(store: JsonbRecordStore): RoutineRepositor
           ...input,
           origin: input.origin ?? (input.routineId ? "routine" : "manual"),
           routineRevisionSnapshot,
-          id: await lockedStore.nextId("task_occurrence", input.workspaceId, "task"),
+          id: input.id ?? await lockedStore.nextId("task_occurrence", input.workspaceId, "task"),
           createdAt: timestamp,
           updatedAt: timestamp
         });
@@ -1320,7 +1320,7 @@ function createPostgresAnnouncementRepository(store: JsonbRecordStore): Announce
 
     async createAnnouncement(input) {
       const timestamp = now();
-      const announcementId = await store.nextId("announcement", input.workspaceId, "announcement");
+      const announcementId = input.id ?? await store.nextId("announcement", input.workspaceId, "announcement");
       const announcement: Announcement = {
         ...input,
         id: announcementId,

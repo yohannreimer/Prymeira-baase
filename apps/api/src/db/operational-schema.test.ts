@@ -260,7 +260,9 @@ describe("operational schema", () => {
     expect(sql).toContain("source_suggestion_id text not null");
     expect(sql).toContain("confirmed_payload_json jsonb");
     expect(sql).toContain("idempotency_key text");
+    expect(sql).toContain("intended_resource_id text");
     expect(sql).toContain("result_resource_id text");
+    expect(sql).toContain("intended_resource_id=result_resource_id");
     expect(sql).toContain("claim_token text");
     expect(sql).toContain("create unique index studio_operation_previews_idempotency_uidx");
     expect(sql).toContain("unique (workspace_id,owner_profile_id,preview_id)");
