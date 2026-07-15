@@ -94,6 +94,7 @@ export default function UniversalCaptureComposer({
   const [linkMode, setLinkMode] = useState(false);
   const [link, setLink] = useState("");
   const [saving, setSaving] = useState(false);
+  const [audioActive, setAudioActive] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [retryAttachment, setRetryAttachment] = useState<RetryAttachment | null>(null);
   const busyRef = useRef(false);
@@ -317,6 +318,7 @@ export default function UniversalCaptureComposer({
             inputTestId="studio-audio-input"
             disabled={saving || Boolean(retryAttachment)}
             onStatus={setMessage}
+            onActiveChange={setAudioActive}
             onCaptured={({ blob, filename }) => void capture({
               mode: "audio",
               captureKey: globalThis.crypto.randomUUID(),
@@ -327,17 +329,17 @@ export default function UniversalCaptureComposer({
               idempotencyKey: globalThis.crypto.randomUUID()
             })}
           />
-          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || Boolean(retryAttachment)}>
+          <button type="button" aria-label="Adicionar arquivo" onClick={() => fileInputRef.current?.click()} disabled={saving || audioActive || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-paperclip" />
           </button>
-          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || Boolean(retryAttachment)}>
+          <button type="button" aria-label="Adicionar imagem" onClick={() => imageInputRef.current?.click()} disabled={saving || audioActive || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-image" />
           </button>
-          <button ref={linkTriggerRef} type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || Boolean(retryAttachment)}>
+          <button ref={linkTriggerRef} type="button" aria-label="Adicionar link" onClick={showLinkMode} disabled={saving || audioActive || Boolean(retryAttachment)}>
             <i aria-hidden="true" className="ph-light ph-link" />
           </button>
         </div>
-        <button className="studio-composer__submit" type="submit" disabled={saving || Boolean(retryAttachment) || (linkMode ? !link.trim() : !text.trim())}>
+        <button className="studio-composer__submit" type="submit" disabled={saving || audioActive || Boolean(retryAttachment) || (linkMode ? !link.trim() : !text.trim())}>
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>

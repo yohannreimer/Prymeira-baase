@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StudioAsset, StudioDocument } from "./studio.types";
@@ -191,6 +191,85 @@ describe("UniversalCaptureComposer", () => {
     expect(onCaptured).not.toHaveBeenCalled();
   });
 
+  it("disables competing captures from microphone acquisition through terminal release", async () => {
+    let grantStream!: (stream: MediaStream) => void;
+    const recorderMock = installTestRecorder(vi.fn(() => new Promise<MediaStream>((resolve) => {
+      grantStream = resolve;
+    })));
+    try {
+      render(<UniversalCaptureComposer createDocument={vi.fn()} onCaptured={vi.fn()} />);
+      await userEvent.type(
+        screen.getByRole("textbox", { name: "Registre um pensamento" }),
+        "Texto preservado"
+      );
+      const audio = screen.getByRole("button", { name: "Gravar áudio" });
+      const competingControls = [
+        screen.getByRole("button", { name: "Adicionar arquivo" }),
+        screen.getByRole("button", { name: "Adicionar imagem" }),
+        screen.getByRole("button", { name: "Adicionar link" }),
+        screen.getByRole("button", { name: "Guardar" })
+      ];
+      competingControls.forEach((control) => expect(control).toBeEnabled());
+
+      fireEvent.click(audio);
+      expect(audio).toBeEnabled();
+      competingControls.forEach((control) => expect(control).toBeDisabled());
+
+      await act(async () => grantStream(streamWith(vi.fn())));
+      const stop = await screen.findByRole("button", { name: "Parar gravação" });
+      expect(stop).toBeEnabled();
+      competingControls.forEach((control) => expect(control).toBeDisabled());
+
+      fireEvent.click(stop);
+      competingControls.forEach((control) => expect(control).toBeDisabled());
+      await act(async () => recorderMock.recorders[0]!.emit("stop"));
+
+      await waitFor(() => competingControls.forEach((control) => expect(control).toBeEnabled()));
+    } finally {
+      recorderMock.restore();
+    }
+  });
+
+  it("includes text edited during recording in the final audio capture", async () => {
+    const stopTrack = vi.fn();
+    const recorderMock = installTestRecorder(vi.fn(async () => streamWith(stopTrack)));
+    const audioDocument = { ...capturedDocument, id: "audio_with_text", captureMode: "mixed" as const };
+    const createDocument = vi.fn(async () => audioDocument);
+    const attachAsset = vi.fn(async () => asset({ documentId: audioDocument.id }));
+    try {
+      render(
+        <UniversalCaptureComposer
+          createDocument={createDocument}
+          attachAsset={attachAsset}
+          onCaptured={vi.fn()}
+        />
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+      const stop = await screen.findByRole("button", { name: "Parar gravação" });
+
+      await userEvent.type(
+        screen.getByRole("textbox", { name: "Registre um pensamento" }),
+        "Texto escrito durante a gravação"
+      );
+      fireEvent.click(stop);
+      await act(async () => {
+        recorderMock.recorders[0]!.emit("dataavailable", new Blob(["audio"]));
+        recorderMock.recorders[0]!.emit("stop");
+      });
+
+      await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+      expect(createDocument).toHaveBeenCalledWith(expect.objectContaining({
+        body_text: "Texto escrito durante a gravação",
+        capture_mode: "mixed",
+        title: "Registro em áudio"
+      }), expect.any(AbortSignal));
+      expect(attachAsset).toHaveBeenCalledTimes(1);
+      expect(stopTrack).toHaveBeenCalledTimes(1);
+    } finally {
+      recorderMock.restore();
+    }
+  });
+
   it("cancels an in-flight capture when its surface closes", async () => {
     const user = userEvent.setup();
     let receivedSignal: AbortSignal | undefined;
@@ -208,6 +287,58 @@ describe("UniversalCaptureComposer", () => {
     expect(receivedSignal?.aborted).toBe(true);
   });
 });
+
+function installTestRecorder(getUserMedia: ReturnType<typeof vi.fn>) {
+  const originalMediaRecorder = globalThis.MediaRecorder;
+  const originalMediaDevices = navigator.mediaDevices;
+  const recorders: TestMediaRecorder[] = [];
+  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+  Object.defineProperty(globalThis, "MediaRecorder", {
+    configurable: true,
+    value: class extends TestMediaRecorder {
+      constructor(stream: MediaStream) {
+        super(stream);
+        recorders.push(this);
+      }
+    }
+  });
+  return {
+    recorders,
+    restore() {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: originalMediaDevices });
+      Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: originalMediaRecorder });
+    }
+  };
+}
+
+function streamWith(stop: ReturnType<typeof vi.fn>) {
+  return { getTracks: () => [{ stop }] } as unknown as MediaStream;
+}
+
+class TestMediaRecorder {
+  state: RecordingState = "inactive";
+  mimeType = "audio/webm";
+  private listeners = new Map<string, (event: { data: Blob }) => void>();
+
+  constructor(_stream: MediaStream) {}
+
+  addEventListener(type: string, listener: (event: { data: Blob }) => void) {
+    this.listeners.set(type, listener);
+  }
+
+  start() {
+    this.state = "recording";
+  }
+
+  stop() {
+    this.state = "inactive";
+  }
+
+  emit(type: "stop" | "error" | "dataavailable", data = new Blob()) {
+    if (type === "error") this.state = "inactive";
+    this.listeners.get(type)?.({ data });
+  }
+}
 
 function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
   return {

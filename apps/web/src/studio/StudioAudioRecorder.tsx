@@ -8,13 +8,13 @@ export type StudioAudioRecorderProps = {
   inputTestId?: string;
   onCaptured(audio: StudioRecordedAudio): void;
   onStatus(message: string): void;
+  onActiveChange?(active: boolean): void;
 };
 
 type RecordingSession = {
   recorder: MediaRecorder;
   stream: MediaStream;
   chunks: Blob[];
-  failed: boolean;
   terminal: boolean;
 };
 
@@ -23,13 +23,27 @@ export default function StudioAudioRecorder({
   variant = "icon",
   inputTestId,
   onCaptured,
-  onStatus
+  onStatus,
+  onActiveChange
 }: StudioAudioRecorderProps) {
   const [recording, setRecording] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const recordingSessionRef = useRef<RecordingSession | null>(null);
   const acquiringMicrophoneRef = useRef(false);
+  const activeRef = useRef(false);
   const mountedRef = useRef(true);
+  const onCapturedRef = useRef(onCaptured);
+  const onStatusRef = useRef(onStatus);
+  const onActiveChangeRef = useRef(onActiveChange);
+  onCapturedRef.current = onCaptured;
+  onStatusRef.current = onStatus;
+  onActiveChangeRef.current = onActiveChange;
+
+  function updateActive(active: boolean) {
+    if (activeRef.current === active) return;
+    activeRef.current = active;
+    if (mountedRef.current) onActiveChangeRef.current?.(active);
+  }
 
   function releaseRecording(session: RecordingSession) {
     if (session.terminal) return;
@@ -39,6 +53,7 @@ export default function StudioAudioRecorder({
       recordingSessionRef.current = null;
       if (mountedRef.current) setRecording(false);
     }
+    updateActive(false);
   }
 
   useEffect(() => {
@@ -60,7 +75,7 @@ export default function StudioAudioRecorder({
   async function toggleRecording() {
     const currentSession = recordingSessionRef.current;
     if (currentSession && !currentSession.terminal) {
-      if (!currentSession.failed && currentSession.recorder.state === "recording") {
+      if (currentSession.recorder.state === "recording") {
         currentSession.recorder.stop();
       }
       return;
@@ -71,6 +86,7 @@ export default function StudioAudioRecorder({
     }
     if (acquiringMicrophoneRef.current) return;
     acquiringMicrophoneRef.current = true;
+    updateActive(true);
     let grantedStream: MediaStream | null = null;
     let setupSession: RecordingSession | null = null;
     try {
@@ -80,11 +96,12 @@ export default function StudioAudioRecorder({
       if (!mountedRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         grantedStream = null;
+        updateActive(false);
         return;
       }
 
       const recorder = new MediaRecorder(stream);
-      const session: RecordingSession = { recorder, stream, chunks: [], failed: false, terminal: false };
+      const session: RecordingSession = { recorder, stream, chunks: [], terminal: false };
       setupSession = session;
       recordingSessionRef.current = session;
       grantedStream = null;
@@ -96,37 +113,35 @@ export default function StudioAudioRecorder({
         if (session.terminal) return;
         const type = recorder.mimeType || "audio/webm";
         const blob = new Blob(session.chunks, { type });
-        const failed = session.failed;
         releaseRecording(session);
-        if (!mountedRef.current || failed) return;
+        if (!mountedRef.current) return;
         if (!blob.size) {
-          onStatus("Não foi possível registrar áudio desta vez.");
+          onStatusRef.current("Não foi possível registrar áudio desta vez.");
           return;
         }
         const extension = type.includes("mp4") ? "m4a" : "webm";
-        onCaptured({
+        onCapturedRef.current({
           blob,
           filename: `registro-${new Date().toISOString().replaceAll(":", "-")}.${extension}`
         });
       }, { once: true });
       recorder.addEventListener("error", () => {
         if (session.terminal) return;
-        session.failed = true;
-        if (recordingSessionRef.current === session && mountedRef.current) {
-          setRecording(false);
-          onStatus("Não foi possível registrar áudio desta vez.");
-        }
+        releaseRecording(session);
+        if (mountedRef.current) onStatusRef.current("Não foi possível registrar áudio desta vez.");
       }, { once: true });
 
       recorder.start();
+      if (session.terminal) return;
       setRecording(true);
-      onStatus("Gravação em andamento. Seu áudio só será enviado quando você parar.");
+      onStatusRef.current("Gravação em andamento. Seu áudio só será enviado quando você parar.");
     } catch {
       acquiringMicrophoneRef.current = false;
       if (setupSession) releaseRecording(setupSession);
       else grantedStream?.getTracks().forEach((track) => track.stop());
+      updateActive(false);
       if (mountedRef.current) {
-        onStatus("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
+        onStatusRef.current("Não foi possível acessar o microfone. Você pode adicionar um áudio já gravado.");
         inputRef.current?.click();
       }
     }

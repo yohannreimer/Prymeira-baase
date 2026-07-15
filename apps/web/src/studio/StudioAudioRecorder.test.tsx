@@ -78,7 +78,8 @@ describe("StudioAudioRecorder", () => {
 
   it("does not reacquire the microphone after stop is clicked twice", async () => {
     const { getUserMedia, recorders } = installRecorder();
-    renderRecorder();
+    const onActiveChange = vi.fn();
+    renderRecorder({ onActiveChange });
     fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
     const stop = await screen.findByRole("button", { name: "Parar gravação" });
 
@@ -87,6 +88,63 @@ describe("StudioAudioRecorder", () => {
 
     expect(recorders[0]!.stopCalls).toBe(1);
     expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(onActiveChange).toHaveBeenCalledTimes(1);
+    expect(onActiveChange).toHaveBeenLastCalledWith(true);
+    await act(async () => recorders[0]!.emit("stop"));
+    expect(onActiveChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("uses the latest capture and activity callbacks when a recording finishes", async () => {
+    const { recorders } = installRecorder();
+    const firstCaptured = vi.fn();
+    const latestCaptured = vi.fn();
+    const firstActiveChange = vi.fn();
+    const latestActiveChange = vi.fn();
+    const view = render(
+      <StudioAudioRecorder
+        onCaptured={firstCaptured}
+        onStatus={vi.fn()}
+        onActiveChange={firstActiveChange}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+    const stop = await screen.findByRole("button", { name: "Parar gravação" });
+
+    view.rerender(
+      <StudioAudioRecorder
+        onCaptured={latestCaptured}
+        onStatus={vi.fn()}
+        onActiveChange={latestActiveChange}
+      />
+    );
+    await act(async () => recorders[0]!.emit("dataavailable", new Blob(["audio atualizado"])));
+    fireEvent.click(stop);
+    await act(async () => recorders[0]!.emit("stop"));
+
+    expect(firstCaptured).not.toHaveBeenCalled();
+    expect(latestCaptured).toHaveBeenCalledTimes(1);
+    expect(firstActiveChange.mock.calls).toEqual([[true]]);
+    expect(latestActiveChange.mock.calls).toEqual([[false]]);
+  });
+
+  it("uses the latest status callback for an asynchronous terminal result", async () => {
+    const { recorders } = installRecorder();
+    const firstStatus = vi.fn();
+    const latestStatus = vi.fn();
+    const view = render(
+      <StudioAudioRecorder onCaptured={vi.fn()} onStatus={firstStatus} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
+    const stop = await screen.findByRole("button", { name: "Parar gravação" });
+    view.rerender(
+      <StudioAudioRecorder onCaptured={vi.fn()} onStatus={latestStatus} />
+    );
+
+    fireEvent.click(stop);
+    await act(async () => recorders[0]!.emit("stop"));
+
+    expect(firstStatus).toHaveBeenCalledTimes(1);
+    expect(latestStatus).toHaveBeenCalledWith("Não foi possível registrar áudio desta vez.");
   });
 
   it("reports an empty recording instead of emitting it", async () => {
@@ -107,7 +165,8 @@ describe("StudioAudioRecorder", () => {
     const getUserMedia = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
     installRecorder({ getUserMedia });
     const onStatus = vi.fn();
-    renderRecorder({ onStatus });
+    const onActiveChange = vi.fn();
+    renderRecorder({ onStatus, onActiveChange });
     const onInputClick = vi.fn();
     screen.getByTestId("audio-fallback").addEventListener("click", onInputClick);
 
@@ -119,6 +178,7 @@ describe("StudioAudioRecorder", () => {
     ));
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(onInputClick).toHaveBeenCalledTimes(1);
+    expect(onActiveChange.mock.calls).toEqual([[true], [false]]);
   });
 
   it("stops every recording track on unmount", async () => {
@@ -233,7 +293,7 @@ describe("StudioAudioRecorder", () => {
     expect(secondStopTrack).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for terminal stop after an error and never emits obsolete audio", async () => {
+  it("releases a terminal error immediately, permits retry, and ignores obsolete events", async () => {
     const firstStopTrack = vi.fn();
     const secondStopTrack = vi.fn();
     const getUserMedia = vi.fn()
@@ -242,15 +302,17 @@ describe("StudioAudioRecorder", () => {
     const { recorders } = installRecorder({ getUserMedia });
     const onCaptured = vi.fn();
     const onStatus = vi.fn();
-    const view = renderRecorder({ onCaptured, onStatus });
+    const onActiveChange = vi.fn();
+    const view = renderRecorder({ onCaptured, onStatus, onActiveChange });
     fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
     await screen.findByRole("button", { name: "Parar gravação" });
 
     await act(async () => recorders[0]!.emit("error"));
     expect(onStatus).toHaveBeenLastCalledWith("Não foi possível registrar áudio desta vez.");
+    expect(firstStopTrack).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Gravar áudio" })).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
-    expect(getUserMedia).toHaveBeenCalledTimes(1);
-    expect(firstStopTrack).not.toHaveBeenCalled();
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(2));
     await act(async () => {
       recorders[0]!.emit("dataavailable", new Blob(["obsolete"]));
       recorders[0]!.emit("stop");
@@ -258,9 +320,8 @@ describe("StudioAudioRecorder", () => {
 
     expect(firstStopTrack).toHaveBeenCalledTimes(1);
     expect(onCaptured).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Gravar áudio" }));
-    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(2));
     await screen.findByRole("button", { name: "Parar gravação" });
+    expect(onActiveChange.mock.calls).toEqual([[true], [false], [true]]);
     view.unmount();
     expect(secondStopTrack).toHaveBeenCalledTimes(1);
   });
@@ -269,6 +330,7 @@ describe("StudioAudioRecorder", () => {
 type RecorderOverrides = {
   onCaptured?: ReturnType<typeof vi.fn>;
   onStatus?: ReturnType<typeof vi.fn>;
+  onActiveChange?: ReturnType<typeof vi.fn>;
 };
 
 function renderRecorder(overrides: RecorderOverrides = {}) {
@@ -278,6 +340,7 @@ function renderRecorder(overrides: RecorderOverrides = {}) {
       inputTestId="audio-fallback"
       onCaptured={overrides.onCaptured ?? vi.fn()}
       onStatus={overrides.onStatus ?? vi.fn()}
+      onActiveChange={overrides.onActiveChange}
     />
   );
 }
