@@ -27,6 +27,7 @@ import {
 import type { StudioOwnerScope, StudioService } from "./studio.types";
 import type { StudioMemoryIndex } from "./studio-memory";
 import type { StudioRitualService } from "./studio-ritual.service";
+import type { StudioReadiness } from "./studio-readiness";
 
 const studioRelatedQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(12).default(6) }).strict();
 const studioRelationBodySchema = z.object({
@@ -48,6 +49,10 @@ function relatedExplanation(vectorScore: number, lexicalScore: number) {
 
 function studioRouteError(error: unknown) {
   if (!(error instanceof Error)) return error;
+
+  if (error.message === "AI_PROVIDER_UNAVAILABLE") {
+    return new ApiError(503, "AI_PROVIDER_UNAVAILABLE", "A inteligência artificial do Estúdio está indisponível no momento.");
+  }
 
   if (error.message === "STUDIO_DOCUMENT_STALE") {
     return new ApiError(
@@ -155,8 +160,22 @@ export async function registerStudioRoutes(
   app: FastifyInstance,
   service: StudioService,
   memoryIndex?: StudioMemoryIndex,
-  ritualService?: StudioRitualService
+  ritualService?: StudioRitualService,
+  readiness?: StudioReadiness
 ) {
+  app.get("/studio/readiness", async (request) => {
+    requireStudioScope(request);
+    readNoRouteParams(request);
+    readNoQuery(request);
+    readNoBody(request);
+    return readiness ?? {
+      ai: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
+      embeddings: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
+      vector: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
+      maintenance: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" }
+    };
+  });
+
   app.get("/studio/home", async (request) => {
     const scope = requireStudioScope(request);
     readNoRouteParams(request);
@@ -172,11 +191,11 @@ export async function registerStudioRoutes(
     readNoBody(request);
     const source = await runStudioOperation(() => service.getDocument(scope, params.documentId));
     if (!memoryIndex || !source.bodyText.trim()) return { related: [] };
-    const matches = await memoryIndex.findRelated(scope, {
+    const matches = await runStudioOperation(() => memoryIndex.findRelated(scope, {
       documentId: source.id,
       query: [source.title, source.bodyText].filter(Boolean).join("\n\n").slice(0, 8_000),
       limit: query.limit
-    });
+    }));
     const related = await Promise.all(matches.map(async (match) => {
       const document = await runStudioOperation(() => service.getDocument(scope, match.documentId));
       return {

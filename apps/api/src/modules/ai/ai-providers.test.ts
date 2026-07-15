@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDeepgramProvider } from "./providers/deepgram.provider";
 import { createMockAiProvider } from "./providers/mock-ai.provider";
 import { createOpenAiProvider } from "./providers/openai.provider";
+import { createDefaultAiProvider } from "./providers/default-ai.provider";
 import {
   announcementDraftSchema,
   onboardingSetupSuggestionSchema,
@@ -110,6 +111,25 @@ describe("Mock AI provider", () => {
     expect(first[0]).toHaveLength(first[1]!.length);
     await expect(provider.createEmbeddings({ model: "mock-embedding", inputs: ["um"], dimensions: 0 }))
       .rejects.toThrow("MOCK_AI_EMBEDDING_DIMENSIONS_INVALID");
+  });
+});
+
+describe("Default AI provider", () => {
+  it("rejects Studio AI work in production when OpenAI is unavailable", async () => {
+    const provider = createDefaultAiProvider({
+      mode: "production",
+      studioEnabled: true,
+      openAiApiKey: undefined
+    });
+
+    await expect(provider.generateStructured({
+      taskKind: "studio_assist", agentKey: "studio_assistant", promptKey: "agent/studio-assistant",
+      promptVersion: "1", model: "gpt-5.6-terra", reasoningEffort: "medium", input: {}
+    })).rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
+    await expect(provider.createEmbeddings({
+      model: "text-embedding-3-small", inputs: ["conteúdo privado"], dimensions: 1536
+    })).rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
+    await expect(collect(provider.streamText(textRequest(false)))).rejects.toThrow("AI_PROVIDER_UNAVAILABLE");
   });
 });
 

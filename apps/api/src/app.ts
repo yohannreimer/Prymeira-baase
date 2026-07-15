@@ -78,6 +78,7 @@ import {
   type StudioMemoryIndex
 } from "./modules/studio/studio-memory";
 import { createPostgresStudioMemoryIndex } from "./modules/studio/postgres-studio-memory";
+import { buildStudioReadiness } from "./modules/studio/studio-readiness";
 import { createStudioAssetProcessor } from "./modules/studio/studio-asset-processor";
 import { createStudioAssetCleanupProcessor } from "./modules/studio/studio-asset-cleanup";
 import { createStudioAssetUploadCleanupProcessor } from "./modules/studio/studio-asset-upload-cleanup";
@@ -107,6 +108,8 @@ export type BuildAppOptions = {
   studioPortabilityStore?: StudioPortabilityStore;
   studioMemoryModel?: string;
   studioMemoryDimensions?: number;
+  studioVectorPersistent?: boolean;
+  studioMaintenanceAvailable?: boolean;
   studioLinkResolver?: StudioLinkResolver;
   studioLinkFetcher?: StudioLinkFetcher;
   studioUploadSemaphore?: StudioUploadSemaphore;
@@ -154,7 +157,12 @@ export function buildApp(options: BuildAppOptions = {}) {
   const announcementRepository = options.announcementRepository ?? createInMemoryAnnouncementRepository();
   const onboardingRepository = options.onboardingRepository ?? createInMemoryOnboardingRepository();
   const aiRepository = options.aiRepository ?? createInMemoryAiRepository();
-  const aiProvider = options.aiProvider ?? createDefaultAiProvider();
+  const openAiApiKey = process.env.OPENAI_API_KEY;
+  const aiProvider = options.aiProvider ?? createDefaultAiProvider({
+    mode: runtimeConfig.mode,
+    studioEnabled: runtimeConfig.studio.enabled,
+    openAiApiKey
+  });
   const studioRepository = options.studioRepository ?? createInMemoryStudioRepository();
   const aiHarness = createAiHarness({
     repository: aiRepository,
@@ -178,6 +186,12 @@ export function buildApp(options: BuildAppOptions = {}) {
     repository: studioRepository,
     memoryIndex: studioMemoryIndex,
     now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const studioReadiness = buildStudioReadiness({
+    runtimeConfig,
+    aiAvailable: Boolean(options.aiProvider) || Boolean(openAiApiKey),
+    hasPersistentVectorIndex: options.studioVectorPersistent ?? Boolean(options.studioMemoryPool),
+    maintenanceAvailable: options.studioMaintenanceAvailable ?? true
   });
   const studioService = createStudioService(studioRepository, {
     now: options.now ? () => options.now!().toISOString() : undefined
@@ -426,7 +440,13 @@ export function buildApp(options: BuildAppOptions = {}) {
     routineRepository,
     trainingRepository
   }));
-  app.register((routes) => registerStudioRoutes(routes, studioService, studioMemoryIndex, studioRitualService));
+  app.register((routes) => registerStudioRoutes(
+    routes,
+    studioService,
+    studioMemoryIndex,
+    studioRitualService,
+    studioReadiness
+  ));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
   app.register((routes) => registerStudioPortabilityRoutes(routes, studioPortabilityService));

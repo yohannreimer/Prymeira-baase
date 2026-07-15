@@ -1,8 +1,11 @@
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import { readRuntimeConfig } from "../../config/runtime";
 import { initializePostgresRuntime } from "../../server-initialization";
+import { createMockAiProvider } from "../ai/providers/mock-ai.provider";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
+import type { StudioMemoryIndex } from "./studio-memory";
 
 const ownerA = {
   "x-baase-workspace-id": "workspace_a",
@@ -49,6 +52,91 @@ function createApp() {
 }
 
 describe("Studio routes", () => {
+  it("returns the safe readiness projection only to the owner", async () => {
+    const app = buildApp({
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "pilot",
+        BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true",
+        BAASE_STUDIO_VECTOR_ENABLED: "true"
+      }),
+      aiProvider: createMockAiProvider(),
+      studioVectorPersistent: true,
+      studioMaintenanceAvailable: true
+    });
+
+    const response = await app.inject({ method: "GET", url: "/studio/readiness", headers: ownerA });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ai: { status: "ready", code: null },
+      embeddings: { status: "ready", code: null },
+      vector: { status: "ready", code: null },
+      maintenance: { status: "ready", code: null }
+    });
+    expect(JSON.stringify(response.json())).not.toContain(documentPayload.body_text);
+
+    for (const headers of [manager, employee]) {
+      const forbidden = await app.inject({ method: "GET", url: "/studio/readiness", headers });
+      expect(forbidden.statusCode).toBe(403);
+    }
+  });
+
+  it("reports unavailable Studio AI and vector capabilities honestly", async () => {
+    const app = buildApp({
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "production",
+        BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true",
+        BAASE_STUDIO_VECTOR_ENABLED: "false"
+      }),
+      studioMaintenanceAvailable: false
+    });
+    const response = await app.inject({ method: "GET", url: "/studio/readiness", headers: ownerA });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
+      embeddings: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
+      vector: { status: "unavailable", code: "STUDIO_VECTOR_NOT_CONFIGURED" },
+      maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }
+    });
+  });
+
+  it("maps unavailable Studio AI to a safe 503 response", async () => {
+    const unavailableIndex: StudioMemoryIndex = {
+      async indexVersion() { return false; },
+      async removeDocument() { return false; },
+      async findRelated() { throw new Error("AI_PROVIDER_UNAVAILABLE"); }
+    };
+    const app = buildApp({
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "production",
+        BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true",
+        BAASE_STUDIO_VECTOR_ENABLED: "true"
+      }),
+      studioMemoryIndex: unavailableIndex
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/studio/documents",
+      headers: ownerA,
+      payload: documentPayload
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/studio/documents/${created.json().document.id}/related`,
+      headers: ownerA
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toEqual({
+      code: "AI_PROVIDER_UNAVAILABLE",
+      message: "A inteligência artificial do Estúdio está indisponível no momento.",
+      details: {}
+    });
+  });
+
   it.each(["text", "audio", "file", "image", "link", "mixed"] as const)(
     "creates exactly one initial document version for concurrent %s capture retries",
     async (captureMode) => {

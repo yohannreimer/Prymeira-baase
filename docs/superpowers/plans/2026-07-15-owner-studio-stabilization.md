@@ -168,7 +168,7 @@ git commit -m "fix(studio): use configured AI model"
 - Modify: `apps/api/src/app.ts`
 - Modify: `apps/api/src/modules/studio/studio.routes.ts`
 
-- [ ] **Step 1: Write failing readiness and provider-policy tests**
+- [x] **Step 1: Write failing readiness and provider-policy tests**
 
 ```ts
 it("reports unavailable instead of returning mock Studio AI in production", async () => {
@@ -182,12 +182,12 @@ it("never includes private text in readiness output", async () => {
 });
 ```
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts`  
 Expected: FAIL because the readiness module and unavailable provider do not exist.
 
-- [ ] **Step 3: Implement safe capability status**
+- [x] **Step 3: Implement safe capability status**
 
 ```ts
 export type StudioCapability = { status: "ready" | "degraded" | "unavailable"; code: string | null };
@@ -211,12 +211,12 @@ export function createUnavailableAiProvider(code = "AI_PROVIDER_UNAVAILABLE"): A
 
 Register owner-only `GET /studio/readiness` and map provider/model/vector errors to stable codes without message bodies.
 
-- [ ] **Step 4: Run readiness, route, and provider tests**
+- [x] **Step 4: Run readiness, route, and provider tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts src/modules/studio/studio.routes.test.ts src/modules/ai/ai-providers.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/ai/providers apps/api/src/modules/studio/studio-readiness* apps/api/src/modules/studio/studio.routes.ts apps/api/src/app.ts
