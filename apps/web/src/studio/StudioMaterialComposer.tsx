@@ -75,7 +75,6 @@ function parseIpv6Address(hostname: string): bigint | null {
 
 const blockedIpv6Networks = [
   ["::", 96],
-  ["::ffff:0:0", 96],
   ["64:ff9b::", 96],
   ["64:ff9b:1::", 48],
   ["100::", 64],
@@ -89,16 +88,33 @@ const blockedIpv6Networks = [
   ["ff00::", 8]
 ] as const;
 
+function isInIpv6Network(address: bigint, networkValue: string, prefixLength: number) {
+  const network = parseIpv6Address(networkValue);
+  if (network === null) return false;
+  const shift = 128n - BigInt(prefixLength);
+  return (address >> shift) === (network >> shift);
+}
+
+function mappedIpv4Address(address: bigint) {
+  if (!isInIpv6Network(address, "::ffff:0:0", 96)) return null;
+  const ipv4 = Number(address & 0xffff_ffffn);
+  return [24, 16, 8, 0]
+    .map((shift) => String((ipv4 >>> shift) & 0xff))
+    .join(".");
+}
+
 function isPrivateIpv6(hostname: string) {
   if (!hostname.includes(":")) return false;
   const address = parseIpv6Address(hostname);
   if (address === null) return true;
-  return blockedIpv6Networks.some(([networkValue, prefixLength]) => {
-    const network = parseIpv6Address(networkValue);
-    if (network === null) return true;
-    const shift = 128n - BigInt(prefixLength);
-    return (address >> shift) === (network >> shift);
-  });
+  const mappedIpv4 = mappedIpv4Address(address);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4);
+  // Local feedback accepts only global-unicast IPv6. The server remains the
+  // authority for DNS, redirects, and the final SSRF decision.
+  if (!isInIpv6Network(address, "2000::", 3)) return true;
+  return blockedIpv6Networks.some(([networkValue, prefixLength]) => (
+    isInIpv6Network(address, networkValue, prefixLength)
+  ));
 }
 
 function readPublicHttpUrl(value: string) {
@@ -117,6 +133,7 @@ function readPublicHttpUrl(value: string) {
       || hostname.endsWith(".local")
       || hostname.endsWith(".internal")
       || hostname.endsWith(".home.arpa")
+      || (!hostname.includes(":") && !hostname.includes("."))
       || isPrivateIpv4(hostname)
       || isPrivateIpv6(hostname)) {
       return null;

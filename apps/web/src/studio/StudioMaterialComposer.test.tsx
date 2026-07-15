@@ -522,10 +522,15 @@ describe("StudioMaterialComposer", () => {
     ["hex loopback", "http://0x7f000001/admin"],
     ["private IPv4", "http://192.168.1.8/admin"],
     ["IPv6 loopback", "http://[::1]/admin"],
+    ["IPv4-mapped loopback", "http://[::ffff:127.0.0.1]/admin"],
     ["IPv6 unique local", "http://[fd00::1]/admin"],
+    ["expanded IPv6 unique local", "http://[fd00:0000:0000:0000:0000:0000:0000:0001]/admin"],
     ["IPv6 link-local", "http://[fe80::1]/admin"],
+    ["deprecated IPv6 site-local", "http://[fec0::1]/admin"],
     ["IPv6 documentation CIDR", "http://[2001:db8::1]/admin"],
+    ["expanded IPv6 documentation CIDR", "http://[2001:0db8:0000:0000:0000:0000:0000:0001]/admin"],
     ["credentials", "https://user:secret@example.com/private"],
+    ["single-label hostname", "http://intranet/private"],
     ["uppercase localhost", "http://LOCALHOST/admin"],
     ["uppercase local suffix", "http://SERVICE.INTERNAL/admin"],
     ["local suffix", "http://printer.local/admin"],
@@ -548,6 +553,8 @@ describe("StudioMaterialComposer", () => {
 
   it.each([
     ["public IPv6 outside documentation CIDR", "https://[2001:db80::1]/resource"],
+    ["fully expanded public IPv6", "https://[2606:2800:0220:0001:0248:1893:25c8:1946]/resource"],
+    ["IPv4-mapped public address", "https://[::ffff:93.184.216.34]/resource"],
     ["uppercase public hostname", "HTTPS://EXAMPLE.COM/Resource"]
   ])("accepts %s", async (_label, publicUrl) => {
     const user = userEvent.setup();
