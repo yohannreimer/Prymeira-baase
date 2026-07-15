@@ -285,6 +285,7 @@ export default function StudioAssetProcessingStatus({
 
   const isAudio = current.kind === "audio";
   const originalLabel = isAudio ? "Baixar áudio original" : "Baixar arquivo original";
+  const extractedContentLabel = isAudio ? "Transcrição" : "Conteúdo extraído";
   const canInsertTranscript = isAudio
     && current.extractionStatus === "ready"
     && Boolean(current.extractedText?.trim())
@@ -358,7 +359,7 @@ export default function StudioAssetProcessingStatus({
       <div className="studio-asset-status__processing" role="status" aria-live="polite">
         {current.extractionStatus === "ready" ? (
           current.extractedText
-            ? <div className="studio-asset-transcript"><strong>Transcrição</strong><p>{current.extractedText}</p></div>
+            ? <div className="studio-asset-transcript"><strong>{extractedContentLabel}</strong><p>{current.extractedText}</p></div>
             : <p>O material está pronto e o original continua disponível acima.</p>
         ) : current.extractionStatus === "failed" ? (
           <div>

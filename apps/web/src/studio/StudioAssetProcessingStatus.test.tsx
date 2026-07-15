@@ -402,6 +402,22 @@ describe("StudioAssetProcessingStatus", () => {
     expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["audio", "Transcrição"],
+    ["file", "Conteúdo extraído"],
+    ["image", "Conteúdo extraído"],
+    ["link_snapshot", "Conteúdo extraído"]
+  ] as const)("labels extracted %s content as %s", (kind, expectedLabel) => {
+    render(
+      <StudioAssetProcessingStatus
+        asset={asset({ kind, extractionStatus: "ready", extractedText: "Texto preservado." })}
+        getDownload={vi.fn(() => new Promise<{ url: string; expiresInSeconds: number }>(() => undefined))}
+      />
+    );
+
+    expect(screen.getByText(expectedLabel, { selector: "strong" })).toBeInTheDocument();
+  });
+
   it("preserves the original transcript, suppresses concurrent activation, and permits explicit repetition", async () => {
     const insertion = deferred<boolean>();
     const original = "  Linha original\nsem mutação.  ";
