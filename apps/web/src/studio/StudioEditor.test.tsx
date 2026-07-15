@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StudioDocument } from "./studio.types";
 import StudioEditor from "./StudioEditor";
@@ -84,6 +85,154 @@ describe("StudioEditor", () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
     expect(JSON.parse(window.localStorage.getItem(`baase:studio:draft:${document.id}`)!).draft.title)
       .toBe("Plano anual preservado");
+  });
+
+  it("applies an accepted AI revision of the same document before the next edit", async () => {
+    const user = userEvent.setup();
+    const initialDocument = {
+      ...document,
+      revision: 1,
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Original" }] }] }
+    };
+    const acceptedDocument = {
+      ...rawDocument,
+      revision: 2,
+      title: "Título proposto",
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Texto proposto" }] }] },
+      body_text: "Texto proposto"
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/assistant/turns")) return sse(studioSuggestionStream());
+      if (url.endsWith("/suggestions/suggestion_1/accept")) {
+        return response({
+          suggestion: rawStudioSuggestion(),
+          version: { ...acceptedStudioVersion(), version_number: 2 }
+        });
+      }
+      if (url.endsWith(`/documents/${document.id}`) && !init?.method) {
+        return response({ document: acceptedDocument });
+      }
+      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return response({ document: {
+          ...acceptedDocument,
+          revision: 3,
+          title: payload.title,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        } });
+      }
+      return response({}, 404);
+    });
+
+    function AcceptedRevisionHarness() {
+      const [currentDocument, setCurrentDocument] = useState<StudioDocument>(initialDocument);
+      return <StudioEditor document={currentDocument} onDocumentChange={setCurrentDocument} debounceMs={0} />;
+    }
+
+    render(<AcceptedRevisionHarness />);
+    await user.type(await screen.findByLabelText(/o que você quer entender/i), "Organize este plano");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    const card = await screen.findByRole("region", { name: "Proposta revisável da IA" });
+    await user.click(within(card).getByRole("button", { name: "Aceitar como nova versão" }));
+
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await waitFor(() => expect(title).toHaveValue("Título proposto"));
+    expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Texto proposto");
+
+    await user.type(title, "!");
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input, request]) => (
+      String(input).endsWith(`/documents/${document.id}`) && request?.method === "PATCH"
+    ))).toBe(true));
+    const patchCall = fetchSpy.mock.calls.find(([input, request]) => (
+      String(input).endsWith(`/documents/${document.id}`) && request?.method === "PATCH"
+    ));
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({
+      expected_revision: 2,
+      title: "Título proposto!",
+      body_text: "Texto proposto"
+    });
+  });
+
+  it("renders a newer clean prop revision and saves from its revision", async () => {
+    const user = userEvent.setup();
+    const initialDocument: StudioDocument = {
+      ...document,
+      revision: 1,
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Original" }] }] }
+    };
+    const newerDocument: StudioDocument = {
+      ...initialDocument,
+      revision: 2,
+      title: "Título sincronizado",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Texto sincronizado" }] }] },
+      bodyText: "Texto sincronizado"
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return response({ document: {
+          ...rawDocument,
+          revision: 3,
+          title: payload.title,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        } });
+      }
+      return response({}, 404);
+    });
+    const { rerender } = render(
+      <StudioEditor document={initialDocument} onDocumentChange={vi.fn()} debounceMs={0} />
+    );
+
+    rerender(<StudioEditor document={newerDocument} onDocumentChange={vi.fn()} debounceMs={0} />);
+
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await waitFor(() => expect(title).toHaveValue("Título sincronizado"));
+    expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Texto sincronizado");
+    await user.type(title, "!");
+    const patchCall = await waitFor(() => {
+      const found = fetchSpy.mock.calls.find(([, request]) => request?.method === "PATCH");
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(JSON.parse(String(patchCall[1]?.body))).toMatchObject({
+      expected_revision: 2,
+      title: "Título sincronizado!",
+      body_text: "Texto sincronizado"
+    });
+  });
+
+  it("preserves a dirty editor and opens conflict when the same document advances", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const initialDocument = {
+      ...document,
+      revision: 1,
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Original" }] }] }
+    };
+    const newerDocument = {
+      ...document,
+      revision: 2,
+      title: "Título vindo do servidor",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Texto do servidor" }] }] },
+      bodyText: "Texto do servidor"
+    };
+    const { rerender } = render(
+      <StudioEditor document={initialDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />
+    );
+    const title = screen.getByRole("textbox", { name: "Título do documento" });
+    await user.type(title, " em edição");
+
+    rerender(<StudioEditor document={newerDocument} onDocumentChange={vi.fn()} debounceMs={60_000} />);
+
+    expect(title).toHaveValue("Plano anual em edição");
+    expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toHaveTextContent("Original");
+    expect(await screen.findByRole("alert", { name: "Conflito de versões" })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(`baase:studio:draft:${document.id}`)!).draft.title)
+      .toBe("Plano anual em edição");
+    expect(fetchSpy.mock.calls.filter(([, request]) => request?.method === "PATCH")).toHaveLength(0);
   });
 
   it("describes blocked local storage truthfully without claiming device persistence", async () => {
@@ -289,7 +438,7 @@ describe("StudioEditor", () => {
     })));
 
     expect(title).toHaveValue("Edição feita durante a busca");
-    expect(await screen.findByRole("alert")).toHaveTextContent(/não foi aplicada.*continuou editando/i);
+    expect(await screen.findByText(/não foi aplicada.*continuou editando/i)).toBeInTheDocument();
   });
 
   it("does not switch away from newer edits when creating a conflict copy finishes late", async () => {
@@ -317,7 +466,7 @@ describe("StudioEditor", () => {
 
     expect(title).toHaveValue("Minha edição mais recente");
     expect(onDocumentChange).not.toHaveBeenCalledWith(expect.objectContaining({ id: "document_copy" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/cópia foi criada.*continuou editando/i);
+    expect(await screen.findByText(/cópia foi criada.*continuou editando/i)).toBeInTheDocument();
   });
 
   it("offers explicit, non-destructive conflict actions", async () => {

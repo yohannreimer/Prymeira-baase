@@ -73,6 +73,7 @@ function StudioEditorSession({
   const titleRef = useRef(title);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const notifiedRevisionRef = useRef(sourceDocument.revision);
+  const appliedSourceRevisionRef = useRef(sourceDocument.revision);
   const versionsTriggerRef = useRef<HTMLButtonElement>(null);
   const versionsHeadingRef = useRef<HTMLHeadingElement>(null);
   const firstVersionButtonRef = useRef<HTMLButtonElement>(null);
@@ -172,18 +173,30 @@ function StudioEditorSession({
 
   useEffect(() => {
     if (autosave.document.revision === notifiedRevisionRef.current) return;
+    if (sourceDocument.id === autosave.document.id
+      && sourceDocument.revision >= autosave.document.revision) {
+      notifiedRevisionRef.current = autosave.document.revision;
+      return;
+    }
     notifiedRevisionRef.current = autosave.document.revision;
     onDocumentChange(autosave.document);
-  }, [autosave.document, onDocumentChange]);
+  }, [autosave.document, onDocumentChange, sourceDocument.id, sourceDocument.revision]);
 
   useEffect(() => {
-    if (sourceDocument.id === autosave.document.id) return;
-    const recovered = autosave.initialDraft;
-    const nextTitle = recovered?.title ?? sourceDocument.title ?? "";
+    const adoptedRevision = autosave.adoptedSourceRevision;
+    if (!editor
+      || adoptedRevision === null
+      || adoptedRevision <= appliedSourceRevisionRef.current
+      || sourceDocument.id !== autosave.document.id
+      || adoptedRevision !== autosave.document.revision) return;
+    editGenerationRef.current += 1;
+    appliedSourceRevisionRef.current = adoptedRevision;
+    notifiedRevisionRef.current = adoptedRevision;
+    const nextTitle = autosave.document.title ?? "";
     titleRef.current = nextTitle;
     setTitle(nextTitle);
-    editor?.commands.setContent(documentContent(sourceDocument, recovered), { emitUpdate: false });
-  }, [autosave.document.id, autosave.initialDraft, editor, sourceDocument]);
+    editor.commands.setContent(autosave.document.bodyJson, { emitUpdate: false });
+  }, [autosave.adoptedSourceRevision, autosave.document, editor, sourceDocument.id]);
 
   useEffect(() => {
     if (!versionsOpen) return;
@@ -250,6 +263,7 @@ function StudioEditorSession({
     editGenerationRef.current += 1;
     autosave.resolveConflict(nextDocument, discardLocalDraft);
     notifiedRevisionRef.current = nextDocument.revision;
+    appliedSourceRevisionRef.current = nextDocument.revision;
     const nextTitle = nextDocument.title ?? "";
     titleRef.current = nextTitle;
     setTitle(nextTitle);

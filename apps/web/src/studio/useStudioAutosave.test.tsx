@@ -43,6 +43,102 @@ describe("useStudioAutosave", () => {
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
 
+  it("adopts a newer clean revision of the same document before the next PATCH", async () => {
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const newerDocument = makeDocument({
+      revision: 5,
+      title: "Plano reorganizado pela IA",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Nova direção" }] }] },
+      bodyText: "Nova direção"
+    });
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save),
+      { initialProps: { source: document } }
+    );
+
+    rerender({ source: newerDocument });
+
+    expect(result.current.document).toEqual(newerDocument);
+    expect(result.current.state).toBe("saved");
+    act(() => result.current.queueSave(secondDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    expect(save).toHaveBeenCalledWith(secondDraft, 5, expect.any(AbortSignal));
+  });
+
+  it("turns a pending local draft into an explicit conflict when the same document advances", async () => {
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const newerDocument = makeDocument({ revision: 5, title: "Servidor mais novo" });
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save),
+      { initialProps: { source: document } }
+    );
+    act(() => result.current.queueSave(firstDraft));
+
+    rerender({ source: newerDocument });
+
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.currentDraft).toEqual(firstDraft);
+    expect(result.current.conflictDraft).toEqual(firstDraft);
+    expect(readEnvelope().draft).toEqual(firstDraft);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("aborts an in-flight save and keeps its draft when the same document advances", async () => {
+    const pending = deferred<StudioDocument>();
+    let observedSignal: AbortSignal | undefined;
+    const save = vi.fn((_next: StudioDocumentDraft, _revision: number, signal?: AbortSignal) => {
+      observedSignal = signal;
+      return pending.promise;
+    });
+    const newerDocument = makeDocument({ revision: 5, title: "Servidor mais novo" });
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save),
+      { initialProps: { source: document } }
+    );
+    act(() => result.current.queueSave(firstDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    rerender({ source: newerDocument });
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.conflictDraft).toEqual(firstDraft);
+    await act(async () => pending.resolve(saved(firstDraft, 5)));
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.document.revision).toBe(4);
+  });
+
+  it("does not let an aborted save release a newer in-flight save", async () => {
+    const first = deferred<StudioDocument>();
+    const second = deferred<StudioDocument>();
+    const save = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+      .mockImplementation(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const newerDocument = makeDocument({ revision: 5, title: "Servidor mais novo" });
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save),
+      { initialProps: { source: document } }
+    );
+    act(() => result.current.queueSave(firstDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    rerender({ source: newerDocument });
+    act(() => result.current.resolveConflict(newerDocument, true));
+    act(() => result.current.queueSave(secondDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    expect(save).toHaveBeenCalledTimes(2);
+
+    await act(async () => first.resolve(saved(firstDraft, 5)));
+    act(() => result.current.queueSave(firstDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(save).toHaveBeenCalledTimes(2);
+    await act(async () => second.resolve(saved(secondDraft, 6)));
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(save).toHaveBeenLastCalledWith(firstDraft, 6, expect.any(AbortSignal));
+  });
+
   it("serializes an edit made during an in-flight save into a second PATCH", async () => {
     const first = deferred<StudioDocument>();
     const second = deferred<StudioDocument>();
