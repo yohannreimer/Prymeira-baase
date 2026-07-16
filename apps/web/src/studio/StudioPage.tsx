@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import StudioHome from "./StudioHome";
-import StudioAssetProcessingStatus from "./StudioAssetProcessingStatus";
+import StudioMaterialList from "./StudioMaterialList";
 import StudioMaterialComposer from "./StudioMaterialComposer";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
@@ -528,17 +528,26 @@ function DocumentAssets({
   onRetry(): void;
   onInsertTranscript(text: string): boolean | Promise<boolean>;
 }) {
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedAssetId(null);
+  }, [documentId]);
+
+  useEffect(() => {
+    if (selectedAssetId && !assets.some((asset) => asset.id === selectedAssetId)) {
+      setSelectedAssetId(null);
+    }
+  }, [assets, selectedAssetId]);
+
   return (
     <div className="studio-document-assets" role="region" aria-label="Materiais do documento">
       <StudioMaterialComposer documentId={documentId} onAttached={onAttached} />
-      {assets.map((asset) => (
-        <StudioAssetProcessingStatus
-          key={asset.id}
-          asset={asset}
-          onAssetChange={onAttached}
-          onInsertTranscript={onInsertTranscript}
-        />
-      ))}
+      <StudioMaterialList
+        assets={assets}
+        selectedAssetId={selectedAssetId}
+        onSelect={(asset) => setSelectedAssetId(asset.id)}
+      />
       {loading && assets.length === 0 ? (
         <p
           className="studio-document-assets__status"

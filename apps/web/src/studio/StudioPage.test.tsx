@@ -448,7 +448,7 @@ describe("StudioPage", () => {
     expect(collectionReads).toBe(1);
   });
 
-  it("opens a recent document with persisted assets, transcript, original, and focused heading", async () => {
+  it("opens a recent document with a compact material row and focused heading", async () => {
     const user = userEvent.setup();
     vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
       const url = String(input);
@@ -475,11 +475,13 @@ describe("StudioPage", () => {
     const heading = await screen.findByRole("heading", { name: "Reflexão estratégica" });
     expect(heading).toHaveAttribute("tabindex", "-1");
     expect(heading).toHaveFocus();
-    expect(await screen.findByText("Escolher uma direção com calma.")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-audio-player")).toHaveAttribute("src", "https://private.example/reflexao.wav");
-    expect(screen.getByRole("link", { name: "Baixar áudio original" })).toHaveAttribute(
-      "href", "https://private.example/reflexao.wav"
-    );
+    const material = await screen.findByRole("button", { name: "Abrir reflexao.wav" });
+    expect(material).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("studio-audio-player")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Baixar áudio original" })).not.toBeInTheDocument();
+    await user.click(material);
+    expect(material).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps existing and newly attached materials together inside the editor without reopening", async () => {
@@ -542,7 +544,7 @@ describe("StudioPage", () => {
     expect(assetLists).toBe(1);
   });
 
-  it("inserts a ready audio transcript at the editor's last cursor and autosaves the document", async () => {
+  it("keeps a ready audio transcript out of the document when its compact row is selected", async () => {
     const user = userEvent.setup();
     const sourceDocument = {
       ...rawDocument,
@@ -578,23 +580,17 @@ describe("StudioPage", () => {
     render(<StudioPage />);
     const body = await screen.findByRole("textbox", { name: "Conteúdo do documento" });
 
-    await setTipTapSelection(body, 5);
-    await user.click(await screen.findByRole("button", { name: "Adicionar transcrição ao documento" }));
+    await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
 
-    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
-    expect(within(body).getAllByText(/Antes|Escolher uma direção com calma|depois/u).map((node) => node.textContent)).toEqual([
-      "Antes", "Escolher uma direção com calma.", " depois"
-    ]);
-    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => (
+    expect(body).toHaveTextContent("Antes depois");
+    expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
+    expect(fetchSpy.mock.calls.some(([url, init]) => (
       String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
-    ))).toBe(true));
-    const patch = fetchSpy.mock.calls.find(([url, init]) => (
-      String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
-    ));
-    expect(JSON.parse(String(patch?.[1]?.body)).body_text).toBe("Antes\nEscolher uma direção com calma.\n depois");
+    ))).toBe(false);
   });
 
-  it("uses the new keyed editor handle after switching documents", async () => {
+  it("uses the current document's compact material selection after switching documents", async () => {
     const user = userEvent.setup();
     const documentA = {
       ...rawDocument,
@@ -644,16 +640,18 @@ describe("StudioPage", () => {
     fireEvent(window, new PopStateEvent("popstate"));
     const bodyB = await screen.findByRole("textbox", { name: "Conteúdo do documento" });
     await waitFor(() => expect(bodyB).toHaveTextContent("Documento B"));
-    await user.click(await screen.findByRole("button", { name: "Adicionar transcrição ao documento" }));
+    const materialB = await screen.findByRole("button", { name: "Abrir reflexao.wav" });
+    await user.click(materialB);
 
-    expect(await screen.findByText("Transcrição adicionada ao documento")).toBeInTheDocument();
-    await waitFor(() => expect(fetchSpy.mock.calls.some(([url, init]) => (
-      String(url).endsWith(`/api/studio/documents/${documentB.id}`) && init?.method === "PATCH"
-    ))).toBe(true));
+    expect(materialB).toHaveAttribute("aria-pressed", "true");
     expect(fetchSpy.mock.calls.some(([url, init]) => (
       String(url).endsWith(`/api/studio/documents/${documentA.id}`) && init?.method === "PATCH"
     ))).toBe(false);
-    expect(bodyB).toHaveTextContent("Documento BTranscrição somente B.");
+    expect(fetchSpy.mock.calls.some(([url, init]) => (
+      String(url).endsWith(`/api/studio/documents/${documentB.id}`) && init?.method === "PATCH"
+    ))).toBe(false);
+    expect(bodyB).toHaveTextContent("Documento B");
+    expect(screen.queryByText("Transcrição somente B.")).not.toBeInTheDocument();
   });
 
   it("keeps a document B attachment when document A's obsolete asset list resolves", async () => {

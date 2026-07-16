@@ -603,7 +603,7 @@ git commit -m "feat(studio): move history into bounded drawer"
 - Modify: `apps/web/src/studio/StudioPage.tsx`
 - Modify: `apps/web/src/studio/studio.css`
 
-- [ ] **Step 1: Write a regression test for long PDF extraction**
+- [x] **Step 1: Write a regression test for long PDF extraction**
 
 ```tsx
 render(<StudioMaterialList assets={[pdfAsset({ extractedText: "Long text ".repeat(10_000) })]} onSelect={onSelect} />);
@@ -613,12 +613,12 @@ await user.click(screen.getByRole("button", { name: /Abrir strategy.pdf/u }));
 expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "asset_pdf" }));
 ```
 
-- [ ] **Step 2: Run and confirm current inline rendering violates the test**
+- [x] **Step 2: Run and confirm current inline rendering violates the test**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement the compact list and status labels**
+- [x] **Step 3: Implement the compact list and status labels**
 
 ```tsx
 <ul className="studio-material-list" aria-label="Materiais do documento">
@@ -634,12 +634,12 @@ Expected: FAIL.
 </ul>
 ```
 
-- [ ] **Step 4: Run page and list tests**
+- [x] **Step 4: Run page and list tests**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx src/studio/StudioPage.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio/StudioMaterialList* apps/web/src/studio/StudioPage.tsx apps/web/src/studio/studio.css
