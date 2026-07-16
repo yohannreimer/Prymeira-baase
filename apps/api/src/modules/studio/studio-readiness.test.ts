@@ -6,7 +6,7 @@ describe("Studio readiness", () => {
     const readiness = buildStudioReadiness({
       runtimeConfig: {
         mode: "production",
-        studio: { enabled: true, vectorConfigured: true }
+        studio: { enabled: true, vectorConfigured: true, aiModel: "gpt-5.6-terra" }
       },
       aiAvailable: false,
       hasPersistentVectorIndex: false,
@@ -14,7 +14,7 @@ describe("Studio readiness", () => {
     });
 
     expect(readiness).toEqual({
-      ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
+      ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE", model: "gpt-5.6-terra" },
       embeddings: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
       vector: { status: "unavailable", code: "STUDIO_EMBEDDINGS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }
@@ -26,13 +26,13 @@ describe("Studio readiness", () => {
     expect(buildStudioReadiness({
       runtimeConfig: {
         mode: "production",
-        studio: { enabled: true, vectorConfigured: true }
+        studio: { enabled: true, vectorConfigured: true, aiModel: "gpt-5.6-terra" }
       },
       aiAvailable: true,
       hasPersistentVectorIndex: true,
       maintenanceAvailable: true
     })).toEqual({
-      ai: { status: "ready", code: null },
+      ai: { status: "ready", code: null, model: "gpt-5.6-terra" },
       embeddings: { status: "ready", code: null },
       vector: { status: "ready", code: null },
       maintenance: { status: "ready", code: null }

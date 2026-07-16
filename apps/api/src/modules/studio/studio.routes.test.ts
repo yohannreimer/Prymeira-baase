@@ -127,7 +127,7 @@ describe("Studio routes", () => {
     const response = await app.inject({ method: "GET", url: "/studio/readiness", headers: ownerA });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      ai: { status: "ready", code: null },
+      ai: { status: "ready", code: null, model: "gpt-5.6-terra" },
       embeddings: { status: "ready", code: null },
       vector: { status: "ready", code: null },
       maintenance: { status: "ready", code: null }
@@ -154,7 +154,7 @@ describe("Studio routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
+      ai: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE", model: "gpt-5.6-terra" },
       embeddings: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE" },
       vector: { status: "unavailable", code: "STUDIO_EMBEDDINGS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }

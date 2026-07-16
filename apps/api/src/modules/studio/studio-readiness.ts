@@ -3,8 +3,12 @@ export type StudioCapability = {
   code: string | null;
 };
 
+export type StudioAiCapability = StudioCapability & {
+  model: string | null;
+};
+
 export type StudioReadiness = {
-  ai: StudioCapability;
+  ai: StudioAiCapability;
   embeddings: StudioCapability;
   vector: StudioCapability;
   maintenance: StudioCapability;
@@ -13,7 +17,7 @@ export type StudioReadiness = {
 type StudioReadinessInput = {
   runtimeConfig: {
     mode: "demo" | "pilot" | "production";
-    studio: { enabled: boolean; vectorConfigured: boolean };
+    studio: { enabled: boolean; vectorConfigured: boolean; aiModel: string };
   };
   aiAvailable: boolean;
   hasPersistentVectorIndex: boolean;
@@ -23,15 +27,16 @@ type StudioReadinessInput = {
 export function buildStudioReadiness(input: StudioReadinessInput): StudioReadiness {
   if (!input.runtimeConfig.studio.enabled) {
     return {
-      ai: unavailable("STUDIO_DISABLED"),
+      ai: aiCapability(unavailable("STUDIO_DISABLED"), input.runtimeConfig.studio.aiModel),
       embeddings: unavailable("STUDIO_DISABLED"),
       vector: unavailable("STUDIO_DISABLED"),
       maintenance: unavailable("STUDIO_DISABLED")
     };
   }
 
-  const ai = input.aiAvailable ? ready() : unavailable("AI_PROVIDER_UNAVAILABLE");
-  const embeddings = ai;
+  const aiStatus = input.aiAvailable ? ready() : unavailable("AI_PROVIDER_UNAVAILABLE");
+  const ai = aiCapability(aiStatus, input.runtimeConfig.studio.aiModel);
+  const embeddings = aiStatus;
   const vector = embeddings.status !== "ready"
     ? unavailable("STUDIO_EMBEDDINGS_UNAVAILABLE")
     : !input.runtimeConfig.studio.vectorConfigured
@@ -46,6 +51,10 @@ export function buildStudioReadiness(input: StudioReadinessInput): StudioReadine
     vector,
     maintenance: input.maintenanceAvailable ? ready() : unavailable("STUDIO_MAINTENANCE_UNAVAILABLE")
   };
+}
+
+function aiCapability(capability: StudioCapability, model: string): StudioAiCapability {
+  return { ...capability, model };
 }
 
 function ready(): StudioCapability {

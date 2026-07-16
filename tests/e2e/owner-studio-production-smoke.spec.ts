@@ -13,7 +13,7 @@ test("deployed Owner Studio reports honest private-intelligence readiness", asyn
   const response = await page.request.get(`${productionUrl}/api/studio/readiness`, { headers: { authorization } });
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toEqual({
-    ai: { status: "ready", code: null },
+    ai: { status: "ready", code: null, model: "gpt-5.6-terra" },
     embeddings: { status: "ready", code: null },
     vector: { status: "ready", code: null },
     maintenance: { status: "ready", code: null }
@@ -29,6 +29,11 @@ test("configured gpt-5.6-terra completes an owner-only disposable turn", async (
   const runtime = await page.request.get(`${productionUrl}/api/readiness`, { headers: { authorization } });
   expect(runtime.ok()).toBeTruthy();
   expect(await runtime.json()).toMatchObject({ ai: { structured: "openai" } });
+  const studioRuntime = await page.request.get(`${productionUrl}/api/studio/readiness`, { headers: { authorization } });
+  expect(studioRuntime.ok()).toBeTruthy();
+  expect(await studioRuntime.json()).toMatchObject({
+    ai: { status: "ready", code: null, model: "gpt-5.6-terra" }
+  });
 
   const created = await page.request.post(`${productionUrl}/api/studio/documents`, {
     headers: { authorization, "idempotency-key": crypto.randomUUID() },

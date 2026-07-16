@@ -186,7 +186,7 @@ export async function registerStudioRoutes(
     readNoQuery(request);
     readNoBody(request);
     return readiness ?? {
-      ai: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
+      ai: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE", model: null },
       embeddings: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
       vector: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_READINESS_UNAVAILABLE" }

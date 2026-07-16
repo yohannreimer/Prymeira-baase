@@ -30,19 +30,21 @@ docker run -d --name "$project" -e POSTGRES_PASSWORD=rehearsal -e POSTGRES_DB=ba
 port="$(docker port "$project" 5432/tcp | sed 's/.*://')"
 until docker exec "$project" pg_isready -U postgres -d baase; do sleep 1; done
 docker exec -i "$project" pg_restore --clean --if-exists --no-owner --no-acl -U postgres -d baase < "$BAASE_REHEARSAL_DUMP"
-counts_sql="SELECT json_build_object('documents',(SELECT count(*) FROM studio_documents),'assets',(SELECT count(*) FROM studio_assets),'structures',(SELECT count(*) FROM studio_structures),'collections',(SELECT count(*) FROM studio_collections),'versions',(SELECT count(*) FROM studio_document_versions),'legacy_versions',(SELECT count(*) FROM studio_document_versions WHERE is_legacy = true));"
+counts_sql="SELECT json_build_object('documents',(SELECT count(*) FROM studio_documents),'assets',(SELECT count(*) FROM studio_assets),'structures',(SELECT count(*) FROM studio_structures),'collections',(SELECT count(*) FROM studio_collections),'versions',(SELECT count(*) FROM studio_document_versions));"
 docker exec "$project" psql -U postgres -d baase -Atc "$counts_sql" > /tmp/baase-studio-before.json
 DATABASE_URL="postgresql://postgres:rehearsal@127.0.0.1:${port}/baase" pnpm --filter @prymeira/baase-api db:migrate-operational
 docker exec "$project" psql -U postgres -d baase -Atc "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
 docker exec "$project" psql -U postgres -d baase -Atc "$counts_sql" > /tmp/baase-studio-after.json
 diff -u /tmp/baase-studio-before.json /tmp/baase-studio-after.json
 legacy_count="$(docker exec "$project" psql -U postgres -d baase -Atc "SELECT count(*) FROM studio_document_versions WHERE is_legacy = true;")"
+version_count="$(docker exec "$project" psql -U postgres -d baase -Atc "SELECT count(*) FROM studio_document_versions;")"
 test "$legacy_count" -gt 0
+test "$legacy_count" -eq "$version_count"
 docker rm -f "$project"
 docker volume rm "$volume"
 ```
 
-The migration command and count diff must exit 0, the vector query must return exactly one non-empty version row, and the legacy/material/structure/collection queries must remain readable. Preserve the sanitized dump as release evidence under restricted access; never commit it.
+The pre-migration snapshot intentionally reads only tables and columns that predate migration 27. The migration command and count diff must exit 0, the vector query must return exactly one non-empty version row, and every preserved pre-migration version must be backfilled as `is_legacy = true`. The material, structure, and collection queries must remain readable. Preserve the sanitized dump as release evidence under restricted access; never commit it.
 
 ## MinIO bootstrap check
 
@@ -84,7 +86,7 @@ pnpm exec playwright test -c playwright.production.config.ts
 
 The dedicated production config starts no local fixture/API/web server. The smoke captures the Bearer header from an authenticated app request without printing it, then reuses it for readiness, disposable document creation, trash, and permanent deletion. In tightly controlled automation, `BAASE_PRODUCTION_BEARER_TOKEN` may provide the same Bearer token explicitly; keep it in the secret store and never put it in command history or logs.
 
-The Studio readiness response must report `ready` for `ai`, `embeddings`, `vector`, and `maintenance`. The Copilot assertion waits for the SSE turn to reach its terminal UI state and validates the terminal response before cleanup. The smoke uses only fixed synthetic text and never logs prompts, responses, tokens, or private content. It exercises the configured `gpt-5.6-terra` path only when both required opt-in variables are present.
+The Studio readiness response must report `ready` for `ai`, `embeddings`, `vector`, and `maintenance`, and must resolve `ai.model` exactly to `gpt-5.6-terra`. The model identifier is safe operational metadata; the private endpoint never includes provider credentials. The Copilot assertion waits for the SSE turn to reach its terminal UI state and validates the terminal response before cleanup. The smoke uses only fixed synthetic text and never logs prompts, responses, tokens, or private content. It exercises the configured `gpt-5.6-terra` path only when both required opt-in variables are present.
 
 After the smoke, manually confirm with the same owner that pre-existing documents, compact materials, structures, collections, and legacy versions open without mutation.
 
