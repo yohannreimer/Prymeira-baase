@@ -38,7 +38,17 @@ it("keeps a long PDF extraction collapsed until the owner asks to read it", asyn
 it("falls back to the compatible browser copy path when Clipboard API is unavailable", async () => {
   const user = userEvent.setup();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-  const execCommand = vi.fn().mockReturnValue(true);
+  let temporaryFieldWasValid = false;
+  const execCommand = vi.fn().mockImplementation(() => {
+    const field = document.querySelector("textarea[aria-hidden='true']") as HTMLTextAreaElement | null;
+    temporaryFieldWasValid = Boolean(
+      field?.closest("[role='dialog']")
+      && document.activeElement === field
+      && field.selectionStart === 0
+      && field.selectionEnd === field.value.length
+    );
+    return temporaryFieldWasValid;
+  });
   Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
   render(<StudioMaterialInspector
     asset={asset({ kind: "link_snapshot", displayName: "Pesquisa", sourceUrl: "https://example.com/fallback" })}
@@ -46,11 +56,14 @@ it("falls back to the compatible browser copy path when Clipboard API is unavail
     onClose={vi.fn()}
   />);
 
-  await user.click(screen.getByRole("button", { name: "Copiar link" }));
+  const copyButton = screen.getByRole("button", { name: "Copiar link" });
+  await user.click(copyButton);
 
   expect(execCommand).toHaveBeenCalledWith("copy");
+  expect(temporaryFieldWasValid).toBe(true);
   expect(await screen.findByRole("status")).toHaveTextContent("Link copiado");
   expect(document.querySelector("textarea[aria-hidden='true']")).not.toBeInTheDocument();
+  expect(copyButton).toHaveFocus();
 });
 
 it("copies only a safe original link and announces success", async () => {

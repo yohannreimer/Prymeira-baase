@@ -49,7 +49,7 @@ function extractionExcerpt(value: string, limit = 220) {
   return `${excerpt.trimEnd()}…`;
 }
 
-async function copyText(value: string) {
+async function copyText(value: string, fallbackContainer: HTMLElement) {
   try {
     if (typeof navigator.clipboard?.writeText === "function") {
       await navigator.clipboard.writeText(value);
@@ -60,19 +60,28 @@ async function copyText(value: string) {
   }
 
   const textarea = document.createElement("textarea");
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   textarea.value = value;
   textarea.readOnly = true;
   textarea.setAttribute("aria-hidden", "true");
+  textarea.tabIndex = -1;
   textarea.style.position = "fixed";
   textarea.style.inset = "-9999px auto auto -9999px";
-  document.body.append(textarea);
+  fallbackContainer.append(textarea);
   try {
+    textarea.focus({ preventScroll: true });
     textarea.select();
-    return typeof document.execCommand === "function" && document.execCommand("copy");
+    textarea.setSelectionRange(0, textarea.value.length);
+    const hasCompleteSelection = document.activeElement === textarea
+      && textarea.selectionStart === 0
+      && textarea.selectionEnd === textarea.value.length;
+    if (!hasCompleteSelection || typeof document.execCommand !== "function") return false;
+    return document.execCommand("copy") === true;
   } catch {
     return false;
   } finally {
     textarea.remove();
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
   }
 }
 
@@ -377,7 +386,8 @@ export default function StudioMaterialInspector({
     if (!externalUrl || copyState === "working") return;
     const generation = actionGenerationRef.current;
     setCopyState("working");
-    const copied = await copyText(externalUrl);
+    const container = dialogRef.current;
+    const copied = container ? await copyText(externalUrl, container) : false;
     if (generation === actionGenerationRef.current) setCopyState(copied ? "success" : "error");
   }
 
@@ -512,7 +522,7 @@ export default function StudioMaterialInspector({
               </button>
             ) : null}
             {asset.kind === "link_snapshot" && externalUrl ? (
-              <button type="button" disabled={copyState === "working"} onClick={() => void copyOriginalLink()}>
+              <button type="button" aria-disabled={copyState === "working"} onClick={() => void copyOriginalLink()}>
                 {copyState === "working" ? "Copiando link…" : "Copiar link"}
               </button>
             ) : null}

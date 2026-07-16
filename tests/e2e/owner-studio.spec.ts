@@ -248,6 +248,61 @@ test.describe("Owner Studio release acceptance", () => {
     await page.reload();
     await expect(page.getByRole("textbox", { name: "Conteúdo do documento" })).toContainText(resilientText.trim());
   });
+
+  test("10. clipboard fallback copies a safe source link without escaping the material dialog", async ({ page, context, request }) => {
+    const sourceUrl = `https://example.com/referencia-${Date.now()}`;
+    const document = await createDocument(request, ownerA, `Referência ${Date.now()}`, "Contexto preservado.");
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:5190" });
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "__nativeClipboard", { value: navigator.clipboard });
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    });
+    await page.route(`**/api/studio/documents/${document.id}/assets`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const now = new Date().toISOString();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ assets: [{
+          id: "asset_link_fallback",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: document.id,
+          idempotency_key: null,
+          kind: "link_snapshot",
+          display_name: "Referência externa",
+          source_url: sourceUrl,
+          final_url: sourceUrl,
+          mime_type: "text/html",
+          size_bytes: 512,
+          extraction_status: "ready",
+          extracted_text: "Trecho preservado da referência externa.",
+          last_error_code: null,
+          attempt_count: 1,
+          next_attempt_at: null,
+          created_at: now,
+          updated_at: now
+        }] })
+      });
+    });
+
+    await page.goto(`/#estudio/document/${encodeURIComponent(document.id)}`);
+    await page.getByRole("button", { name: "Abrir Referência externa" }).click();
+    const materialDialog = page.getByRole("dialog", { name: "Material Referência externa" });
+    const copyButton = materialDialog.getByRole("button", { name: "Copiar link" });
+    await copyButton.click();
+
+    await expect(materialDialog.getByRole("status")).toContainText("Link copiado");
+    await expect(copyButton).toBeFocused();
+    const clipboardText = await page.evaluate(async () => {
+      const nativeClipboard = (window as unknown as { __nativeClipboard: Clipboard }).__nativeClipboard;
+      return nativeClipboard.readText();
+    });
+    expect(clipboardText).toBe(sourceUrl);
+  });
 });
 
 async function openStudio(page: Page) {
