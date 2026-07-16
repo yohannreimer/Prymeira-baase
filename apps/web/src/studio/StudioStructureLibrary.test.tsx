@@ -1,9 +1,11 @@
+import { StrictMode } from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioStructureLibrary, { formatStudioCalendarDate } from "./StudioStructureLibrary";
 import { listStudioStructures } from "./studio-api";
 import type { StudioStructure } from "./studio.types";
+import { publishStudioEvent } from "./studio-events";
 
 vi.mock("./studio-api", async (importOriginal) => {
   const original = await importOriginal<typeof import("./studio-api")>();
@@ -235,6 +237,70 @@ describe("StudioStructureLibrary", () => {
     });
     rerender(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
     expect(await screen.findByText("Revisar 31 de dez. de 2026")).toBeInTheDocument();
+  });
+
+  it("revalidates a changed kind immediately, replacing updates and removing archived rows", async () => {
+    const original = structure({
+      id: "decision_live",
+      documentId: "document_live",
+      documentTitle: "Escolha original",
+      kind: "decision",
+      propertiesJson: { decision: "Começar pequeno" }
+    });
+    const updated = { ...original, revision: 2, documentTitle: "Escolha revisada", propertiesJson: { decision: "Escalar com margem" } };
+    mockedList
+      .mockResolvedValueOnce({ items: [original], nextCursor: null })
+      .mockResolvedValueOnce({ items: [updated], nextCursor: null })
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+
+    render(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
+    expect(await screen.findByText("Escolha original")).toBeInTheDocument();
+
+    act(() => publishStudioEvent({ type: "structure-changed", documentId: "document_live", kind: "decision" }));
+    expect(await screen.findByText("Escolha revisada")).toBeInTheDocument();
+    expect(screen.queryByText("Escolha original")).not.toBeInTheDocument();
+
+    act(() => publishStudioEvent({ type: "structure-changed", documentId: "document_live", kind: "decision" }));
+    expect(await screen.findByText("Nenhuma decisão organizada ainda.")).toBeInTheDocument();
+    expect(screen.queryByText("Escolha revisada")).not.toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores unrelated structure kinds and revalidates document lifecycle changes", async () => {
+    const original = structure({ id: "goal_live", documentId: "document_live", documentTitle: "Meta ativa" });
+    mockedList
+      .mockResolvedValueOnce({ items: [original], nextCursor: null })
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+
+    render(<StudioStructureLibrary kind="goal" onOpenDocument={vi.fn()} />);
+    await screen.findByText("Meta ativa");
+
+    act(() => publishStudioEvent({ type: "structure-changed", documentId: "other", kind: "plan" }));
+    await act(async () => Promise.resolve());
+    expect(mockedList).toHaveBeenCalledTimes(1);
+
+    act(() => publishStudioEvent({ type: "document-lifecycle-changed", documentId: "document_live" }));
+    expect(await screen.findByText("Nenhuma meta organizada ainda.")).toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps exactly one live subscription in StrictMode and removes it on unmount", async () => {
+    mockedList.mockResolvedValue({ items: [], nextCursor: null });
+    const { unmount } = render(
+      <StrictMode>
+        <StudioStructureLibrary kind="plan" onOpenDocument={vi.fn()} />
+      </StrictMode>
+    );
+    await screen.findByText("Nenhum plano organizado ainda.");
+    const callsAfterMount = mockedList.mock.calls.length;
+
+    act(() => publishStudioEvent({ type: "structure-changed", documentId: "document_1", kind: "plan" }));
+    await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(callsAfterMount + 1));
+
+    unmount();
+    act(() => publishStudioEvent({ type: "structure-changed", documentId: "document_1", kind: "plan" }));
+    await act(async () => Promise.resolve());
+    expect(mockedList).toHaveBeenCalledTimes(callsAfterMount + 1);
   });
 });
 

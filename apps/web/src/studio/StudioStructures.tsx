@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { STUDIO_STRUCTURE_CONTRACT, STUDIO_STRUCTURE_KIND_ORDER } from "@prymeira/baase-shared";
 import {
+  archiveStudioStructure,
+  createStudioCheckpoint,
   createStudioStructure,
+  getStudioDocument,
   listStudioStructures,
   StudioApiError,
   updateStudioStructure
 } from "./studio-api";
 import type { StudioStructure, StudioStructureKind } from "./studio.types";
+import { publishStudioEvent } from "./studio-events";
 import DecisionDetails, { type DecisionDetailsValue } from "./DecisionDetails";
 import GoalDetails, { type GoalDetailsValue } from "./GoalDetails";
 import PlanDetails, { type PlanDetailsValue } from "./PlanDetails";
@@ -33,6 +37,7 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
   const [selectedKind, setSelectedKind] = useState<SupportedKind | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyWarning, setHistoryWarning] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [needsReload, setNeedsReload] = useState(false);
 
@@ -96,6 +101,7 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
   }) {
     setBusy(true);
     setError(null);
+    setHistoryWarning(null);
     try {
       const current = structures.find((structure) => structure.kind === kind);
       const saved = current
@@ -117,12 +123,34 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
       });
       setSelectedKind(kind);
       setLoadState("ready");
+      await finishStructureMutation(documentId, kind, setHistoryWarning);
     } catch (caught) {
       setError(structureErrorMessage(caught));
       if (
         caught instanceof StudioApiError
         && (caught.code === "STUDIO_STRUCTURE_CHANGED" || caught.code === "STUDIO_STRUCTURE_ACTIVE_DUPLICATE")
       ) {
+        setNeedsReload(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function archive(structure: StudioStructure) {
+    const kind = structure.kind as SupportedKind;
+    setBusy(true);
+    setError(null);
+    setHistoryWarning(null);
+    try {
+      await archiveStudioStructure(structure.id);
+      const remaining = structures.filter((item) => item.id !== structure.id);
+      setStructures(remaining);
+      setSelectedKind((remaining[0]?.kind as SupportedKind | undefined) ?? null);
+      await finishStructureMutation(documentId, kind, setHistoryWarning);
+    } catch (caught) {
+      setError(structureErrorMessage(caught));
+      if (caught instanceof StudioApiError && caught.code === "STUDIO_STRUCTURE_CHANGED") {
         setNeedsReload(true);
       }
     } finally {
@@ -187,12 +215,54 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
               {selectedKind === "goal" ? <GoalDetails key={activeStructure?.id ?? "new-goal"} documentTitle={documentTitle} structure={activeStructure} busy={busy} error={error} onSave={saveGoal} /> : null}
               {selectedKind === "decision" ? <DecisionDetails key={activeStructure?.id ?? "new-decision"} structure={activeStructure} busy={busy} error={error} onSave={saveDecision} /> : null}
               {selectedKind === "plan" ? <PlanDetails key={activeStructure?.id ?? "new-plan"} structure={activeStructure} busy={busy} error={error} onSave={savePlan} /> : null}
+              {historyWarning ? (
+                <p className="studio-structure-form__guidance" role="status" aria-live="polite">{historyWarning}</p>
+              ) : null}
+              {activeStructure ? (
+                <button
+                  className="studio-structure-form__remove"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void archive(activeStructure)}
+                >
+                  Arquivar {kindLabel(activeStructure.kind as SupportedKind).toLocaleLowerCase("pt-BR")}
+                </button>
+              ) : null}
             </>
           ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+async function finishStructureMutation(
+  documentId: string,
+  kind: SupportedKind,
+  setHistoryWarning: (message: string | null) => void
+) {
+  let checkpointCreated = false;
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const document = await getStudioDocument(documentId);
+      try {
+        await createStudioCheckpoint(documentId, {
+          expected_revision: document.revision,
+          reason: "structure_changed"
+        });
+        checkpointCreated = true;
+        break;
+      } catch (error) {
+        if (!(error instanceof StudioApiError) || error.status !== 409 || attempt > 0) throw error;
+      }
+    }
+  } catch {
+    // The structure is already durable. History is helpful, but must never roll back that mutation.
+  }
+  setHistoryWarning(checkpointCreated
+    ? null
+    : "A estrutura foi salva, mas este marco não pôde ser preservado no histórico agora.");
+  publishStudioEvent({ type: "structure-changed", documentId, kind });
 }
 
 async function loadDocumentStructures(documentId: string, signal: AbortSignal) {

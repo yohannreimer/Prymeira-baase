@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioPage, { mergeAssets } from "./StudioPage";
 import type { StudioAsset } from "./studio.types";
+import { subscribeStudioEvents } from "./studio-events";
 
 describe("mergeAssets", () => {
   it("preserves a ready current asset when an older pending version arrives", () => {
@@ -215,6 +216,134 @@ describe("StudioPage", () => {
     const library = await screen.findByRole("region", { name: "Decisões" });
     expect(within(library).getByRole("list", { name: "Decisões organizadas" })).toBeInTheDocument();
     expect(within(library).getByRole("button", { name: "Abrir Escolher o novo canal" })).toBeInTheDocument();
+  });
+
+  it("shows a newly persisted decision as soon as the owner moves from its document to Decisions", async () => {
+    const user = userEvent.setup();
+    let decisionCreated = false;
+    const rawDecision = {
+      id: "decision_immediate",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      document_id: rawDocument.id,
+      document_title: rawDocument.title,
+      kind: "decision",
+      lifecycle_status: "active",
+      revision: 1,
+      horizon_at: null,
+      metric_json: null,
+      cadence_json: null,
+      next_run_at: null,
+      properties_json: { decision: "Nova decisão estratégica" },
+      created_at: "2026-07-16T14:00:00.000Z",
+      updated_at: "2026-07-16T14:00:00.000Z",
+      archived_at: null
+    };
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = new URL(String(input), "https://baase.local");
+      if (url.pathname === `/api/studio/documents/${rawDocument.id}` && !init?.method) {
+        return jsonResponse({ document: { ...rawDocument, revision: 5 } });
+      }
+      if (url.pathname === `/api/studio/documents/${rawDocument.id}/assets`) return jsonResponse({ assets: [] });
+      if (url.pathname === "/api/studio/structures" && url.searchParams.get("document_id") === rawDocument.id) {
+        return jsonResponse({ structures: decisionCreated ? [rawDecision] : [], next_cursor: null });
+      }
+      if (url.pathname === "/api/studio/structures" && url.searchParams.get("kind") === "decision") {
+        return jsonResponse({ structures: decisionCreated ? [rawDecision] : [], next_cursor: null });
+      }
+      if (url.pathname === `/api/studio/documents/${rawDocument.id}/structures` && init?.method === "POST") {
+        decisionCreated = true;
+        return jsonResponse({ structure: rawDecision }, 201);
+      }
+      if (url.pathname === `/api/studio/documents/${rawDocument.id}/checkpoints` && init?.method === "POST") {
+        return jsonResponse({ version: {
+          id: "version_structure",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: rawDocument.id,
+          version_number: 5,
+          body_json: rawDocument.body_json,
+          body_text: rawDocument.body_text,
+          origin: "user",
+          actor_profile_id: "profile_owner",
+          ai_run_id: null,
+          created_at: "2026-07-16T14:00:00.000Z",
+          checkpoint_reason: "structure_changed",
+          source_revision: 5,
+          is_legacy: false
+        } }, 201);
+      }
+      if (url.pathname === "/api/studio/collections") return jsonResponse({ collections: [] });
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await screen.findByRole("heading", { name: rawDocument.title });
+    await user.click(await screen.findByRole("button", { name: /estruturar este pensamento/i }));
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Nova decisão estratégica");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+    await user.click(screen.getByRole("button", { name: "Decisões" }));
+
+    expect(await screen.findByText(rawDocument.title)).toBeInTheDocument();
+    expect(screen.getByText("Nova decisão estratégica")).toBeInTheDocument();
+  });
+
+  it("publishes document lifecycle changes only after the archive request succeeds", async () => {
+    const user = userEvent.setup();
+    const received = vi.fn();
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/documents?")) {
+        return jsonResponse({ documents: [rawDocument], next_cursor: null, collections_by_document_id: {} });
+      }
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/archive`) && init?.method === "POST") {
+        return jsonResponse({ document: { ...rawDocument, status: "archived", archived_at: "2026-07-16T15:00:00.000Z" } });
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    const row = await screen.findByRole("listitem", { name: rawDocument.title });
+    await user.click(within(row).getByRole("button", { name: "Arquivar" }));
+    await user.click(within(row).getByRole("button", { name: "Confirmar arquivo" }));
+
+    await waitFor(() => expect(received).toHaveBeenCalledWith({
+      type: "document-lifecycle-changed",
+      documentId: rawDocument.id
+    }));
+    unsubscribe();
+  });
+
+  it("does not publish a document lifecycle change when archiving fails", async () => {
+    const user = userEvent.setup();
+    const received = vi.fn();
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/documents?")) {
+        return jsonResponse({ documents: [rawDocument], next_cursor: null, collections_by_document_id: {} });
+      }
+      if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/archive`) && init?.method === "POST") {
+        return jsonResponse({ error: { code: "TEMPORARY", message: "offline" } }, 503);
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    render(<StudioPage />);
+
+    await user.click(screen.getByRole("button", { name: "Tudo" }));
+    const row = await screen.findByRole("listitem", { name: rawDocument.title });
+    await user.click(within(row).getByRole("button", { name: "Arquivar" }));
+    await user.click(within(row).getByRole("button", { name: "Confirmar arquivo" }));
+
+    expect(await screen.findByText(/não foi possível arquivar reflexão estratégica/i)).toBeInTheDocument();
+    expect(received).not.toHaveBeenCalled();
+    unsubscribe();
   });
 
   it("clears and reissues section announcements around document transitions", async () => {

@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import StudioStructures from "./StudioStructures";
+import { subscribeStudioEvents } from "./studio-events";
 
 const baseStructure = {
   id: "structure_1",
@@ -350,7 +351,182 @@ describe("StudioStructures", () => {
     expect(serverStore).toHaveLength(10_001);
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe("/api/studio/structures?lifecycle_status=active&document_id=document+%2F+10.000&limit=4");
   });
+
+  it("checkpoints the current saved revision before publishing a successful structure change", async () => {
+    const user = userEvent.setup();
+    const sequence: string[] = [];
+    const received = vi.fn(() => sequence.push("event"));
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [], nextCursor: null });
+      if (url.endsWith("/api/studio/documents/document_1/structures") && init?.method === "POST") {
+        sequence.push("persisted");
+        return response({ structure: decisionStructure() }, 201);
+      }
+      if (url.endsWith("/api/studio/documents/document_1") && !init?.method) {
+        sequence.push("document");
+        return response({ document: rawDocument(7) });
+      }
+      if (url.endsWith("/api/studio/documents/document_1/checkpoints") && init?.method === "POST") {
+        sequence.push("checkpoint");
+        expect(JSON.parse(String(init.body))).toEqual({ expected_revision: 7, reason: "structure_changed" });
+        return response({ version: rawCheckpoint(7) }, 201);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioStructures documentId="document_1" documentTitle="Direção estratégica" />);
+    await user.click(await screen.findByRole("button", { name: /estruturar este pensamento/i }));
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Concentrar a expansão");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+
+    await waitFor(() => expect(received).toHaveBeenCalledWith({
+      type: "structure-changed",
+      documentId: "document_1",
+      kind: "decision"
+    }));
+    expect(sequence).toEqual(["persisted", "document", "checkpoint", "event"]);
+    expect(screen.queryByText(/marco não pôde ser preservado/i)).not.toBeInTheDocument();
+    unsubscribe();
+  });
+
+  it("keeps the durable mutation visible, warns accessibly when checkpointing fails, and still publishes", async () => {
+    const user = userEvent.setup();
+    const received = vi.fn();
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [], nextCursor: null });
+      if (url.endsWith("/api/studio/documents/document_1/structures") && init?.method === "POST") {
+        return response({ structure: decisionStructure() }, 201);
+      }
+      if (url.endsWith("/api/studio/documents/document_1") && !init?.method) return response({ document: rawDocument(3) });
+      if (url.endsWith("/api/studio/documents/document_1/checkpoints") && init?.method === "POST") {
+        return response({ error: { code: "TEMPORARY", message: "offline" } }, 503);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioStructures documentId="document_1" documentTitle="Direção estratégica" />);
+    await user.click(await screen.findByRole("button", { name: /estruturar este pensamento/i }));
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Preservar a margem");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+
+    expect(await screen.findByRole("button", { name: /decisão.*direção estratégica/i })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(/estrutura foi salva.*histórico/i);
+    expect(received).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("does not publish when structure persistence fails", async () => {
+    const user = userEvent.setup();
+    const received = vi.fn();
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [], nextCursor: null });
+      if (url.endsWith("/api/studio/documents/document_1/structures") && init?.method === "POST") {
+        return response({ error: { code: "TEMPORARY", message: "offline" } }, 503);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioStructures documentId="document_1" documentTitle="Escolha" />);
+    await user.click(await screen.findByRole("button", { name: /estruturar este pensamento/i }));
+    await user.click(screen.getByRole("button", { name: "Decisão" }));
+    await user.type(screen.getByRole("textbox", { name: "Decisão tomada" }), "Escolher agora");
+    await user.click(screen.getByRole("button", { name: "Criar decisão" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/não foi possível salvar/i);
+    expect(received).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("archives an existing structure, removes it locally and publishes its kind after persistence", async () => {
+    const user = userEvent.setup();
+    const decision = decisionStructure();
+    const received = vi.fn();
+    const unsubscribe = subscribeStudioEvents(received);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [decision], nextCursor: null });
+      if (url.endsWith("/api/studio/structures/structure_decision") && init?.method === "DELETE") {
+        return response({ structure: { ...decision, lifecycleStatus: "archived", archivedAt: "2026-07-16T14:00:00.000Z" } });
+      }
+      if (url.endsWith("/api/studio/documents/document_1") && !init?.method) return response({ document: rawDocument(4) });
+      if (url.endsWith("/api/studio/documents/document_1/checkpoints") && init?.method === "POST") {
+        return response({ version: rawCheckpoint(4) }, 201);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioStructures documentId="document_1" documentTitle="Escolha" />);
+    await user.click(await screen.findByRole("button", { name: /decisão.*escolha/i }));
+    await user.click(screen.getByRole("button", { name: "Arquivar decisão" }));
+
+    await waitFor(() => expect(received).toHaveBeenCalledWith({
+      type: "structure-changed",
+      documentId: "document_1",
+      kind: "decision"
+    }));
+    expect(screen.queryByRole("button", { name: "Arquivar decisão" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /estruturar este pensamento/i })).toBeInTheDocument();
+    unsubscribe();
+  });
 });
+
+function decisionStructure() {
+  return {
+    ...baseStructure,
+    id: "structure_decision",
+    kind: "decision" as const,
+    horizonAt: null,
+    metricJson: null,
+    propertiesJson: { decision: "Concentrar a expansão" }
+  };
+}
+
+function rawDocument(revision: number) {
+  return {
+    id: "document_1",
+    workspace_id: "workspace_1",
+    owner_profile_id: "owner_1",
+    capture_key: null,
+    title: "Direção estratégica",
+    body_json: { type: "doc" },
+    body_text: "Pensamento",
+    revision,
+    capture_mode: "text",
+    inbox_state: "reviewed",
+    is_focused: false,
+    status: "active",
+    created_at: "2026-07-14T12:00:00.000Z",
+    updated_at: "2026-07-16T12:00:00.000Z",
+    archived_at: null
+  };
+}
+
+function rawCheckpoint(revision: number) {
+  return {
+    id: `version_${revision}`,
+    workspace_id: "workspace_1",
+    owner_profile_id: "owner_1",
+    document_id: "document_1",
+    version_number: revision,
+    body_json: { type: "doc" },
+    body_text: "Pensamento",
+    origin: "user",
+    actor_profile_id: "owner_1",
+    ai_run_id: null,
+    created_at: "2026-07-16T12:00:00.000Z",
+    checkpoint_reason: "structure_changed",
+    source_revision: revision,
+    is_legacy: false
+  };
+}
 
 function response(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });

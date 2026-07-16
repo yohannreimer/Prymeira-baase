@@ -7,8 +7,16 @@ import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
 import StudioStructureLibrary from "./StudioStructureLibrary";
-import { createStudioCheckpoint, getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
+import {
+  archiveStudioDocument,
+  createStudioCheckpoint,
+  getStudioDocument,
+  getStudioDocumentAssets,
+  restoreStudioDocument,
+  StudioApiError
+} from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
+import { publishStudioEvent } from "./studio-events";
 import { useStudioCollections } from "./useStudioCollections";
 import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
@@ -219,6 +227,18 @@ export default function StudioPage({ onOpenInternalSource }: {
     });
     transcriptInsertionsRef.current.set(assetId, operation);
     return operation.promise;
+  }, []);
+
+  const archiveDocument = useCallback(async (documentId: string, signal?: AbortSignal) => {
+    const document = await archiveStudioDocument(documentId, signal);
+    publishStudioEvent({ type: "document-lifecycle-changed", documentId });
+    return document;
+  }, []);
+
+  const restoreDocument = useCallback(async (documentId: string, signal?: AbortSignal) => {
+    const document = await restoreStudioDocument(documentId, signal);
+    publishStudioEvent({ type: "document-lifecycle-changed", documentId });
+    return document;
   }, []);
 
   useEffect(() => {
@@ -483,13 +503,13 @@ export default function StudioPage({ onOpenInternalSource }: {
           ) : section === "inbox" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
             </>
           ) : section === "all" ? (
             <>
               <StudioSectionHeading item={active} />
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
             </>
           ) : section === "goals" || section === "decisions" || section === "plans" ? (
             <StudioStructureLibrary
@@ -511,7 +531,7 @@ export default function StudioPage({ onOpenInternalSource }: {
           ) : section === "archive" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
             </>
           ) : section === "privacy" ? (
             <Suspense fallback={<StudioPrivacySkeleton />}>

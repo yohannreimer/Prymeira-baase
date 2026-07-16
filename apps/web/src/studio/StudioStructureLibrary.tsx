@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listStudioStructures } from "./studio-api";
 import type { StudioStructure, StudioStructureKind } from "./studio.types";
+import { subscribeStudioEvents } from "./studio-events";
 
 type LibraryKind = Exclude<StudioStructureKind, "ritual">;
 
@@ -84,6 +85,11 @@ export default function StudioStructureLibrary({ kind, onOpenDocument }: StudioS
   }, [kind, reloadKey]);
 
   useEffect(() => () => paginationControllerRef.current?.abort(), []);
+
+  useEffect(() => subscribeStudioEvents((event) => {
+    if (event.type === "structure-changed" && event.kind !== kind) return;
+    setReloadKey((key) => key + 1);
+  }), [kind]);
 
   useEffect(() => {
     if (!focusAfterPagination) return;

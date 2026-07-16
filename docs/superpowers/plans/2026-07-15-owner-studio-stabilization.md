@@ -762,7 +762,7 @@ git commit -m "feat(studio): connect structure libraries"
 - Modify: `apps/web/src/studio/StudioStructureLibrary.tsx`
 - Modify: `apps/web/src/studio/StudioPage.tsx`
 
-- [ ] **Step 1: Write an integration test for immediate visibility**
+- [x] **Step 1: Write an integration test for immediate visibility**
 
 ```tsx
 render(<StudioPage />);
@@ -771,12 +771,12 @@ await user.click(screen.getByRole("button", { name: "Decisões" }));
 expect(await screen.findByText("Nova decisão estratégica")).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and verify stale section data**
+- [x] **Step 2: Run and verify stale section data**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/studio-events.test.ts`  
 Expected: FAIL before event invalidation exists.
 
-- [ ] **Step 3: Add a small typed invalidation bus**
+- [x] **Step 3: Add a small typed invalidation bus**
 
 ```ts
 export type StudioDataEvent =
@@ -797,12 +797,12 @@ export function subscribeStudioEvents(listener: (event: StudioDataEvent) => void
 Publish only after successful persistence. Libraries reload or update the relevant row.
 After a successful structure create/update/archive, create a `structure_changed` checkpoint for the current saved document revision before publishing the event. If the checkpoint call fails, preserve the structure mutation and surface a non-blocking history warning.
 
-- [ ] **Step 4: Run page and structures tests**
+- [x] **Step 4: Run page and structures tests**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/StudioStructures.test.tsx src/studio/StudioStructureLibrary.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio
