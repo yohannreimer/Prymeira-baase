@@ -63,4 +63,19 @@ describe("studio checkpoint policy", () => {
       bodyText: "Initial checkpoint body with a meaningful newer change"
     });
   });
+
+  it("does not regress the checkpoint baseline when completions arrive out of order", () => {
+    const policy = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+    const revision2 = { revision: 2, bodyText: "A meaningful body at revision two" };
+    const revision3 = { revision: 3, bodyText: "A wholly different meaningful body at revision three" };
+    policy.recordSaved(revision2, 0);
+    policy.recordCheckpoint(0, revision2);
+    policy.recordSaved(revision3, 1_000);
+    policy.recordCheckpoint(1_000, revision3);
+
+    policy.recordCheckpoint(2_000, revision2);
+    policy.recordSaved(revision3, 3_000);
+
+    expect(policy.pendingForExit()).toBeNull();
+  });
 });

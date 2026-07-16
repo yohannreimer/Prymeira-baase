@@ -402,7 +402,9 @@ export function useStudioAutosave(
   const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkpointControllerRef = useRef<AbortController | null>(null);
   const checkpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
-  const exitCheckpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
+  const checkpointedRevisionRef = useRef(sourceDocument.revision);
+  const exitCheckpointsInFlightRef = useRef(new Map<number, StudioCheckpointSnapshot>());
+  const exitCheckpointRetryRef = useRef<StudioCheckpointSnapshot | null>(null);
   const runNextRef = useRef<() => Promise<void>>(async () => undefined);
 
   saveRef.current = save;
@@ -422,12 +424,25 @@ export function useStudioAutosave(
     if (!checkpoint) return;
 
     if (reason === "document_exit") {
-      if (exitCheckpointInFlightRef.current) return;
-      exitCheckpointInFlightRef.current = candidate;
+      if (candidate.revision <= checkpointedRevisionRef.current) return;
+      const inFlightRevisions = [...exitCheckpointsInFlightRef.current.keys()];
+      if (inFlightRevisions.some((revision) => revision >= candidate.revision)) return;
+      exitCheckpointsInFlightRef.current.set(candidate.revision, candidate);
       void checkpoint(candidate.revision, reason, undefined).then(() => {
+        checkpointedRevisionRef.current = Math.max(checkpointedRevisionRef.current, candidate.revision);
         checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
-      }).catch(() => undefined).finally(() => {
-        if (exitCheckpointInFlightRef.current === candidate) exitCheckpointInFlightRef.current = null;
+        if ((exitCheckpointRetryRef.current?.revision ?? -1) <= candidate.revision) {
+          exitCheckpointRetryRef.current = null;
+        }
+      }).catch(() => {
+        if (candidate.revision > checkpointedRevisionRef.current
+          && (exitCheckpointRetryRef.current?.revision ?? -1) <= candidate.revision) {
+          exitCheckpointRetryRef.current = candidate;
+        }
+      }).finally(() => {
+        if (exitCheckpointsInFlightRef.current.get(candidate.revision) === candidate) {
+          exitCheckpointsInFlightRef.current.delete(candidate.revision);
+        }
       });
       return;
     }
@@ -436,7 +451,10 @@ export function useStudioAutosave(
     checkpointControllerRef.current = controller;
     checkpointInFlightRef.current = candidate;
     void checkpoint(candidate.revision, reason, controller.signal).then(() => {
-      if (!controller.signal.aborted) checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
+      if (!controller.signal.aborted) {
+        checkpointedRevisionRef.current = Math.max(checkpointedRevisionRef.current, candidate.revision);
+        checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
+      }
     }).catch(() => undefined).finally(() => {
       if (checkpointControllerRef.current === controller) {
         checkpointControllerRef.current = null;
@@ -459,8 +477,14 @@ export function useStudioAutosave(
   }, [cancelCheckpointWork, runCheckpoint]);
 
   const checkpointOnExit = useCallback(() => {
-    if (exitCheckpointInFlightRef.current) return;
-    const candidate = checkpointInFlightRef.current ?? checkpointPolicyRef.current?.consumeForExit() ?? null;
+    const candidates = [
+      checkpointInFlightRef.current,
+      checkpointPolicyRef.current?.pendingForExit() ?? null,
+      exitCheckpointRetryRef.current
+    ].filter((candidate): candidate is StudioCheckpointSnapshot => candidate !== null);
+    const candidate = candidates.reduce<StudioCheckpointSnapshot | null>((latest, current) => (
+      latest === null || current.revision > latest.revision ? current : latest
+    ), null);
     cancelCheckpointWork();
     if (candidate) runCheckpoint(candidate, "document_exit");
   }, [cancelCheckpointWork, runCheckpoint]);
@@ -684,6 +708,7 @@ export function useStudioAutosave(
       queuedRef.current = null;
       retryRef.current = null;
       revisionRef.current = sourceDocument.revision;
+      checkpointedRevisionRef.current = sourceDocument.revision;
       cancelCheckpointWork();
       checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
       checkpointPolicyRef.current.recordSaved({ revision: sourceDocument.revision, bodyText: sourceDocument.bodyText }, Date.now());
@@ -712,6 +737,7 @@ export function useStudioAutosave(
     const nextQueue = recoveredQueue(sourceDocument.id, sourceDocument.revision, recovery);
     documentIdRef.current = sourceDocument.id;
     revisionRef.current = sourceDocument.revision;
+    checkpointedRevisionRef.current = sourceDocument.revision;
     cancelCheckpointWork();
     checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
     checkpointPolicyRef.current.recordSaved({ revision: sourceDocument.revision, bodyText: sourceDocument.bodyText }, Date.now());

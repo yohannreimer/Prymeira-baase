@@ -137,6 +137,50 @@ describe("useStudioAutosave", () => {
     await act(async () => pendingCheckpoint.resolve());
   });
 
+  it("checkpoints a newer saved revision while an older pagehide checkpoint is still in flight", async () => {
+    const firstCheckpoint = deferred<void>();
+    const secondCheckpoint = deferred<void>();
+    const firstMeaningfulDraft = draft("Uma primeira mudança longa antes de navegar");
+    const newerMeaningfulDraft = draft("Uma segunda mudança longa salva após voltar pelo BFCache");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn()
+      .mockImplementationOnce(() => firstCheckpoint.promise)
+      .mockImplementationOnce(() => secondCheckpoint.promise);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(firstMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newerMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(checkpoint.mock.calls.map(([revision]) => revision)).toEqual([5, 6]);
+    await act(async () => secondCheckpoint.resolve());
+    await act(async () => firstCheckpoint.reject(new TypeError("older navigation failed late")));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an unchanged exit candidate after its pagehide checkpoint fails", async () => {
+    const meaningfulDraft = draft("Uma mudança suficientemente longa antes de uma falha");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn()
+      .mockRejectedValueOnce(new TypeError("navigation interrupted"))
+      .mockResolvedValueOnce(undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    await act(async () => Promise.resolve());
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(checkpoint.mock.calls.map(([revision]) => revision)).toEqual([5, 5]);
+  });
+
   it("never blocks draft saves behind an in-flight checkpoint", async () => {
     const pendingCheckpoint = deferred<void>();
     const firstMeaningfulDraft = draft("Uma primeira mudança longa e significativa");
