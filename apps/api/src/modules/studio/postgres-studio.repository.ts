@@ -57,6 +57,8 @@ type StudioDocumentRow = {
   archived_at: string | Date | null;
   trashed_at: string | Date | null;
   pre_trash_status: Exclude<StudioDocumentStatus, "trashed"> | null;
+  trash_claim_token: string | null;
+  trash_lease_expires_at: string | Date | null;
 };
 
 type StudioDocumentVersionRow = {
@@ -929,6 +931,33 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         }
         throw error;
       });
+    },
+
+    async claimNextExpiredTrash(cutoff, now, leaseMs = 120_000, excludeOwnerKeys = []) {
+      const claimToken = generatedId("studio_trash_claim");
+      const leaseExpiresAt = new Date(new Date(now).getTime() + leaseMs).toISOString();
+      const claimed = await db.query<StudioDocumentRow>(
+        `WITH candidate AS (
+           SELECT workspace_id,owner_profile_id,id
+           FROM studio_documents
+           WHERE status='trashed' AND trashed_at <= $1
+             AND (trash_claim_token IS NULL OR trash_lease_expires_at <= $2)
+             AND NOT ((workspace_id || '/' || owner_profile_id) = ANY($3::text[]))
+           ORDER BY trashed_at ASC,id ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1
+         )
+         UPDATE studio_documents document SET
+           trash_claim_token=$4,trash_lease_expires_at=$5,updated_at=document.updated_at
+         FROM candidate
+         WHERE document.workspace_id=candidate.workspace_id
+           AND document.owner_profile_id=candidate.owner_profile_id
+           AND document.id=candidate.id
+         RETURNING document.*`,
+        [cutoff, now, excludeOwnerKeys, claimToken, leaseExpiresAt]
+      );
+      const row = claimed.rows[0];
+      return row ? { ...documentFromRow(row), claimToken, leaseExpiresAt } : null;
     },
 
     async permanentlyDeleteDocument(scope, documentId) {

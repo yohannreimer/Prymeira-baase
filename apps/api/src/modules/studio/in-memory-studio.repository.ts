@@ -182,6 +182,7 @@ export function createInMemoryStudioRepository(
   const structures: StudioStructure[] = [];
   const ritualSessions: StudioRitualSession[] = [];
   const permanentDeletionClaims = new Map<string, Promise<boolean>>();
+  const trashCleanupClaims = new Map<string, { claimToken: string; leaseExpiresAt: string }>();
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
   let checkpointLock: Promise<void> = Promise.resolve();
@@ -487,6 +488,7 @@ export function createInMemoryStudioRepository(
         updatedAt: nextTimestamp(now, current.updatedAt)
       };
       documents[index] = updated;
+      trashCleanupClaims.delete(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
       enqueueIndexJob(updated);
       return cloneDocument(updated);
     },
@@ -509,8 +511,29 @@ export function createInMemoryStudioRepository(
         updatedAt: nextTimestamp(now, current.updatedAt)
       };
       documents[index] = updated;
+      trashCleanupClaims.delete(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
       if (restoredStatus === "active") enqueueIndexJob(updated);
       return cloneDocument(updated);
+    },
+
+    async claimNextExpiredTrash(cutoff, at, leaseMs = 120_000, excludeOwnerKeys = []) {
+      const timestamp = normalizeTimestamp(at);
+      const cutoffTimestamp = normalizeTimestamp(cutoff);
+      const nowMs = new Date(timestamp).getTime();
+      const candidate = documents
+        .filter((document) => document.status === "trashed" && document.trashedAt !== null
+          && document.trashedAt !== undefined && document.trashedAt <= cutoffTimestamp)
+        .filter((document) => !excludeOwnerKeys.includes(`${document.workspaceId}/${document.ownerProfileId}`))
+        .filter((document) => {
+          const claim = trashCleanupClaims.get(`${document.workspaceId}/${document.ownerProfileId}/${document.id}`);
+          return !claim || new Date(claim.leaseExpiresAt).getTime() <= nowMs;
+        })
+        .sort((left, right) => (left.trashedAt ?? "").localeCompare(right.trashedAt ?? "") || left.id.localeCompare(right.id))[0];
+      if (!candidate) return null;
+      const claimToken = randomUUID();
+      const leaseExpiresAt = new Date(nowMs + leaseMs).toISOString();
+      trashCleanupClaims.set(`${candidate.workspaceId}/${candidate.ownerProfileId}/${candidate.id}`, { claimToken, leaseExpiresAt });
+      return { ...cloneDocument(candidate), claimToken, leaseExpiresAt };
     },
 
     async permanentlyDeleteDocument(scope, documentId) {
@@ -571,6 +594,7 @@ export function createInMemoryStudioRepository(
       removeWhere(assets, (asset) => owned(asset) && asset.documentId === documentId);
       removeWhere(versions, (version) => owned(version) && version.documentId === documentId);
       documents.splice(documentIndex, 1);
+      trashCleanupClaims.delete(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
       return true;
     },
 

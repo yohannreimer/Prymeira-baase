@@ -983,6 +983,53 @@
   margin: 10px 0 0;
 }
 
+.studio-trash { margin-top: 24px; }
+.studio-trash__notice { align-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; color: var(--muted); display: flex; gap: 10px; padding: 12px 14px; }
+.studio-trash__notice i { color: var(--faint); font-size: 18px; }
+.studio-trash__notice p { font-size: 12px; margin: 0; }
+.studio-trash__operation-error { background: var(--danger-bg); border: 1px solid var(--danger-line); border-radius: 8px; color: var(--danger-ink); font-size: 12px; margin: 12px 0 0; padding: 10px 12px; }
+.studio-trash__list { border-top: 1px solid var(--line); margin-top: 24px; }
+.studio-trash-row { align-items: center; border-bottom: 1px solid var(--line); display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) auto; padding: 19px 2px; }
+.studio-trash-row__body { display: grid; gap: 4px; }
+.studio-trash-row h3 { font-size: 14px; margin: 0; }
+.studio-trash-row p { color: var(--muted); font-size: 12px; margin: 0; }
+.studio-trash-row time { color: var(--faint); font-size: 11px; }
+.studio-trash-row__actions { display: flex; gap: 6px; }
+.studio-trash-row__actions button,
+.studio-trash__more,
+.studio-trash__error button { background: transparent; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 11.5px; min-height: 36px; padding: 7px 10px; }
+.studio-trash-row__actions button:hover:not(:disabled),
+.studio-trash__more:hover:not(:disabled),
+.studio-trash__error button:hover { background: var(--panel2); color: var(--ink); }
+.studio-trash-row__actions .studio-trash-row__delete { border-color: transparent; color: var(--danger-ink); }
+.studio-trash-row__actions button:focus-visible,
+.studio-trash__more:focus-visible,
+.studio-trash__error button:focus-visible,
+.studio-trash-dialog button:focus-visible,
+.studio-trash-dialog input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.studio-trash__more { margin-top: 18px; }
+.studio-trash__empty,
+.studio-trash__error { align-items: center; color: var(--muted); display: flex; gap: 10px; padding: 30px 2px; }
+.studio-trash__empty { flex-direction: column; text-align: center; }
+.studio-trash__empty i { color: var(--faint); font-size: 24px; }
+.studio-trash__empty p,
+.studio-trash__empty span,
+.studio-trash__error p { margin: 0; }
+.studio-trash__empty span { color: var(--faint); font-size: 12px; }
+.studio-trash__loading { display: grid; gap: 1px; margin-top: 24px; }
+.studio-trash__loading span { background: var(--panel2); border-bottom: 1px solid var(--line2); min-height: 82px; }
+.studio-trash-dialog__backdrop { align-items: center; background: var(--studio-sheet-backdrop); display: flex; inset: 0; justify-content: center; padding: 20px; position: fixed; z-index: 80; }
+.studio-trash-dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 70px var(--studio-shadow); max-width: 460px; padding: 28px; width: 100%; }
+.studio-trash-dialog > .mono { color: var(--danger-ink); font-size: 10px; letter-spacing: .08em; margin: 0 0 8px; text-transform: uppercase; }
+.studio-trash-dialog h2 { font-size: 30px; margin: 0 0 10px; }
+.studio-trash-dialog > p:not(.mono) { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.studio-trash-dialog label { color: var(--muted); display: grid; font-size: 12px; gap: 8px; margin-top: 24px; }
+.studio-trash-dialog input { background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; color: var(--ink); min-height: 42px; padding: 9px 11px; }
+.studio-trash-dialog > div { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+.studio-trash-dialog button { background: transparent; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); min-height: 38px; padding: 8px 12px; }
+.studio-trash-dialog button:last-child { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger-ink); }
+.studio-trash-dialog button:disabled { cursor: default; opacity: .5; }
+
 .studio-document-open-error {
   align-items: flex-start;
   display: flex;
@@ -3288,6 +3335,13 @@
     gap: 6px;
     grid-template-columns: 1fr;
   }
+
+  .studio-trash-row { align-items: stretch; gap: 14px; grid-template-columns: 1fr; }
+  .studio-trash-row__actions { flex-wrap: wrap; }
+  .studio-trash-row__actions button { min-height: 44px; }
+  .studio-trash-dialog { padding: 24px 20px; }
+  .studio-trash-dialog > div { align-items: stretch; flex-direction: column-reverse; }
+  .studio-trash-dialog button { min-height: 44px; }
 
   .studio-library-row__main > time {
     grid-row: 2;

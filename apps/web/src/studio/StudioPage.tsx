@@ -7,12 +7,14 @@ import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
 import StudioStructureLibrary from "./StudioStructureLibrary";
+import StudioTrash from "./StudioTrash";
 import {
   archiveStudioDocument,
   createStudioCheckpoint,
   getStudioDocument,
   getStudioDocumentAssets,
   restoreStudioDocument,
+  trashStudioDocument,
   StudioApiError
 } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
@@ -33,7 +35,7 @@ const STRUCTURE_KIND_BY_SECTION = {
   plans: "plan"
 } as const;
 
-type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "privacy" | "document";
+type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "trash" | "privacy" | "document";
 
 type StudioNavItem = {
   key: StudioSection;
@@ -129,6 +131,7 @@ const studioNavigation: StudioNavItem[] = [
   { key: "rituals", label: "Rituais", icon: "ph-calendar-check", title: "Rituais", description: "Reserve momentos de revisão para manter prioridades e decisões vivas.", instruction: "Seus rituais de reflexão aparecerão aqui quando forem definidos." },
   { key: "collections", label: "Coleções", icon: "ph-folder-simple", title: "Coleções", description: "Agrupe documentos que pertencem ao mesmo contexto ou frente de pensamento.", instruction: "Escolha ou crie uma coleção para reunir documentos relacionados." },
   { key: "archive", label: "Arquivo", icon: "ph-archive", title: "Arquivo", description: "Registros preservados fora da sua mesa principal.", instruction: "Documentos arquivados podem ser restaurados quando voltarem a importar." },
+  { key: "trash", label: "Lixeira", icon: "ph-trash", title: "Lixeira", description: "Registros removidos ficam protegidos por 30 dias antes de desaparecerem.", instruction: "" },
   { key: "privacy", label: "Privacidade", icon: "ph-shield-check", title: "Privacidade do Estúdio", description: "Leve uma cópia ou remova apenas o conteúdo deste espaço privado.", instruction: "" }
 ];
 
@@ -237,6 +240,12 @@ export default function StudioPage({ onOpenInternalSource }: {
 
   const restoreDocument = useCallback(async (documentId: string, signal?: AbortSignal) => {
     const document = await restoreStudioDocument(documentId, signal);
+    publishStudioEvent({ type: "document-lifecycle-changed", documentId });
+    return document;
+  }, []);
+
+  const trashDocument = useCallback(async (documentId: string, signal?: AbortSignal) => {
+    const document = await trashStudioDocument(documentId, signal);
     publishStudioEvent({ type: "document-lifecycle-changed", documentId });
     return document;
   }, []);
@@ -503,13 +512,13 @@ export default function StudioPage({ onOpenInternalSource }: {
           ) : section === "inbox" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active", inbox_state: "pending_review" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} trashDocument={trashDocument} />
             </>
           ) : section === "all" ? (
             <>
               <StudioSectionHeading item={active} />
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} trashDocument={trashDocument} />
             </>
           ) : section === "goals" || section === "decisions" || section === "plans" ? (
             <StudioStructureLibrary
@@ -531,7 +540,12 @@ export default function StudioPage({ onOpenInternalSource }: {
           ) : section === "archive" ? (
             <>
               <StudioSectionHeading item={active} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} />
+              <StudioLibrary collections={collectionStore.collections} query={{ status: "archived" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} trashDocument={trashDocument} />
+            </>
+          ) : section === "trash" ? (
+            <>
+              <StudioSectionHeading item={active} />
+              <StudioTrash />
             </>
           ) : section === "privacy" ? (
             <Suspense fallback={<StudioPrivacySkeleton />}>

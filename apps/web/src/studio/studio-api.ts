@@ -683,6 +683,44 @@ export async function restoreStudioDocument(
   return mapStudioDocument(response.document);
 }
 
+export async function trashStudioDocument(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}/trash`,
+    { method: "POST", signal },
+    fetcher
+  );
+  return mapStudioDocument(response.document);
+}
+
+export async function restoreStudioDocumentFromTrash(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(
+    `/documents/${encodeURIComponent(documentId)}/restore-from-trash`,
+    { method: "POST", signal },
+    fetcher
+  );
+  return mapStudioDocument(response.document);
+}
+
+export async function permanentlyDeleteStudioDocument(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<void> {
+  await studioRequest<Record<string, never>>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    { method: "DELETE", signal },
+    fetcher
+  );
+}
+
 export async function addStudioDocumentToCollection(
   collectionId: string,
   documentId: string,

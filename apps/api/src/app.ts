@@ -44,6 +44,7 @@ import {
   type StudioLinkResolver
 } from "./modules/studio/studio-assets.routes";
 import { createStudioService } from "./modules/studio/studio.service";
+import { createStudioTrashCleanupProcessor } from "./modules/studio/studio-trash-cleanup";
 import { createStudioContextBuilder } from "./modules/studio/studio-context-builder";
 import { createStudioAssistantService } from "./modules/studio/studio-assistant.service";
 import { createStudioRitualService } from "./modules/studio/studio-ritual.service";
@@ -205,6 +206,11 @@ export function buildApp(options: BuildAppOptions = {}) {
       if (!studioProactivityStore.deleteSignalsForSources) return;
       await studioProactivityStore.deleteSignalsForSources(scope, sourceIds);
     }
+  });
+  const studioTrashCleanupProcessor = createStudioTrashCleanupProcessor({
+    repository: studioRepository,
+    service: studioService,
+    now: options.now ? () => options.now!().toISOString() : undefined
   });
   const studioContextBuilder = createStudioContextBuilder({
     companyRepository,
@@ -497,7 +503,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioMemoryIndexProcessor,
     studioProactivityService,
     studioPortabilityService,
-    studioPortabilityReconciliationProcessor
+    studioPortabilityReconciliationProcessor,
+    studioTrashCleanupProcessor
   });
 }
 

@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -170,6 +170,18 @@ describe("operational schema", () => {
       (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,checkpoint_key)
       values ('checkpoint_key_b','workspace','owner','checkpoint_key_document',2,'{}','', 'user','owner','mutation:1')`))
       .rejects.toBeDefined();
+  });
+
+  it("adds durable trash retention claims in migration 30", async () => {
+    await ensureOperationalSchemaThrough(db, 30);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_documents'
+         and column_name in ('trash_claim_token','trash_lease_expires_at')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual([
+      "trash_claim_token", "trash_lease_expires_at"
+    ]);
   });
 
   it("keeps the owner Studio lexical GIN index in migration 9", async () => {

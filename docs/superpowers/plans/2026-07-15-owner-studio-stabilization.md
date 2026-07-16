@@ -952,7 +952,7 @@ git commit -m "feat(studio): add document trash lifecycle"
 - Modify: `apps/web/src/studio/studio-api.ts`
 - Modify: `apps/web/src/studio/studio.css`
 
-- [ ] **Step 1: Write cleanup and UI confirmation tests**
+- [x] **Step 1: Write cleanup and UI confirmation tests**
 
 ```ts
 expect(await processor.processNext()).toMatchObject({ id: "expired_document" });
@@ -965,12 +965,12 @@ await user.click(await screen.findByRole("button", { name: "Excluir definitivame
 expect(screen.getByRole("dialog", { name: "Excluir definitivamente?" })).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and confirm missing processor/UI**
+- [x] **Step 2: Run and confirm missing processor/UI**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement cleanup and calm Trash view**
+- [x] **Step 3: Implement cleanup and calm Trash view**
 
 ```ts
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -983,12 +983,12 @@ return document;
 
 Add `trash` to Studio navigation, show deletion date and remaining retention, and require typed confirmation only for permanent deletion.
 
-- [ ] **Step 4: Run maintenance, UI, and accessibility suites**
+- [x] **Step 4: Run maintenance, UI, and accessibility suites**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx src/studio/studio-accessibility.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio apps/web/src/studio

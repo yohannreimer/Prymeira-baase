@@ -135,6 +135,7 @@ describe("StudioPage", () => {
       "Rituais",
       "Coleções",
       "Arquivo",
+      "Lixeira",
       "Privacidade"
     ];
 
@@ -530,7 +531,7 @@ describe("StudioPage", () => {
 
     const navigation = screen.getByRole("navigation", { name: "Seções do Estúdio" });
     expect(navigation).not.toHaveAttribute("aria-hidden");
-    expect(within(navigation).getAllByRole("button")).toHaveLength(10);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(11);
     expect(screen.getByRole("region", { name: "Conteúdo da seção" })).toBeVisible();
   });
 

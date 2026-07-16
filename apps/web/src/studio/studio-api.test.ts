@@ -24,8 +24,11 @@ import {
   listStudioRitualSessions,
   listStudioStructures,
   removeStudioDocumentFromCollection,
+  permanentlyDeleteStudioDocument,
   renameStudioCollection,
   restoreStudioDocument,
+  restoreStudioDocumentFromTrash,
+  trashStudioDocument,
   restoreStudioDocumentVersion,
   retryStudioAsset,
   searchStudioDocuments,
@@ -499,18 +502,23 @@ describe("Studio API client", () => {
     });
   });
 
-  it("archives, restores, and changes collection membership with encoded owner-scoped routes", async () => {
+  it("archives, restores, trashes, permanently deletes, and changes collection membership with encoded owner-scoped routes", async () => {
     const controller = new AbortController();
     const rawCollection = {
       id: "collection / 1", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
       name: "Estratégia", created_at: "2026-07-10", updated_at: "2026-07-11"
     };
-    const fetcher = vi.fn(async (input: string, init?: RequestInit) => input.includes("/collections/")
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => init?.method === "DELETE" && input.startsWith("/api/studio/documents/")
+      ? new Response(null, { status: 204 })
+      : input.includes("/collections/")
       ? jsonResponse({ membership: {}, removed: true, collections: init?.method === "DELETE" ? [] : [rawCollection] })
       : jsonResponse({ document: { ...rawDocument, status: input.endsWith("/archive") ? "archived" : "active" } }));
 
     await archiveStudioDocument("document / 1", controller.signal, fetcher);
     await restoreStudioDocument("document / 1", controller.signal, fetcher);
+    await trashStudioDocument("document / 1", controller.signal, fetcher);
+    await restoreStudioDocumentFromTrash("document / 1", controller.signal, fetcher);
+    await permanentlyDeleteStudioDocument("document / 1", controller.signal, fetcher);
     await expect(addStudioDocumentToCollection("collection / 1", "document / 1", controller.signal, fetcher))
       .resolves.toEqual([expect.objectContaining({ id: "collection / 1", name: "Estratégia" })]);
     await expect(removeStudioDocumentFromCollection("collection / 1", "document / 1", controller.signal, fetcher))
@@ -519,10 +527,13 @@ describe("Studio API client", () => {
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
       "/api/studio/documents/document%20%2F%201/archive",
       "/api/studio/documents/document%20%2F%201/restore",
+      "/api/studio/documents/document%20%2F%201/trash",
+      "/api/studio/documents/document%20%2F%201/restore-from-trash",
+      "/api/studio/documents/document%20%2F%201",
       "/api/studio/collections/collection%20%2F%201/documents/document%20%2F%201",
       "/api/studio/collections/collection%20%2F%201/documents/document%20%2F%201"
     ]);
-    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "POST", "PUT", "DELETE"]);
+    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(["POST", "POST", "POST", "POST", "DELETE", "PUT", "DELETE"]);
     expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
   });
 

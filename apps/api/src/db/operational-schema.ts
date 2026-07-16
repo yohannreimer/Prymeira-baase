@@ -1582,6 +1582,17 @@ const migrations: Migration[] = [{
       ON studio_document_versions (workspace_id,owner_profile_id,document_id,checkpoint_key)
       WHERE checkpoint_key IS NOT NULL;
   `
+}, {
+  version: 30,
+  name: "studio_trash_retention_claims",
+  sql: `
+    ALTER TABLE studio_documents
+      ADD COLUMN IF NOT EXISTS trash_claim_token TEXT,
+      ADD COLUMN IF NOT EXISTS trash_lease_expires_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS studio_documents_trash_retention_idx
+      ON studio_documents (trashed_at,id)
+      WHERE status='trashed';
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

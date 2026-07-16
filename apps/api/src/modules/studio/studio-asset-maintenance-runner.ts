@@ -15,6 +15,7 @@ export function createStudioAssetMaintenanceRunner(options: {
   uploadCleanupProcessor: Processor;
   memoryProcessor?: Processor;
   portabilityProcessor?: Processor;
+  trashProcessor?: Processor;
   logger: MaintenanceLogger;
   maxItemsPerProcessor?: number;
   intervalMs?: number;
@@ -81,6 +82,7 @@ export function createStudioAssetMaintenanceRunner(options: {
     ];
     if (options.memoryProcessor) processors.push(["memory indexing", options.memoryProcessor]);
     if (options.portabilityProcessor) processors.push(["private data reconciliation", options.portabilityProcessor]);
+    if (options.trashProcessor) processors.push(["trash retention", options.trashProcessor]);
     for (const [name, processor] of processors) {
       let processed = 0;
       let fairnessPass = true;
@@ -220,6 +222,7 @@ export function startStudioAssetMaintenance(input: {
   studioAssetUploadCleanupProcessor: Processor;
   studioMemoryIndexProcessor?: Processor;
   studioPortabilityReconciliationProcessor?: Processor;
+  studioTrashCleanupProcessor?: Processor;
   log: MaintenanceLogger;
 }, options: {
   maxItemsPerProcessor?: number;
@@ -238,6 +241,7 @@ export function startStudioAssetMaintenance(input: {
     uploadCleanupProcessor: input.studioAssetUploadCleanupProcessor,
     memoryProcessor: input.studioMemoryIndexProcessor,
     portabilityProcessor: input.studioPortabilityReconciliationProcessor,
+    trashProcessor: input.studioTrashCleanupProcessor,
     logger: input.log,
     ...options
   });

@@ -12,6 +12,27 @@ const collections: StudioCollection[] = [
 ];
 
 describe("StudioLibrary", () => {
+  it("moves a record into the recoverable 30-day trash only after confirmation", async () => {
+    const user = userEvent.setup();
+    const trashDocument = vi.fn(async () => ({ ...documents[0]!, status: "trashed" as const }));
+    render(<StudioLibrary
+      query={{ status: "active" }}
+      loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: {} })}
+      loadCollections={async () => []}
+      trashDocument={trashDocument}
+      onOpenDocument={vi.fn()}
+    />);
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Mover para a lixeira" }));
+    expect(within(row).getByText("Mover para a lixeira? Você poderá restaurar por 30 dias.")).toBeVisible();
+    const confirm = within(row).getByRole("button", { name: "Mover para a lixeira" });
+    expect(confirm).toHaveFocus();
+    await user.click(confirm);
+    await waitFor(() => expect(trashDocument).toHaveBeenCalledWith(documents[0]!.id, expect.any(AbortSignal)));
+    expect(screen.queryByRole("listitem", { name: "Plano de expansão" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Plano de expansão movido para a lixeira.");
+  });
+
   it("loads cursor pages without duplicating a document and offers calm empty states", async () => {
     const user = userEvent.setup();
     const loadDocuments = vi.fn(async ({ cursor }: { cursor?: string }): Promise<StudioDocumentPage> => cursor

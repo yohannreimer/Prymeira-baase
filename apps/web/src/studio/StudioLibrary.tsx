@@ -6,6 +6,7 @@ import {
   listStudioDocuments,
   removeStudioDocumentFromCollection,
   restoreStudioDocument,
+  trashStudioDocument,
   updateStudioDocument
 } from "./studio-api";
 import type { StudioCollection, StudioDocument, StudioDocumentPage, StudioDocumentStatus } from "./studio.types";
@@ -25,6 +26,7 @@ type StudioLibraryProps = {
   updateDocument?: typeof defaultUpdateDocument;
   archiveDocument?: typeof archiveStudioDocument;
   restoreDocument?: typeof restoreStudioDocument;
+  trashDocument?: typeof trashStudioDocument;
   addMembership?: typeof addStudioDocumentToCollection;
   removeMembership?: typeof removeStudioDocumentFromCollection;
 };
@@ -45,6 +47,7 @@ export default function StudioLibrary({
   updateDocument = defaultUpdateDocument,
   archiveDocument = archiveStudioDocument,
   restoreDocument = restoreStudioDocument,
+  trashDocument = trashStudioDocument,
   addMembership = addStudioDocumentToCollection,
   removeMembership = removeStudioDocumentFromCollection
 }: StudioLibraryProps) {
@@ -55,6 +58,7 @@ export default function StudioLibrary({
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirmingTrashId, setConfirmingTrashId] = useState<string | null>(null);
   const [expandedCollectionsId, setExpandedCollectionsId] = useState<string | null>(null);
   const [memberships, setMemberships] = useState<Record<string, string[]>>({});
   const [liveMessage, setLiveMessage] = useState("");
@@ -68,6 +72,7 @@ export default function StudioLibrary({
   const titleRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const pendingFocusIndex = useRef<number | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const trashConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const emptyRef = useRef<HTMLDivElement | null>(null);
   const rowActionsRef = useRef<StudioLibraryRowActions>(undefined!);
   const queryKey = `${query.status}:${query.inbox_state ?? "all"}:${query.collection_id ?? "all"}`;
@@ -85,6 +90,7 @@ export default function StudioLibrary({
     setActiveIndex(0);
     setExpandedCollectionsId(null);
     setConfirmingId(null);
+    setConfirmingTrashId(null);
     void loadDocuments({ status: query.status, limit: PAGE_SIZE, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal).then((page) => {
       if (controller.signal.aborted || queryGeneration.current !== generation) return;
       setDocuments(uniqueDocuments(page.items));
@@ -134,6 +140,10 @@ export default function StudioLibrary({
   useEffect(() => {
     if (confirmingId) confirmButtonRef.current?.focus();
   }, [confirmingId]);
+
+  useEffect(() => {
+    if (confirmingTrashId) trashConfirmButtonRef.current?.focus();
+  }, [confirmingTrashId]);
 
   async function loadNextPage() {
     if (!cursor || loadingMore) return;
@@ -195,6 +205,23 @@ export default function StudioLibrary({
       if (!controller.signal.aborted && !isAbortError(error)) {
         restoreRollback(rollback);
         setLiveMessage(`Não foi possível restaurar ${document.title || "o documento"}.`);
+      }
+    } finally {
+      operationControllers.current.delete(controller);
+    }
+  }
+
+  async function moveToTrash(document: StudioDocument) {
+    const rollback = removeOptimistically(document);
+    setConfirmingTrashId(null);
+    const controller = trackController(operationControllers.current);
+    try {
+      await trashDocument(document.id, controller.signal);
+      if (!controller.signal.aborted) setLiveMessage(`${document.title || "Documento"} movido para a lixeira.`);
+    } catch (error) {
+      if (!controller.signal.aborted && !isAbortError(error)) {
+        restoreRollback(rollback);
+        setLiveMessage(`Não foi possível mover ${document.title || "o documento"} para a lixeira.`);
       }
     } finally {
       operationControllers.current.delete(controller);
@@ -331,7 +358,9 @@ export default function StudioLibrary({
     review,
     restore,
     archive,
+    moveToTrash,
     changeConfirming: setConfirmingId,
+    changeTrashConfirming: setConfirmingTrashId,
     changeOrganizing: setExpandedCollectionsId,
     changeMembership: toggleMembership
   };
@@ -358,12 +387,14 @@ export default function StudioLibrary({
               active={activeIndex === index}
               isOrganizing={expandedCollectionsId === document.id}
               isConfirming={confirmingId === document.id}
+              isConfirmingTrash={confirmingTrashId === document.id}
               selectedCollections={memberships[document.id] ?? EMPTY_MEMBERSHIPS}
               collections={collections}
               inbox={Boolean(query.inbox_state)}
               status={query.status}
               titleRefs={titleRefs}
               confirmButtonRef={confirmButtonRef}
+              trashConfirmButtonRef={trashConfirmButtonRef}
               actionsRef={rowActionsRef}
             />
           ))}
@@ -381,12 +412,14 @@ type StudioLibraryRowProps = {
   active: boolean;
   isOrganizing: boolean;
   isConfirming: boolean;
+  isConfirmingTrash: boolean;
   selectedCollections: string[];
   collections: StudioCollection[];
   inbox: boolean;
   status: StudioDocumentStatus;
   titleRefs: MutableRefObject<Array<HTMLButtonElement | null>>;
   confirmButtonRef: RefObject<HTMLButtonElement | null>;
+  trashConfirmButtonRef: RefObject<HTMLButtonElement | null>;
   actionsRef: MutableRefObject<StudioLibraryRowActions>;
 };
 
@@ -397,7 +430,9 @@ type StudioLibraryRowActions = {
   review(document: StudioDocument): Promise<void>;
   restore(document: StudioDocument): Promise<void>;
   archive(document: StudioDocument): Promise<void>;
+  moveToTrash(document: StudioDocument): Promise<void>;
   changeConfirming(documentId: string | null): void;
+  changeTrashConfirming(documentId: string | null): void;
   changeOrganizing(documentId: string | null): void;
   changeMembership(documentId: string, collectionId: string, checked: boolean): Promise<void>;
 };
@@ -408,12 +443,14 @@ const StudioLibraryRow = memo(function StudioLibraryRow({
   active,
   isOrganizing,
   isConfirming,
+  isConfirmingTrash,
   selectedCollections,
   collections,
   inbox,
   status,
   titleRefs,
   confirmButtonRef,
+  trashConfirmButtonRef,
   actionsRef
 }: StudioLibraryRowProps) {
   return (
@@ -450,7 +487,14 @@ const StudioLibraryRow = memo(function StudioLibraryRow({
             <button ref={confirmButtonRef} type="button" onClick={() => void actionsRef.current.archive(document)}>Confirmar arquivo</button>
             <button type="button" onClick={() => actionsRef.current.changeConfirming(null)}>Cancelar</button>
           </span>
-        ) : <button type="button" onClick={() => actionsRef.current.changeConfirming(document.id)}>Arquivar</button>}
+        ) : <button type="button" onClick={() => { actionsRef.current.changeTrashConfirming(null); actionsRef.current.changeConfirming(document.id); }}>Arquivar</button>}
+        {isConfirmingTrash ? (
+          <span className="studio-library-row__confirm studio-library-row__confirm--trash">
+            <span>Mover para a lixeira? Você poderá restaurar por 30 dias.</span>
+            <button ref={trashConfirmButtonRef} type="button" onClick={() => void actionsRef.current.moveToTrash(document)}>Mover para a lixeira</button>
+            <button type="button" onClick={() => actionsRef.current.changeTrashConfirming(null)}>Cancelar</button>
+          </span>
+        ) : <button type="button" onClick={() => { actionsRef.current.changeConfirming(null); actionsRef.current.changeTrashConfirming(document.id); }}>Mover para a lixeira</button>}
       </div>
 
       {isOrganizing ? (
@@ -478,6 +522,7 @@ function sameStudioLibraryRow(previous: StudioLibraryRowProps, next: StudioLibra
     && previous.active === next.active
     && previous.isOrganizing === next.isOrganizing
     && previous.isConfirming === next.isConfirming
+    && previous.isConfirmingTrash === next.isConfirmingTrash
     && previous.selectedCollections === next.selectedCollections
     && previous.collections === next.collections
     && previous.inbox === next.inbox

@@ -214,6 +214,11 @@ export type StudioDocument = StudioOwnerScope & {
   preTrashStatus?: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
+export type StudioTrashCleanupClaim = StudioDocument & {
+  claimToken: string;
+  leaseExpiresAt: string;
+};
+
 export type StudioDocumentVersion = StudioOwnerScope & {
   id: string;
   documentId: string;
@@ -532,6 +537,12 @@ export type StudioRepository = {
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
   trashDocument(scope: StudioOwnerScope, documentId: string, trashedAt: string): Promise<StudioDocument>;
   restoreDocumentFromTrash(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument>;
+  claimNextExpiredTrash(
+    cutoff: string,
+    now: string,
+    leaseMs?: number,
+    excludeOwnerKeys?: readonly string[]
+  ): Promise<StudioTrashCleanupClaim | null>;
   permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string): Promise<boolean>;
   permanentlyDeleteDocumentWithCleanup?(
     scope: StudioOwnerScope,
