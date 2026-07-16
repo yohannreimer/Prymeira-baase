@@ -30,7 +30,8 @@ const app = buildApp({
   companyRepository,
   objectStorage,
   runtimeConfig,
-  seedDemoData: true
+  seedDemoData: true,
+  studioMemoryDimensions: 4
 });
 const maintenance = startStudioAssetMaintenance(app, {
   intervalMs: 40,

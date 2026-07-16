@@ -7,9 +7,11 @@ const manager = actor("manager", "profile_manager");
 const employee = actor("employee", "profile_employee");
 
 test.describe("Owner Studio release acceptance", () => {
-  test("1. resilient audio capture: owner leaves and returns to the original audio and transcript", async ({ page }) => {
+  test("1. resilient audio capture: owner leaves and returns to the original audio and transcript", async ({ page }, testInfo) => {
+    const captureMarker = `captura-audio-${uniqueTestMarker(testInfo)}`;
     const filename = `reflexao-${Date.now()}.wav`;
     await openStudio(page);
+    await page.getByRole("textbox", { name: "Registre um pensamento" }).fill(captureMarker);
     await page.getByTestId("studio-audio-input").setInputFiles({
       name: filename,
       mimeType: "audio/wav",
@@ -25,10 +27,10 @@ test.describe("Owner Studio release acceptance", () => {
     await expect(page.getByRole("heading", { name: /Bom dia|Acompanhamento operacional/ })).toBeVisible();
     await page.getByRole("link", { name: "Estúdio", exact: true }).click();
     await page.getByRole("button", { name: "Entrada", exact: true }).click();
-    await page
-      .getByRole("listitem", { name: "Registro em áudio" })
-      .getByRole("button", { name: /^Registro em áudio/u })
-      .click();
+    const exactCapture = page.getByRole("listitem").filter({ hasText: captureMarker });
+    await expect(exactCapture).toHaveCount(1);
+    await exactCapture.getByRole("button", { name: /^Registro em áudio/u }).click();
+    await expect(page.getByRole("textbox", { name: "Conteúdo do documento" })).toContainText(captureMarker);
 
     await page.getByRole("button", { name: `Abrir ${filename}` }).click();
     await expectReadyAudioInspector(page, filename);
@@ -50,13 +52,15 @@ test.describe("Owner Studio release acceptance", () => {
     await expect(suggestion.getByRole("button", { name: "Aplicada em nova versão" })).toBeVisible();
 
     await page.getByRole("button", { name: "Ver histórico de versões" }).click();
-    const history = page.getByRole("region", { name: "Histórico de versões" });
-    await expect(history).toContainText(original);
-    await expect(history).toContainText(`Meta proposta: ${original}`);
+    const history = page.getByRole("dialog", { name: "Histórico de versões" });
+    await expect(history.getByRole("document", { name: "Prévia imutável da versão 2" })).toContainText(`Meta proposta: ${original}`);
+    await history.getByRole("button", { name: /^Histórico anterior/u }).click();
+    await history.getByRole("button", { name: /^Versão 1/u }).click();
+    await expect(history.getByRole("document", { name: "Prévia imutável da versão 1" })).toContainText(original);
   });
 
-  test("3. related thoughts: four matching thoughts expose the correct private sources", async ({ page, request }) => {
-    const marker = `capacidade-recorrente-${Date.now()}`;
+  test("3. related thoughts: four matching thoughts expose the correct private sources", async ({ page, request }, testInfo) => {
+    const marker = `capacidade-recorrente-${uniqueTestMarker(testInfo)}`;
     const documents = [];
     for (let index = 1; index <= 5; index += 1) {
       documents.push(await createDocument(request, ownerA, `Pensamento relacionado ${index} ${marker}`, `${marker} aparece na reflexão ${index}.`));
@@ -65,8 +69,10 @@ test.describe("Owner Studio release acceptance", () => {
     await expect.poll(async () => {
       const response = await api(request, ownerA, `/studio/documents/${source.id}/related?limit=4`);
       if (!response.ok()) return [];
-      return (await response.json()).related.map((item: { document: { id: string } }) => item.document.id);
-    }).toEqual(documents.slice(1).map((document) => document.id));
+      return (await response.json()).related
+        .map((item: { document: { id: string } }) => item.document.id)
+        .sort();
+    }).toEqual(documents.slice(1).map((document) => document.id).sort());
 
     await page.goto(`/#estudio/document/${encodeURIComponent(source.id)}`);
     await expect(page.getByRole("heading", { name: source.title })).toBeVisible();
