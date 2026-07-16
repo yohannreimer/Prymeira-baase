@@ -622,7 +622,7 @@ export function useStudioAutosave(
             storageUnavailable: storageSucceeded ? current.storageUnavailable : true
           }));
         }
-        if (restartSave) void runNextRef.current();
+        if (rebased) void runNextRef.current();
       }
       void version;
     }).catch(() => undefined).finally(() => {

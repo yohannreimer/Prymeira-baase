@@ -262,6 +262,35 @@ describe("useStudioAutosave", () => {
     await act(async () => rebasedSave.resolve(saved(newer, 7)));
   });
 
+  it("auto-retries one retry-only offline draft after an authoritative exit rebase without looping", async () => {
+    const first = draft("Base salva antes da falha offline");
+    const newer = draft("Retry isolado que precisa de um novo owner");
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const save = vi.fn()
+      .mockResolvedValueOnce(saved(first, 5))
+      .mockRejectedValueOnce(new TypeError("PATCH offline"))
+      .mockRejectedValueOnce(new TypeError("PATCH ainda offline"));
+    const { result } = renderHook(() => useStudioAutosave(document, save, {
+      exitCheckpoint: vi.fn(() => exit.promise)
+    }));
+
+    act(() => result.current.queueSave(first));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newer));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(result.current.state).toBe("offline");
+    expect(save).toHaveBeenCalledTimes(2);
+    await act(async () => exit.resolve(exitCheckpointResult(first, 6)));
+
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(save).toHaveBeenLastCalledWith(newer, 6, expect.any(AbortSignal));
+    expect(result.current.state).toBe("offline");
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(save).toHaveBeenCalledTimes(3);
+  });
+
   it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
