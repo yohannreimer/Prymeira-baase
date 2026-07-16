@@ -752,14 +752,16 @@ export async function restoreStudioDocumentVersion(
 
 export type StudioStructurePage = { items: StudioStructure[]; nextCursor: string | null };
 
+export type StudioStructureListQuery = {
+  kind?: StudioStructureKind;
+  lifecycle_status?: StudioStructureLifecycleStatus;
+  document_id?: string;
+  cursor?: string;
+  limit?: number;
+};
+
 export async function listStudioStructures(
-  query: {
-    kind?: StudioStructureKind;
-    lifecycle_status?: StudioStructureLifecycleStatus;
-    document_id?: string;
-    cursor?: string;
-    limit?: number;
-  } = {},
+  query: StudioStructureListQuery = {},
   fetcher: StudioFetcher = fetch,
   signal?: AbortSignal
 ): Promise<StudioStructurePage> {

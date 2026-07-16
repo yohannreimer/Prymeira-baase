@@ -148,6 +148,45 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
     expect(within(content).getByRole("heading", { level: 2, name: "Metas" })).toBeInTheDocument();
   });
 
+  it("exposes the strategic library as a named region and a semantic list", async () => {
+    const user = userEvent.setup();
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      if (!String(input).includes("/api/studio/structures?")) {
+        return new Response(JSON.stringify({ collections: [] }), { headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+      structures: [{
+        id: "goal_accessible",
+        workspace_id: "workspace_a",
+        owner_profile_id: "profile_owner",
+        document_id: "document_goal",
+        document_title: "Aumentar a previsibilidade",
+        kind: "goal",
+        lifecycle_status: "active",
+        revision: 1,
+        horizon_at: "2026-12-31T00:00:00.000Z",
+        metric_json: null,
+        cadence_json: null,
+        next_run_at: null,
+        properties_json: { desired_outcome: "Receita recorrente", state: "in_focus" },
+        created_at: "2026-07-14T10:00:00.000Z",
+        updated_at: "2026-07-15T10:00:00.000Z",
+        archived_at: null
+      }],
+      next_cursor: null
+      }), { headers: { "content-type": "application/json" } });
+    });
+
+    render(<StudioPage />);
+    await user.click(screen.getByRole("button", { name: "Metas" }));
+
+    const library = await screen.findByRole("region", { name: "Metas" });
+    const list = within(library).getByRole("list", { name: "Metas organizadas" });
+    expect(within(list).getByRole("listitem", { name: "Aumentar a previsibilidade" })).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Abrir Aumentar a previsibilidade" })).toBeInTheDocument();
+    expect(within(library).getByRole("searchbox", { name: "Buscar metas por título" })).toBeInTheDocument();
+  });
+
   it("parses material rules through nested grouping at-rules without entering keyframes", () => {
     const fixtureRules = parseCssRules(String.raw`
       @layer studio {

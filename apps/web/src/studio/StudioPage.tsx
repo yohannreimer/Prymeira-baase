@@ -6,6 +6,7 @@ import StudioMaterialComposer from "./StudioMaterialComposer";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
+import StudioStructureLibrary from "./StudioStructureLibrary";
 import { createStudioCheckpoint, getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { useStudioCollections } from "./useStudioCollections";
@@ -17,6 +18,12 @@ import "./studio.css";
 const StudioEditor = lazy(() => import("./StudioEditor"));
 const StudioRituals = lazy(() => import("./StudioRituals"));
 const StudioPrivacySettings = lazy(() => import("./StudioPrivacySettings"));
+
+const STRUCTURE_KIND_BY_SECTION = {
+  goals: "goal",
+  decisions: "decision",
+  plans: "plan"
+} as const;
 
 type StudioSection = "home" | "inbox" | "all" | "goals" | "decisions" | "plans" | "rituals" | "collections" | "archive" | "privacy" | "document";
 
@@ -484,6 +491,11 @@ export default function StudioPage({ onOpenInternalSource }: {
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
               <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} />
             </>
+          ) : section === "goals" || section === "decisions" || section === "plans" ? (
+            <StudioStructureLibrary
+              kind={STRUCTURE_KIND_BY_SECTION[section]}
+              onOpenDocument={(documentId) => void openDocumentById(documentId)}
+            />
           ) : section === "collections" ? (
             <>
               <StudioSectionHeading item={active} />

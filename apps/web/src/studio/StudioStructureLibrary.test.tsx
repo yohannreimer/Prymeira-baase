@@ -1,0 +1,155 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import StudioStructureLibrary from "./StudioStructureLibrary";
+import { listStudioStructures } from "./studio-api";
+import type { StudioStructure } from "./studio.types";
+
+vi.mock("./studio-api", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./studio-api")>();
+  return { ...original, listStudioStructures: vi.fn() };
+});
+
+const mockedList = vi.mocked(listStudioStructures);
+
+describe("StudioStructureLibrary", () => {
+  beforeEach(() => mockedList.mockReset());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("lists decisions and opens the original document", async () => {
+    const user = userEvent.setup();
+    const onOpenDocument = vi.fn();
+    mockedList.mockResolvedValue({
+      items: [structure({
+        id: "decision_1",
+        documentId: "document_1",
+        documentTitle: "Reorganizar atendimento",
+        kind: "decision",
+        propertiesJson: { decision: "Unificar a fila comercial", context: "Dois canais competiam pela atenção." }
+      })],
+      nextCursor: null
+    });
+
+    render(<StudioStructureLibrary kind="decision" onOpenDocument={onOpenDocument} />);
+
+    expect(await screen.findByRole("heading", { name: "Decisões" })).toBeVisible();
+    expect(screen.getByText("Reorganizar atendimento")).toBeVisible();
+    expect(mockedList).toHaveBeenCalledWith(
+      { kind: "decision", lifecycle_status: "active", limit: 30 },
+      fetch,
+      expect.any(AbortSignal)
+    );
+    await user.click(screen.getByRole("button", { name: "Abrir Reorganizar atendimento" }));
+    expect(onOpenDocument).toHaveBeenCalledWith("document_1");
+  });
+
+  it("searches loaded titles and filters by a safe structure state", async () => {
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue({
+      items: [
+        structure({ id: "goal_1", documentId: "doc_1", documentTitle: "Abrir nova unidade", propertiesJson: { desired_outcome: "Operação pronta", state: "in_focus" } }),
+        structure({ id: "goal_2", documentId: "doc_2", documentTitle: "Rever margem", propertiesJson: { desired_outcome: "Margem saudável", state: "waiting" } })
+      ],
+      nextCursor: null
+    });
+
+    render(<StudioStructureLibrary kind="goal" onOpenDocument={vi.fn()} />);
+    await screen.findByText("Abrir nova unidade");
+
+    await user.type(screen.getByRole("searchbox", { name: "Buscar metas por título" }), "margem");
+    expect(screen.queryByText("Abrir nova unidade")).not.toBeInTheDocument();
+    expect(screen.getByText("Rever margem")).toBeInTheDocument();
+
+    await user.clear(screen.getByRole("searchbox", { name: "Buscar metas por título" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filtrar metas por estado" }), "in_focus");
+    expect(screen.getByText("Abrir nova unidade")).toBeInTheDocument();
+    expect(screen.queryByText("Rever margem")).not.toBeInTheDocument();
+  });
+
+  it("loads true cursor pages incrementally and deduplicates repeated ids", async () => {
+    const user = userEvent.setup();
+    mockedList
+      .mockResolvedValueOnce({
+        items: [structure({ id: "plan_1", documentId: "doc_1", documentTitle: "Plano Sul", kind: "plan", propertiesJson: { direction: "Validar a região" } })],
+        nextCursor: "cursor_2"
+      })
+      .mockResolvedValueOnce({
+        items: [
+          structure({ id: "plan_1", documentId: "doc_1", documentTitle: "Plano Sul repetido", kind: "plan", propertiesJson: { direction: "Validar a região" } }),
+          structure({ id: "plan_2", documentId: "doc_2", documentTitle: "Plano Norte", kind: "plan", propertiesJson: { direction: "Encontrar parceiros" } })
+        ],
+        nextCursor: null
+      });
+
+    render(<StudioStructureLibrary kind="plan" onOpenDocument={vi.fn()} />);
+    await screen.findByText("Plano Sul");
+    await user.click(screen.getByRole("button", { name: "Carregar mais planos" }));
+
+    expect(await screen.findByText("Plano Norte")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(mockedList).toHaveBeenNthCalledWith(2,
+      { kind: "plan", lifecycle_status: "active", limit: 30, cursor: "cursor_2" },
+      fetch,
+      expect.any(AbortSignal)
+    );
+  });
+
+  it("abandons stale results when the kind changes", async () => {
+    const decisionPage = deferred<{ items: StudioStructure[]; nextCursor: null }>();
+    mockedList.mockImplementation((query) => query?.kind === "decision"
+      ? decisionPage.promise
+      : Promise.resolve({ items: [structure({ id: "goal_new", documentId: "doc_new", documentTitle: "Meta atual" })], nextCursor: null }));
+
+    const { rerender } = render(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
+    rerender(<StudioStructureLibrary kind="goal" onOpenDocument={vi.fn()} />);
+    expect(await screen.findByText("Meta atual")).toBeInTheDocument();
+
+    decisionPage.resolve({
+      items: [structure({ id: "decision_old", documentId: "doc_old", documentTitle: "Decisão antiga", kind: "decision" })],
+      nextCursor: null
+    });
+    await waitFor(() => expect(screen.queryByText("Decisão antiga")).not.toBeInTheDocument());
+    expect(mockedList.mock.calls[0]?.[2]).toBeInstanceOf(AbortSignal);
+    expect(mockedList.mock.calls[0]?.[2]?.aborted).toBe(true);
+  });
+
+  it("offers calm empty, no-result, error and retry states", async () => {
+    const user = userEvent.setup();
+    mockedList.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({ items: [], nextCursor: null });
+
+    render(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("Não foi possível buscar suas decisões agora.")).toBeInTheDocument();
+    await user.click(within(alert).getByRole("button", { name: "Tentar novamente" }));
+    expect(await screen.findByText("Nenhuma decisão organizada ainda.")).toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledTimes(2);
+  });
+});
+
+function structure(overrides: Partial<StudioStructure> = {}): StudioStructure {
+  return {
+    id: "structure_1",
+    workspaceId: "workspace_1",
+    ownerProfileId: "owner_1",
+    documentId: "document_1",
+    documentTitle: "Pensamento",
+    kind: "goal",
+    lifecycleStatus: "active",
+    revision: 1,
+    horizonAt: null,
+    metricJson: null,
+    cadenceJson: null,
+    nextRunAt: null,
+    propertiesJson: { desired_outcome: "Resultado" },
+    createdAt: "2026-07-10T10:00:00.000Z",
+    updatedAt: "2026-07-12T10:00:00.000Z",
+    archivedAt: null,
+    ...overrides
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}

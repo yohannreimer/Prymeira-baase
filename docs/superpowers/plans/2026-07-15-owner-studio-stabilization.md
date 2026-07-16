@@ -711,7 +711,7 @@ git commit -m "feat(studio): inspect materials without page expansion"
 - Modify: `apps/web/src/studio/StudioPage.tsx`
 - Modify: `apps/web/src/studio/studio.css`
 
-- [ ] **Step 1: Write tests for Goals, Decisions, and Plans**
+- [x] **Step 1: Write tests for Goals, Decisions, and Plans**
 
 ```tsx
 render(<StudioStructureLibrary kind="decision" onOpenDocument={onOpenDocument} />);
@@ -721,12 +721,12 @@ await user.click(screen.getByRole("button", { name: "Abrir Reorganizar atendimen
 expect(onOpenDocument).toHaveBeenCalledWith("document_1");
 ```
 
-- [ ] **Step 2: Run and confirm current placeholder behavior**
+- [x] **Step 2: Run and confirm current placeholder behavior**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx`  
 Expected: FAIL because those sections render `studio-empty`.
 
-- [ ] **Step 3: Compose the query-driven library**
+- [x] **Step 3: Compose the query-driven library**
 
 ```tsx
 const KIND_BY_SECTION = { goals: "goal", decisions: "decision", plans: "plan" } as const;
@@ -741,12 +741,12 @@ const KIND_BY_SECTION = { goals: "goal", decisions: "decision", plans: "plan" } 
 
 Use `listStudioStructures({ kind, lifecycle_status: "active", limit: 30 })`, client search over loaded titles, status filters from properties, and incremental pagination.
 
-- [ ] **Step 4: Run structure, page, and accessibility tests**
+- [x] **Step 4: Run structure, page, and accessibility tests**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx src/studio/studio-accessibility.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio/StudioStructureLibrary* apps/web/src/studio/StudioPage.tsx apps/web/src/studio/studio-api.ts apps/web/src/studio/studio.css

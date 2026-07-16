@@ -157,6 +157,7 @@ describe("StudioPage", () => {
       if (url.includes("/api/studio/documents?")) {
         return jsonResponse({ documents: [], next_cursor: null, collections_by_document_id: {} });
       }
+      if (url.includes("/api/studio/structures?")) return jsonResponse({ structures: [], next_cursor: null });
       if (url.endsWith("/api/studio/collections")) return jsonResponse({ collections: [] });
       return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
     });
@@ -175,6 +176,45 @@ describe("StudioPage", () => {
     expect(navigationStatus).toBeEmptyDOMElement();
     expect(screen.getByRole("button", { name: "Planos" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Planos" })).toBeInTheDocument();
+    expect(await screen.findByText("Nenhum plano organizado ainda.")).toBeInTheDocument();
+  });
+
+  it("connects strategic navigation to the active structure library", async () => {
+    const user = userEvent.setup();
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const url = new URL(String(input), "https://baase.local");
+      if (url.pathname === "/api/studio/structures" && url.searchParams.get("kind") === "decision") {
+        return jsonResponse({
+          structures: [{
+            id: "decision_1",
+            workspace_id: "workspace_a",
+            owner_profile_id: "profile_owner",
+            document_id: "document_decision",
+            document_title: "Escolher o novo canal",
+            kind: "decision",
+            lifecycle_status: "active",
+            revision: 1,
+            horizon_at: null,
+            metric_json: null,
+            cadence_json: null,
+            next_run_at: null,
+            properties_json: { decision: "Priorizar indicação" },
+            created_at: "2026-07-14T10:00:00.000Z",
+            updated_at: "2026-07-15T10:00:00.000Z",
+            archived_at: null
+          }],
+          next_cursor: null
+        });
+      }
+      return jsonResponse({ structures: [], next_cursor: null });
+    });
+
+    render(<StudioPage />);
+    await user.click(screen.getByRole("button", { name: "Decisões" }));
+
+    const library = await screen.findByRole("region", { name: "Decisões" });
+    expect(within(library).getByRole("list", { name: "Decisões organizadas" })).toBeInTheDocument();
+    expect(within(library).getByRole("button", { name: "Abrir Escolher o novo canal" })).toBeInTheDocument();
   });
 
   it("clears and reissues section announcements around document transitions", async () => {
