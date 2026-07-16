@@ -890,10 +890,17 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         );
         if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
         const current = documentFromRow(locked.rows[0]);
-        if (current.status === "trashed") return current;
+        if (current.status === "trashed") {
+          const invalidated = await client.query<StudioDocumentRow>(
+            `UPDATE studio_documents SET trash_claim_token=NULL,trash_lease_expires_at=NULL
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+            [scope.workspaceId, scope.ownerProfileId, documentId]
+          );
+          return documentFromRow(invalidated.rows[0]!);
+        }
         const updated = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET status='trashed',pre_trash_status=$4,trashed_at=$5,
-             revision=revision+1,updated_at=NOW()
+             trash_claim_token=NULL,trash_lease_expires_at=NULL,revision=revision+1,updated_at=NOW()
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
           [scope.workspaceId, scope.ownerProfileId, documentId, current.status, trashedAt]
         );
@@ -917,7 +924,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         const updated = await client.query<StudioDocumentRow>(
           `UPDATE studio_documents SET status=$4,
              archived_at=CASE WHEN $4='active' THEN NULL ELSE archived_at END,
-             trashed_at=NULL,pre_trash_status=NULL,revision=revision+1,updated_at=NOW()
+             trashed_at=NULL,pre_trash_status=NULL,trash_claim_token=NULL,trash_lease_expires_at=NULL,
+             revision=revision+1,updated_at=NOW()
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
           [scope.workspaceId, scope.ownerProfileId, documentId, restoredStatus]
         );
@@ -960,7 +968,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       return row ? { ...documentFromRow(row), claimToken, leaseExpiresAt } : null;
     },
 
-    async permanentlyDeleteDocument(scope, documentId) {
+    async permanentlyDeleteDocument(scope, documentId, claimToken) {
       return withOperationalTransaction(db, async (client) => {
         const locked = await client.query<StudioDocumentRow>(
           `SELECT * FROM studio_documents
@@ -968,6 +976,9 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
           [scope.workspaceId, scope.ownerProfileId, documentId]
         );
         if (!locked.rows[0]) return false;
+        if (claimToken !== undefined && locked.rows[0].trash_claim_token !== claimToken) {
+          throw new Error("STUDIO_TRASH_CLAIM_STALE");
+        }
         if (locked.rows[0].status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
         const structureRows = await client.query<{ id: string }>(
           `SELECT id FROM studio_structures

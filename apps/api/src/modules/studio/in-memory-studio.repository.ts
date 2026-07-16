@@ -478,7 +478,10 @@ export function createInMemoryStudioRepository(
         && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       const current = documents[index]!;
-      if (current.status === "trashed") return cloneDocument(current);
+      if (current.status === "trashed") {
+        trashCleanupClaims.delete(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
+        return cloneDocument(current);
+      }
       const updated: StudioDocument = {
         ...current,
         status: "trashed",
@@ -499,7 +502,10 @@ export function createInMemoryStudioRepository(
         && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
       const current = documents[index]!;
-      if (current.status !== "trashed") return cloneDocument(current);
+      if (current.status !== "trashed") {
+        trashCleanupClaims.delete(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
+        return cloneDocument(current);
+      }
       const restoredStatus = current.preTrashStatus === "archived" ? "archived" : "active";
       const updated: StudioDocument = {
         ...current,
@@ -524,6 +530,7 @@ export function createInMemoryStudioRepository(
         .filter((document) => document.status === "trashed" && document.trashedAt !== null
           && document.trashedAt !== undefined && document.trashedAt <= cutoffTimestamp)
         .filter((document) => !excludeOwnerKeys.includes(`${document.workspaceId}/${document.ownerProfileId}`))
+        .filter((document) => !permanentDeletionClaims.has(`${document.workspaceId}/${document.ownerProfileId}/${document.id}`))
         .filter((document) => {
           const claim = trashCleanupClaims.get(`${document.workspaceId}/${document.ownerProfileId}/${document.id}`);
           return !claim || new Date(claim.leaseExpiresAt).getTime() <= nowMs;
@@ -536,10 +543,14 @@ export function createInMemoryStudioRepository(
       return { ...cloneDocument(candidate), claimToken, leaseExpiresAt };
     },
 
-    async permanentlyDeleteDocument(scope, documentId) {
+    async permanentlyDeleteDocument(scope, documentId, claimToken) {
       const documentIndex = documents.findIndex((document) => document.workspaceId === scope.workspaceId
         && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
       if (documentIndex === -1) return false;
+      if (claimToken !== undefined) {
+        const claim = trashCleanupClaims.get(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`);
+        if (claim?.claimToken !== claimToken) throw new Error("STUDIO_TRASH_CLAIM_STALE");
+      }
       if (documents[documentIndex]!.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
       const owned = <T extends { workspaceId: string; ownerProfileId: string }>(value: T) =>
         value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId;
@@ -598,21 +609,27 @@ export function createInMemoryStudioRepository(
       return true;
     },
 
-    async permanentlyDeleteDocumentWithCleanup(scope, documentId, cleanup) {
+    async permanentlyDeleteDocumentWithCleanup(scope, documentId, cleanup, claimToken) {
       const claimKey = `${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`;
       const existing = permanentDeletionClaims.get(claimKey);
       if (existing) return existing;
-      const operation = (async () => {
+      const operation = Promise.resolve().then(async () => {
         const document = documents.find((candidate) => candidate.workspaceId === scope.workspaceId
           && candidate.ownerProfileId === scope.ownerProfileId && candidate.id === documentId);
         if (!document) return false;
+        if (claimToken !== undefined && trashCleanupClaims.get(claimKey)?.claimToken !== claimToken) {
+          throw new Error("STUDIO_TRASH_CLAIM_STALE");
+        }
         if (document.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
         const sourceIds = structures.filter((structure) => structure.workspaceId === scope.workspaceId
           && structure.ownerProfileId === scope.ownerProfileId && structure.documentId === documentId)
           .map((structure) => structure.id);
         await cleanup(sourceIds);
-        return repository.permanentlyDeleteDocument(scope, documentId);
-      })();
+        if (claimToken !== undefined && trashCleanupClaims.get(claimKey)?.claimToken !== claimToken) {
+          throw new Error("STUDIO_TRASH_CLAIM_STALE");
+        }
+        return repository.permanentlyDeleteDocument(scope, documentId, claimToken);
+      });
       permanentDeletionClaims.set(claimKey, operation);
       try {
         return await operation;

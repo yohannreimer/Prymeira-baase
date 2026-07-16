@@ -5,7 +5,7 @@ export const STUDIO_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export function createStudioTrashCleanupProcessor(options: {
   repository: StudioRepository;
-  service: Pick<StudioService, "permanentlyDeleteDocument">;
+  service: Pick<StudioService, "permanentlyDeleteClaimedDocument">;
   now?: () => string;
   leaseMs?: number;
 }) {
@@ -23,7 +23,9 @@ export function createStudioTrashCleanupProcessor(options: {
       const scope = { workspaceId: claim.workspaceId, ownerProfileId: claim.ownerProfileId };
       try {
         throwIfAborted(signal);
-        await options.service.permanentlyDeleteDocument(scope, scope.ownerProfileId, claim.id);
+        await options.service.permanentlyDeleteClaimedDocument(
+          scope, scope.ownerProfileId, claim.id, claim.claimToken
+        );
         return claim;
       } catch (error) {
         throw tagStudioMaintenanceFailure(error, scope);

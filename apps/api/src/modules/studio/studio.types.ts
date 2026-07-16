@@ -499,6 +499,12 @@ export type StudioService = {
   trashDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
   restoreDocumentFromTrash(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
   permanentlyDeleteDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<boolean>;
+  permanentlyDeleteClaimedDocument(
+    scope: StudioOwnerScope,
+    actorProfileId: string,
+    id: string,
+    claimToken: string
+  ): Promise<boolean>;
   setFocused(scope: StudioOwnerScope, actorProfileId: string, id: string, focused: boolean): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, id: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, id: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
@@ -543,11 +549,12 @@ export type StudioRepository = {
     leaseMs?: number,
     excludeOwnerKeys?: readonly string[]
   ): Promise<StudioTrashCleanupClaim | null>;
-  permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string): Promise<boolean>;
+  permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string, claimToken?: string): Promise<boolean>;
   permanentlyDeleteDocumentWithCleanup?(
     scope: StudioOwnerScope,
     documentId: string,
-    cleanup: (sourceIds: readonly string[]) => Promise<void>
+    cleanup: (sourceIds: readonly string[]) => Promise<void>,
+    claimToken?: string
   ): Promise<boolean>;
   listDocumentStructureIdsIncludingInactive(scope: StudioOwnerScope, documentId: string): Promise<string[]>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;

@@ -154,6 +154,27 @@ function repositoryContract(
       });
     });
 
+    it("fences expired trash claims and invalidates them on restore", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput({ bodyText: "Retention claim" }));
+        const trashedAt = "2026-06-01T12:00:00.000Z";
+        const cutoff = "2026-06-15T12:00:00.000Z";
+        await repository.trashDocument(scope, document.id, trashedAt);
+        const claimA = await repository.claimNextExpiredTrash(cutoff, "2026-07-15T12:00:00.000Z", 1_000);
+        const claimB = await repository.claimNextExpiredTrash(cutoff, "2026-07-15T12:00:01.001Z", 1_000);
+        expect(claimA?.claimToken).not.toBe(claimB?.claimToken);
+        await expect(repository.permanentlyDeleteDocument(scope, document.id, claimA!.claimToken))
+          .rejects.toThrow("STUDIO_TRASH_CLAIM_STALE");
+        await expect(repository.findDocument(scope, document.id)).resolves.toMatchObject({ status: "trashed" });
+
+        await repository.restoreDocumentFromTrash(scope, document.id);
+        await expect(repository.permanentlyDeleteDocument(scope, document.id, claimB!.claimToken))
+          .rejects.toThrow("STUDIO_TRASH_CLAIM_STALE");
+        await expect(repository.findDocument(scope, document.id)).resolves.toMatchObject({ status: "active" });
+      });
+    });
+
     it("rejects permanent deletion until the owner has moved the document to trash", async () => {
       await withRepository(async (repository) => {
         const document = await repository.createDocument(documentInput());
@@ -1915,6 +1936,41 @@ describe("PostgreSQL repository bundle", () => {
     expect(claim).toContain("NOT EXISTS");
     expect(claim.match(/FOR UPDATE OF intents SKIP LOCKED/g)).toHaveLength(2);
     expect(claim).toContain("ANY($2::text[])");
+  });
+
+  it("fences a stale Postgres trash token under the deletion transaction row lock", async () => {
+    const statements: string[] = [];
+    const staleRow = {
+      id: "document_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", capture_key: null,
+      title: "Documento", body_json: {}, body_text: "Documento", revision: 2, capture_mode: "text",
+      inbox_state: "reviewed", is_focused: false, status: "trashed", created_at: "2026-06-01T12:00:00.000Z",
+      updated_at: "2026-06-01T12:00:00.000Z", archived_at: null, trashed_at: "2026-06-01T12:00:00.000Z",
+      pre_trash_status: "active", trash_claim_token: "claim_b", trash_lease_expires_at: "2026-07-15T12:01:00.000Z"
+    };
+    const pool: OperationalPool = {
+      async query<T>(text: string) {
+        statements.push(text);
+        return { rows: [] as T[] };
+      },
+      async connect() {
+        return {
+          async query<T>(text: string) {
+            statements.push(text.trim());
+            if (text.includes("SELECT * FROM studio_documents")) return { rows: [staleRow] as T[] };
+            return { rows: [] as T[] };
+          },
+          release() {}
+        };
+      }
+    };
+    const repository = createPostgresStudioRepository(pool);
+    await expect(repository.permanentlyDeleteDocument(
+      { workspaceId: "workspace_a", ownerProfileId: "owner_a" }, "document_a", "claim_a"
+    )).rejects.toThrow("STUDIO_TRASH_CLAIM_STALE");
+    expect(statements).toContain("BEGIN");
+    expect(statements).toContain("ROLLBACK");
+    expect(statements.some((statement) => statement.includes("DELETE FROM studio_proactive_signals"))).toBe(false);
+    expect(statements.some((statement) => statement.includes("DELETE FROM studio_documents"))).toBe(false);
   });
 
   it("loads structure document titles with one exact owner-scoped join", async () => {
