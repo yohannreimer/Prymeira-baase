@@ -299,6 +299,19 @@ function versionFromRow(row: StudioDocumentVersionRow): StudioDocumentVersion {
   };
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value as Record<string, unknown>).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function sameCheckpoint(version: StudioDocumentVersion, document: StudioDocument) {
+  return !version.isLegacy && version.title?.trim() === document.title?.trim()
+    && version.bodyText.replace(/\s+/gu, " ").trim() === document.bodyText.replace(/\s+/gu, " ").trim()
+    && canonicalJson(version.bodyJson) === canonicalJson(document.bodyJson);
+}
+
 function collectionFromRow(row: StudioCollectionRow): StudioCollection {
   return {
     id: row.id,
@@ -896,6 +909,30 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         [scope.workspaceId, scope.ownerProfileId, documentId, versionId]
       );
       return result.rows[0] ? versionFromRow(result.rows[0]) : null;
+    },
+
+    async createCheckpoint(scope, documentId, actorProfileId, input) {
+      return withOperationalTransaction(db, async (client) => {
+        const locked = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const document = documentFromRow(locked.rows[0]);
+        if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+        const latest = await client.query<StudioDocumentVersionRow>(
+          `SELECT * FROM studio_document_versions WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
+           ORDER BY version_number DESC,id DESC LIMIT 1`, [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (latest.rows[0] && sameCheckpoint(versionFromRow(latest.rows[0]), document)) {
+          return { version: versionFromRow(latest.rows[0]), inserted: false };
+        }
+        const version = await insertVersion(client, { ...scope, documentId, title: document.title, bodyJson: document.bodyJson,
+          bodyText: document.bodyText, origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason,
+          sourceRevision: document.revision, isLegacy: false });
+        await insertIndexJob(client, document);
+        return { version, inserted: true };
+      });
     },
 
     async findStructure(scope, structureId) {

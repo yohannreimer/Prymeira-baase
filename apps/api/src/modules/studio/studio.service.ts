@@ -41,15 +41,6 @@ function normalizeBodyText(value: string) {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-function normalizedJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(normalizedJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${normalizedJson(object[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function normalizeCollectionName(input: CreateStudioCollection | UpdateStudioCollection) {
   const name = input.name.trim();
   if (!name) throw new Error("STUDIO_COLLECTION_NAME_REQUIRED");
@@ -316,17 +307,7 @@ export function createStudioService(
 
     async createCheckpoint(scope, actorProfileId, id, input) {
       assertActor(scope, actorProfileId);
-      const document = await requireDocument(repository, scope, id);
-      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
-      const latest = (await repository.listVersions(scope, id)).at(-1);
-      if (latest && !latest.isLegacy && latest.title?.trim() === document.title?.trim()
-        && normalizeBodyText(latest.bodyText) === normalizeBodyText(document.bodyText)
-        && normalizedJson(latest.bodyJson) === normalizedJson(document.bodyJson)) return latest;
-      return repository.appendVersion({
-        ...scope, documentId: id, title: document.title, bodyJson: structuredClone(document.bodyJson), bodyText: document.bodyText,
-        origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason,
-        sourceRevision: document.revision, isLegacy: false
-      });
+      return (await repository.createCheckpoint(scope, id, actorProfileId, input)).version;
     },
 
     async restoreVersion(scope, actorProfileId, id, versionId, input) {

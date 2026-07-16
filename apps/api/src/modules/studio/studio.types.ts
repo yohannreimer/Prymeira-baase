@@ -237,6 +237,7 @@ export type StudioCheckpointReason =
 export type StudioVersionQuery = { cursor?: string; limit: number };
 export type StudioVersionPage = { items: StudioDocumentVersion[]; nextCursor: string | null };
 export type CreateStudioCheckpoint = { expected_revision: number; reason: StudioCheckpointReason };
+export type StudioCheckpointResult = { version: StudioDocumentVersion; inserted: boolean };
 
 export type StudioStructure = StudioOwnerScope & {
   id: string;
@@ -523,6 +524,7 @@ export type StudioRepository = {
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;
+  createCheckpoint(scope: StudioOwnerScope, documentId: string, actorProfileId: string, input: CreateStudioCheckpoint): Promise<StudioCheckpointResult>;
   findStructure(scope: StudioOwnerScope, structureId: string): Promise<StudioStructure | null>;
   createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;
   updateStructure(input: StudioStructure, expectedRevision: number): Promise<StudioStructure>;

@@ -381,6 +381,20 @@ function repositoryContract(
       });
     });
 
+    it("deduplicates concurrent checkpoints under the document lock", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
+        const checkpoints = await Promise.all([
+          repository.createCheckpoint(scope, created.id, created.ownerProfileId, { expected_revision: created.revision, reason: "manual" }),
+          repository.createCheckpoint(scope, created.id, created.ownerProfileId, { expected_revision: created.revision, reason: "manual" })
+        ]);
+        expect(checkpoints.filter((item) => item.inserted)).toHaveLength(1);
+        expect(checkpoints.map((item) => item.version.id)).toEqual([checkpoints[0]!.version.id, checkpoints[0]!.version.id]);
+        expect(await repository.listIndexJobs(scope)).toHaveLength(1);
+      });
+    });
+
     it("persists owner-scoped collections and idempotent many-to-many membership", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };

@@ -76,6 +76,19 @@ function cloneCitation(value: StudioCitation) { return structuredClone(value); }
 function cloneStructure(value: StudioStructure) { return structuredClone(value); }
 function cloneRitualSession(value: StudioRitualSession) { return structuredClone(value); }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value as Record<string, unknown>).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function sameCheckpoint(version: StudioDocumentVersion, document: StudioDocument) {
+  return !version.isLegacy && version.title?.trim() === document.title?.trim()
+    && version.bodyText.replace(/\s+/gu, " ").trim() === document.bodyText.replace(/\s+/gu, " ").trim()
+    && canonicalJson(version.bodyJson) === canonicalJson(document.bodyJson);
+}
+
 function nextRitualTitle(document: StudioDocument, structure: StudioStructure) {
   const intention = structure.propertiesJson.intention;
   return document.title?.trim()
@@ -443,6 +456,19 @@ export function createInMemoryStudioRepository(
       const version = versions.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId
         && item.documentId === documentId && item.id === versionId);
       return version ? cloneVersion(version) : null;
+    },
+
+    async createCheckpoint(scope, documentId, actorProfileId, input) {
+      const document = documents.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
+      if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+      const latest = versions.filter((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId)
+        .sort((left, right) => right.versionNumber - left.versionNumber)[0];
+      if (latest && sameCheckpoint(latest, document)) return { version: cloneVersion(latest), inserted: false };
+      const version = appendStoredVersion({ ...scope, documentId, title: document.title, bodyJson: document.bodyJson, bodyText: document.bodyText,
+        origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason, sourceRevision: document.revision, isLegacy: false });
+      enqueueIndexJob(document);
+      return { version, inserted: true };
     },
 
     async findStructure(scope, structureId) {
