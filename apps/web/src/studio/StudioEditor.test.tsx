@@ -1075,6 +1075,7 @@ describe("StudioEditor", () => {
     await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
     await user.click(await screen.findByRole("button", { name: /Versão 2/u }));
     await user.click(screen.getByRole("button", { name: "Restaurar como nova versão" }));
+    await user.keyboard("{Escape}");
     const body = screen.getByRole("textbox", { name: "Conteúdo do documento" });
     act(() => body.focus());
     await user.keyboard("Texto escrito durante a restauração");

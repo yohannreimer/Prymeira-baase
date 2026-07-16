@@ -91,18 +91,28 @@ export default function StudioVersionDrawer({
       }
       const first = focusable[0]!;
       const last = focusable.at(-1)!;
-      if (event.shiftKey && window.document.activeElement === first) {
+      const activeElement = window.document.activeElement;
+      const atInitialAnchor = activeElement === headingRef.current || activeElement === drawerRef.current;
+      const outsideDrawer = activeElement === null || !drawerRef.current?.contains(activeElement);
+      if (event.shiftKey && (activeElement === first || atInitialAnchor || outsideDrawer)) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && window.document.activeElement === last) {
+      } else if (!event.shiftKey && (activeElement === last || atInitialAnchor || outsideDrawer)) {
         event.preventDefault();
         first.focus();
       }
     }
 
+    function handleFocusIn(event: FocusEvent) {
+      const target = event.target;
+      if (target instanceof Node && !drawerRef.current?.contains(target)) headingRef.current?.focus();
+    }
+
     window.document.addEventListener("keydown", handleKeyDown);
+    window.document.addEventListener("focusin", handleFocusIn);
     return () => {
       window.document.removeEventListener("keydown", handleKeyDown);
+      window.document.removeEventListener("focusin", handleFocusIn);
       window.document.body.style.overflow = previousOverflow;
     };
   }, [onClose, open]);

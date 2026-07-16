@@ -66,6 +66,30 @@ it("contains focus, closes from Escape and the backdrop, and restores through co
   await waitFor(() => expect(screen.getByRole("dialog", { name: "Histórico de versões" })).toBeInTheDocument());
 });
 
+it("wraps keyboard focus from the initial heading and the final drawer control", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ versions: [rawVersion(version(3, false, "manual", "Marco"))] }));
+  render(<>
+    <button type="button">Fora do modal</button>
+    <StudioVersionDrawer documentId="doc_1" open onClose={vi.fn()} onRestore={vi.fn()} />
+  </>);
+
+  const drawer = await screen.findByRole("dialog", { name: "Histórico de versões" });
+  const heading = within(drawer).getByRole("heading", { name: "Histórico de versões" });
+  const close = within(drawer).getByRole("button", { name: "Fechar histórico" });
+  const restore = within(drawer).getByRole("button", { name: "Restaurar como nova versão" });
+  expect(heading).toHaveFocus();
+
+  await user.keyboard("{Shift>}{Tab}{/Shift}");
+  expect(restore).toHaveFocus();
+
+  await user.keyboard("{Tab}");
+  expect(close).toHaveFocus();
+
+  screen.getByRole("button", { name: "Fora do modal" }).focus();
+  expect(heading).toHaveFocus();
+});
+
 function version(
   versionNumber: number,
   isLegacy: boolean,
