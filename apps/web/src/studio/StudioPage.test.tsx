@@ -522,21 +522,21 @@ describe("StudioPage", () => {
     window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
     const { container } = render(<StudioPage />);
 
-    expect(await screen.findByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir reflexao.wav" })).toBeInTheDocument();
     await user.upload(screen.getByTestId("studio-material-file-input"), new File(["pdf"], "premissas.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "premissas.pdf" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir premissas.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir reflexao.wav" })).toBeInTheDocument();
 
     await user.upload(screen.getByTestId("studio-material-image-input"), new File(["png"], "mapa.png", { type: "image/png" }));
     const materialRegion = screen.getByRole("region", { name: "Materiais do documento" });
-    expect(await within(materialRegion).findByRole("heading", { name: "mapa.png" })).toBeInTheDocument();
-    expect(within(materialRegion).getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+    expect(await within(materialRegion).findByRole("button", { name: "Abrir mapa.png" })).toBeInTheDocument();
+    expect(within(materialRegion).getAllByRole("button", { name: /^Abrir /u }).map((button) => button.getAttribute("aria-label")?.replace("Abrir ", ""))).toEqual([
       "reflexao.wav",
       "premissas.pdf",
       "mapa.png"
     ]);
     const composer = within(materialRegion).getByRole("group", { name: "Adicionar material" });
-    const firstMaterial = within(materialRegion).getByRole("heading", { name: "reflexao.wav" });
+    const firstMaterial = within(materialRegion).getByRole("button", { name: "Abrir reflexao.wav" });
     expect(composer.compareDocumentPosition(firstMaterial) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByRole("region", { name: "Materiais do documento" })).toHaveLength(1);
     expect(materialRegion.closest("article.studio-editor")).not.toBeNull();
@@ -686,11 +686,11 @@ describe("StudioPage", () => {
     await user.click(screen.getByRole("button", { name: "Início" }));
     await user.click((await screen.findAllByRole("button", { name: /Plano comercial/u })).at(-1)!);
     await user.upload(screen.getByTestId("studio-material-file-input"), new File(["b"], "plano-b.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "plano-b.pdf" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir plano-b.pdf" })).toBeInTheDocument();
 
     await act(async () => assetsA.resolve(jsonResponse({ assets: [rawAsset] })));
-    expect(screen.getByRole("heading", { name: "plano-b.pdf" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "reflexao.wav" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir plano-b.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Abrir reflexao.wav" })).not.toBeInTheDocument();
   });
 
   it("does not show a server-owned A upload when it resolves while B remains selected", async () => {
@@ -769,7 +769,7 @@ describe("StudioPage", () => {
 
     await act(async () => uploadA.resolve(jsonResponse({ asset: attachedA }, 201)));
 
-    expect(await screen.findByRole("heading", { name: "retornado-a.pdf" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir retornado-a.pdf" })).toBeInTheDocument();
     expect(aAssetLists).toBe(2);
   });
 
@@ -809,7 +809,7 @@ describe("StudioPage", () => {
 
     expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(fetchCallsAfterUnmount);
     expect(consoleError.mock.calls).toHaveLength(errorsAfterUnmount);
-    expect(screen.queryByRole("heading", { name: "apos-unmount.pdf" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Abrir apos-unmount.pdf" })).not.toBeInTheDocument();
   });
 
   it("merges a late initial list with a newly attached material for the same document", async () => {
@@ -836,11 +836,11 @@ describe("StudioPage", () => {
 
     await screen.findByRole("heading", { name: "Reflexão estratégica" });
     await user.upload(screen.getByTestId("studio-material-file-input"), new File(["new"], "novo.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "novo.pdf" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir novo.pdf" })).toBeInTheDocument();
     await act(async () => initialAssets.resolve(jsonResponse({ assets: [rawAsset] })));
 
-    expect(screen.getByRole("heading", { name: "reflexao.wav" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "novo.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir reflexao.wav" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir novo.pdf" })).toBeInTheDocument();
   });
 
   it("keeps a newly attached material visible when the current document list fails", async () => {
@@ -867,13 +867,13 @@ describe("StudioPage", () => {
 
     await screen.findByRole("heading", { name: "Reflexão estratégica" });
     await user.upload(screen.getByTestId("studio-material-file-input"), new File(["known"], "preservado.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "preservado.pdf" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir preservado.pdf" })).toBeInTheDocument();
 
     await act(async () => initialAssets.resolve(jsonResponse({
       error: { code: "TEMPORARY", message: "retry" }
     }, 503)));
 
-    expect(screen.getByRole("heading", { name: "preservado.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir preservado.pdf" })).toBeInTheDocument();
     expect(screen.getByRole("alert", { name: "Falha ao carregar materiais do documento Reflexão estratégica" }))
       .toHaveTextContent("Não foi possível carregar os materiais preservados agora.");
     expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
@@ -923,16 +923,16 @@ describe("StudioPage", () => {
     await screen.findByRole("heading", { name: "Reflexão estratégica" });
     const input = screen.getByTestId("studio-material-file-input");
     await user.upload(input, new File(["first"], "primeiro.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "retornado-primeiro.pdf" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Abrir retornado-primeiro.pdf" })).toBeInTheDocument();
 
     await act(async () => initialAssets.resolve(jsonResponse({ assets: [listedVersion] })));
-    expect(screen.getByRole("heading", { name: "retornado-primeiro.pdf" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "listado-depois.pdf" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abrir retornado-primeiro.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Abrir listado-depois.pdf" })).not.toBeInTheDocument();
 
     await user.upload(input, new File(["last"], "ultimo.pdf", { type: "application/pdf" }));
-    expect(await screen.findByRole("heading", { name: "retornado-por-ultimo.pdf" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "listado-depois.pdf" })).not.toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Materiais do documento" })).getAllByRole("heading", { level: 3 })).toHaveLength(1);
+    expect(await screen.findByRole("button", { name: "Abrir retornado-por-ultimo.pdf" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Abrir listado-depois.pdf" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Materiais do documento" })).getAllByRole("button", { name: /^Abrir /u })).toHaveLength(1);
   });
 
   it("opens the configured ritual from the calm home in the private session surface", async () => {

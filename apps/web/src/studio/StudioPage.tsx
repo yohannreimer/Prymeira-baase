@@ -547,6 +547,7 @@ function DocumentAssets({
         assets={assets}
         selectedAssetId={selectedAssetId}
         onSelect={(asset) => setSelectedAssetId(asset.id)}
+        onAssetChange={onAttached}
       />
       {loading && assets.length === 0 ? (
         <p
