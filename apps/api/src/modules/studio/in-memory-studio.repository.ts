@@ -21,6 +21,7 @@ import type {
 } from "./studio.types";
 import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
 import { studioSearchScore } from "./studio-search";
+import { assertStudioEditorJson } from "./studio-security";
 import type { StudioPortabilityRepositoryHooks, StudioPortabilitySnapshot } from "./studio-portability.service";
 
 type InMemoryStudioRepositoryOptions = {
@@ -491,6 +492,7 @@ export function createInMemoryStudioRepository(
       const source = versions.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId
         && item.documentId === documentId && item.id === versionId);
       if (!source) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
+      assertStudioEditorJson(source.bodyJson);
       const restored: StudioDocument = {
         ...persisted, title: source.title ?? null, bodyJson: structuredClone(source.bodyJson),
         bodyText: source.bodyText.replace(/\s+/gu, " ").trim(), revision: persisted.revision + 1,

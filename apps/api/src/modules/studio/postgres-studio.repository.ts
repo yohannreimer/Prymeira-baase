@@ -30,6 +30,7 @@ import {
   prepareStudioSearchFields,
   prepareStudioSearchQuery
 } from "./studio-search";
+import { assertStudioEditorJson } from "./studio-security";
 import {
   generatedId,
   iso,
@@ -950,6 +951,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         );
         if (!sourceResult.rows[0]) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
         const source = versionFromRow(sourceResult.rows[0]);
+        assertStudioEditorJson(source.bodyJson);
         const bodyText = source.bodyText.replace(/\s+/gu, " ").trim();
         const search = prepareStudioSearchFields(source.title ?? null, bodyText);
         const updatedResult = await client.query<StudioDocumentRow>(

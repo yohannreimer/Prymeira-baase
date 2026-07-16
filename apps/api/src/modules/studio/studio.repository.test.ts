@@ -395,6 +395,26 @@ function repositoryContract(
       });
     });
 
+    it("rejects an invalid legacy checkpoint without mutating the draft, index queue, or history", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
+        const invalidBody = Array.from({ length: 34 }).reduce<unknown>((value) => ({ nested: value }), {});
+        const invalid = await repository.appendVersion({ ...scope, documentId: created.id, title: "Invalid",
+          bodyJson: invalidBody as Record<string, unknown>, bodyText: "invalid", origin: "import",
+          actorProfileId: created.ownerProfileId, aiRunId: null, checkpointReason: "legacy_autosave", isLegacy: true });
+        const beforeDocument = await repository.findDocument(scope, created.id);
+        const beforeVersions = await repository.listVersions(scope, created.id);
+        const beforeJobs = await repository.listIndexJobs(scope);
+
+        await expect(repository.restoreDocumentVersion(scope, created.id, invalid.id, created.ownerProfileId, created.revision))
+          .rejects.toThrow("STUDIO_EDITOR_JSON_INVALID");
+        expect(await repository.findDocument(scope, created.id)).toEqual(beforeDocument);
+        expect(await repository.listVersions(scope, created.id)).toEqual(beforeVersions);
+        expect(await repository.listIndexJobs(scope)).toEqual(beforeJobs);
+      });
+    });
+
     it("persists owner-scoped collections and idempotent many-to-many membership", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
