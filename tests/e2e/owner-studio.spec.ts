@@ -16,19 +16,22 @@ test.describe("Owner Studio release acceptance", () => {
       buffer: wavFixture()
     });
 
-    await expect(page.getByLabel("Materiais do documento").getByRole("heading", { name: filename })).toBeVisible();
-    await expect(page.getByText("Transcrição determinística: preservar a fala original e organizar a próxima revisão.")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Baixar áudio original" })).toBeVisible();
+    await page.getByRole("button", { name: `Abrir ${filename}` }).click();
+    await expectReadyAudioInspector(page, filename);
+    await page.getByRole("button", { name: "Fechar material" }).click();
+    await expect(page.getByRole("dialog", { name: `Material ${filename}` })).toHaveCount(0);
 
     await page.getByRole("link", { name: "Painel", exact: true }).click();
     await expect(page.getByRole("heading", { name: /Bom dia|Acompanhamento operacional/ })).toBeVisible();
     await page.getByRole("link", { name: "Estúdio", exact: true }).click();
     await page.getByRole("button", { name: "Entrada", exact: true }).click();
-    await page.getByRole("button", { name: new RegExp(filename) }).click();
+    await page
+      .getByRole("listitem", { name: "Registro em áudio" })
+      .getByRole("button", { name: /^Registro em áudio/u })
+      .click();
 
-    await expect(page.getByLabel("Materiais do documento").getByRole("heading", { name: filename })).toBeVisible();
-    await expect(page.getByText("Transcrição determinística: preservar a fala original e organizar a próxima revisão.")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Baixar áudio original" })).toBeVisible();
+    await page.getByRole("button", { name: `Abrir ${filename}` }).click();
+    await expectReadyAudioInspector(page, filename);
   });
 
   test("2. AI organization: accepting a goal-like proposal preserves the readable original version", async ({ page }) => {
@@ -309,6 +312,18 @@ async function openStudio(page: Page) {
   await page.goto("/#estudio");
   await expect(page.getByRole("heading", { level: 1, name: "Estúdio" })).toBeVisible();
   await expect(page.getByRole("form", { name: "Nova captura" })).toBeVisible();
+}
+
+async function expectReadyAudioInspector(page: Page, filename: string) {
+  const dialog = page.getByRole("dialog", { name: `Material ${filename}` });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Trecho da transcrição")).toContainText(
+    "Transcrição determinística: preservar a fala original e organizar a próxima revisão."
+  );
+  await expect(dialog.getByLabel(`Ouvir áudio original: ${filename}`)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Inserir no documento" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Baixar original" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Tentar processamento novamente" })).toHaveCount(0);
 }
 
 function actor(role: "owner" | "manager" | "employee", profileId: string) {
