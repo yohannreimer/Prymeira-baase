@@ -52,6 +52,8 @@ export type StudioPortabilityExport = StudioOwnerPortabilityScope & {
   objectKey: string;
   status: StudioPortabilityExportStatus;
   createdAt: string;
+  filename: string;
+  sizeBytes: number | null;
   expiresAt: string;
   claimToken: string | null;
   claimLeaseExpiresAt: string | null;
@@ -80,6 +82,7 @@ export type StudioPortabilityStore = {
     id: string;
     scope: StudioOwnerPortabilityScope;
     objectKey: string;
+    filename: string;
     createdAt: string;
     expiresAt: string;
   }, authorize: OwnerFence): Promise<void>;
@@ -91,7 +94,7 @@ export type StudioPortabilityStore = {
     claimToken: string;
     readyAt: string;
     expiresAt: string;
-  }, authorize: OwnerFence, publish: () => Promise<T>): Promise<T>;
+  }, authorize: OwnerFence, publish: () => Promise<{ result: T; sizeBytes: number }>): Promise<T>;
   signExport<T>(input: {
     scope: StudioOwnerPortabilityScope;
     id: string;
@@ -164,16 +167,22 @@ export function createStudioPortabilityService(options: {
       const exportId = `studio_export_${randomUUID()}`;
       const createdAt = now();
       const expiresAt = new Date(createdAt.getTime() + EXPORT_URL_TTL_SECONDS * 1_000);
+      const filename = exportFilename(createdAt);
       const objectKey = `${ownerPrefix(scope)}/exports/${exportId}.zip`;
       await options.store.createExport({
         id: exportId,
         scope,
         objectKey,
+        filename,
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString()
       }, authorizeActor(actor));
       logger.info({ event: "studio_export_requested", exportId, workspaceId: scope.workspaceId, ownerProfileId: scope.ownerProfileId });
-      return { exportId, status: "pending" as const, expiresAt: expiresAt.toISOString(), downloadUrl: null };
+      return exportProjection({
+        id: exportId, ...scope, objectKey, filename, sizeBytes: null, status: "pending",
+        createdAt: createdAt.toISOString(), expiresAt: expiresAt.toISOString(),
+        claimToken: null, claimLeaseExpiresAt: null
+      }, "pending", null);
     },
 
     async getExport(actor: StudioPortabilityActor, exportId: string) {
@@ -182,20 +191,17 @@ export function createStudioPortabilityService(options: {
       if (!record) throw portabilityError("STUDIO_EXPORT_NOT_FOUND");
       const signingAt = now();
       if (record.status === "ready" && Date.parse(record.expiresAt) <= signingAt.getTime()) {
-        return { exportId: record.id, status: "expired" as const, expiresAt: record.expiresAt, downloadUrl: null };
+        return exportProjection(record, "expired", null);
       }
       if (record.status !== "ready") {
-        return { exportId: record.id, status: record.status, expiresAt: record.expiresAt, downloadUrl: null };
+        return exportProjection(record, record.status, null);
       }
-      return options.store.signExport({ scope, id: exportId, now: signingAt.toISOString() }, authorizeActor(actor), async (ready) => ({
-        exportId: ready.id,
-        status: "ready" as const,
-        expiresAt: ready.expiresAt,
-        downloadUrl: await options.objectStorage.createDownloadUrl(
+      return options.store.signExport({ scope, id: exportId, now: signingAt.toISOString() }, authorizeActor(actor), async (ready) => exportProjection(
+        ready, "ready", await options.objectStorage.createDownloadUrl(
           ready.objectKey,
           Math.max(1, Math.min(EXPORT_URL_TTL_SECONDS, Math.ceil((Date.parse(ready.expiresAt) - signingAt.getTime()) / 1_000)))
         )
-      }));
+      ));
     },
 
     async processNextExport(signal?: AbortSignal, budget: StudioMaintenanceBudget = {}) {
@@ -227,6 +233,12 @@ export function createStudioPortabilityService(options: {
             contentType: "application/zip",
             sizeBytes: archive.sizeBytes
           }, { signal });
+          const stored = await options.objectStorage.get(claim.objectKey, { signal });
+          stored.body.destroy();
+          if (stored.sizeBytes === null || stored.sizeBytes < 0) {
+            throw portabilityError("STUDIO_EXPORT_METADATA_UNAVAILABLE");
+          }
+          return { result: undefined, sizeBytes: stored.sizeBytes };
         });
         logger.info({ event: "studio_export_ready", exportId: claim.id, workspaceId: claim.workspaceId, ownerProfileId: claim.ownerProfileId });
       } catch (error) {
@@ -459,6 +471,8 @@ export function createInMemoryStudioPortabilityStore(input: {
           id: record.id,
           ...clone(record.scope),
           objectKey: record.objectKey,
+          filename: record.filename,
+          sizeBytes: null,
           status: "pending",
           createdAt: record.createdAt,
           expiresAt: record.expiresAt,
@@ -497,12 +511,13 @@ export function createInMemoryStudioPortabilityStore(input: {
         if (record.status !== "processing" || record.claimToken !== claimToken) {
           throw portabilityError("STUDIO_EXPORT_CLAIM_LOST");
         }
-        const result = await publish();
+        const published = await publish();
         record.status = "ready";
+        record.sizeBytes = published.sizeBytes;
         record.expiresAt = expiresAt;
         record.claimToken = null;
         record.claimLeaseExpiresAt = null;
-        return result;
+        return published.result;
       });
     },
     async signExport({ scope, id, now }, authorize, sign) {
@@ -839,6 +854,26 @@ function safeArchiveName(value: string): string {
 
 function ownerPrefix(scope: StudioOwnerPortabilityScope): string {
   return `workspaces/${safeStorageSegment(scope.workspaceId)}/studio/${safeStorageSegment(scope.ownerProfileId)}`;
+}
+
+function exportFilename(requestedAt: Date): string {
+  return `prymeira-baase-estudio-${requestedAt.toISOString().slice(0, 10)}.zip`;
+}
+
+function exportProjection(
+  record: StudioPortabilityExport,
+  status: StudioPortabilityExportStatus,
+  downloadUrl: string | null
+) {
+  return {
+    exportId: record.id,
+    status,
+    requestedAt: record.createdAt,
+    filename: record.filename,
+    sizeBytes: record.sizeBytes,
+    expiresAt: record.expiresAt,
+    downloadUrl
+  };
 }
 
 function safeStorageSegment(value: string): string {

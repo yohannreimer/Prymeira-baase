@@ -50,11 +50,19 @@ describe("Studio portability service", () => {
       workspaceId: "workspace_a", ownerProfileId: "owner_a", status: "processing"
     }));
     const downloadable = await service.getExport(ownerA, exported.exportId);
-    expect(downloadable).toMatchObject({ status: "ready", expiresAt: "2026-07-14T15:15:00.000Z" });
+    expect(downloadable).toMatchObject({
+      status: "ready",
+      requestedAt: "2026-07-14T15:00:00.000Z",
+      filename: "prymeira-baase-estudio-2026-07-14.zip",
+      sizeBytes: expect.any(Number),
+      expiresAt: "2026-07-14T15:15:00.000Z"
+    });
+    expect(downloadable.sizeBytes).toBeGreaterThan(0);
     expect(downloadable.downloadUrl).toContain("expires_in=900");
     const exportKey = storage.keys().find((key) => key.includes("/exports/"));
     expect(exportKey).toMatch(/^workspaces\/workspace_a\/studio\/owner_a\/exports\/.+\.zip$/u);
     const archive = await readObject(storage, exportKey!);
+    expect(downloadable.sizeBytes).toBe(archive.length);
     const entries = readStoredZip(archive);
     const manifest = JSON.parse(entries.get("manifest.json")!.toString("utf8"));
     expect(manifest).toMatchObject({

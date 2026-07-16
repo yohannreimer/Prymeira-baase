@@ -56,6 +56,7 @@ type StudioCopilotRequest = {
 };
 
 const WIDTH_KEY = "baase:studio:copilot-width";
+const COPILOT_OPEN_KEY = "baase:studio:copilot-open";
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 520;
 const COMPACT_MEDIA_QUERY = "(max-width: 1200px)";
@@ -64,8 +65,12 @@ const OPERATIONAL_RESOURCE_TYPES = [
 ] as const;
 
 export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance }: Props) {
-  const [open, setOpen] = useState(true);
-  const [compact, setCompact] = useState(() => window.matchMedia?.(COMPACT_MEDIA_QUERY).matches ?? false);
+  const [open, setOpenState] = useState(readOpenPreference);
+  const setOpen = (next: boolean) => {
+    setOpenState(next);
+    persistOpenPreference(next);
+  };
+  const [compact, setCompact] = useState(() => typeof window !== "undefined" && (window.matchMedia?.(COMPACT_MEDIA_QUERY).matches ?? false));
   const [width, setWidth] = useState(readWidth);
   const [prompt, setPrompt] = useState("");
   const [allowResearch, setAllowResearch] = useState(false);
@@ -294,8 +299,8 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
     persistWidth(bounded);
   }
 
-  if (!open) return <button ref={openTriggerRef} className="studio-copilot-open" type="button" onClick={() => setOpen(true)}>
-    <i className="ph-light ph-sparkle" aria-hidden="true" /> Pensar com a IA
+  if (!open) return <button ref={openTriggerRef} className="studio-copilot-open" type="button" aria-label="Abrir Copiloto" onClick={() => setOpen(true)}>
+    <i className="ph-light ph-sparkle" aria-hidden="true" /> Abrir Copiloto
   </button>;
 
   return <>
@@ -313,7 +318,7 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
         onKeyDown={resizeWithKeyboard} onPointerDown={beginResize} /> : null}
       <header className="studio-copilot__header">
         <div><p className="mono">Ao seu lado</p><h2>Copiloto</h2></div>
-        <button type="button" aria-label="Recolher copiloto" onClick={() => {
+        <button type="button" aria-label="Recolher Copiloto" onClick={() => {
           setOpen(false);
           if (compact) queueMicrotask(() => openTriggerRef.current?.focus());
         }}><i className="ph-light ph-sidebar-simple" aria-hidden="true" /></button>
@@ -546,10 +551,20 @@ function plainTextDocument(text: string): Record<string, unknown> {
 }
 
 function readWidth() {
+  if (typeof window === "undefined") return 380;
   try { return clampWidth(Number(window.localStorage.getItem(WIDTH_KEY)) || 380); }
   catch { return 380; }
 }
 function persistWidth(width: number) { try { window.localStorage.setItem(WIDTH_KEY, String(clampWidth(width))); } catch { /* optional preference */ } }
+function readOpenPreference() {
+  if (typeof window === "undefined") return true;
+  try { return window.localStorage.getItem(COPILOT_OPEN_KEY) !== "false"; }
+  catch { return true; }
+}
+function persistOpenPreference(open: boolean) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(COPILOT_OPEN_KEY, String(open)); } catch { /* optional preference */ }
+}
 function clampWidth(width: number) { return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(width))); }
 function documentBodyUnlock() { /* compact cleanup is owned by the effect cleanup */ }
 

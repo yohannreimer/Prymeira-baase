@@ -1593,6 +1593,19 @@ const migrations: Migration[] = [{
       ON studio_documents (trashed_at,id)
       WHERE status='trashed';
   `
+}, {
+  version: 31,
+  name: "studio_portability_export_metadata",
+  sql: `
+    ALTER TABLE studio_portability_exports
+      ADD COLUMN IF NOT EXISTS filename TEXT,
+      ADD COLUMN IF NOT EXISTS size_bytes BIGINT CHECK (size_bytes IS NULL OR size_bytes >= 0);
+    UPDATE studio_portability_exports
+      SET filename='prymeira-baase-estudio-' || id || '.zip'
+      WHERE filename IS NULL;
+    ALTER TABLE studio_portability_exports
+      ALTER COLUMN filename SET NOT NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

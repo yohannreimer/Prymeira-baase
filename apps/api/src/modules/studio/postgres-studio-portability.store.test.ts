@@ -79,6 +79,7 @@ describe("Postgres Studio portability store", () => {
     }, async () => true, async () => {
       publishObserved = true;
       expect(calls.at(-1)).toContain("FOR UPDATE");
+      return { result: undefined, sizeBytes: 4096 };
     });
 
     expect(publishObserved).toBe(true);

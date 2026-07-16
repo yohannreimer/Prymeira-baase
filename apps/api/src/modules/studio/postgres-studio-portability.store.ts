@@ -16,6 +16,8 @@ type ExportRow = {
   object_key: string;
   status: StudioPortabilityExport["status"];
   created_at: string | Date;
+  filename: string;
+  size_bytes: number | string | null;
   expires_at: string | Date;
   claim_token: string | null;
   claim_lease_expires_at: string | Date | null;
@@ -88,14 +90,14 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
       } satisfies StudioPortabilitySnapshot;
     },
 
-    async createExport({ id, scope, objectKey, createdAt, expiresAt }, authorize) {
+    async createExport({ id, scope, objectKey, filename, createdAt, expiresAt }, authorize) {
       await withOwnerTransaction(pool, scope, authorize, async (client) => {
         await ensureNoActiveDeletion(client, scope);
         await client.query(
           `INSERT INTO studio_portability_exports
-            (id,workspace_id,owner_profile_id,object_key,status,created_at,expires_at,updated_at)
-           VALUES ($1,$2,$3,$4,'pending',$5,$6,$5)`,
-          [id, scope.workspaceId, scope.ownerProfileId, objectKey, createdAt, expiresAt]
+            (id,workspace_id,owner_profile_id,object_key,filename,status,created_at,expires_at,updated_at)
+           VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$6)`,
+          [id, scope.workspaceId, scope.ownerProfileId, objectKey, filename, createdAt, expiresAt]
         );
       });
     },
@@ -167,14 +169,15 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
         if (record.status !== "processing" || record.claim_token !== claimToken) {
           throw portabilityError("STUDIO_EXPORT_CLAIM_LOST");
         }
-        const result = await publish();
+        const published = await publish();
         await client.query(
           `UPDATE studio_portability_exports
-           SET status='ready',claim_token=NULL,claim_lease_expires_at=NULL,ready_at=$2,expires_at=$3,updated_at=$2
+           SET status='ready',claim_token=NULL,claim_lease_expires_at=NULL,ready_at=$2,expires_at=$3,
+               size_bytes=$4,updated_at=$2
            WHERE id=$1`,
-          [id, readyAt, expiresAt]
+          [id, readyAt, expiresAt, published.sizeBytes]
         );
-        return result;
+        return published.result;
       });
     },
 
@@ -432,6 +435,8 @@ function exportFromRow(row: ExportRow): StudioPortabilityExport {
     objectKey: row.object_key,
     status: row.status,
     createdAt: iso(row.created_at),
+    filename: row.filename,
+    sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes),
     expiresAt: iso(row.expires_at),
     claimToken: row.claim_token,
     claimLeaseExpiresAt: row.claim_lease_expires_at ? iso(row.claim_lease_expires_at) : null

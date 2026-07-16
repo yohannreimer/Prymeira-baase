@@ -641,6 +641,67 @@
 .studio-privacy__feedback span { color: var(--faint); font-size: 11px; }
 .studio-privacy__feedback--error { color: var(--danger-ink); font-size: 12px; line-height: 1.45; }
 
+.studio-export-card {
+  background: color-mix(in srgb, var(--panel2) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 15px;
+}
+
+.studio-export-card--ready { border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); }
+.studio-export-card--failed { background: var(--danger-bg); border-color: var(--danger-line); }
+
+.studio-export-card__state {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
+.studio-export-card__mark {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent-ink);
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.studio-export-card__state strong { color: var(--ink); display: block; font-size: 12.5px; line-height: 1.35; }
+.studio-export-card__state p { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 3px 0 0; }
+.studio-export-card dl { display: grid; gap: 8px; margin: 0; min-width: 0; }
+.studio-export-card dl > div { display: grid; gap: 8px; grid-template-columns: 58px minmax(0, 1fr); }
+.studio-export-card dt { color: var(--faint); font-size: 10px; letter-spacing: .035em; text-transform: uppercase; }
+.studio-export-card dd { color: var(--muted); font-size: 11px; margin: 0; overflow-wrap: anywhere; }
+.studio-export-card__download {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+  color: var(--accent-ink);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 7px;
+  justify-content: center;
+  min-height: 42px;
+  padding: 9px 12px;
+  text-decoration: none;
+}
+
+.studio-export-card__spinner { animation: studio-export-spin 1.15s linear infinite; }
+@keyframes studio-export-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-export-card__spinner { animation: none; }
+}
+
 .studio-privacy__section--danger .studio-privacy__icon {
   background: var(--danger-bg);
   border-color: var(--danger-line);

@@ -40,6 +40,27 @@ describe("Studio assistant SSE", () => {
 });
 
 describe("StudioCopilot", () => {
+  it("persists the explicit open preference across remounts", async () => {
+    const user = userEvent.setup();
+    const first = render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Recolher Copiloto" }));
+    expect(window.localStorage.getItem("baase:studio:copilot-open")).toBe("false");
+    first.unmount();
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Abrir Copiloto" })).toBeVisible();
+  });
+
+  it("remains usable when preference storage throws", async () => {
+    Object.defineProperty(window, "localStorage", { configurable: true, value: {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); }
+    } });
+    const user = userEvent.setup();
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Recolher Copiloto" }));
+    expect(screen.getByRole("button", { name: "Abrir Copiloto" })).toBeVisible();
+  });
+
   it("sends an explicit operational period separately from web-research consent", async () => {
     const user = userEvent.setup();
     let body: Record<string, unknown> | null = null;
@@ -297,7 +318,7 @@ describe("StudioCopilot", () => {
     await waitFor(() => expect(screen.getByLabelText(/o que você quer entender/i)).toHaveFocus());
     expect(documentBody()).toHaveStyle({ overflow: "hidden" });
     await user.keyboard("{Escape}");
-    const trigger = screen.getByRole("button", { name: /pensar com a ia/i });
+    const trigger = screen.getByRole("button", { name: "Abrir Copiloto" });
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(documentBody().style.overflow).toBe("");
@@ -397,8 +418,8 @@ describe("StudioCopilot", () => {
     expect(panel).toHaveStyle({ width: "300px" });
     await waitFor(() => expect(window.localStorage.getItem("baase:studio:copilot-width")).toBe("300"));
 
-    await user.click(screen.getByRole("button", { name: "Recolher copiloto" }));
-    const reopen = screen.getByRole("button", { name: /pensar com a ia/i });
+    await user.click(screen.getByRole("button", { name: "Recolher Copiloto" }));
+    const reopen = screen.getByRole("button", { name: "Abrir Copiloto" });
     await waitFor(() => expect(reopen).toHaveFocus());
     await user.click(reopen);
     expect(screen.getByRole("complementary", { name: "Copiloto do Estúdio" })).toBeInTheDocument();

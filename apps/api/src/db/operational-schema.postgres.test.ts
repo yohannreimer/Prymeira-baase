@@ -251,6 +251,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       await expect(pool.query<{ status: string }>(
         "SELECT status FROM studio_portability_exports WHERE id='legacy'"
       )).resolves.toMatchObject({ rows: [{ status: "pending" }] });
+      await ensureOperationalSchema(pool);
       await pool.query(`UPDATE studio_portability_exports
         SET status='processing',claim_token='claim',claim_lease_expires_at='2026-07-14T12:02:00Z'
         WHERE id='legacy'`);
@@ -265,6 +266,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       }, async () => true, async () => {
         entered();
         await publicationGate;
+        return { result: undefined, sizeBytes: 4096 };
       });
       await publicationEntered;
       let downgraded = false;

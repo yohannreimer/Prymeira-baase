@@ -1122,7 +1122,7 @@ git commit -m "fix(studio): prepare rituals without blocking"
 - Modify: `apps/api/src/modules/studio/studio-portability.service.ts`
 - Test: `apps/api/src/modules/studio/studio-portability.routes.test.ts`
 
-- [ ] **Step 1: Write visibility and preference tests**
+- [x] **Step 1: Write visibility and preference tests**
 
 ```tsx
 expect(await screen.findByText("Sua cópia está na fila")).toBeVisible();
@@ -1137,12 +1137,12 @@ render(<StudioCopilot {...props} />);
 expect(screen.getByRole("button", { name: "Abrir Copiloto" })).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and confirm missing persistent preference/copy**
+- [x] **Step 2: Run and confirm missing persistent preference/copy**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Add persistent, accessible states**
+- [x] **Step 3: Add persistent, accessible states**
 
 ```ts
 const COPILOT_OPEN_KEY = "baase:studio:copilot-open";
@@ -1156,12 +1156,12 @@ function setOpen(next: boolean) {
 In Privacy, render a status card for pending/processing/ready/failed/expired with request time, filename, size, expiry, download, and regenerate action. Stop polling on terminal states and abort on unmount.
 Extend the export projection returned by the API with `requestedAt`, `filename`, and `sizeBytes`; populate the size from the generated object metadata rather than estimating it in the browser.
 
-- [ ] **Step 4: Run privacy, Copilot, and accessibility suites**
+- [x] **Step 4: Run privacy, Copilot, and accessibility suites**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-portability.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx src/studio/studio-accessibility.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio/studio-portability* apps/web/src/studio/StudioPrivacySettings* apps/web/src/studio/StudioCopilot* apps/web/src/studio/studio.css

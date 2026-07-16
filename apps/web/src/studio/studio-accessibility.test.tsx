@@ -79,7 +79,7 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
     expect(dialog).toHaveAttribute("aria-modal", "true");
     await waitFor(() => expect(screen.getByLabelText("O que você quer entender melhor?")).toHaveFocus());
     await user.keyboard("{Escape}");
-    const trigger = screen.getByRole("button", { name: "Pensar com a IA" });
+    const trigger = screen.getByRole("button", { name: "Abrir Copiloto" });
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 

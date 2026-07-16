@@ -8,11 +8,14 @@ const owner = { "x-baase-workspace-id": "workspace_a", "x-baase-profile-id": "ow
 describe("Studio portability routes", () => {
   it("keeps export and deletion owner-only and passes the authenticated profile to the recheck", async () => {
     const exportData = vi.fn(async () => ({
-      exportId: "export_1", status: "pending" as const, expiresAt: "2026-07-14T15:15:00.000Z"
+      exportId: "export_1", status: "pending" as const, requestedAt: "2026-07-14T15:00:00.000Z",
+      filename: "prymeira-baase-estudio-2026-07-14.zip", sizeBytes: null,
+      expiresAt: "2026-07-14T15:15:00.000Z", downloadUrl: null
     }));
     const getExport = vi.fn(async () => ({
       exportId: "export_1", status: "ready" as const, downloadUrl: "https://private.test/export",
-      expiresAt: "2026-07-14T15:15:00.000Z"
+      requestedAt: "2026-07-14T15:00:00.000Z", filename: "prymeira-baase-estudio-2026-07-14.zip",
+      sizeBytes: 8192, expiresAt: "2026-07-14T15:15:00.000Z"
     }));
     const deleteData = vi.fn(async () => ({
       requestId: "delete_1", status: "completed" as const, pendingObjectCount: 0
@@ -26,6 +29,11 @@ describe("Studio portability routes", () => {
     const ready = await app.inject({ method: "GET", url: "/studio/export/export_1", headers: owner });
     expect(ready.statusCode).toBe(200);
     expect(ready.json().export.downloadUrl).toBe("https://private.test/export");
+    expect(ready.json().export).toMatchObject({
+      requestedAt: "2026-07-14T15:00:00.000Z",
+      filename: "prymeira-baase-estudio-2026-07-14.zip",
+      sizeBytes: 8192
+    });
     expect(getExport).toHaveBeenCalledWith(
       { workspaceId: "workspace_a", profileId: "owner_a", role: "owner" }, "export_1"
     );

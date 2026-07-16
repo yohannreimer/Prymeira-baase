@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -182,6 +182,16 @@ describe("operational schema", () => {
     expect(columns.rows.map((row) => row.column_name).sort()).toEqual([
       "trash_claim_token", "trash_lease_expires_at"
     ]);
+  });
+
+  it("stores generated export metadata in migration 31", async () => {
+    await ensureOperationalSchemaThrough(db, 31);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_portability_exports'
+         and column_name in ('filename','size_bytes')`
+    );
+    expect(columns.rows.map((row) => row.column_name).sort()).toEqual(["filename", "size_bytes"]);
   });
 
   it("keeps the owner Studio lexical GIN index in migration 9", async () => {
