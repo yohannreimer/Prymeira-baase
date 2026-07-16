@@ -532,6 +532,7 @@ export type StudioRepository = {
   trashDocument(scope: StudioOwnerScope, documentId: string, trashedAt: string): Promise<StudioDocument>;
   restoreDocumentFromTrash(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument>;
   permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string): Promise<boolean>;
+  listDocumentStructureIdsIncludingInactive(scope: StudioOwnerScope, documentId: string): Promise<string[]>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;

@@ -199,15 +199,8 @@ export function buildApp(options: BuildAppOptions = {}) {
   const studioService = createStudioService(studioRepository, {
     now: options.now ? () => options.now!().toISOString() : undefined,
     removeMemory: (scope, documentId) => studioMemoryIndex.removeDocument(scope, documentId).then(() => undefined),
-    removeProactiveSignals: options.studioMemoryPool ? undefined : async (scope, documentId) => {
+    removeProactiveSignals: options.studioMemoryPool ? undefined : async (scope, sourceIds) => {
       if (!studioProactivityStore.deleteSignalsForSources) return;
-      const sourceIds: string[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await studioRepository.listStructures(scope, { documentId, cursor, limit: 100 });
-        sourceIds.push(...page.items.map((structure) => structure.id));
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
       await studioProactivityStore.deleteSignalsForSources(scope, sourceIds);
     }
   });

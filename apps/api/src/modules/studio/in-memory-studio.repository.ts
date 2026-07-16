@@ -563,6 +563,14 @@ export function createInMemoryStudioRepository(
       return true;
     },
 
+    async listDocumentStructureIdsIncludingInactive(scope, documentId) {
+      return structures
+        .filter((structure) => structure.workspaceId === scope.workspaceId
+          && structure.ownerProfileId === scope.ownerProfileId
+          && structure.documentId === documentId)
+        .map((structure) => structure.id);
+    },
+
     async listVersions(scope, documentId) {
       return versions
         .filter((version) => version.workspaceId === scope.workspaceId)

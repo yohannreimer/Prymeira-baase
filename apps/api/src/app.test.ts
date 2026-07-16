@@ -4,6 +4,12 @@ import type { BaaseRuntimeConfig } from "./config/runtime";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
 import { createInMemoryOnboardingRepository } from "./modules/onboarding/in-memory-onboarding.repository";
 import type { CreateOnboardingSessionInput } from "./modules/onboarding/onboarding.types";
+import { createInMemoryStudioRepository } from "./modules/studio/in-memory-studio.repository";
+import {
+  createInMemoryStudioProactivityStore,
+  createStudioProactivityService
+} from "./modules/studio/studio-proactivity.service";
+import { createStudioService } from "./modules/studio/studio.service";
 
 const inMemoryObjectStorage = { provider: "memory" as const, s3: null };
 const accountBearer = (subject: string) => `Bearer header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;
@@ -35,6 +41,67 @@ function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput>
 }
 
 describe("Baase API app", () => {
+  it("cleans only the deleted owner's ritual signals and due queue in the in-memory lifecycle", async () => {
+    const now = new Date("2026-07-14T12:00:00.000Z");
+    const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
+    const repository = createInMemoryStudioRepository({ now: () => now.toISOString() });
+    const setup = createStudioService(repository, { now: () => now.toISOString() });
+    const document = await setup.createDocument(ownerA, ownerA.ownerProfileId, {
+      title: "Revisão semanal",
+      body_json: { type: "doc", content: [] },
+      body_text: "Revisar prioridades",
+      capture_mode: "text"
+    });
+    const ritual = await setup.createStructure(ownerA, ownerA.ownerProfileId, document.id, {
+      kind: "ritual",
+      cadence_json: null,
+      properties_json: { intention: "Revisar prioridades", guide_questions: [] }
+    });
+    const due = (ownerProfileId: string) => ({
+      workspaceId: "workspace_a",
+      ownerProfileId,
+      ritualId: ritual.id,
+      title: "Revisão semanal",
+      scheduledFor: "2026-07-14T11:00:00.000Z"
+    });
+    const store = createInMemoryStudioProactivityStore({
+      now: () => now.toISOString(),
+      dueRituals: [due(ownerA.ownerProfileId), due(ownerB.ownerProfileId)]
+    });
+    const preparation = createStudioProactivityService({
+      store,
+      ritualService: { startSession: async () => ({ status: "ready" }) },
+      now: () => now
+    });
+    await preparation.updateSettings(ownerA, { ritualReminder: true });
+    await preparation.updateSettings(ownerB, { ritualReminder: true });
+    await preparation.runDuePreparations(now, 2);
+    const app = buildApp({ studioRepository: repository, studioProactivityStore: store, now: () => now });
+    const headers = {
+      "x-baase-workspace-id": ownerA.workspaceId,
+      "x-baase-profile-id": ownerA.ownerProfileId,
+      "x-baase-role": "owner"
+    };
+
+    expect(await app.studioProactivityService.listSignals(ownerA, 10, now)).toHaveLength(1);
+    expect(await app.studioProactivityService.listSignals(ownerB, 10, now)).toHaveLength(1);
+
+    expect((await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/trash`, headers
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "DELETE", url: `/studio/documents/${document.id}`, headers
+    })).statusCode).toBe(204);
+
+    expect(await app.studioProactivityService.listSignals(ownerA, 10, now)).toEqual([]);
+    expect(store.getDueRituals()).toEqual([due(ownerB.ownerProfileId)]);
+    expect(await app.studioProactivityService.listSignals(ownerB, 10, now)).toEqual([
+      expect.objectContaining({ sourceId: ritual.id, ownerProfileId: ownerB.ownerProfileId })
+    ]);
+    await app.close();
+  });
+
   it("maps unavailable AI providers to a safe service-unavailable response globally", async () => {
     const app = buildApp();
     app.get("/__test/ai-provider-unavailable", async () => {

@@ -44,18 +44,35 @@ describe("StudioService documents", () => {
   it("removes semantic memory before permanently deleting a trashed document", async () => {
     const repository = createInMemoryStudioRepository();
     const removed: string[] = [];
-    const removedSignals: string[] = [];
+    const removedSignals: string[][] = [];
     const service = createStudioService(repository, {
       removeMemory: async (_scope, documentId) => { removed.push(documentId); },
-      removeProactiveSignals: async (_scope, documentId) => { removedSignals.push(documentId); }
+      removeProactiveSignals: async (_scope, sourceIds) => { removedSignals.push([...sourceIds]); }
     });
     const document = await service.createDocument(scope, "owner_a", documentInput());
+    const ritual = await service.createStructure(scope, "owner_a", document.id, {
+      kind: "ritual", cadence_json: null,
+      properties_json: { intention: "Revisar", guide_questions: [] }
+    });
     await service.trashDocument(scope, "owner_a", document.id);
 
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(true);
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(false);
     expect(removed).toEqual([document.id]);
-    expect(removedSignals).toEqual([document.id]);
+    expect(removedSignals).toEqual([[ritual.id]]);
+  });
+
+  it("keeps a trashed document when proactive cleanup fails", async () => {
+    const repository = createInMemoryStudioRepository();
+    const service = createStudioService(repository, {
+      removeProactiveSignals: async () => { throw new Error("PROACTIVE_CLEANUP_FAILED"); }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id))
+      .rejects.toThrow("PROACTIVE_CLEANUP_FAILED");
+    await expect(service.getDocument(scope, document.id)).resolves.toMatchObject({ status: "trashed" });
   });
 
   it("creates, gets, and updates an owner document without mutating editor JSON", async () => {

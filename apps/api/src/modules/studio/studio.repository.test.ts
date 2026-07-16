@@ -110,7 +110,7 @@ function repositoryContract(
         await repository.addCollectionMembership({ ...scope, collectionId: collection.id, documentId: document.id });
         await repository.createRelation({ ...scope, sourceDocumentId: document.id, targetDocumentId: peer.id,
           relationType: "related_to", createdByProfileId: scope.ownerProfileId });
-        await repository.createStructure({ ...scope, documentId: document.id, kind: "plan", lifecycleStatus: "active",
+        const structure = await repository.createStructure({ ...scope, documentId: document.id, kind: "plan", lifecycleStatus: "active",
           horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
           propertiesJson: { outcome: "Outcome", steps: [] } });
         await repository.createAsset({ ...scope, documentId: document.id, kind: "file", displayName: "notes.txt",
@@ -131,6 +131,10 @@ function repositoryContract(
         expect(restored).toMatchObject({ status: "active", trashedAt: null, preTrashStatus: null });
         expect(await repository.restoreDocumentFromTrash(scope, document.id)).toEqual(restored);
         await repository.trashDocument(scope, document.id, "2026-07-16T12:30:00.000Z");
+        expect(await repository.listDocumentStructureIdsIncludingInactive(scope, document.id)).toEqual([structure.id]);
+        expect(await repository.listDocumentStructureIdsIncludingInactive({
+          ...scope, ownerProfileId: "owner_b"
+        }, document.id)).toEqual([]);
 
         await expect(repository.permanentlyDeleteDocument({ ...scope, ownerProfileId: "owner_b" }, document.id))
           .resolves.toBe(false);

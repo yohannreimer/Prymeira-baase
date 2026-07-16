@@ -1035,6 +1035,16 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       });
     },
 
+    async listDocumentStructureIdsIncludingInactive(scope, documentId) {
+      const result = await db.query<{ id: string }>(
+        `SELECT id FROM studio_structures
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
+         ORDER BY id`,
+        [scope.workspaceId, scope.ownerProfileId, documentId]
+      );
+      return result.rows.map((structure) => structure.id);
+    },
+
     async listVersions(scope, documentId) {
       const result = await db.query<StudioDocumentVersionRow>(
         `SELECT * FROM studio_document_versions
