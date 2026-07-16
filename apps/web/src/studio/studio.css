@@ -1694,6 +1694,31 @@
   white-space: pre-wrap;
 }
 
+.studio-material-inspector__excerpt {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 11px 12px;
+}
+
+.studio-material-inspector__excerpt > span {
+  color: var(--faint);
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: .08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.studio-material-inspector__excerpt > p {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  display: -webkit-box;
+  font-size: 12.5px;
+  line-height: 1.65;
+  overflow: hidden;
+}
+
 .studio-material-inspector button {
   background: transparent;
   border: 1px solid var(--line);

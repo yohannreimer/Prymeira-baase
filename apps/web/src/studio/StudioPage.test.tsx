@@ -585,7 +585,8 @@ describe("StudioPage", () => {
     expect(body).toHaveTextContent("Antes depois");
     expect(screen.getByRole("dialog", { name: "Material reflexao.wav" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Inserir no documento" })).toBeVisible();
-    expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
+    expect(body).not.toHaveTextContent("Escolher uma direção com calma.");
+    expect(screen.getByLabelText("Trecho da transcrição")).toHaveTextContent("Escolher uma direção com calma.");
     expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
     expect(fetchSpy.mock.calls.some(([url, init]) => (
       String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
@@ -902,7 +903,8 @@ describe("StudioPage", () => {
       String(url).endsWith(`/api/studio/documents/${documentB.id}`) && init?.method === "PATCH"
     ))).toBe(false);
     expect(bodyB).toHaveTextContent("Documento B");
-    expect(screen.queryByText("Transcrição somente B.")).not.toBeInTheDocument();
+    expect(bodyB).not.toHaveTextContent("Transcrição somente B.");
+    expect(screen.getByLabelText("Trecho da transcrição")).toHaveTextContent("Transcrição somente B.");
   });
 
   it("keeps a document B attachment when document A's obsolete asset list resolves", async () => {

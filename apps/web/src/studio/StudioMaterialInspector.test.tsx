@@ -7,11 +7,13 @@ import type { StudioAsset } from "./studio.types";
 afterEach(() => {
   vi.useRealTimers();
   document.body.style.overflow = "";
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: undefined });
 });
 
 it("keeps a long PDF extraction collapsed until the owner asks to read it", async () => {
   const user = userEvent.setup();
-  const extractedText = "Direção estratégica ".repeat(2_000);
+  const extractedText = `${"Direção estratégica para o próximo ciclo. ".repeat(20)}CONTEÚDO INTEGRAL RESERVADO`;
   const normalizedText = extractedText.trim();
   render(<StudioMaterialInspector
     asset={asset({ displayName: "strategy.pdf", mimeType: "application/pdf", extractedText })}
@@ -23,9 +25,81 @@ it("keeps a long PDF extraction collapsed until the owner asks to read it", asyn
 
   expect(screen.getByRole("dialog", { name: "Material strategy.pdf" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Ver texto completo" })).toBeVisible();
+  const excerpt = screen.getByLabelText("Trecho do texto encontrado");
+  expect(excerpt).toBeVisible();
+  expect(excerpt).toHaveTextContent("Trecho encontrado");
+  expect(excerpt.querySelector("p")?.textContent?.length).toBeLessThanOrEqual(220);
+  expect(excerpt).not.toHaveTextContent("CONTEÚDO INTEGRAL RESERVADO");
   expect(screen.queryByText(normalizedText)).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Ver texto completo" }));
   expect(screen.getByRole("document")).toHaveTextContent(normalizedText);
+});
+
+it("falls back to the compatible browser copy path when Clipboard API is unavailable", async () => {
+  const user = userEvent.setup();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  const execCommand = vi.fn().mockReturnValue(true);
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+  render(<StudioMaterialInspector
+    asset={asset({ kind: "link_snapshot", displayName: "Pesquisa", sourceUrl: "https://example.com/fallback" })}
+    open
+    onClose={vi.fn()}
+  />);
+
+  await user.click(screen.getByRole("button", { name: "Copiar link" }));
+
+  expect(execCommand).toHaveBeenCalledWith("copy");
+  expect(await screen.findByRole("status")).toHaveTextContent("Link copiado");
+  expect(document.querySelector("textarea[aria-hidden='true']")).not.toBeInTheDocument();
+});
+
+it("copies only a safe original link and announces success", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText }
+  });
+  render(<StudioMaterialInspector
+    asset={asset({ kind: "link_snapshot", displayName: "Pesquisa", sourceUrl: "https://example.com/path?q=calma" })}
+    open
+    onClose={vi.fn()}
+  />);
+
+  await user.click(screen.getByRole("button", { name: "Copiar link" }));
+
+  expect(writeText).toHaveBeenCalledWith("https://example.com/path?q=calma");
+  expect(await screen.findByRole("status")).toHaveTextContent("Link copiado");
+  expect(screen.getByRole("link", { name: "Abrir link original" })).toHaveAttribute(
+    "href",
+    "https://example.com/path?q=calma"
+  );
+});
+
+it("reports copy failure and never offers actions for an unsafe source URL", async () => {
+  const user = userEvent.setup();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockRejectedValue(new Error("blocked")) }
+  });
+  const execCommand = vi.fn().mockReturnValue(false);
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+  const view = render(<StudioMaterialInspector
+    asset={asset({ kind: "link_snapshot", displayName: "Pesquisa", sourceUrl: "https://example.com" })}
+    open
+    onClose={vi.fn()}
+  />);
+
+  await user.click(screen.getByRole("button", { name: "Copiar link" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Não foi possível copiar o link");
+
+  view.rerender(<StudioMaterialInspector
+    asset={asset({ id: "unsafe", kind: "link_snapshot", displayName: "Inseguro", sourceUrl: "javascript:alert(1)" })}
+    open
+    onClose={vi.fn()}
+  />);
+  expect(screen.queryByRole("button", { name: "Copiar link" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Abrir link original" })).not.toBeInTheDocument();
 });
 
 it("previews each material kind without exposing unsafe inline content", async () => {

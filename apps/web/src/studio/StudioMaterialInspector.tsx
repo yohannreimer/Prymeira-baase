@@ -38,6 +38,44 @@ function safeExternalUrl(value: string | null) {
   }
 }
 
+function extractionExcerpt(value: string, limit = 220) {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  const clipped = normalized.slice(0, limit - 1);
+  const wordBoundary = clipped.lastIndexOf(" ");
+  const excerpt = wordBoundary >= Math.floor(limit * 0.65)
+    ? clipped.slice(0, wordBoundary)
+    : clipped;
+  return `${excerpt.trimEnd()}…`;
+}
+
+async function copyText(value: string) {
+  try {
+    if (typeof navigator.clipboard?.writeText === "function") {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Some browsers expose Clipboard API but deny it outside a trusted gesture.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.inset = "-9999px auto auto -9999px";
+  document.body.append(textarea);
+  try {
+    textarea.select();
+    return typeof document.execCommand === "function" && document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
 function focusableElements(root: HTMLElement | null) {
   if (!root) return [];
   return [...root.querySelectorAll<HTMLElement>(
@@ -85,6 +123,7 @@ export default function StudioMaterialInspector({
   const [insertState, setInsertState] = useState<"idle" | "working" | "success" | "error">("idle");
   const [retryState, setRetryState] = useState<"idle" | "working" | "error">("idle");
   const [downloadState, setDownloadState] = useState<"idle" | "working" | "error">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "working" | "success" | "error">("idle");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteState, setDeleteState] = useState<"idle" | "working" | "error">("idle");
   onCloseRef.current = onClose;
@@ -112,6 +151,7 @@ export default function StudioMaterialInspector({
     setInsertState("idle");
     setRetryState("idle");
     setDownloadState("idle");
+    setCopyState("idle");
     setDeleteConfirm(false);
     setDeleteState("idle");
   }, [asset.id]);
@@ -231,6 +271,7 @@ export default function StudioMaterialInspector({
   if (!open) return null;
 
   const extraction = asset.extractedText?.trim() || null;
+  const excerpt = extraction ? extractionExcerpt(extraction) : null;
   const status = studioAssetStatusPresentation[asset.extractionStatus];
   const canInsert = asset.extractionStatus === "ready" && Boolean(extraction) && Boolean(onInsertText);
   const externalUrl = safeExternalUrl(asset.sourceUrl);
@@ -332,6 +373,14 @@ export default function StudioMaterialInspector({
     }
   }
 
+  async function copyOriginalLink() {
+    if (!externalUrl || copyState === "working") return;
+    const generation = actionGenerationRef.current;
+    setCopyState("working");
+    const copied = await copyText(externalUrl);
+    if (generation === actionGenerationRef.current) setCopyState(copied ? "success" : "error");
+  }
+
   async function confirmDelete() {
     if (deleteState === "working") return;
     const controller = new AbortController();
@@ -422,6 +471,15 @@ export default function StudioMaterialInspector({
             </div>
             {extraction ? (
               <>
+                {!expanded && excerpt ? (
+                  <div
+                    className="studio-material-inspector__excerpt"
+                    aria-label={asset.kind === "audio" ? "Trecho da transcrição" : "Trecho do texto encontrado"}
+                  >
+                    <span className="mono">Trecho encontrado</span>
+                    <p>{excerpt}</p>
+                  </div>
+                ) : null}
                 <button type="button" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
                   {expanded ? "Ocultar texto completo" : "Ver texto completo"}
                 </button>
@@ -453,9 +511,16 @@ export default function StudioMaterialInspector({
                 {downloadState === "working" ? "Preparando original…" : "Baixar original"}
               </button>
             ) : null}
+            {asset.kind === "link_snapshot" && externalUrl ? (
+              <button type="button" disabled={copyState === "working"} onClick={() => void copyOriginalLink()}>
+                {copyState === "working" ? "Copiando link…" : "Copiar link"}
+              </button>
+            ) : null}
             {insertState === "success" ? <p role="status">Texto inserido e versão preservada.</p> : null}
             {insertState === "error" ? <p role="alert">O texto não foi inserido. Sua escrita atual foi preservada; tente novamente.</p> : null}
             {downloadState === "error" ? <p role="alert">Não foi possível preparar o original agora.</p> : null}
+            {copyState === "success" ? <p role="status">Link copiado.</p> : null}
+            {copyState === "error" ? <p role="alert">Não foi possível copiar o link agora.</p> : null}
           </section>
 
           <section className="studio-material-inspector__danger" aria-label="Excluir material">
