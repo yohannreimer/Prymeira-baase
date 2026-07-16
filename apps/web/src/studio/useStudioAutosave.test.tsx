@@ -120,6 +120,23 @@ describe("useStudioAutosave", () => {
     expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
   });
 
+  it("does not duplicate an in-flight pagehide checkpoint during unmount", async () => {
+    const pendingCheckpoint = deferred<void>();
+    const meaningfulDraft = draft("Uma mudança suficientemente longa antes de navegar");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(() => pendingCheckpoint.promise);
+    const { result, unmount } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    unmount();
+
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+    await act(async () => pendingCheckpoint.resolve());
+  });
+
   it("never blocks draft saves behind an in-flight checkpoint", async () => {
     const pendingCheckpoint = deferred<void>();
     const firstMeaningfulDraft = draft("Uma primeira mudança longa e significativa");

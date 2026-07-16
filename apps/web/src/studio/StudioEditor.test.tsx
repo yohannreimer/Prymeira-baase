@@ -88,7 +88,7 @@ describe("StudioEditor", () => {
     expect(JSON.parse(String(patchCall?.[1]?.body)).body_text).toBe("Antes\nPrimeira\nSegunda\n depois");
   });
 
-  it("preserves the last meaningful saved edit as a document-exit checkpoint on unmount", async () => {
+  it("preserves the last meaningful saved edit once with keepalive on pagehide", async () => {
     const editorRef = createRef<StudioEditorHandle>();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -119,7 +119,7 @@ describe("StudioEditor", () => {
     act(() => { editorRef.current?.insertTextAtLastSelection("Mudança longa o bastante para preservar na saída"); });
     await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1));
 
-    view.unmount();
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
 
     await waitFor(() => expect(fetchSpy.mock.calls.some(([input, init]) => (
       String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
@@ -127,10 +127,17 @@ describe("StudioEditor", () => {
     const checkpointCall = fetchSpy.mock.calls.find(([input, init]) => (
       String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
     ));
+    expect(checkpointCall?.[1]?.keepalive).toBe(true);
     expect(JSON.parse(String(checkpointCall?.[1]?.body))).toEqual({
       expected_revision: 5,
       reason: "document_exit"
     });
+
+    view.unmount();
+    await Promise.resolve();
+    expect(fetchSpy.mock.calls.filter(([input, init]) => (
+      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+    ))).toHaveLength(1);
   });
 
   it("inserts transcript blocks between two existing paragraphs", async () => {

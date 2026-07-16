@@ -47,4 +47,20 @@ describe("studio checkpoint policy", () => {
 
     expect(policy.dueAt(61_000)).toBe(false);
   });
+
+  it("does not clear a newer saved change when an older checkpoint finishes", () => {
+    const policy = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+    policy.recordSaved({ revision: 1, bodyText: "Initial checkpoint body" }, 0);
+    policy.recordCheckpoint(0);
+    policy.recordSaved({ revision: 2, bodyText: "Initial checkpoint body with a meaningful first change" }, 1_000);
+    const exiting = policy.consumeForExit();
+    policy.recordSaved({ revision: 3, bodyText: "Initial checkpoint body with a meaningful newer change" }, 2_000);
+
+    policy.recordCheckpoint(3_000, exiting ?? undefined);
+
+    expect(policy.pendingForExit()).toEqual({
+      revision: 3,
+      bodyText: "Initial checkpoint body with a meaningful newer change"
+    });
+  });
 });

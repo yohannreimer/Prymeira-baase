@@ -402,6 +402,7 @@ export function useStudioAutosave(
   const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkpointControllerRef = useRef<AbortController | null>(null);
   const checkpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
+  const exitCheckpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
   const runNextRef = useRef<() => Promise<void>>(async () => undefined);
 
   saveRef.current = save;
@@ -421,8 +422,13 @@ export function useStudioAutosave(
     if (!checkpoint) return;
 
     if (reason === "document_exit") {
-      checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
-      void checkpoint(candidate.revision, reason, undefined).catch(() => undefined);
+      if (exitCheckpointInFlightRef.current) return;
+      exitCheckpointInFlightRef.current = candidate;
+      void checkpoint(candidate.revision, reason, undefined).then(() => {
+        checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
+      }).catch(() => undefined).finally(() => {
+        if (exitCheckpointInFlightRef.current === candidate) exitCheckpointInFlightRef.current = null;
+      });
       return;
     }
 
@@ -453,6 +459,7 @@ export function useStudioAutosave(
   }, [cancelCheckpointWork, runCheckpoint]);
 
   const checkpointOnExit = useCallback(() => {
+    if (exitCheckpointInFlightRef.current) return;
     const candidate = checkpointInFlightRef.current ?? checkpointPolicyRef.current?.consumeForExit() ?? null;
     cancelCheckpointWork();
     if (candidate) runCheckpoint(candidate, "document_exit");

@@ -310,7 +310,7 @@ describe("Studio API client", () => {
     await expect(createStudioCheckpoint("document / 1", {
       expected_revision: 4,
       reason: "significant_pause"
-    }, controller.signal, fetcher)).resolves.toMatchObject({
+    }, controller.signal, fetcher, { keepalive: true })).resolves.toMatchObject({
       id: "version_2",
       checkpointReason: "significant_pause",
       sourceRevision: 4
@@ -318,7 +318,7 @@ describe("Studio API client", () => {
 
     expect(fetcher).toHaveBeenCalledWith(
       "/api/studio/documents/document%20%2F%201/checkpoints",
-      expect.objectContaining({ method: "POST", signal: controller.signal })
+      expect.objectContaining({ method: "POST", signal: controller.signal, keepalive: true })
     );
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
       expected_revision: 4,

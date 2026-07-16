@@ -90,7 +90,13 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
     }, signal)
   ), [sourceDocument.id]);
   const checkpoint = useCallback((expectedRevision: number, reason: "significant_pause" | "document_exit", signal?: AbortSignal) => (
-    createStudioCheckpoint(sourceDocument.id, { expected_revision: expectedRevision, reason }, signal)
+    createStudioCheckpoint(
+      sourceDocument.id,
+      { expected_revision: expectedRevision, reason },
+      signal,
+      fetch,
+      { keepalive: reason === "document_exit" }
+    )
   ), [sourceDocument.id]);
   const autosave = useStudioAutosave(sourceDocument, save, { debounceMs, checkpoint });
   const [title, setTitle] = useState(autosave.initialDraft?.title ?? sourceDocument.title ?? "");

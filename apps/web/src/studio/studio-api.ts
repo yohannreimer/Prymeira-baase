@@ -556,11 +556,12 @@ export async function createStudioCheckpoint(
   documentId: string,
   input: { expected_revision: number; reason: StudioCheckpointReason },
   signal?: AbortSignal,
-  fetcher: StudioFetcher = fetch
+  fetcher: StudioFetcher = fetch,
+  options: { keepalive?: boolean } = {}
 ): Promise<StudioDocumentVersion> {
   const response = await studioRequest<{ version: RawStudioDocumentVersion }>(
     `/documents/${encodeURIComponent(documentId)}/checkpoints`,
-    { method: "POST", body: JSON.stringify(input), signal },
+    { method: "POST", body: JSON.stringify(input), signal, keepalive: options.keepalive },
     fetcher
   );
   return mapStudioDocumentVersion(response.version);

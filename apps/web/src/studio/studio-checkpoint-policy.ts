@@ -79,7 +79,7 @@ export function createCheckpointPolicy(options: StudioCheckpointPolicyOptions) {
     recordCheckpoint(_checkpointedAt: number, completedSnapshot?: StudioCheckpointSnapshot) {
       const snapshot = completedSnapshot ?? pending?.snapshot ?? latestSaved;
       if (snapshot) checkpoint = { ...snapshot };
-      pending = null;
+      if (!pending || (snapshot && pending.snapshot.revision <= snapshot.revision)) pending = null;
     }
   };
 }
