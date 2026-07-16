@@ -33,6 +33,16 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const lifecycleGenerationRef = useRef(0);
+  const selectedRitualIdRef = useRef<string | null>(null);
+  const startControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    lifecycleGenerationRef.current += 1;
+    selectedRitualIdRef.current = null;
+    startControllerRef.current?.abort();
+    startControllerRef.current = null;
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -57,22 +67,33 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   useEffect(() => {
     if (!selectedRitual || !session || session.status !== "preparing") return;
     const controller = new AbortController();
+    const generation = lifecycleGenerationRef.current;
+    const ritualId = selectedRitual.id;
+    const sessionId = session.id;
+    const isCurrent = () => !controller.signal.aborted
+      && lifecycleGenerationRef.current === generation
+      && selectedRitualIdRef.current === ritualId;
     let timeout: number | undefined;
     const poll = async () => {
       try {
         const page = await listStudioRitualSessions(
-          selectedRitual.id,
+          ritualId,
           { limit: 1 },
           controller.signal,
           fetch
         );
-        if (controller.signal.aborted) return;
-        const latest = page.items.find((item) => item.id === session.id);
-        if (latest) setSession((current) => !current || latest.revision > current.revision ? latest : current);
+        if (!isCurrent()) return;
+        const latest = page.items.find((item) => item.id === sessionId && item.ritualId === ritualId);
+        if (latest) setSession((current) => current
+          && current.id === sessionId
+          && current.ritualId === ritualId
+          && latest.revision > current.revision
+          ? latest
+          : current);
       } catch {
         // Polling is enhancement-only: answers remain usable and locally durable.
       }
-      if (!controller.signal.aborted) timeout = window.setTimeout(() => void poll(), 1_000);
+      if (isCurrent()) timeout = window.setTimeout(() => void poll(), 1_000);
     };
     timeout = window.setTimeout(() => void poll(), 400);
     return () => {
@@ -82,25 +103,46 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   }, [selectedRitual, session?.id, session?.status]);
 
   async function openSession(ritual: StudioStructure) {
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+    selectedRitualIdRef.current = ritual.id;
+    startControllerRef.current?.abort();
+    const controller = new AbortController();
+    startControllerRef.current = controller;
     setBusy(true);
     setStartError(null);
     setSelectedRitual(ritual);
+    setSession(null);
     setMode("session");
+    const isCurrent = () => !controller.signal.aborted
+      && lifecycleGenerationRef.current === generation
+      && selectedRitualIdRef.current === ritual.id;
     try {
-      setSession(await startStudioRitualSession(ritual.id));
+      const started = await startStudioRitualSession(ritual.id, controller.signal);
+      if (isCurrent() && started.ritualId === ritual.id) setSession(started);
     } catch (error) {
-      setStartError(ritualErrorMessage(error));
+      if (isCurrent()) setStartError(ritualErrorMessage(error));
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        setBusy(false);
+        if (startControllerRef.current === controller) startControllerRef.current = null;
+      }
     }
   }
 
   function returnToList() {
+    lifecycleGenerationRef.current += 1;
+    selectedRitualIdRef.current = null;
+    startControllerRef.current?.abort();
+    startControllerRef.current = null;
+    setBusy(false);
     setMode("list");
     setSession(null);
     setSelectedRitual(null);
     setStartError(null);
   }
+
+  const renderedGeneration = lifecycleGenerationRef.current;
 
   return (
     <div className="studio-rituals">
@@ -142,11 +184,20 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
             </div>
           ) : busy && !session ? (
             <RitualLoading />
-          ) : session ? (
+          ) : session && session.ritualId === selectedRitual.id ? (
             <RitualSession
+              key={`${lifecycleGenerationRef.current}:${selectedRitual.id}:${session.id}`}
               ritual={selectedRitual}
               initialSession={session}
-              onSessionChange={setSession}
+              onSessionChange={(next) => {
+                if (lifecycleGenerationRef.current !== renderedGeneration
+                  || selectedRitualIdRef.current !== selectedRitual.id
+                  || next.id !== session.id || next.ritualId !== selectedRitual.id) return;
+                setSession((current) => lifecycleGenerationRef.current === renderedGeneration
+                  && current?.id === session.id && current.ritualId === selectedRitual.id
+                  ? next
+                  : current);
+              }}
             />
           ) : null}
         </div>
@@ -356,7 +407,22 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const localDraftStoredRef = useRef(true);
   const answerRef = useRef<HTMLTextAreaElement | null>(null);
+  const mountedRef = useRef(true);
+  const childGenerationRef = useRef(0);
+  const operationControllersRef = useRef(new Set<AbortController>());
+  const sessionIdentityRef = useRef({ ritualId: ritual.id, sessionId: initialSession.id });
   const question = questions[Math.min(questionIndex, Math.max(questions.length - 1, 0))]!;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    childGenerationRef.current += 1;
+    return () => {
+      mountedRef.current = false;
+      childGenerationRef.current += 1;
+      for (const controller of operationControllersRef.current) controller.abort();
+      operationControllersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     answersRef.current = answers;
@@ -389,61 +455,94 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
     return () => window.clearTimeout(timeout);
   }, [answers, saveState]);
 
-  function acceptSession(next: StudioRitualSession) {
+  function beginOperation() {
+    const controller = new AbortController();
+    const generation = childGenerationRef.current;
+    operationControllersRef.current.add(controller);
+    return {
+      controller,
+      isCurrent: () => mountedRef.current
+        && childGenerationRef.current === generation
+        && !controller.signal.aborted
+        && sessionIdentityRef.current.ritualId === ritual.id
+        && sessionIdentityRef.current.sessionId === initialSession.id
+    };
+  }
+
+  function endOperation(operation: ReturnType<typeof beginOperation>) {
+    operationControllersRef.current.delete(operation.controller);
+  }
+
+  function acceptSession(next: StudioRitualSession, isCurrent = () => mountedRef.current) {
+    if (!isCurrent() || next.id !== sessionIdentityRef.current.sessionId
+      || next.ritualId !== sessionIdentityRef.current.ritualId) return false;
     revisionRef.current = next.revision;
     setSession(next);
     onSessionChange(next);
+    return true;
   }
 
   async function persistAnswers() {
     if (session.status === "completed") return true;
     if (savePromiseRef.current) return savePromiseRef.current;
-    const pending = drainAnswerSnapshots().finally(() => { savePromiseRef.current = null; });
+    const pending = drainAnswerSnapshots();
     savePromiseRef.current = pending;
+    void pending.then(
+      () => { if (savePromiseRef.current === pending) savePromiseRef.current = null; },
+      () => { if (savePromiseRef.current === pending) savePromiseRef.current = null; }
+    );
     return pending;
   }
 
   async function drainAnswerSnapshots() {
+    const operation = beginOperation();
     setSaveState("saving");
-    while (JSON.stringify(answersRef.current) !== lastSavedRef.current) {
-      const snapshot = { ...answersRef.current };
-      try {
+    try {
+      while (operation.isCurrent() && JSON.stringify(answersRef.current) !== lastSavedRef.current) {
+        const snapshot = { ...answersRef.current };
         const updated = await updateStudioRitualSession(session.id, {
           expected_revision: revisionRef.current,
           answers: snapshot
-        });
-        acceptSession(updated);
+        }, operation.controller.signal);
+        if (!acceptSession(updated, operation.isCurrent)) return false;
         lastSavedRef.current = JSON.stringify(snapshot);
         setActionError(null);
-      } catch (error) {
-        if (isRitualConflict(error)) {
-          setSaveState("conflict");
-          setActionError("Esta sessão mudou em outra aba. Seu rascunho continua guardado; escolha qual versão deseja manter.");
-        } else if (isOfflineError(error)) {
-          setSaveState("offline");
-          setActionError(localDraftStoredRef.current
-            ? "Sua resposta ficou guardada neste navegador e ainda não chegou ao servidor."
-            : "Sem conexão e sem espaço para guardar o rascunho no navegador. Mantenha esta página aberta e tente novamente.");
-        } else {
-          setSaveState("error");
-          setActionError(ritualErrorMessage(error));
-        }
-        return false;
       }
+      if (!operation.isCurrent()) return false;
+      removeRitualDraft(session.id);
+      setSaveState("saved");
+      return true;
+    } catch (error) {
+      if (!operation.isCurrent()) return false;
+      if (isRitualConflict(error)) {
+        setSaveState("conflict");
+        setActionError("Esta sessão mudou em outra aba. Seu rascunho continua guardado; escolha qual versão deseja manter.");
+      } else if (isOfflineError(error)) {
+        setSaveState("offline");
+        setActionError(localDraftStoredRef.current
+          ? "Sua resposta ficou guardada neste navegador e ainda não chegou ao servidor."
+          : "Sem conexão e sem espaço para guardar o rascunho no navegador. Mantenha esta página aberta e tente novamente.");
+      } else {
+        setSaveState("error");
+        setActionError(ritualErrorMessage(error));
+      }
+      return false;
+    } finally {
+      endOperation(operation);
     }
-    removeRitualDraft(session.id);
-    setSaveState("saved");
-    return true;
   }
 
   async function continueSession() {
     if (!await persistAnswers()) return;
+    if (!mountedRef.current) return;
     setQuestionIndex((index) => Math.min(index + 1, questions.length - 1));
   }
 
   async function finish() {
     if (finishing) return;
     if (!await persistAnswers()) return;
+    if (!mountedRef.current) return;
+    const operation = beginOperation();
     setFinishing(true);
     setSaveState("saving");
     try {
@@ -451,21 +550,23 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
         expected_revision: revisionRef.current,
         answers: { ...answersRef.current },
         request_synthesis: true
-      });
-      acceptSession(completed);
-      setFinishing(false);
+      }, operation.controller.signal);
+      if (!acceptSession(completed, operation.isCurrent)) return;
       lastSavedRef.current = JSON.stringify(completed.answersJson);
       removeRitualDraft(session.id);
       setSaveState("saved");
       setActionError(null);
     } catch (error) {
-      setFinishing(false);
+      if (!operation.isCurrent()) return;
       if (isRitualConflict(error)) setSaveState("conflict");
       else if (isOfflineError(error)) setSaveState("offline");
       else setSaveState("error");
       setActionError(isRitualConflict(error)
         ? "Esta sessão mudou em outra aba. Recarregue antes de concluir."
         : ritualErrorMessage(error));
+    } finally {
+      endOperation(operation);
+      if (operation.isCurrent()) setFinishing(false);
     }
   }
 
@@ -475,33 +576,42 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
     setPreparationRetryError(null);
     try {
       if (!await persistAnswers()) return;
-      const retried = await startStudioRitualSession(ritual.id);
-      acceptSession(retried);
+      if (!mountedRef.current) return;
+      const operation = beginOperation();
+      try {
+        const retried = await startStudioRitualSession(ritual.id, operation.controller.signal);
+        acceptSession(retried, operation.isCurrent);
+      } finally {
+        endOperation(operation);
+      }
     } catch (error) {
+      if (!mountedRef.current) return;
       setPreparationRetryError(ritualErrorMessage(error));
     } finally {
-      setRetryingPreparation(false);
+      if (mountedRef.current) setRetryingPreparation(false);
     }
   }
 
-  async function loadLatestSession() {
-    const page = await listStudioRitualSessions(ritual.id, { limit: 1 });
+  async function loadLatestSession(signal: AbortSignal) {
+    const page = await listStudioRitualSessions(ritual.id, { limit: 1 }, signal);
     const latest = page.items.find((item) => item.id === session.id) ?? page.items[0];
     if (!latest) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
     return latest;
   }
 
   async function keepLocalDraft() {
+    const operation = beginOperation();
     setSaveState("saving");
     const localDraft = { ...readRitualDraft(session.id), ...answersRef.current };
     try {
-      const latest = await loadLatestSession();
+      const latest = await loadLatestSession(operation.controller.signal);
+      if (!operation.isCurrent()) return;
       if (latest.status === "completed") {
         setSaveState("conflict");
         setActionError("A sessão já foi concluída em outra aba. Seu rascunho continua guardado neste navegador.");
         return;
       }
-      acceptSession(latest);
+      if (!acceptSession(latest, operation.isCurrent)) return;
       lastSavedRef.current = JSON.stringify(latest.answersJson);
       const merged = { ...latest.answersJson, ...localDraft };
       answersRef.current = merged;
@@ -511,18 +621,22 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       setActionError(null);
       await persistAnswers();
     } catch (error) {
+      if (!operation.isCurrent()) return;
       setSaveState("conflict");
       setActionError(isOfflineError(error)
         ? "Sem conexão para comparar as versões. Seu rascunho continua guardado neste navegador."
         : ritualErrorMessage(error));
+    } finally {
+      endOperation(operation);
     }
   }
 
   async function discardLocalDraft() {
+    const operation = beginOperation();
     setSaveState("saving");
     try {
-      const latest = await loadLatestSession();
-      acceptSession(latest);
+      const latest = await loadLatestSession(operation.controller.signal);
+      if (!acceptSession(latest, operation.isCurrent)) return;
       answersRef.current = latest.answersJson;
       setAnswers(latest.answersJson);
       lastSavedRef.current = JSON.stringify(latest.answersJson);
@@ -530,10 +644,13 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       setSaveState("saved");
       setActionError(null);
     } catch (error) {
+      if (!operation.isCurrent()) return;
       setSaveState("conflict");
       setActionError(isOfflineError(error)
         ? "Sem conexão para carregar a versão do servidor. Seu rascunho continua guardado neste navegador."
         : ritualErrorMessage(error));
+    } finally {
+      endOperation(operation);
     }
   }
 

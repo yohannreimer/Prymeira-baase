@@ -59,9 +59,154 @@ const readySession = {
   completedAt: null
 };
 
+const secondRitual = {
+  ...ritual,
+  id: "ritual_2",
+  documentId: "document_2",
+  documentTitle: "Revisar caixa",
+  propertiesJson: { intention: "Revisar caixa", guide_questions: ["Como está o caixa?"] }
+};
+
+const secondSession = {
+  ...readySession,
+  id: "session_2",
+  ritualId: secondRitual.id,
+  preparationJson: null,
+  contextJson: { ritual: { guideQuestions: ["Como está o caixa?"] } },
+  answersJson: { "Como está o caixa?": "Caixa protegido." },
+  prepareAiRunId: null
+};
+
 describe("StudioRituals", () => {
   beforeEach(() => installLocalStorage());
   afterEach(() => vi.restoreAllMocks());
+
+  it("ignores a late start after returning and opening another ritual", async () => {
+    const user = userEvent.setup();
+    const firstStart = deferred<Response>();
+    let firstSignal: AbortSignal | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) {
+        return response({ structures: [ritual, secondRitual], nextCursor: null });
+      }
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        firstSignal = init.signal as AbortSignal;
+        return firstStart.promise;
+      }
+      if (url.endsWith(`/api/studio/rituals/${secondRitual.id}/sessions`) && init?.method === "POST") {
+        return response({ session: secondSession }, 201);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisar prioridades" }));
+    await user.click(screen.getByRole("button", { name: "Rituais" }));
+    await user.click(screen.getByRole("button", { name: "Iniciar Revisar caixa" }));
+    expect(await screen.findByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido.");
+    expectAborted(firstSignal);
+
+    firstStart.resolve(response({ session: readySession }, 201));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido."));
+    expect(screen.queryByRole("textbox", { name: "Resposta para O que mudou?" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a save from an unmounted ritual without clearing its draft or changing the next ritual", async () => {
+    const user = userEvent.setup();
+    const firstSave = deferred<Response>();
+    let saveSignal: AbortSignal | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual, secondRitual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith(`/api/studio/rituals/${secondRitual.id}/sessions`) && init?.method === "POST") return response({ session: secondSession }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        saveSignal = init.signal as AbortSignal;
+        return firstSave.promise;
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisar prioridades" }));
+    await user.type(screen.getByRole("textbox", { name: "Resposta para O que mudou?" }), "Rascunho A");
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    await user.click(screen.getByRole("button", { name: "Rituais" }));
+    await user.click(screen.getByRole("button", { name: "Iniciar Revisar caixa" }));
+    expectAborted(saveSignal);
+
+    firstSave.resolve(response({ session: { ...readySession, status: "in_progress", revision: 2, answersJson: { "O que mudou?": "Rascunho A" } } }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido."));
+    expect(window.localStorage.getItem("baase:studio:ritual-draft:session_1")).toContain("Rascunho A");
+  });
+
+  it("ignores a completed finish from a ritual that was left", async () => {
+    const user = userEvent.setup();
+    const finishA = deferred<Response>();
+    let finishSignal: AbortSignal | null = null;
+    let revision = 1;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual, secondRitual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") return response({ session: readySession }, 201);
+      if (url.endsWith(`/api/studio/rituals/${secondRitual.id}/sessions`) && init?.method === "POST") return response({ session: secondSession }, 201);
+      if (url.endsWith("/api/studio/ritual-sessions/session_1") && init?.method === "PATCH") {
+        revision += 1;
+        return response({ session: { ...readySession, status: "in_progress", revision, answersJson: JSON.parse(String(init.body)).answers } });
+      }
+      if (url.endsWith("/api/studio/ritual-sessions/session_1/finish") && init?.method === "POST") {
+        finishSignal = init.signal as AbortSignal;
+        return finishA.promise;
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisar prioridades" }));
+    await user.click(screen.getByRole("button", { name: "Salvar e continuar" }));
+    await screen.findByRole("textbox", { name: "Resposta para O que merece foco?" });
+    await user.click(screen.getByRole("button", { name: "Concluir ritual" }));
+    await user.click(screen.getByRole("button", { name: "Rituais" }));
+    await user.click(screen.getByRole("button", { name: "Iniciar Revisar caixa" }));
+    expectAborted(finishSignal);
+
+    finishA.resolve(response({ session: { ...readySession, status: "completed", revision: 3, completedAt: "2026-07-14T12:20:00.000Z" } }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido."));
+    expect(screen.queryByRole("heading", { name: "Ritual concluído" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a late preparation retry after switching rituals", async () => {
+    const user = userEvent.setup();
+    const retryA = deferred<Response>();
+    let startsA = 0;
+    let retrySignal: AbortSignal | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual, secondRitual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        startsA += 1;
+        if (startsA > 1) {
+          retrySignal = init.signal as AbortSignal;
+          return retryA.promise;
+        }
+        return response({ session: { ...readySession, status: "failed", preparationJson: null, failureCode: "STUDIO_RITUAL_PREPARATION_FAILED" } }, 201);
+      }
+      if (url.endsWith(`/api/studio/rituals/${secondRitual.id}/sessions`) && init?.method === "POST") return response({ session: secondSession }, 201);
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Iniciar Revisar prioridades" }));
+    await user.click(await screen.findByRole("button", { name: "Tentar preparar novamente" }));
+    await user.click(screen.getByRole("button", { name: "Rituais" }));
+    await user.click(screen.getByRole("button", { name: "Iniciar Revisar caixa" }));
+    expectAborted(retrySignal);
+
+    retryA.resolve(response({ session: { ...readySession, status: "preparing", revision: 2, preparationJson: null, failureCode: null } }, 201));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido."));
+    expect(screen.queryByText(/não foi possível abrir o ritual/i)).not.toBeInTheDocument();
+  });
 
   it("opens answers immediately while preparation advances through abortable polling", async () => {
     const user = userEvent.setup();
@@ -608,6 +753,11 @@ describe("StudioRituals", () => {
 
 function response(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+}
+
+function expectAborted(signal: AbortSignal | null) {
+  expect(signal).not.toBeNull();
+  expect(signal!.aborted).toBe(true);
 }
 
 function installLocalStorage() {
