@@ -1577,6 +1577,57 @@ function repositoryContract(
       });
     });
 
+    it("never claims a failed ritual preparation even after its answers are edited", async () => {
+      await withRepository(async (repository) => {
+        const ownerScope = { workspaceId: "workspace_failed_claim", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput(ownerScope));
+        const ritual = await repository.createStructure({
+          ...ownerScope,
+          documentId: document.id,
+          kind: "ritual",
+          lifecycleStatus: "active",
+          horizonAt: null,
+          metricJson: null,
+          cadenceJson: null,
+          nextRunAt: null,
+          propertiesJson: { guide_questions: ["O que mudou?"] }
+        });
+        const queued = await repository.createRitualSession({
+          ...ownerScope,
+          ritualId: ritual.id,
+          preparationToken: null,
+          preparationLeaseExpiresAt: null,
+          contextJson: { ritual: { guideQuestions: ["O que mudou?"] } }
+        });
+        const claimed = await repository.claimNextRitualPreparation("2026-07-13T12:00:00.000Z");
+        expect(claimed?.id).toBe(queued.id);
+        const failed = await repository.updateRitualSession({
+          ...claimed!,
+          status: "failed",
+          answersJson: { "O que mudou?": "Resposta preservada" },
+          preparationToken: null,
+          preparationLeaseExpiresAt: null,
+          failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+        }, claimed!.revision);
+        await expect(repository.claimNextRitualPreparation("2026-07-13T12:03:00.000Z")).resolves.toBeNull();
+
+        const edited = await repository.updateRitualSession({
+          ...failed,
+          answersJson: { "O que mudou?": "Resposta editada" }
+        }, failed.revision);
+        expect(edited).toMatchObject({ status: "failed", failureCode: "STUDIO_RITUAL_PREPARATION_FAILED" });
+        await expect(repository.claimNextRitualPreparation("2026-07-13T12:06:00.000Z")).resolves.toBeNull();
+
+        const legacyInProgress = await repository.updateRitualSession({
+          ...edited,
+          status: "in_progress",
+          failureCode: null
+        }, edited.revision);
+        expect(legacyInProgress.preparationJson).toBeNull();
+        await expect(repository.claimNextRitualPreparation("2026-07-13T12:09:00.000Z")).resolves.toBeNull();
+      });
+    });
+
     it("projects the next active scheduled ritual with its owner-scoped document title in one bounded query", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -2140,6 +2191,8 @@ describe("PostgreSQL repository bundle", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.text).toContain("FOR UPDATE SKIP LOCKED");
+    expect(calls[0]!.text).toContain("sessions.status='preparing'");
+    expect(calls[0]!.text).not.toContain("sessions.status IN ('preparing','in_progress')");
     expect(calls[0]!.text).toContain("preparation_token IS NULL OR sessions.preparation_lease_expires_at <=");
     expect(calls[0]!.text).toContain("NOT (sessions.workspace_id || '/' || sessions.owner_profile_id = ANY");
     expect(calls[0]!.text).toContain("revision=sessions.revision+1");

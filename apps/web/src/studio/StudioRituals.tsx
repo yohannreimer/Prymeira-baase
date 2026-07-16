@@ -348,6 +348,8 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   const [actionError, setActionError] = useState<string | null>(null);
   const [localDraftStored, setLocalDraftStored] = useState(true);
   const [finishing, setFinishing] = useState(false);
+  const [retryingPreparation, setRetryingPreparation] = useState(false);
+  const [preparationRetryError, setPreparationRetryError] = useState<string | null>(null);
   const revisionRef = useRef(initialSession.revision);
   const answersRef = useRef(answers);
   const lastSavedRef = useRef(JSON.stringify(initialSession.answersJson));
@@ -467,6 +469,21 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
     }
   }
 
+  async function retryPreparation() {
+    if (retryingPreparation) return;
+    setRetryingPreparation(true);
+    setPreparationRetryError(null);
+    try {
+      if (!await persistAnswers()) return;
+      const retried = await startStudioRitualSession(ritual.id);
+      acceptSession(retried);
+    } catch (error) {
+      setPreparationRetryError(ritualErrorMessage(error));
+    } finally {
+      setRetryingPreparation(false);
+    }
+  }
+
   async function loadLatestSession() {
     const page = await listStudioRitualSessions(ritual.id, { limit: 1 });
     const latest = page.items.find((item) => item.id === session.id) ?? page.items[0];
@@ -539,7 +556,12 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
         <SaveIndicator state={saveState} offlinePreserved={localDraftStored} />
       </header>
 
-      <PreparedContext session={session} />
+      <PreparedContext
+        session={session}
+        retrying={retryingPreparation}
+        retryError={preparationRetryError}
+        onRetry={() => void retryPreparation()}
+      />
 
       <section className="studio-ritual-question" aria-label={`Pergunta ${questionIndex + 1}`}>
         <p className="studio-ritual-question__purpose">{question.purpose}</p>
@@ -588,7 +610,12 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   );
 }
 
-function PreparedContext({ session }: { session: StudioRitualSession }) {
+function PreparedContext({ session, retrying, retryError, onRetry }: {
+  session: StudioRitualSession;
+  retrying: boolean;
+  retryError: string | null;
+  onRetry(): void;
+}) {
   const preparation = asRecord(session.preparationJson);
   const proposal = asRecord(preparation.proposal);
   const notes = stringList(proposal.preparation_notes);
@@ -602,9 +629,15 @@ function PreparedContext({ session }: { session: StudioRitualSession }) {
   );
   const preparationFailureCode = session.failureCode ?? context.preparationFailureCode;
   if (preparationFailureCode && session.preparationJson === null) return (
-    <div className="studio-ritual-context-status studio-ritual-context-status--failed" role="status">
-      <i aria-hidden="true" className="ph-light ph-cloud-slash" />
-      <span>O contexto da IA não ficou disponível. Suas respostas continuam funcionando normalmente.</span>
+    <div className="studio-ritual-context-status studio-ritual-context-status--failed">
+      <div role="status">
+        <i aria-hidden="true" className="ph-light ph-cloud-slash" />
+        <span>O contexto da IA não ficou disponível. Suas respostas continuam funcionando normalmente.</span>
+      </div>
+      <button type="button" disabled={retrying} onClick={onRetry}>
+        {retrying ? "Preparando novamente…" : "Tentar preparar novamente"}
+      </button>
+      {retryError ? <p role="alert">{retryError}</p> : null}
     </div>
   );
   return (

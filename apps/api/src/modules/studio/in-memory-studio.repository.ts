@@ -874,7 +874,7 @@ export function createInMemoryStudioRepository(
       const excluded = new Set(excludeOwnerKeys);
       const candidate = ritualSessions
         .filter((session) => session.preparationJson === null
-          && (session.status === "preparing" || session.status === "in_progress")
+          && session.status === "preparing"
           && (session.preparationToken === null
             || (session.preparationLeaseExpiresAt !== null
               && new Date(session.preparationLeaseExpiresAt).getTime() <= claimedAt.getTime()))

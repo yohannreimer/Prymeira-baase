@@ -3116,7 +3116,11 @@
 }
 .studio-ritual-context-status i { color: var(--accent-ink); font-size: 15px; }
 .studio-ritual-context-status:not(.studio-ritual-context-status--failed) i { animation: studio-ritual-spin 1.4s linear infinite; }
+.studio-ritual-context-status--failed { align-items: flex-start; flex-wrap: wrap; justify-content: space-between; }
+.studio-ritual-context-status--failed > div { align-items: center; display: flex; gap: 8px; }
 .studio-ritual-context-status--failed i { color: var(--warning, #9a6b2f); }
+.studio-ritual-context-status--failed button { flex: none; font-size: 11px; min-height: 30px; padding: 5px 9px; }
+.studio-ritual-context-status--failed p { color: var(--danger-ink); flex-basis: 100%; margin: 2px 0 0 23px; }
 @keyframes studio-ritual-spin { to { transform: rotate(360deg); } }
 .studio-ritual-question { display: grid; gap: 12px; padding: 20px 0 28px; }
 .studio-ritual-question__purpose { color: var(--muted); font-size: 12px; margin: 0; }

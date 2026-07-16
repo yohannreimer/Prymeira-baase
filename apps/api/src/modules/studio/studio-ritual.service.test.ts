@@ -152,7 +152,7 @@ describe("Studio ritual sessions", () => {
     });
   });
 
-  it("keeps answers and exposes an honest state when a claimed provider fails", async () => {
+  it("keeps answers in a terminal failure until the owner explicitly retries preparation", async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const setup = await fixture({
@@ -173,10 +173,39 @@ describe("Studio ritual sessions", () => {
     await processing;
 
     expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
-      status: "in_progress",
+      status: "failed",
       answersJson: { "O que mudou?": "Esta resposta não pode sumir." },
-      failureCode: null,
-      contextJson: { preparationFailureCode: "STUDIO_RITUAL_PREPARATION_FAILED" }
+      failureCode: "STUDIO_RITUAL_PREPARATION_FAILED",
+      preparationToken: null,
+      preparationLeaseExpiresAt: null
+    });
+    await expect(setup.service.processNextPreparation()).resolves.toBeNull();
+
+    const failed = (await setup.repository.findRitualSession(scope, started.id))!;
+    const edited = await setup.service.updateSession(scope, failed.id, {
+      expectedRevision: failed.revision,
+      answers: { "O que mudou?": "Resposta editada e ainda segura." }
+    });
+    expect(edited).toMatchObject({
+      status: "failed",
+      answersJson: { "O que mudou?": "Resposta editada e ainda segura." },
+      failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+    });
+    await expect(setup.service.processNextPreparation()).resolves.toBeNull();
+
+    const retried = await setup.service.startSession(scope, setup.ritual.id);
+    expect(retried).toMatchObject({
+      id: started.id,
+      status: "preparing",
+      answersJson: { "O que mudou?": "Resposta editada e ainda segura." },
+      failureCode: null
+    });
+    await setup.service.processNextPreparation();
+    expect(setup.provider.generateStructured).toHaveBeenCalledTimes(2);
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "failed",
+      answersJson: { "O que mudou?": "Resposta editada e ainda segura." },
+      failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
     });
   });
 
@@ -258,7 +287,7 @@ describe("Studio ritual sessions", () => {
     expect(observedModels).toEqual(["gpt-5.6-terra", "gpt-5.6-terra"]);
   });
 
-  it("keeps preparation failures retryable and never blocks manual partial answers", async () => {
+  it("keeps preparation failures terminal while manual partial answers change", async () => {
     const setup = await fixture({ failPreparation: true });
     const started = await setup.service.startSession(scope, setup.ritual.id);
     await setup.service.processNextPreparation();
@@ -267,7 +296,12 @@ describe("Studio ritual sessions", () => {
     const answered = await setup.service.updateSession(scope, failed.id, {
       expectedRevision: failed.revision, answers: { "O que mudou?": "Contratamos uma pessoa." }
     });
-    expect(answered).toMatchObject({ status: "preparing", answersJson: { "O que mudou?": "Contratamos uma pessoa." } });
+    expect(answered).toMatchObject({
+      status: "failed",
+      failureCode: "STUDIO_RITUAL_PREPARATION_FAILED",
+      answersJson: { "O que mudou?": "Contratamos uma pessoa." }
+    });
+    await expect(setup.service.processNextPreparation()).resolves.toBeNull();
   });
 
   it("persists final answers before optional synthesis and prevents restarting a completed session", async () => {

@@ -162,18 +162,38 @@ describe("StudioRituals", () => {
     expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes("ritual-sessions/session_1") && init?.method === "PATCH")).toHaveLength(2);
   });
 
-  it("keeps answers available when preparation fails", async () => {
+  it("keeps answers available and explicitly retries a failed preparation", async () => {
     const user = userEvent.setup();
+    let starts = 0;
+    let polls = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
       if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
-        return response({ session: {
+        starts += 1;
+        return response({ session: starts === 1 ? {
           ...readySession,
           status: "failed",
           preparationJson: null,
+          answersJson: { "O que mudou?": "Resposta preservada" },
           failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+        } : {
+          ...readySession,
+          status: "preparing",
+          revision: 2,
+          preparationJson: null,
+          answersJson: { "O que mudou?": "Resposta preservada" },
+          failureCode: null
         } }, 201);
+      }
+      if (url.includes(`/api/studio/rituals/${ritual.id}/sessions?`) && !init?.method) {
+        polls += 1;
+        return response({ sessions: [{
+          ...readySession,
+          status: "in_progress",
+          revision: 3,
+          answersJson: { "O que mudou?": "Resposta preservada" }
+        }], nextCursor: null });
       }
       return response({}, 404);
     });
@@ -182,8 +202,67 @@ describe("StudioRituals", () => {
     await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
     expect(await screen.findByRole("status", { name: "Estado do salvamento do ritual" })).toBeVisible();
     expect(screen.getByText(/contexto da IA não ficou disponível/i)).toBeVisible();
-    expect(screen.getByRole("heading", { name: "O que mudou?" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "O que merece foco?" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pergunta anterior" }));
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toHaveValue("Resposta preservada");
+    await user.click(screen.getByRole("button", { name: "Tentar preparar novamente" }));
+    expect(await screen.findByText("Preparando contexto em segundo plano…")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toHaveValue("Resposta preservada");
+    await waitFor(() => expect(screen.getByText("Ver contexto preparado")).toBeVisible(), { timeout: 2_500 });
+    expect(starts).toBe(2);
+    expect(polls).toBeGreaterThan(0);
+  });
+
+  it("keeps retry available when preparation fails again", async () => {
+    const user = userEvent.setup();
+    let starts = 0;
+    let polls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        starts += 1;
+        return response({ session: starts === 1 ? {
+          ...readySession,
+          status: "failed",
+          revision: 1,
+          preparationJson: null,
+          answersJson: { "O que mudou?": "Resposta preservada" },
+          failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+        } : {
+          ...readySession,
+          status: "preparing",
+          revision: 2,
+          preparationJson: null,
+          answersJson: { "O que mudou?": "Resposta preservada" },
+          failureCode: null
+        } }, 201);
+      }
+      if (url.includes(`/api/studio/rituals/${ritual.id}/sessions?`) && !init?.method) {
+        polls += 1;
+        return response({ sessions: [{
+          ...readySession,
+          status: "failed",
+          revision: 3,
+          preparationJson: null,
+          answersJson: { "O que mudou?": "Resposta preservada" },
+          failureCode: "STUDIO_RITUAL_PREPARATION_FAILED"
+        }], nextCursor: null });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+    const retry = await screen.findByRole("button", { name: "Tentar preparar novamente" });
+    await user.click(retry);
+
+    expect(await screen.findByText("Preparando contexto em segundo plano…")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Tentar preparar novamente" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Pergunta anterior" }));
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toHaveValue("Resposta preservada");
+    expect(starts).toBe(2);
+    expect(polls).toBeGreaterThan(0);
   });
 
   it("keeps an offline answer locally and retries without hiding the save state", async () => {

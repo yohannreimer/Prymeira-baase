@@ -116,9 +116,11 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       if (current.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
       return assertSession(await options.repository.updateRitualSession({
         ...current,
-        status: current.preparationJson === null ? "preparing" : "in_progress",
+        status: current.status === "failed"
+          ? "failed"
+          : current.preparationJson === null ? "preparing" : "in_progress",
         answersJson: mergeAnswers(current.answersJson, input.answers),
-        failureCode: null
+        failureCode: current.status === "failed" ? current.failureCode : null
       }, current.revision));
     },
 
@@ -254,16 +256,12 @@ async function prepareClaimedSession(
           ? "STUDIO_RITUAL_PREPARATION_CANCELLED"
           : "STUDIO_RITUAL_PREPARATION_FAILED";
       try {
-        const hasAnswers = Object.keys(latest.answersJson).length > 0;
         return assertSession(await options.repository.updateRitualSession({
           ...latest,
-          status: hasAnswers ? "in_progress" : "failed",
-          contextJson: hasAnswers
-            ? assertJsonBounds({ ...(latest.contextJson ?? {}), preparationFailureCode: failureCode })
-            : latest.contextJson,
+          status: "failed",
           preparationToken: null,
           preparationLeaseExpiresAt: null,
-          failureCode: hasAnswers ? null : failureCode
+          failureCode
         }, latest.revision));
       } catch (updateError) {
         if (!isStale(updateError)) throw updateError;

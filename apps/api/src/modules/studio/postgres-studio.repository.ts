@@ -1361,7 +1361,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
            SELECT sessions.id,sessions.workspace_id,sessions.owner_profile_id
            FROM studio_ritual_sessions sessions
            WHERE sessions.preparation_json IS NULL
-             AND sessions.status IN ('preparing','in_progress')
+             AND sessions.status='preparing'
              AND (sessions.preparation_token IS NULL OR sessions.preparation_lease_expires_at <= $1::timestamptz)
              ${exclusions}
            ORDER BY sessions.updated_at ASC,sessions.id ASC
