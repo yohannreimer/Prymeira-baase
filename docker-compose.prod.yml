@@ -33,7 +33,7 @@ services:
         condition: on-failure
 
   prymeira_baase_api:
-    image: ghcr.io/yohannreimer/prymeira-baase-api:latest
+    image: ghcr.io/yohannreimer/prymeira-baase-api:${BAASE_IMAGE_TAG:-latest}
     networks:
       prymeira_baase_internal:
         aliases:
@@ -116,7 +116,7 @@ services:
         condition: on-failure
 
   prymeira_baase_minio_bootstrap:
-    image: ghcr.io/yohannreimer/prymeira-baase-api:latest
+    image: ghcr.io/yohannreimer/prymeira-baase-api:${BAASE_IMAGE_TAG:-latest}
     command: ["pnpm", "--filter", "@prymeira/baase-api", "storage:bootstrap"]
     networks:
       - prymeira_baase_internal
@@ -144,7 +144,7 @@ services:
         condition: on-failure
 
   prymeira_baase_web:
-    image: ghcr.io/yohannreimer/prymeira-baase-web:latest
+    image: ghcr.io/yohannreimer/prymeira-baase-web:${BAASE_IMAGE_TAG:-latest}
     networks:
       - network_swarm_public
       - prymeira_baase_internal

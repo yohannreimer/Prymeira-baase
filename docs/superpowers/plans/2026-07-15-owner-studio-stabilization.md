@@ -67,7 +67,7 @@ it("uses the approved Studio models and allows explicit overrides", () => {
 
 - [x] **Step 2: Run the focused test and confirm the missing fields**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`
 Expected: FAIL because `aiModel` and `embeddingModel` are absent.
 
 - [x] **Step 3: Add validated model settings**
@@ -90,7 +90,7 @@ Return both fields under `runtimeConfig.studio` and extend `BaaseRuntimeConfig` 
 
 - [x] **Step 4: Re-run the runtime tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/config/runtime.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -126,7 +126,7 @@ Add the equivalent expectation for ritual preparation and synthesis.
 
 - [x] **Step 2: Run both focused suites and verify they fail**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts`
 Expected: FAIL because the services still send `gpt-5.5`.
 
 - [x] **Step 3: Add required `model` options and remove Studio hardcoding**
@@ -148,7 +148,7 @@ In `buildApp`, pass `runtimeConfig.studio.aiModel` to assistant and ritual servi
 
 - [x] **Step 4: Re-run focused tests and typecheck**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-api typecheck`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-assistant.service.test.ts src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-api typecheck`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -184,7 +184,7 @@ it("never includes private text in readiness output", async () => {
 
 - [x] **Step 2: Run and observe failure**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts`
 Expected: FAIL because the readiness module and unavailable provider do not exist.
 
 - [x] **Step 3: Implement safe capability status**
@@ -213,7 +213,7 @@ Register owner-only `GET /studio/readiness` and map provider/model/vector errors
 
 - [x] **Step 4: Run readiness, route, and provider tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts src/modules/studio/studio.routes.test.ts src/modules/ai/ai-providers.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-readiness.test.ts src/modules/studio/studio.routes.test.ts src/modules/ai/ai-providers.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -248,7 +248,7 @@ it("rejects vector-enabled Studio when pgvector cannot be initialized", async ()
 
 - [x] **Step 2: Run the focused initialization tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts`
 Expected: FAIL because vector readiness is lazy.
 
 - [x] **Step 3: Update compose and startup initialization**
@@ -286,7 +286,7 @@ Call `CREATE EXTENSION IF NOT EXISTS vector` during PostgreSQL runtime initializ
 
 - [x] **Step 4: Run tests and validate compose rendering**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts && docker compose -f docker-compose.prod.yml config >/dev/null`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/server-initialization.test.ts src/db/operational-schema.postgres.test.ts && docker compose -f docker-compose.prod.yml config >/dev/null`
 Expected: PASS and compose exits 0.
 
 - [x] **Step 5: Commit**
@@ -320,7 +320,7 @@ expect(columns("studio_documents")).toEqual(expect.arrayContaining([
 
 - [x] **Step 2: Run schema tests and verify missing columns**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts`
 Expected: FAIL.
 
 - [x] **Step 3: Add the next migration and compatible types**
@@ -344,7 +344,7 @@ Extend statuses and wire types with `trashed`, checkpoint `title`, `checkpointRe
 
 - [x] **Step 4: Run schema suites**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts src/db/operational-schema.postgres.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/db/operational-schema.test.ts src/db/operational-schema.postgres.test.ts`
 Expected: PASS; PostgreSQL test may skip only with the explicit vector prerequisite code.
 
 - [x] **Step 5: Commit**
@@ -374,7 +374,7 @@ expect(await repository.listVersions(scope, created.id)).toHaveLength(1);
 
 - [x] **Step 2: Run and confirm excess versions**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts`
 Expected: FAIL because each update inserts a version.
 
 - [x] **Step 3: Remove `insertVersion` from ordinary update transactions**
@@ -393,7 +393,7 @@ Keep the initial imported checkpoint on document creation and explicit version a
 
 - [x] **Step 4: Run in-memory and PostgreSQL repository suites**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts src/db/postgres.repositories.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.repository.test.ts src/db/postgres.repositories.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -444,7 +444,7 @@ expect(restored.json().version.checkpointReason).toBe("restored");
 
 - [x] **Step 2: Run and observe 404/schema failure**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts`
 Expected: FAIL.
 
 - [x] **Step 3: Implement checkpoint rules and pagination**
@@ -479,7 +479,7 @@ Add `POST /studio/documents/:documentId/versions/:versionId/restore`; it copies 
 
 - [x] **Step 4: Run route, service, and memory tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts src/modules/studio/studio-memory.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.service.test.ts src/modules/studio/studio-memory.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -514,7 +514,7 @@ it("creates one significant-pause checkpoint after meaningful editing", () => {
 
 - [x] **Step 2: Run and confirm the module is absent**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Implement the deterministic policy and API call**
@@ -537,7 +537,7 @@ Trigger a checkpoint after a 30-second meaningful pause and on editor unmount/na
 
 - [x] **Step 4: Run autosave/editor/API tests**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-api.test.ts`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-api.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -566,7 +566,7 @@ expect(screen.getByRole("button", { name: "Carregar versões anteriores" })).toB
 
 - [x] **Step 2: Run and verify the component is missing**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Build the accessible drawer**
@@ -585,7 +585,7 @@ Paginate new checkpoints, collapse legacy entries, restore focus to the trigger,
 
 - [x] **Step 4: Run drawer/editor/accessibility tests**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-accessibility.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-accessibility.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -615,7 +615,7 @@ expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "asset_pdf" 
 
 - [x] **Step 2: Run and confirm current inline rendering violates the test**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Implement the compact list and status labels**
@@ -636,7 +636,7 @@ Expected: FAIL.
 
 - [x] **Step 4: Run page and list tests**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx src/studio/StudioPage.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialList.test.tsx src/studio/StudioPage.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -668,7 +668,7 @@ expect(screen.getByText(readyPdf.extractedText!)).toBeVisible();
 
 - [x] **Step 2: Run and verify the inspector is absent**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Implement per-kind inspector actions**
@@ -690,7 +690,7 @@ Reuse audio URL renewal and retry logic from `StudioAssetProcessingStatus`; redu
 
 - [x] **Step 4: Run material regression suites**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx src/studio/StudioAssetProcessingStatus.test.tsx src/studio/StudioPage.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx src/studio/StudioAssetProcessingStatus.test.tsx src/studio/StudioPage.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -723,7 +723,7 @@ expect(onOpenDocument).toHaveBeenCalledWith("document_1");
 
 - [x] **Step 2: Run and confirm current placeholder behavior**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx`
 Expected: FAIL because those sections render `studio-empty`.
 
 - [x] **Step 3: Compose the query-driven library**
@@ -743,7 +743,7 @@ Use `listStudioStructures({ kind, lifecycle_status: "active", limit: 30 })`, cli
 
 - [x] **Step 4: Run structure, page, and accessibility tests**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx src/studio/studio-accessibility.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioStructureLibrary.test.tsx src/studio/StudioPage.test.tsx src/studio/studio-accessibility.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -773,7 +773,7 @@ expect(await screen.findByText("Nova decisão estratégica")).toBeVisible();
 
 - [x] **Step 2: Run and verify stale section data**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/studio-events.test.ts`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/studio-events.test.ts`
 Expected: FAIL before event invalidation exists.
 
 - [x] **Step 3: Add a small typed invalidation bus**
@@ -799,7 +799,7 @@ After a successful structure create/update/archive, create a `structure_changed`
 
 - [x] **Step 4: Run page and structures tests**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/StudioStructures.test.tsx src/studio/StudioStructureLibrary.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPage.test.tsx src/studio/StudioStructures.test.tsx src/studio/StudioStructureLibrary.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -847,7 +847,7 @@ expect(await screen.findByRole("checkbox", { name: "Estratégia" })).toBeChecked
 
 - [x] **Step 2: Run and confirm the mutation currently returns no canonical set**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Return and apply canonical memberships**
@@ -871,7 +871,7 @@ Map the returned collection IDs and replace `membershipActual`, `membershipDesir
 
 - [x] **Step 4: Run route, UI, and PostgreSQL tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/db/postgres.repositories.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/db/postgres.repositories.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -905,7 +905,7 @@ expect((await request("DELETE", `/studio/documents/${id}`, ownerA)).statusCode).
 
 - [x] **Step 2: Run and confirm routes are missing**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts`
 Expected: FAIL.
 
 - [x] **Step 3: Implement the lifecycle transactionally**
@@ -930,7 +930,7 @@ Moving to trash must enqueue the current checkpoint for index removal so trashed
 
 - [x] **Step 4: Run lifecycle, portability, and isolation suites**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts src/modules/studio/studio-portability.service.test.ts`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts src/modules/studio/studio-portability.service.test.ts`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -967,7 +967,7 @@ expect(screen.getByRole("dialog", { name: "Excluir definitivamente?" })).toBeVis
 
 - [x] **Step 2: Run and confirm missing processor/UI**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Implement cleanup and calm Trash view**
@@ -985,7 +985,7 @@ Add `trash` to Studio navigation, show deletion date and remaining retention, an
 
 - [x] **Step 4: Run maintenance, UI, and accessibility suites**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx src/studio/studio-accessibility.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-trash-cleanup.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioTrash.test.tsx src/studio/studio-accessibility.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -1024,7 +1024,7 @@ expect(screen.queryByText("Nenhuma conexão encontrada")).not.toBeInTheDocument(
 
 - [x] **Step 2: Run and verify the endpoint only returns `related`**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Add a stable index projection**
@@ -1041,7 +1041,7 @@ Return the projection with results. Map `StudioVectorPrerequisiteError` and embe
 
 - [x] **Step 4: Run memory, route, and related-thought tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-memory.test.ts src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-memory.test.ts src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -1079,7 +1079,7 @@ expect(screen.getByText("Preparando contexto em segundo plano…")).toBeVisible(
 
 - [x] **Step 2: Run and confirm start currently awaits AI**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Persist a preparation job and poll session state**
@@ -1100,7 +1100,7 @@ Move AI generation into a maintenance processor. Keep base guide questions avail
 
 - [x] **Step 4: Run ritual, maintenance, and UI tests**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -1139,7 +1139,7 @@ expect(screen.getByRole("button", { name: "Abrir Copiloto" })).toBeVisible();
 
 - [x] **Step 2: Run and confirm missing persistent preference/copy**
 
-Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx`
 Expected: FAIL.
 
 - [x] **Step 3: Add persistent, accessible states**
@@ -1158,7 +1158,7 @@ Extend the export projection returned by the API with `requestedAt`, `filename`,
 
 - [x] **Step 4: Run privacy, Copilot, and accessibility suites**
 
-Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-portability.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx src/studio/studio-accessibility.test.tsx`  
+Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-portability.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioPrivacySettings.test.tsx src/studio/StudioCopilot.test.tsx src/studio/studio-accessibility.test.tsx`
 Expected: PASS.
 
 - [x] **Step 5: Commit**
@@ -1178,7 +1178,7 @@ git commit -m "feat(studio): clarify export and Copilot states"
 - Create: `docs/qa/2026-07-15-owner-studio-stabilization-results.md`
 - Create: `docs/operations/owner-studio.md`
 
-- [ ] **Step 1: Write failing complete-flow E2E tests**
+- [x] **Step 1: Write failing complete-flow E2E tests**
 
 ```ts
 test("owner structures, reconnects, and deletes a Studio document", async ({ page, request }) => {
@@ -1195,12 +1195,12 @@ test("owner structures, reconnects, and deletes a Studio document", async ({ pag
 
 Add separate E2E coverage for checkpoint count, compact PDF, non-blocking ritual, and downloadable export.
 
-- [ ] **Step 2: Run E2E and record the initial failures**
+- [x] **Step 2: Run E2E and record the initial failures**
 
-Run: `pnpm test:e2e -- tests/e2e/owner-studio.spec.ts`  
+Run: `pnpm test:e2e -- tests/e2e/owner-studio.spec.ts`
 Expected: FAIL until the E2E server exposes the new contracts and all features are integrated.
 
-- [ ] **Step 3: Extend the fixture server and add opt-in production smoke**
+- [x] **Step 3: Extend the fixture server and add opt-in production smoke**
 
 ```ts
 test.skip(!process.env.BAASE_PRODUCTION_URL || !process.env.BAASE_PRODUCTION_AUTH_STATE,
@@ -1217,7 +1217,7 @@ test("deployed Studio AI and vector readiness are honest", async ({ page }) => {
 
 Document the exact Swarm deploy sequence, pgvector validation query, MinIO check, readiness response, rollback command, and volume preservation check.
 
-- [ ] **Step 4: Run the full verification matrix**
+- [x] **Step 4: Run the full verification matrix**
 
 Run:
 
@@ -1231,7 +1231,7 @@ docker compose -f docker-compose.prod.yml config >/dev/null
 
 Expected: all commands exit 0. Production smoke remains skipped unless both opt-in variables are supplied; when supplied, it must pass before release completion.
 
-- [ ] **Step 5: Record evidence and commit**
+- [x] **Step 5: Record evidence and commit**
 
 ```bash
 git add tests/e2e playwright.config.ts docs/qa/2026-07-15-owner-studio-stabilization-results.md docs/operations docker-compose.prod.yml
@@ -1240,8 +1240,8 @@ git commit -m "test(studio): cover stabilized owner workflows"
 
 ## Final release checklist
 
-- [ ] Confirm the worktree is clean and every task commit exists.
-- [ ] Run `git diff main...HEAD --check`; expected: no whitespace errors.
+- [x] Confirm the worktree is clean and every task commit exists.
+- [x] Run `git diff main...HEAD --check`; expected: no whitespace errors.
 - [ ] Verify the migration on a disposable copy of the production schema and data volume.
 - [ ] Verify `SELECT extversion FROM pg_extension WHERE extname = 'vector'` returns one row.
 - [ ] Verify `/api/studio/readiness` reports AI, embeddings, vector, and maintenance as ready.

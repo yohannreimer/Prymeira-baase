@@ -10,7 +10,9 @@ const port = 3090;
 const runtimeConfig = readRuntimeConfig({
   BAASE_RUNTIME_MODE: "demo",
   BAASE_AUTH_MODE: "local",
-  BAASE_SEED_DEMO_DATA: "true"
+  BAASE_SEED_DEMO_DATA: "true",
+  BAASE_STUDIO_ENABLED: "true",
+  BAASE_STUDIO_VECTOR_ENABLED: "true"
 });
 const memoryObjectStorage = createInMemoryObjectStorage();
 const objectStorage = {
@@ -31,7 +33,8 @@ const app = buildApp({
   objectStorage,
   runtimeConfig,
   seedDemoData: true,
-  studioMemoryDimensions: 4
+  studioMemoryDimensions: 4,
+  studioVectorPersistent: true
 });
 const maintenance = startStudioAssetMaintenance(app, {
   intervalMs: 40,
@@ -99,7 +102,12 @@ function deterministicStudioProvider(): AiProvider {
   return {
     async generateStructured(request) {
       if (request.schemaName === "studio_text_suggestion") return textSuggestion(request);
-      if (request.taskKind === "studio_ritual_prepare") return ritualPreparation(request);
+      if (request.taskKind === "studio_ritual_prepare") {
+        if (JSON.stringify(request.input).includes("E2E_SLOW_PREPARATION")) {
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+        }
+        return ritualPreparation(request);
+      }
       if (request.taskKind === "studio_synthesize") {
         return {
           summary: "A revisão tornou a decisão explícita sem publicar nada na operação.",

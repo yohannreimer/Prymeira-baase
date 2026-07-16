@@ -98,6 +98,7 @@ export async function studioRequest<T>(
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const multipartBody = typeof FormData !== "undefined" && init.body instanceof FormData;
   if (multipartBody) headers.delete("content-type");
+  else if (init.body === undefined) headers.delete("content-type");
   else if (!headers.has("content-type")) headers.set("content-type", "application/json");
 
   const response = await fetcher(`/api/studio${path}`, await withConfiguredAuth({

@@ -22,7 +22,7 @@ test.describe("Owner Studio responsive acceptance", () => {
       const home = navigation.getByRole("button", { name: "Início", exact: true });
       const privacy = navigation.getByRole("button", { name: "Privacidade", exact: true });
       await expect(studio.getByRole("heading", { level: 1, name: "Estúdio" })).toBeVisible();
-      await expect(navigation.getByRole("button")).toHaveCount(10);
+      await expect(navigation.getByRole("button")).toHaveCount(11);
       await expect(home).toHaveAttribute("aria-current", "page");
       await expectNoPageOverflow(page);
       if (viewport.width <= 768) await expectMinimumTouchTarget(home);
@@ -64,7 +64,7 @@ test.describe("Owner Studio responsive acceptance", () => {
         await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe("hidden");
         await expectMinimumTouchTarget(sheet.getByRole("button", { name: "Recolher copiloto" }));
         await page.keyboard.press("Escape");
-        const reopen = page.getByRole("button", { name: "Pensar com a IA" });
+        const reopen = page.getByRole("button", { name: "Abrir Copiloto" });
         await expect(reopen).toBeFocused();
         await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe("");
         await expectNoPageOverflow(page);
@@ -73,7 +73,7 @@ test.describe("Owner Studio responsive acceptance", () => {
         await expect(sidecar).toBeVisible();
         await expect(sidecar.getByRole("separator", { name: "Redimensionar copiloto" })).toBeVisible();
         await sidecar.getByRole("button", { name: "Recolher copiloto" }).click();
-        const reopen = page.getByRole("button", { name: "Pensar com a IA" });
+        const reopen = page.getByRole("button", { name: "Abrir Copiloto" });
         await expect(reopen).toBeFocused();
         await reopen.click();
         await expect(page.getByRole("complementary", { name: "Copiloto do Estúdio" })).toBeVisible();

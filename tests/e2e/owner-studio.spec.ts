@@ -312,6 +312,142 @@ test.describe("Owner Studio release acceptance", () => {
     });
     expect(clipboardText).toBe(sourceUrl);
   });
+
+  test("11. owner structure, collection, connections and trash lifecycle stay coherent", async ({ page, request }, testInfo) => {
+    const marker = uniqueTestMarker(testInfo);
+    const title = `Direção trimestral ${marker}`;
+    const collectionName = `Q3 ${marker.slice(-8)}`;
+    const document = await createDocument(request, ownerA, title, `Contexto privado ${marker}`);
+
+    await page.goto(`/#estudio/document/${encodeURIComponent(document.id)}`);
+    await page.getByRole("button", { name: "Estruturar este pensamento" }).click();
+    await page.getByRole("button", { name: "Decisão", exact: true }).click();
+    await page.getByLabel("Decisão tomada", { exact: true }).fill("Preservar foco no trimestre.");
+    await page.getByRole("button", { name: "Criar decisão" }).click();
+    await expect(page.getByRole("button", { name: new RegExp(`Decisão: ${escapeRegex(title)}`) })).toBeVisible();
+
+    await page.getByRole("button", { name: "Decisões", exact: true }).click();
+    await expect(page.getByRole("listitem", { name: title })).toBeVisible();
+
+    await page.getByRole("button", { name: "Coleções", exact: true }).click();
+    await page.getByLabel("Nova coleção").fill(collectionName);
+    await page.getByRole("button", { name: "Criar", exact: true }).click();
+    await expect(page.getByRole("button", { name: collectionName, exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Tudo", exact: true }).click();
+    let row = page.getByRole("listitem", { name: title });
+    await row.getByRole("button", { name: "Organizar em coleções" }).click();
+    await row.getByRole("checkbox", { name: collectionName }).check();
+    await expect(page.getByRole("status").filter({ hasText: "Documento adicionado à coleção." })).toBeAttached();
+    await page.reload();
+    row = page.getByRole("listitem", { name: title });
+    await row.getByRole("button", { name: "Organizar em coleções" }).click();
+    await expect(row.getByRole("checkbox", { name: collectionName })).toBeChecked();
+
+    await row.locator(".studio-library-row__open").click();
+    await page.getByRole("button", { name: "Encontrar conexões" }).click();
+    await expect(page.getByText(/Nenhuma conexão encontrada|Pensamento relacionado/u).first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Tudo", exact: true }).click();
+    row = page.getByRole("listitem", { name: title });
+    await row.getByRole("button", { name: "Mover para a lixeira" }).click();
+    await row.getByRole("button", { name: "Mover para a lixeira" }).click();
+    await page.getByRole("button", { name: "Lixeira", exact: true }).click();
+    await page.getByRole("button", { name: `Restaurar ${title}` }).click();
+
+    await page.getByRole("button", { name: "Tudo", exact: true }).click();
+    row = page.getByRole("listitem", { name: title });
+    await row.getByRole("button", { name: "Mover para a lixeira" }).click();
+    await row.getByRole("button", { name: "Mover para a lixeira" }).click();
+    await page.getByRole("button", { name: "Lixeira", exact: true }).click();
+    await page.getByRole("button", { name: `Excluir definitivamente ${title}` }).click();
+    const dialog = page.getByRole("dialog", { name: "Excluir definitivamente?" });
+    await dialog.getByRole("textbox").fill(title);
+    await dialog.getByRole("button", { name: "Excluir definitivamente" }).click();
+    await expect(page.getByRole("listitem", { name: title })).toHaveCount(0);
+    expect((await api(request, ownerA, `/studio/documents/${document.id}`)).status()).toBe(404);
+  });
+
+  test("12. connection index reports transient and failed states honestly", async ({ page, request }) => {
+    const document = await createDocument(request, ownerA, `Conexões honestas ${Date.now()}`, "Memória ainda em preparação.");
+    let calls = 0;
+    await page.route(`**/api/studio/documents/${document.id}/related?*`, async (route) => {
+      calls += 1;
+      const status = calls === 1 ? "pending" : calls === 2 ? "failed" : "unavailable";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ index: { status, code: `E2E_${status.toUpperCase()}`, indexedVersionId: null }, related: [] })
+      });
+    });
+    await page.goto(`/#estudio/document/${encodeURIComponent(document.id)}`);
+    await page.getByRole("button", { name: "Encontrar conexões" }).click();
+    await expect(page.getByText("Preparando conexões deste pensamento…")).toBeVisible();
+    await expect(page.getByText("As conexões não puderam ser preparadas.")).toBeVisible({ timeout: 5_000 });
+    await page.getByRole("button", { name: "Tentar novamente" }).click();
+    await expect(page.getByText("As conexões estão indisponíveis neste momento.")).toBeVisible();
+  });
+
+  test("13. history stays bounded while compact PDF opens in the material inspector", async ({ page, request }, testInfo) => {
+    const document = await createDocument(request, ownerA, `Histórico e material ${Date.now()}`, "Texto base.");
+    for (let index = 0; index < 12; index += 1) {
+      const response = await api(request, ownerA, `/studio/documents/${document.id}/checkpoints`, {
+        method: "POST",
+        data: { expected_revision: document.revision, reason: "manual", checkpoint_key: `e2e:${uniqueTestMarker(testInfo)}:${index}` }
+      });
+      expect(response.status()).toBe(201);
+    }
+    await page.goto(`/#estudio/document/${encodeURIComponent(document.id)}`);
+    await page.getByRole("button", { name: "Ver histórico de versões" }).click();
+    const history = page.getByRole("dialog", { name: "Histórico de versões" });
+    await expect(history.getByRole("button", { name: /^Versão / })).toHaveCount(10);
+    await history.getByRole("button", { name: "Fechar histórico" }).click();
+
+    const filename = `direcao-${Date.now()}.pdf`;
+    await page.getByTestId("studio-material-file-input").setInputFiles({
+      name: filename,
+      mimeType: "application/pdf",
+      buffer: minimalPdfFixture("Direcao trimestral")
+    });
+    const compactMaterial = page.getByRole("button", { name: `Abrir ${filename}` });
+    await expect(compactMaterial).toBeVisible();
+    await compactMaterial.click();
+    const inspector = page.getByRole("dialog", { name: `Material ${filename}` });
+    await expect(inspector.getByRole("heading", { name: `Material ${filename}` })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Baixar original" })).toBeVisible();
+  });
+
+  test("14. ritual starts before slow AI preparation finishes", async ({ page, request }) => {
+    const document = await createDocument(request, ownerA, `Ritual não bloqueante ${Date.now()}`, "Revisão semanal.");
+    const created = await api(request, ownerA, `/studio/documents/${document.id}/structures`, {
+      method: "POST",
+      data: {
+        kind: "ritual",
+        cadence_json: { frequency: "weekly", weekdays: [1], local_time: "09:00", timezone: "America/Sao_Paulo" },
+        properties_json: { intention: "E2E_SLOW_PREPARATION", guide_questions: ["O que mudou?"] }
+      }
+    });
+    expect(created.status()).toBe(201);
+    await page.goto("/#estudio/rituals");
+    await page.getByRole("button", { name: new RegExp(`Iniciar ${escapeRegex(document.title)}`) }).click();
+    await expect(page.getByRole("heading", { name: "O que mudou?" })).toBeVisible();
+    await expect(page.getByText("Preparando contexto em segundo plano…")).toBeVisible();
+    await page.getByRole("textbox", { name: "Resposta para O que mudou?" }).fill("A escrita começa sem esperar a IA.");
+    await expect(page.getByText("Ver contexto preparado")).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("15. private export moves from queue to a real named download", async ({ page }) => {
+    await page.goto("/#estudio/privacy");
+    await page.getByRole("button", { name: "Preparar exportação" }).click();
+    await expect(page.getByText(/Sua cópia está na fila|Preparando sua cópia|Sua cópia está pronta/u)).toBeVisible();
+    const downloadLink = page.getByRole("link", { name: "Baixar cópia privada" });
+    await expect(downloadLink).toBeVisible({ timeout: 15_000 });
+    await expect(downloadLink).toHaveAttribute("download", /^prymeira-baase-estudio-.*\.zip$/u);
+    const downloadPromise = page.waitForEvent("download");
+    await downloadLink.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^prymeira-baase-estudio-.*\.zip$/u);
+  });
 });
 
 async function openStudio(page: Page) {
@@ -398,6 +534,11 @@ function wavFixture() {
     buffer.writeInt16LE(Math.round(Math.sin(index / 12) * 1_000), 44 + index * 2);
   }
   return buffer;
+}
+
+function minimalPdfFixture(text: string) {
+  const body = `%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length 44>>stream\nBT /F1 18 Tf 72 720 Td (${text}) Tj ET\nendstream\nendobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF`;
+  return Buffer.from(body, "utf8");
 }
 
 function escapeRegex(value: string) {

@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const apiPort = 3090;
 const webPort = 5190;
+const productionAuthState = process.env.BAASE_PRODUCTION_AUTH_STATE;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -19,7 +20,21 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure"
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      testIgnore: /owner-studio-production-smoke\.spec\.ts/u,
+      use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      name: "production-smoke",
+      testMatch: /owner-studio-production-smoke\.spec\.ts/u,
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(productionAuthState ? { storageState: productionAuthState } : {})
+      }
+    }
+  ],
   webServer: [
     {
       command: "pnpm --filter @prymeira/baase-api exec tsx ../../tests/e2e/owner-studio-server.ts",

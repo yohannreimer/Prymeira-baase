@@ -76,6 +76,15 @@ describe("Studio API client", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not advertise an empty request as JSON", async () => {
+    const fetcher = vi.fn(async (_input: string, _init?: RequestInit) => jsonResponse({ ok: true }));
+
+    await studioRequest("/export", { method: "POST" }, fetcher);
+
+    const init = fetcher.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).has("content-type")).toBe(false);
+  });
+
   it("maps the stable connection index projection without dropping related results", async () => {
     const fetcher = vi.fn(async () => jsonResponse({
       index: { status: "ready", code: null, indexed_version_id: "version_7" },
@@ -227,7 +236,7 @@ describe("Studio API client", () => {
     configureBaaseApiAuth({ getToken: async () => "account-token", accountMode: true });
     await studioRequest("/home", {}, fetcher);
     const accountHeaders = new Headers(fetcher.mock.calls[1]![1]?.headers);
-    expect(accountHeaders.get("content-type")).toBe("application/json");
+    expect(accountHeaders.get("content-type")).toBeNull();
     expect(accountHeaders.get("x-baase-workspace-id")).toBeNull();
     expect(accountHeaders.get("authorization")).toBe("Bearer account-token");
   });
