@@ -15,6 +15,7 @@ import {
   createStudioCheckpoint,
   getStudioDocument,
   listStudioDocumentVersions,
+  saveStudioExitCheckpoint,
   updateStudioDocument
 } from "./studio-api";
 import type { StudioCitation, StudioDocument, StudioDocumentVersion, StudioInternalCitationTarget } from "./studio.types";
@@ -98,7 +99,15 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       { keepalive: reason === "document_exit" }
     )
   ), [sourceDocument.id]);
-  const autosave = useStudioAutosave(sourceDocument, save, { debounceMs, checkpoint });
+  const saveExitCheckpoint = useCallback((draft: StudioDocumentDraft, expectedRevision: number) => (
+    saveStudioExitCheckpoint(sourceDocument.id, {
+      expected_revision: expectedRevision,
+      title: draft.title,
+      body_json: draft.bodyJson,
+      body_text: draft.bodyText
+    })
+  ), [sourceDocument.id]);
+  const autosave = useStudioAutosave(sourceDocument, save, { debounceMs, checkpoint, saveExitCheckpoint });
   const [title, setTitle] = useState(autosave.initialDraft?.title ?? sourceDocument.title ?? "");
   const titleRef = useRef(title);
   const headingRef = useRef<HTMLHeadingElement>(null);

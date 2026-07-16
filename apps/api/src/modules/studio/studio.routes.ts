@@ -14,6 +14,7 @@ import {
   studioDocumentVersionParamsSchema,
   studioVersionListQuerySchema,
   createStudioCheckpointSchema,
+  saveStudioExitCheckpointSchema,
   restoreStudioVersionSchema,
   studioEmptyRouteSchema,
   studioAssetIdempotencyKeySchema,
@@ -417,6 +418,19 @@ export async function registerStudioRoutes(
     const body = createStudioCheckpointSchema.parse(request.body);
     const version = await runStudioOperation(() => service.createCheckpoint(scope, scope.ownerProfileId, params.documentId, body));
     return reply.status(201).send({ version });
+  });
+
+  app.post("/studio/documents/:documentId/exit-checkpoint", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    const body = saveStudioExitCheckpointSchema.parse(request.body);
+    return runStudioOperation(() => service.saveExitCheckpoint(
+      scope,
+      scope.ownerProfileId,
+      params.documentId,
+      body
+    ));
   });
 
   app.post("/studio/documents/:documentId/versions/:versionId/restore", async (request) => {

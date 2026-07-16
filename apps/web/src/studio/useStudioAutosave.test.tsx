@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioApiError } from "./studio-api";
-import type { StudioDocument } from "./studio.types";
+import type { StudioDocument, StudioDocumentVersion } from "./studio.types";
 import { studioDraftStorageKey, useStudioAutosave, type StudioDocumentDraft } from "./useStudioAutosave";
 
 const document = makeDocument();
@@ -129,6 +129,53 @@ describe("useStudioAutosave", () => {
     await act(async () => second.resolve(saved(newerMeaningfulDraft, 6)));
     act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
     expect(checkpoint.mock.calls.map(([revision]) => revision)).toEqual([5, 6]);
+  });
+
+  it("atomically saves and checkpoints a pending PATCH on pagehide", async () => {
+    const pendingSave = deferred<StudioDocument>();
+    const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    let saveSignal: AbortSignal | undefined;
+    const save = vi.fn((_draft: StudioDocumentDraft, _revision: number, signal?: AbortSignal) => {
+      saveSignal = signal;
+      return pendingSave.promise;
+    });
+    const checkpoint = vi.fn(async () => undefined);
+    const saveExitCheckpoint = vi.fn(() => pendingExit.promise);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint, saveExitCheckpoint }));
+    const meaningfulDraft = draft("Uma mudança pendente preservada atomicamente");
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+
+    expect(saveSignal?.aborted).toBe(true);
+    expect(saveExitCheckpoint).toHaveBeenCalledWith(meaningfulDraft, 4);
+    expect(checkpoint).not.toHaveBeenCalled();
+    await act(async () => pendingExit.resolve(exitCheckpointResult(meaningfulDraft, 5)));
+    expect(result.current.document.revision).toBe(5);
+    expect(result.current.state).toBe("saved");
+  });
+
+  it("ignores a late atomic exit result after switching documents", async () => {
+    const pendingSave = deferred<StudioDocument>();
+    const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const save = vi.fn(() => pendingSave.promise);
+    const saveExitCheckpoint = vi.fn(() => pendingExit.promise);
+    const otherDocument = makeDocument({ id: "document_2", revision: 8, title: "Outro", bodyText: "Outro" });
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, save, { saveExitCheckpoint }),
+      { initialProps: { source: document } }
+    );
+    const meaningfulDraft = draft("Mudança do documento anterior");
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    rerender({ source: otherDocument });
+    await act(async () => pendingExit.resolve(exitCheckpointResult(meaningfulDraft, 5)));
+
+    expect(result.current.document.id).toBe(otherDocument.id);
+    expect(result.current.document.revision).toBe(8);
   });
 
   it("creates a document-exit checkpoint for the last meaningful completed save", async () => {
@@ -771,6 +818,20 @@ function makeDocument(overrides: Partial<StudioDocument> = {}): StudioDocument {
 
 function saved(next: StudioDocumentDraft, revision: number) {
   return makeDocument({ title: next.title, bodyJson: next.bodyJson, bodyText: next.bodyText, revision });
+}
+
+function exitCheckpointResult(next: StudioDocumentDraft, revision: number) {
+  const nextDocument = saved(next, revision);
+  return {
+    document: nextDocument,
+    version: {
+      id: `version_${revision}`, workspaceId: nextDocument.workspaceId, ownerProfileId: nextDocument.ownerProfileId,
+      documentId: nextDocument.id, versionNumber: revision, bodyJson: next.bodyJson, bodyText: next.bodyText,
+      origin: "user" as const, actorProfileId: nextDocument.ownerProfileId, aiRunId: null,
+      createdAt: "2026-07-15T10:00:00.000Z", title: next.title,
+      checkpointReason: "document_exit" as const, sourceRevision: revision, isLegacy: false
+    }
+  };
 }
 
 function deferred<T>() {

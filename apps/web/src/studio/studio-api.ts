@@ -567,6 +567,27 @@ export async function createStudioCheckpoint(
   return mapStudioDocumentVersion(response.version);
 }
 
+export async function saveStudioExitCheckpoint(
+  documentId: string,
+  input: {
+    expected_revision: number;
+    title: string | null;
+    body_json: Record<string, unknown>;
+    body_text: string;
+  },
+  fetcher: StudioFetcher = fetch
+): Promise<{ document: StudioDocument; version: StudioDocumentVersion }> {
+  const response = await studioRequest<{
+    document: RawStudioDocument;
+    version: RawStudioDocumentVersion;
+  }>(
+    `/documents/${encodeURIComponent(documentId)}/exit-checkpoint`,
+    { method: "POST", body: JSON.stringify(input), keepalive: true },
+    fetcher
+  );
+  return { document: mapStudioDocument(response.document), version: mapStudioDocumentVersion(response.version) };
+}
+
 export async function listStudioDocuments(
   query: { status?: StudioDocumentStatus; limit?: number; cursor?: string; inbox_state?: "pending_review" | "reviewed"; collection_id?: string } = {},
   fetcher: StudioFetcher = fetch,

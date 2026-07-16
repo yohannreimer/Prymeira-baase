@@ -140,6 +140,44 @@ describe("StudioEditor", () => {
     ))).toHaveLength(1);
   });
 
+  it("atomically saves a pending PATCH checkpoint with keepalive on pagehide", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const pendingPatch = deferred<Response>();
+    let patchSignal: AbortSignal | null | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PATCH") {
+        patchSignal = init.signal;
+        return pendingPatch.promise;
+      }
+      if (url.endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return response({
+          document: { ...rawDocument, revision: 5, title: payload.title, body_json: payload.body_json, body_text: payload.body_text },
+          version: { ...rawVersion, version_number: 3, body_json: payload.body_json, body_text: payload.body_text,
+            checkpoint_reason: "document_exit", source_revision: 5, is_legacy: false }
+        });
+      }
+      return response({}, 404);
+    });
+    render(<StudioEditor ref={editorRef} document={document} onDocumentChange={vi.fn()} debounceMs={0} />);
+    act(() => { editorRef.current?.insertTextAtLastSelection("Snapshot pendente para saída atômica"); });
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => (
+      String(input).endsWith(`/documents/${document.id}/exit-checkpoint`)
+    ))).toBe(true));
+    const exitCall = fetchSpy.mock.calls.find(([input]) => String(input).endsWith(`/documents/${document.id}/exit-checkpoint`));
+    expect(patchSignal?.aborted).toBe(true);
+    expect(exitCall?.[1]?.keepalive).toBe(true);
+    expect(JSON.parse(String(exitCall?.[1]?.body))).toMatchObject({
+      expected_revision: 4,
+      body_text: "Snapshot pendente para saída atômica"
+    });
+  });
+
   it("inserts transcript blocks between two existing paragraphs", async () => {
     const editorRef = createRef<StudioEditorHandle>();
     const source: StudioDocument = {

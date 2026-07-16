@@ -395,6 +395,36 @@ function repositoryContract(
       });
     });
 
+    it("atomically saves and deduplicates a document-exit checkpoint", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
+        const input = {
+          expected_revision: created.revision,
+          title: "Saída preservada",
+          body_json: { type: "doc", content: [{ type: "paragraph" }] },
+          body_text: "Conteúdo preservado na navegação"
+        };
+
+        const [first, retry] = await Promise.all([
+          repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, input),
+          repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, input)
+        ]);
+
+        expect(first.document).toMatchObject({ revision: 2, title: "Saída preservada" });
+        expect(retry.document).toEqual(first.document);
+        expect(retry.version.id).toBe(first.version.id);
+        expect(first.version).toMatchObject({ checkpointReason: "document_exit", sourceRevision: 2 });
+        expect(await repository.listVersions(scope, created.id)).toHaveLength(2);
+        expect(await repository.listIndexJobs(scope)).toHaveLength(2);
+
+        await expect(repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          ...input,
+          body_text: "Conteúdo concorrente diferente"
+        })).rejects.toThrow("STUDIO_DOCUMENT_STALE");
+      });
+    });
+
     it("rejects an invalid legacy checkpoint without mutating the draft, index queue, or history", async () => {
       await withRepository(async (repository) => {
         const created = await repository.createDocument(documentInput());

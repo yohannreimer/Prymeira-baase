@@ -310,6 +310,16 @@ export function createStudioService(
       return (await repository.createCheckpoint(scope, id, actorProfileId, input)).version;
     },
 
+    async saveExitCheckpoint(scope, actorProfileId, id, input) {
+      assertActor(scope, actorProfileId);
+      assertStudioEditorJson(input.body_json);
+      return repository.saveExitCheckpoint(scope, id, actorProfileId, {
+        ...input,
+        body_json: structuredClone(input.body_json),
+        body_text: normalizeBodyText(input.body_text)
+      });
+    },
+
     async restoreVersion(scope, actorProfileId, id, versionId, input) {
       assertActor(scope, actorProfileId);
       return repository.restoreDocumentVersion(scope, id, versionId, actorProfileId, input.expected_revision);

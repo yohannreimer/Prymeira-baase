@@ -484,6 +484,61 @@ export function createInMemoryStudioRepository(
       } finally { release(); }
     },
 
+    async saveExitCheckpoint(scope, documentId, actorProfileId, input) {
+      const release = await acquireCheckpointLock();
+      try {
+        const index = documents.findIndex((item) => item.workspaceId === scope.workspaceId
+          && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
+        if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const persisted = documents[index]!;
+        const requested = {
+          ...persisted,
+          title: input.title,
+          bodyJson: structuredClone(input.body_json),
+          bodyText: input.body_text
+        };
+        const sameSnapshot = sameCheckpoint({
+          ...requested,
+          id: "exit_snapshot",
+          documentId,
+          versionNumber: 0,
+          origin: "user",
+          actorProfileId,
+          aiRunId: null,
+          createdAt: requested.updatedAt,
+          isLegacy: false
+        }, persisted);
+        let document: StudioDocument;
+        if (persisted.revision === input.expected_revision) {
+          document = sameSnapshot ? persisted : {
+            ...requested,
+            revision: persisted.revision + 1,
+            updatedAt: nextTimestamp(now, persisted.updatedAt)
+          };
+          if (!sameSnapshot) {
+            documents[index] = document;
+            enqueueIndexJob(document);
+          }
+        } else if (persisted.revision === input.expected_revision + 1 && sameSnapshot) {
+          document = persisted;
+        } else {
+          throw new Error("STUDIO_DOCUMENT_STALE");
+        }
+        const latest = versions.filter((item) => item.workspaceId === scope.workspaceId
+          && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId)
+          .sort((left, right) => right.versionNumber - left.versionNumber)[0];
+        if (latest?.checkpointReason === "document_exit"
+          && latest.sourceRevision === document.revision && sameCheckpoint(latest, document)) {
+          return { document: cloneDocument(document), version: cloneVersion(latest) };
+        }
+        const version = appendStoredVersion({ ...scope, documentId, title: document.title,
+          bodyJson: document.bodyJson, bodyText: document.bodyText, origin: "user", actorProfileId,
+          aiRunId: null, checkpointReason: "document_exit", sourceRevision: document.revision, isLegacy: false });
+        enqueueIndexJob(document);
+        return { document: cloneDocument(document), version };
+      } finally { release(); }
+    },
+
     async restoreDocumentVersion(scope, documentId, versionId, actorProfileId, expectedRevision) {
       const index = documents.findIndex((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");

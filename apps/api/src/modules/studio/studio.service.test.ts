@@ -123,6 +123,35 @@ describe("StudioService documents", () => {
     })).rejects.toThrow("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
   });
 
+  it("validates and atomically saves an exit checkpoint", async () => {
+    const service = createService();
+    const created = await service.createDocument(scope, "owner_a", documentInput("Original"));
+    const result = await service.saveExitCheckpoint(scope, "owner_a", created.id, {
+      expected_revision: created.revision,
+      title: "Saída",
+      body_json: { type: "doc", content: [{ type: "paragraph" }] },
+      body_text: "Salvo ao sair"
+    });
+
+    expect(result.document).toMatchObject({ revision: 2, title: "Saída", bodyText: "Salvo ao sair" });
+    expect(result.version).toMatchObject({ checkpointReason: "document_exit", sourceRevision: 2 });
+    await expect(service.saveExitCheckpoint(scope, "owner_b", created.id, {
+      expected_revision: 2,
+      title: null,
+      body_json: { type: "doc" },
+      body_text: "Inválido"
+    })).rejects.toThrow("STUDIO_ACTOR_SCOPE_MISMATCH");
+    await expect(service.saveExitCheckpoint(scope, "owner_a", created.id, {
+      expected_revision: 2,
+      title: null,
+      body_json: Array.from({ length: 34 }).reduce<Record<string, unknown>>(
+        (value) => ({ nested: value }),
+        {}
+      ),
+      body_text: "Inválido"
+    })).rejects.toThrow("STUDIO_EDITOR_JSON_INVALID");
+  });
+
   it("archives and restores documents with explicit lifecycle timestamps", async () => {
     const service = createService();
     const created = await service.createDocument(scope, "owner_a", documentInput());

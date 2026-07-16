@@ -369,6 +369,23 @@ describe("Studio routes", () => {
       payload: { expected_revision: 2, reason: "invalid" }
     })).statusCode).toBe(400);
 
+    const exitCheckpoint = await app.inject({
+      method: "POST",
+      url: `/studio/documents/${documentId}/exit-checkpoint`,
+      headers: ownerA,
+      payload: {
+        expected_revision: 2,
+        title: "Saída atômica",
+        body_json: { type: "doc", content: [{ type: "paragraph" }] },
+        body_text: "Conteúdo salvo ao sair"
+      }
+    });
+    expect(exitCheckpoint.statusCode).toBe(200);
+    expect(exitCheckpoint.json()).toMatchObject({
+      document: { revision: 3, title: "Saída atômica" },
+      version: { checkpointReason: "document_exit", sourceRevision: 3 }
+    });
+
     const versionPage = await app.inject({
       method: "GET", url: `/studio/documents/${documentId}/versions?limit=20`, headers: ownerA
     });
@@ -379,13 +396,13 @@ describe("Studio routes", () => {
       method: "POST",
       url: `/studio/documents/${documentId}/versions/${checkpoint.json().version.id}/restore`,
       headers: ownerA,
-      payload: { expected_revision: 2 }
+      payload: { expected_revision: 3 }
     });
     expect(versionRestore.statusCode).toBe(200);
     expect(versionRestore.json().version).toMatchObject({ checkpointReason: "restored" });
     expect((await app.inject({
       method: "POST", url: `/studio/documents/${documentId}/versions/not-found/restore`, headers: ownerA,
-      payload: { expected_revision: 3 }
+      payload: { expected_revision: 4 }
     })).statusCode).toBe(404);
 
     const home = await app.inject({ method: "GET", url: "/studio/home", headers: ownerA });

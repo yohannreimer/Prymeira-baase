@@ -27,6 +27,7 @@ import {
   restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
+  saveStudioExitCheckpoint,
   mapStudioDocument,
   mapStudioDocumentVersion,
   studioRequest,
@@ -324,6 +325,42 @@ describe("Studio API client", () => {
       expected_revision: 4,
       reason: "significant_pause"
     });
+  });
+
+  it("atomically saves a navigation checkpoint with keepalive and preserves conflicts", async () => {
+    const fetcher = vi.fn(async (_input: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.title === "Conflito") return jsonResponse({
+        error: { code: "STUDIO_DOCUMENT_CHANGED", message: "O documento mudou." }
+      }, 409);
+      return jsonResponse({
+        document: { ...rawDocument, revision: 4, title: body.title, body_json: body.body_json, body_text: body.body_text },
+        version: {
+          id: "version_exit", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
+          document_id: "document_1", version_number: 4, body_json: body.body_json, body_text: body.body_text,
+          origin: "user", actor_profile_id: "profile_owner", ai_run_id: null,
+          created_at: "2026-07-15T10:00:00.000Z", title: body.title,
+          checkpoint_reason: "document_exit", source_revision: 4, is_legacy: false
+        }
+      });
+    });
+    const input = {
+      expected_revision: 3,
+      title: "Saída",
+      body_json: { type: "doc" },
+      body_text: "Snapshot"
+    };
+
+    await expect(saveStudioExitCheckpoint("document / 1", input, fetcher)).resolves.toMatchObject({
+      document: { revision: 4, title: "Saída" },
+      version: { checkpointReason: "document_exit", sourceRevision: 4 }
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document%20%2F%201/exit-checkpoint",
+      expect.objectContaining({ method: "POST", keepalive: true })
+    );
+    await expect(saveStudioExitCheckpoint("document_1", { ...input, title: "Conflito" }, fetcher))
+      .rejects.toMatchObject({ status: 409, code: "STUDIO_DOCUMENT_CHANGED" });
   });
 
   it("maps, creates, and updates strategic structures through the API contract", async () => {
