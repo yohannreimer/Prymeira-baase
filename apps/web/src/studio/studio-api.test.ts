@@ -7,6 +7,7 @@ import {
   attachStudioFile,
   attachStudioLink,
   createStudioCollection,
+  createStudioCheckpoint,
   createStudioDocument,
   createStudioStructure,
   deleteStudioCollection,
@@ -282,6 +283,46 @@ describe("Studio API client", () => {
       title: "Plano revisado",
       body_json: { type: "doc", content: [] },
       body_text: "Nova direção"
+    });
+  });
+
+  it("creates a checkpoint with its reason, expected revision, and cancellation signal", async () => {
+    const controller = new AbortController();
+    const rawVersion = {
+      id: "version_2",
+      workspace_id: "workspace_a",
+      owner_profile_id: "profile_owner",
+      document_id: "document_1",
+      version_number: 2,
+      body_json: { type: "doc" },
+      body_text: "Nova direção significativa",
+      origin: "user",
+      actor_profile_id: "profile_owner",
+      ai_run_id: null,
+      created_at: "2026-07-15T10:00:00.000Z",
+      title: "Plano anual",
+      checkpoint_reason: "significant_pause",
+      source_revision: 4,
+      is_legacy: false
+    } as const;
+    const fetcher = vi.fn(async (_input: string, _init?: RequestInit) => jsonResponse({ version: rawVersion }, 201));
+
+    await expect(createStudioCheckpoint("document / 1", {
+      expected_revision: 4,
+      reason: "significant_pause"
+    }, controller.signal, fetcher)).resolves.toMatchObject({
+      id: "version_2",
+      checkpointReason: "significant_pause",
+      sourceRevision: 4
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document%20%2F%201/checkpoints",
+      expect.objectContaining({ method: "POST", signal: controller.signal })
+    );
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+      expected_revision: 4,
+      reason: "significant_pause"
     });
   });
 

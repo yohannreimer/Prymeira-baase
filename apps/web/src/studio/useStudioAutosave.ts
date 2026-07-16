@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { StudioApiError } from "./studio-api";
-import type { StudioDocument } from "./studio.types";
+import type { StudioCheckpointReason, StudioDocument } from "./studio.types";
+import { createCheckpointPolicy, type StudioCheckpointSnapshot } from "./studio-checkpoint-policy";
 import { studioBodyText } from "./studio-editor-content";
 import {
   browserStudioStorage,
@@ -24,6 +25,12 @@ export type SaveStudioDocument = (
   expectedRevision: number,
   signal?: AbortSignal
 ) => Promise<StudioDocument>;
+
+export type CheckpointStudioDocument = (
+  expectedRevision: number,
+  reason: Extract<StudioCheckpointReason, "significant_pause" | "document_exit">,
+  signal?: AbortSignal
+) => Promise<unknown>;
 
 type StoredDraftEnvelope = {
   version: 1;
@@ -365,9 +372,16 @@ function recoveredQueue(documentId: string, revision: number, recovery: StoredDr
 export function useStudioAutosave(
   sourceDocument: StudioDocument,
   save: SaveStudioDocument,
-  options: { debounceMs?: number } = {}
+  options: { debounceMs?: number; checkpoint?: CheckpointStudioDocument } = {}
 ) {
   const debounceMs = options.debounceMs ?? 700;
+  const checkpointRef = useRef(options.checkpoint);
+  const checkpointPolicyRef = useRef<ReturnType<typeof createCheckpointPolicy> | null>(null);
+  if (!checkpointPolicyRef.current) {
+    checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+    checkpointPolicyRef.current.recordSaved({ revision: sourceDocument.revision, bodyText: sourceDocument.bodyText }, Date.now());
+    checkpointPolicyRef.current.recordCheckpoint(Date.now());
+  }
   const initialRecoveryRef = useRef<StoredDraftRead | null>(null);
   if (!initialRecoveryRef.current) initialRecoveryRef.current = readStoredDraft(sourceDocument.id);
   const initialRecovery = initialRecoveryRef.current;
@@ -385,10 +399,64 @@ export function useStudioAutosave(
   const initializedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const checkpointControllerRef = useRef<AbortController | null>(null);
+  const checkpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
   const runNextRef = useRef<() => Promise<void>>(async () => undefined);
 
   saveRef.current = save;
+  checkpointRef.current = options.checkpoint;
   viewRef.current = view;
+
+  const cancelCheckpointWork = useCallback(() => {
+    if (checkpointTimerRef.current) clearTimeout(checkpointTimerRef.current);
+    checkpointTimerRef.current = null;
+    checkpointControllerRef.current?.abort();
+    checkpointControllerRef.current = null;
+    checkpointInFlightRef.current = null;
+  }, []);
+
+  const runCheckpoint = useCallback((candidate: StudioCheckpointSnapshot, reason: "significant_pause" | "document_exit") => {
+    const checkpoint = checkpointRef.current;
+    if (!checkpoint) return;
+
+    if (reason === "document_exit") {
+      checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
+      void checkpoint(candidate.revision, reason, undefined).catch(() => undefined);
+      return;
+    }
+
+    const controller = new AbortController();
+    checkpointControllerRef.current = controller;
+    checkpointInFlightRef.current = candidate;
+    void checkpoint(candidate.revision, reason, controller.signal).then(() => {
+      if (!controller.signal.aborted) checkpointPolicyRef.current?.recordCheckpoint(Date.now(), candidate);
+    }).catch(() => undefined).finally(() => {
+      if (checkpointControllerRef.current === controller) {
+        checkpointControllerRef.current = null;
+        checkpointInFlightRef.current = null;
+      }
+    });
+  }, []);
+
+  const scheduleCheckpoint = useCallback((savedDocument: StudioDocument) => {
+    cancelCheckpointWork();
+    const policy = checkpointPolicyRef.current;
+    if (!checkpointRef.current || !policy) return;
+    policy.recordSaved({ revision: savedDocument.revision, bodyText: savedDocument.bodyText }, Date.now());
+    if (!policy.pendingForExit()) return;
+    checkpointTimerRef.current = setTimeout(() => {
+      checkpointTimerRef.current = null;
+      const candidate = policy.consumeAt(Date.now());
+      if (candidate) runCheckpoint(candidate, "significant_pause");
+    }, 30_000);
+  }, [cancelCheckpointWork, runCheckpoint]);
+
+  const checkpointOnExit = useCallback(() => {
+    const candidate = checkpointInFlightRef.current ?? checkpointPolicyRef.current?.consumeForExit() ?? null;
+    cancelCheckpointWork();
+    if (candidate) runCheckpoint(candidate, "document_exit");
+  }, [cancelCheckpointWork, runCheckpoint]);
 
   const markStorageUnavailable = useCallback(() => {
     setView((current) => ({ ...current, storageUnavailable: true }));
@@ -430,6 +498,7 @@ export function useStudioAutosave(
         storageSucceeded = writeStoredDraft(item.documentId, rebased.envelope);
       } else {
         storageSucceeded = clearMatchingStoredDraft(item.documentId, item.envelope);
+        scheduleCheckpoint(savedDocument);
       }
       if (storageSucceeded) markStorageAvailable();
       else markStorageUnavailable();
@@ -461,7 +530,7 @@ export function useStudioAutosave(
         if (mountedRef.current && queuedRef.current?.documentId === documentIdRef.current) await runNextRef.current();
       }
     }
-  }, [markStorageAvailable, markStorageUnavailable]);
+  }, [markStorageAvailable, markStorageUnavailable, scheduleCheckpoint]);
   runNextRef.current = runNext;
 
   const scheduleQueued = useCallback(() => {
@@ -474,6 +543,8 @@ export function useStudioAutosave(
   }, [debounceMs]);
 
   const queueSave = useCallback((draft: StudioDocumentDraft) => {
+    cancelCheckpointWork();
+    checkpointPolicyRef.current?.cancelPending();
     const preserveConflict = viewRef.current.state === "conflict";
     generationRef.current += 1;
     const envelope = makeEnvelope(draft, revisionRef.current, generationRef.current);
@@ -491,7 +562,7 @@ export function useStudioAutosave(
       state: preserveConflict ? "conflict" : savingRef.current ? "saving" : "dirty"
     }));
     if (!savingRef.current && !preserveConflict) scheduleQueued();
-  }, [markStorageAvailable, markStorageUnavailable, scheduleQueued]);
+  }, [cancelCheckpointWork, markStorageAvailable, markStorageUnavailable, scheduleQueued]);
 
   const retry = useCallback(async () => {
     if (savingRef.current || !retryRef.current || retryRef.current.documentId !== documentIdRef.current) return;
@@ -551,12 +622,16 @@ export function useStudioAutosave(
 
   useEffect(() => {
     mountedRef.current = true;
+    const handlePageHide = () => checkpointOnExit();
+    window.addEventListener("pagehide", handlePageHide);
     return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      checkpointOnExit();
       mountedRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
       controllerRef.current?.abort();
     };
-  }, []);
+  }, [checkpointOnExit]);
 
   useEffect(() => {
     if (!initializedRef.current) {
@@ -602,6 +677,10 @@ export function useStudioAutosave(
       queuedRef.current = null;
       retryRef.current = null;
       revisionRef.current = sourceDocument.revision;
+      cancelCheckpointWork();
+      checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+      checkpointPolicyRef.current.recordSaved({ revision: sourceDocument.revision, bodyText: sourceDocument.bodyText }, Date.now());
+      checkpointPolicyRef.current.recordCheckpoint(Date.now());
       generationRef.current += 1;
       const storageSucceeded = clearStoredDraft(sourceDocument.id);
       setView((latest) => ({
@@ -626,12 +705,16 @@ export function useStudioAutosave(
     const nextQueue = recoveredQueue(sourceDocument.id, sourceDocument.revision, recovery);
     documentIdRef.current = sourceDocument.id;
     revisionRef.current = sourceDocument.revision;
+    cancelCheckpointWork();
+    checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+    checkpointPolicyRef.current.recordSaved({ revision: sourceDocument.revision, bodyText: sourceDocument.bodyText }, Date.now());
+    checkpointPolicyRef.current.recordCheckpoint(Date.now());
     generationRef.current = recovery.kind === "valid" ? recovery.envelope.generation : 0;
     queuedRef.current = nextQueue;
     retryRef.current = nextQueue;
     setView(recoveryView(sourceDocument, recovery));
     scheduleQueued();
-  }, [scheduleQueued, sourceDocument.id, sourceDocument.revision]);
+  }, [cancelCheckpointWork, scheduleQueued, sourceDocument.bodyText, sourceDocument.id, sourceDocument.revision]);
 
   return {
     ...view,

@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   createStudioDocument,
+  createStudioCheckpoint,
   getStudioDocument,
   listStudioDocumentVersions,
   updateStudioDocument
@@ -88,7 +89,10 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       body_text: draft.bodyText
     }, signal)
   ), [sourceDocument.id]);
-  const autosave = useStudioAutosave(sourceDocument, save, { debounceMs });
+  const checkpoint = useCallback((expectedRevision: number, reason: "significant_pause" | "document_exit", signal?: AbortSignal) => (
+    createStudioCheckpoint(sourceDocument.id, { expected_revision: expectedRevision, reason }, signal)
+  ), [sourceDocument.id]);
+  const autosave = useStudioAutosave(sourceDocument, save, { debounceMs, checkpoint });
   const [title, setTitle] = useState(autosave.initialDraft?.title ?? sourceDocument.title ?? "");
   const titleRef = useRef(title);
   const headingRef = useRef<HTMLHeadingElement>(null);

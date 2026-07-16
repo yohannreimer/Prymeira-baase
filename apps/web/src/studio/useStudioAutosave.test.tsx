@@ -43,6 +43,107 @@ describe("useStudioAutosave", () => {
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
 
+  it("creates one significant-pause checkpoint 30 seconds after a meaningful save", async () => {
+    const meaningfulDraft = draft("Uma mudança suficientemente longa para preservar");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    await act(async () => vi.advanceTimersByTimeAsync(29_999));
+    expect(checkpoint).not.toHaveBeenCalled();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(checkpoint).toHaveBeenCalledWith(5, "significant_pause", expect.any(AbortSignal));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a stale checkpoint candidate when a newer edit is queued", async () => {
+    const firstMeaningfulDraft = draft("Uma primeira mudança longa e significativa");
+    const newerMeaningfulDraft = draft("Uma segunda mudança ainda mais longa e atualizada");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(firstMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    await act(async () => vi.advanceTimersByTimeAsync(20_000));
+    act(() => result.current.queueSave(newerMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    await act(async () => vi.advanceTimersByTimeAsync(29_999));
+    expect(checkpoint).not.toHaveBeenCalled();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(checkpoint).toHaveBeenCalledWith(6, "significant_pause", expect.any(AbortSignal));
+  });
+
+  it("does not checkpoint an older save while a newer draft is still saving", async () => {
+    const first = deferred<StudioDocument>();
+    const second = deferred<StudioDocument>();
+    const firstMeaningfulDraft = draft("Uma primeira mudança longa e significativa");
+    const newerMeaningfulDraft = draft("Uma segunda mudança longa e significativa");
+    const save = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const checkpoint = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(firstMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => result.current.queueSave(newerMeaningfulDraft));
+    await act(async () => first.resolve(saved(firstMeaningfulDraft, 5)));
+    expect(save).toHaveBeenCalledTimes(2);
+
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(checkpoint).not.toHaveBeenCalled();
+
+    await act(async () => second.resolve(saved(newerMeaningfulDraft, 6)));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(checkpoint).toHaveBeenCalledWith(6, "significant_pause", expect.any(AbortSignal));
+  });
+
+  it("creates a document-exit checkpoint for the last meaningful completed save", async () => {
+    const meaningfulDraft = draft("Uma mudança suficientemente longa antes de sair");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result, unmount } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    unmount();
+
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+  });
+
+  it("never blocks draft saves behind an in-flight checkpoint", async () => {
+    const pendingCheckpoint = deferred<void>();
+    const firstMeaningfulDraft = draft("Uma primeira mudança longa e significativa");
+    const newerMeaningfulDraft = draft("Uma segunda mudança longa e significativa");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    let checkpointSignal: AbortSignal | undefined;
+    const checkpoint = vi.fn((_revision: number, _reason: string, signal?: AbortSignal) => {
+      checkpointSignal = signal;
+      return pendingCheckpoint.promise;
+    });
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(firstMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(30_700));
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+
+    act(() => result.current.queueSave(newerMeaningfulDraft));
+    expect(checkpointSignal?.aborted).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith(newerMeaningfulDraft, 5, expect.any(AbortSignal));
+  });
+
   it("adopts a newer clean revision of the same document before the next PATCH", async () => {
     const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
     const newerDocument = makeDocument({

@@ -88,6 +88,51 @@ describe("StudioEditor", () => {
     expect(JSON.parse(String(patchCall?.[1]?.body)).body_text).toBe("Antes\nPrimeira\nSegunda\n depois");
   });
 
+  it("preserves the last meaningful saved edit as a document-exit checkpoint on unmount", async () => {
+    const editorRef = createRef<StudioEditorHandle>();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return response({ document: {
+          ...rawDocument,
+          revision: 5,
+          body_json: payload.body_json,
+          body_text: payload.body_text
+        } });
+      }
+      if (url.endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST") {
+        return response({ version: {
+          ...rawVersion,
+          version_number: 3,
+          source_revision: 5,
+          checkpoint_reason: "document_exit",
+          is_legacy: false
+        } }, 201);
+      }
+      return response({}, 404);
+    });
+    const view = render(
+      <StudioEditor ref={editorRef} document={document} onDocumentChange={vi.fn()} debounceMs={0} />
+    );
+
+    act(() => { editorRef.current?.insertTextAtLastSelection("Mudança longa o bastante para preservar na saída"); });
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1));
+
+    view.unmount();
+
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input, init]) => (
+      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+    ))).toBe(true));
+    const checkpointCall = fetchSpy.mock.calls.find(([input, init]) => (
+      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+    ));
+    expect(JSON.parse(String(checkpointCall?.[1]?.body))).toEqual({
+      expected_revision: 5,
+      reason: "document_exit"
+    });
+  });
+
   it("inserts transcript blocks between two existing paragraphs", async () => {
     const editorRef = createRef<StudioEditorHandle>();
     const source: StudioDocument = {

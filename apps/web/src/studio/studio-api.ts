@@ -23,6 +23,7 @@ import type {
   StudioCollection,
   StudioAsset,
   StudioCaptureMode,
+  StudioCheckpointReason,
   StudioDocument,
   StudioDocumentPage,
   StudioDocumentStatus,
@@ -549,6 +550,20 @@ export async function updateStudioDocument(
     fetcher
   );
   return mapStudioDocument(response.document);
+}
+
+export async function createStudioCheckpoint(
+  documentId: string,
+  input: { expected_revision: number; reason: StudioCheckpointReason },
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioDocumentVersion> {
+  const response = await studioRequest<{ version: RawStudioDocumentVersion }>(
+    `/documents/${encodeURIComponent(documentId)}/checkpoints`,
+    { method: "POST", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return mapStudioDocumentVersion(response.version);
 }
 
 export async function listStudioDocuments(

@@ -499,7 +499,7 @@ git commit -m "feat(studio): create explicit checkpoints"
 - Modify: `apps/web/src/studio/StudioEditor.tsx`
 - Test: `apps/web/src/studio/useStudioAutosave.test.tsx`
 
-- [ ] **Step 1: Write failing policy tests**
+- [x] **Step 1: Write failing policy tests**
 
 ```ts
 it("creates one significant-pause checkpoint after meaningful editing", () => {
@@ -512,12 +512,12 @@ it("creates one significant-pause checkpoint after meaningful editing", () => {
 });
 ```
 
-- [ ] **Step 2: Run and confirm the module is absent**
+- [x] **Step 2: Run and confirm the module is absent**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement the deterministic policy and API call**
+- [x] **Step 3: Implement the deterministic policy and API call**
 
 ```ts
 export async function createStudioCheckpoint(documentId: string, input: {
@@ -535,12 +535,12 @@ export async function createStudioCheckpoint(documentId: string, input: {
 
 Trigger a checkpoint after a 30-second meaningful pause and on editor unmount/navigation. Do not block or retry draft saves behind checkpoint creation.
 
-- [ ] **Step 4: Run autosave/editor/API tests**
+- [x] **Step 4: Run autosave/editor/API tests**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/studio-checkpoint-policy.test.ts src/studio/useStudioAutosave.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-api.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio

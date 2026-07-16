@@ -6,6 +6,14 @@ export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioStructureKind = SharedStudioStructureKind;
 export type StudioStructureLifecycleStatus = "active" | "archived";
+export type StudioCheckpointReason =
+  | "significant_pause"
+  | "document_exit"
+  | "structure_changed"
+  | "accepted_ai_suggestion"
+  | "transcript_inserted"
+  | "restored"
+  | "manual";
 
 export type StudioGoalMetric = {
   label: string;
@@ -57,7 +65,7 @@ export type StudioDocumentVersion = {
   aiRunId: string | null;
   createdAt: string;
   title?: string | null;
-  checkpointReason?: string;
+  checkpointReason?: StudioCheckpointReason | "legacy_autosave";
   sourceRevision?: number | null;
   isLegacy?: boolean;
 };
@@ -359,8 +367,8 @@ export type RawStudioDocumentVersion = {
   created_at?: string;
   createdAt?: string;
   title?: string | null;
-  checkpoint_reason?: string;
-  checkpointReason?: string;
+  checkpoint_reason?: StudioCheckpointReason | "legacy_autosave";
+  checkpointReason?: StudioCheckpointReason | "legacy_autosave";
   source_revision?: number | null;
   sourceRevision?: number | null;
   is_legacy?: boolean;
