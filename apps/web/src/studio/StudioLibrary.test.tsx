@@ -7,7 +7,8 @@ import type { StudioCollection, StudioDocument, StudioDocumentPage, StudioDocume
 const documents = [document("document_1", "Plano de expansão"), document("document_2", "Decisão de margem")];
 const collections: StudioCollection[] = [
   collection("collection_1", "Estratégia"),
-  collection("collection_2", "Conselho")
+  collection("collection_2", "Conselho"),
+  collection("collection_3", "Produto")
 ];
 
 describe("StudioLibrary", () => {
@@ -143,6 +144,129 @@ describe("StudioLibrary", () => {
     await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(1));
     expect(removeMembership.mock.invocationCallOrder[0]).toBeLessThan(addMembership.mock.invocationCallOrder[0]!);
     expect(checkbox).toBeChecked();
+  });
+
+  it("serializes deferred rapid additions and reconciles every canonical response", async () => {
+    const user = userEvent.setup();
+    const requests = collections.map(() => deferred<StudioCollection[]>());
+    const addMembership = vi.fn((_collectionId: string) => requests[addMembership.mock.calls.length - 1]!.promise);
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: [] } })}
+        loadCollections={async () => collections}
+        addMembership={addMembership}
+        removeMembership={async () => []}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    for (const item of collections) await user.click(within(row).getByRole("checkbox", { name: item.name }));
+    expect(addMembership).toHaveBeenCalledTimes(1);
+
+    requests[0]!.resolve([collections[0]!]);
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(2));
+    requests[1]!.resolve([collections[0]!, collections[1]!]);
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(3));
+    requests[2]!.resolve(collections);
+    await waitFor(() => collections.forEach((item) => expect(within(row).getByRole("checkbox", { name: item.name })).toBeChecked()));
+    expect(addMembership.mock.calls.map(([collectionId]) => collectionId)).toEqual(collections.map((item) => item.id));
+  });
+
+  it("serializes deferred rapid removals without resurrecting server-removed memberships", async () => {
+    const user = userEvent.setup();
+    const requests = collections.map(() => deferred<StudioCollection[]>());
+    const removeMembership = vi.fn((_collectionId: string) => requests[removeMembership.mock.calls.length - 1]!.promise);
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: collections } })}
+        loadCollections={async () => collections}
+        addMembership={async () => collections}
+        removeMembership={removeMembership}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    for (const item of collections) await user.click(within(row).getByRole("checkbox", { name: item.name }));
+    expect(removeMembership).toHaveBeenCalledTimes(1);
+
+    requests[0]!.resolve([collections[1]!, collections[2]!]);
+    await waitFor(() => expect(removeMembership).toHaveBeenCalledTimes(2));
+    requests[1]!.resolve([collections[2]!]);
+    await waitFor(() => expect(removeMembership).toHaveBeenCalledTimes(3));
+    requests[2]!.resolve([]);
+    await waitFor(() => collections.forEach((item) => expect(within(row).getByRole("checkbox", { name: item.name })).not.toBeChecked()));
+  });
+
+  it("accepts unrelated canonical membership changes when no local intent owns them", async () => {
+    const user = userEvent.setup();
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: [] } })}
+        loadCollections={async () => collections}
+        addMembership={async () => [collections[0]!, collections[2]!]}
+        removeMembership={async () => []}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    await user.click(within(row).getByRole("checkbox", { name: "Estratégia" }));
+    await waitFor(() => expect(within(row).getByRole("checkbox", { name: "Estratégia" })).toBeChecked());
+    expect(within(row).getByRole("checkbox", { name: "Produto" })).toBeChecked();
+    expect(within(row).getByRole("checkbox", { name: "Conselho" })).not.toBeChecked();
+  });
+
+  it("keeps the newest same-collection intent and preserves later intents when a middle mutation fails", async () => {
+    const user = userEvent.setup();
+    const firstAdd = deferred<StudioCollection[]>();
+    const finalStrategyAdd = deferred<StudioCollection[]>();
+    const productAdd = deferred<StudioCollection[]>();
+    const addMembership = vi.fn((collectionId: string) => {
+      if (collectionId === "collection_1" && addMembership.mock.calls.length === 1) return firstAdd.promise;
+      if (collectionId === "collection_2") return Promise.reject(new Error("offline"));
+      if (collectionId === "collection_3") return productAdd.promise;
+      return finalStrategyAdd.promise;
+    });
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: [] } })}
+        loadCollections={async () => collections}
+        addMembership={addMembership}
+        removeMembership={async () => []}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    const strategy = within(row).getByRole("checkbox", { name: "Estratégia" });
+    await user.click(strategy);
+    await user.click(strategy);
+    await user.click(strategy);
+    await user.click(within(row).getByRole("checkbox", { name: "Conselho" }));
+    await user.click(within(row).getByRole("checkbox", { name: "Produto" }));
+
+    firstAdd.resolve([collections[0]!]);
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(2));
+    finalStrategyAdd.resolve([collections[0]!]);
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(4));
+    expect(addMembership.mock.calls.map(([collectionId]) => collectionId)).toEqual([
+      "collection_1", "collection_1", "collection_2", "collection_3"
+    ]);
+    productAdd.resolve([collections[0]!, collections[2]!]);
+
+    await waitFor(() => expect(strategy).toBeChecked());
+    await waitFor(() => expect(within(row).getByRole("checkbox", { name: "Conselho" })).not.toBeChecked());
+    await waitFor(() => expect(within(row).getByRole("checkbox", { name: "Produto" })).toBeChecked());
   });
 
   it("rehydrates canonical collection membership after mutation and rerender", async () => {

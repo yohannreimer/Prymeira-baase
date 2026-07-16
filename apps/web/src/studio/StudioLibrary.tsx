@@ -30,6 +30,7 @@ type StudioLibraryProps = {
 };
 
 type Rollback = { document: StudioDocument; index: number };
+type MembershipIntent = { value: boolean; version: number };
 
 const PAGE_SIZE = 30;
 const EMPTY_MEMBERSHIPS: string[] = [];
@@ -62,7 +63,8 @@ export default function StudioLibrary({
   const membershipLocks = useRef(new Map<string, number>());
   const membershipActual = useRef(new Map<string, Set<string>>());
   const membershipDesired = useRef(new Map<string, Set<string>>());
-  const membershipRevision = useRef(new Map<string, number>());
+  const membershipIntents = useRef(new Map<string, Map<string, MembershipIntent>>());
+  const membershipIntentVersion = useRef(0);
   const titleRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const pendingFocusIndex = useRef<number | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -116,7 +118,7 @@ export default function StudioLibrary({
     membershipLocks.current.clear();
     membershipActual.current.clear();
     membershipDesired.current.clear();
-    membershipRevision.current.clear();
+    membershipIntents.current.clear();
   }, [queryKey]);
 
   const visibleDocuments = useMemo(() => documents, [documents]);
@@ -226,24 +228,19 @@ export default function StudioLibrary({
 
   async function toggleMembership(documentId: string, collectionId: string, checked: boolean) {
     const generation = queryGeneration.current;
-    const desired = new Set(membershipDesired.current.get(documentId) ?? memberships[documentId] ?? []);
-    if (checked) desired.add(collectionId);
-    else desired.delete(collectionId);
-    membershipDesired.current.set(documentId, desired);
-    membershipRevision.current.set(documentId, (membershipRevision.current.get(documentId) ?? 0) + 1);
-    setMembershipSet(documentId, desired);
+    const intents = membershipIntents.current.get(documentId) ?? new Map<string, MembershipIntent>();
+    intents.set(collectionId, { value: checked, version: ++membershipIntentVersion.current });
+    membershipIntents.current.set(documentId, intents);
+    reconcileDesiredMembership(documentId);
     if (membershipLocks.current.get(documentId) === generation) return;
     membershipLocks.current.set(documentId, generation);
 
     while (queryGeneration.current === generation) {
-      const actual = membershipActual.current.get(documentId) ?? new Set<string>();
-      const wanted = membershipDesired.current.get(documentId) ?? new Set<string>();
-      const addition = firstDifference(wanted, actual);
-      const removal = addition ? undefined : firstDifference(actual, wanted);
-      const nextCollectionId = addition ?? removal;
-      if (!nextCollectionId) break;
-      const target = Boolean(addition);
-      const requestedRevision = membershipRevision.current.get(documentId) ?? 0;
+      const pending = membershipIntents.current.get(documentId);
+      const next = pending?.entries().next();
+      if (!next || next.done) break;
+      const [nextCollectionId, requestedIntent] = next.value;
+      const target = requestedIntent.value;
       const controller = trackController(operationControllers.current);
       try {
         const canonical = target
@@ -252,22 +249,26 @@ export default function StudioLibrary({
         if (controller.signal.aborted || queryGeneration.current !== generation) break;
         const canonicalIds = new Set(canonical.map((collection) => collection.id));
         membershipActual.current.set(documentId, canonicalIds);
-        if ((membershipRevision.current.get(documentId) ?? 0) === requestedRevision) {
-          membershipDesired.current.set(documentId, new Set(canonicalIds));
-          setMembershipSet(documentId, canonicalIds);
-        } else {
-          setMembershipSet(documentId, membershipDesired.current.get(documentId) ?? canonicalIds);
+        const currentIntent = pending?.get(nextCollectionId);
+        if (currentIntent?.version === requestedIntent.version
+          && currentIntent.value === requestedIntent.value
+          && canonicalIds.has(nextCollectionId) === requestedIntent.value) {
+          pending?.delete(nextCollectionId);
         }
+        if (pending?.size === 0) membershipIntents.current.delete(documentId);
+        reconcileDesiredMembership(documentId);
         setLiveMessage(target ? "Documento adicionado à coleção." : "Documento removido da coleção.");
       } catch (error) {
         if (!controller.signal.aborted && queryGeneration.current === generation && !isAbortError(error)) {
-          const canonical = new Set(membershipActual.current.get(documentId) ?? []);
-          membershipDesired.current.set(documentId, canonical);
-          membershipRevision.current.set(documentId, (membershipRevision.current.get(documentId) ?? 0) + 1);
-          setMembershipSet(documentId, canonical);
+          const currentIntent = pending?.get(nextCollectionId);
+          if (currentIntent?.version === requestedIntent.version
+            && currentIntent.value === requestedIntent.value) {
+            pending?.delete(nextCollectionId);
+          }
+          if (pending?.size === 0) membershipIntents.current.delete(documentId);
+          reconcileDesiredMembership(documentId);
           setLiveMessage("Não foi possível atualizar a coleção. A seleção anterior foi restaurada.");
         }
-        break;
       } finally {
         operationControllers.current.delete(controller);
       }
@@ -281,21 +282,33 @@ export default function StudioLibrary({
     });
   }
 
+  function reconcileDesiredMembership(documentId: string) {
+    const desired = new Set(membershipActual.current.get(documentId) ?? memberships[documentId] ?? []);
+    for (const [collectionId, intent] of membershipIntents.current.get(documentId) ?? []) {
+      if (intent.value) desired.add(collectionId);
+      else desired.delete(collectionId);
+    }
+    membershipDesired.current.set(documentId, desired);
+    setMembershipSet(documentId, desired);
+  }
+
   function hydrateMemberships(context: Record<string, StudioCollection[]>, merge: boolean) {
     if (!merge) {
       membershipActual.current.clear();
       membershipDesired.current.clear();
-      membershipRevision.current.clear();
+      membershipIntents.current.clear();
     }
     for (const [documentId, documentCollections] of Object.entries(context)) {
+      if (merge && (membershipLocks.current.has(documentId) || membershipIntents.current.has(documentId))) continue;
       const ids = new Set(documentCollections.map((collection) => collection.id));
       membershipActual.current.set(documentId, ids);
       membershipDesired.current.set(documentId, new Set(ids));
-      membershipRevision.current.set(documentId, 0);
+      membershipIntents.current.delete(documentId);
     }
     setMemberships((current) => {
       const next = merge ? { ...current } : {};
       for (const [documentId, documentCollections] of Object.entries(context)) {
+        if (merge && (membershipLocks.current.has(documentId) || membershipIntents.current.has(documentId))) continue;
         next[documentId] = documentCollections.map((collection) => collection.id);
       }
       return next;
@@ -496,11 +509,6 @@ function uniqueDocuments(documents: StudioDocument[]) {
     seen.add(document.id);
     return true;
   });
-}
-
-function firstDifference(left: ReadonlySet<string>, right: ReadonlySet<string>) {
-  for (const value of left) if (!right.has(value)) return value;
-  return undefined;
 }
 
 function trackController(store: Set<AbortController>) {
