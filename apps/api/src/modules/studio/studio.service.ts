@@ -301,11 +301,17 @@ export function createStudioService(
       const current = await repository.findDocument(scope, id);
       if (!current) return false;
       if (current.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
-      if (options.removeProactiveSignals) {
-        const sourceIds = await repository.listDocumentStructureIdsIncludingInactive(scope, id);
-        await options.removeProactiveSignals(scope, sourceIds);
+      const cleanup = (sourceIds: readonly string[]) => Promise.all([
+        options.removeProactiveSignals?.(scope, sourceIds),
+        options.removeMemory?.(scope, id)
+      ]).then(() => undefined);
+      if (repository.permanentlyDeleteDocumentWithCleanup) {
+        return repository.permanentlyDeleteDocumentWithCleanup(scope, id, cleanup);
       }
-      await options.removeMemory?.(scope, id);
+      if (!repository.handlesPermanentDeletionCleanup
+        && (options.removeProactiveSignals || options.removeMemory)) {
+        throw new Error("STUDIO_DOCUMENT_DELETE_CLEANUP_COORDINATION_REQUIRED");
+      }
       return repository.permanentlyDeleteDocument(scope, id);
     },
 

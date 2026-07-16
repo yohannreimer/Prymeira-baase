@@ -17,6 +17,7 @@ import type {
   StudioRitualSession,
   StudioNextRitual,
   CreateStudioCitation,
+  StudioOwnerScope,
   StudioRepository
 } from "./studio.types";
 import { STUDIO_ASSET_MAX_ATTEMPTS } from "./studio.types";
@@ -180,9 +181,16 @@ export function createInMemoryStudioRepository(
   const citations: StudioCitation[] = [];
   const structures: StudioStructure[] = [];
   const ritualSessions: StudioRitualSession[] = [];
+  const permanentDeletionClaims = new Map<string, Promise<boolean>>();
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
   let checkpointLock: Promise<void> = Promise.resolve();
+
+  function assertDocumentNotClaimed(scope: StudioOwnerScope, documentId: string) {
+    if (permanentDeletionClaims.has(`${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`)) {
+      throw new Error("STUDIO_DOCUMENT_DELETE_IN_PROGRESS");
+    }
+  }
 
   async function acquireCheckpointLock() {
     const previous = checkpointLock;
@@ -288,7 +296,7 @@ export function createInMemoryStudioRepository(
     });
   }
 
-  return {
+  const repository: StudioRepository & StudioPortabilityRepositoryHooks = {
     async readPortabilitySnapshot(scope) {
       const scoped = <T extends { workspaceId: string; ownerProfileId: string }>(values: T[]) => values
         .filter((value) => value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId)
@@ -426,6 +434,7 @@ export function createInMemoryStudioRepository(
     },
 
     async updateDocument(input, expectedRevision) {
+      assertDocumentNotClaimed(input, input.id);
       const index = documents.findIndex((document) =>
         document.workspaceId === input.workspaceId
         && document.ownerProfileId === input.ownerProfileId
@@ -463,6 +472,7 @@ export function createInMemoryStudioRepository(
     },
 
     async trashDocument(scope, documentId, trashedAt) {
+      assertDocumentNotClaimed(scope, documentId);
       const index = documents.findIndex((document) => document.workspaceId === scope.workspaceId
         && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
@@ -482,6 +492,7 @@ export function createInMemoryStudioRepository(
     },
 
     async restoreDocumentFromTrash(scope, documentId) {
+      assertDocumentNotClaimed(scope, documentId);
       const index = documents.findIndex((document) => document.workspaceId === scope.workspaceId
         && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
       if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
@@ -561,6 +572,29 @@ export function createInMemoryStudioRepository(
       removeWhere(versions, (version) => owned(version) && version.documentId === documentId);
       documents.splice(documentIndex, 1);
       return true;
+    },
+
+    async permanentlyDeleteDocumentWithCleanup(scope, documentId, cleanup) {
+      const claimKey = `${scope.workspaceId}/${scope.ownerProfileId}/${documentId}`;
+      const existing = permanentDeletionClaims.get(claimKey);
+      if (existing) return existing;
+      const operation = (async () => {
+        const document = documents.find((candidate) => candidate.workspaceId === scope.workspaceId
+          && candidate.ownerProfileId === scope.ownerProfileId && candidate.id === documentId);
+        if (!document) return false;
+        if (document.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+        const sourceIds = structures.filter((structure) => structure.workspaceId === scope.workspaceId
+          && structure.ownerProfileId === scope.ownerProfileId && structure.documentId === documentId)
+          .map((structure) => structure.id);
+        await cleanup(sourceIds);
+        return repository.permanentlyDeleteDocument(scope, documentId);
+      })();
+      permanentDeletionClaims.set(claimKey, operation);
+      try {
+        return await operation;
+      } finally {
+        if (permanentDeletionClaims.get(claimKey) === operation) permanentDeletionClaims.delete(claimKey);
+      }
     },
 
     async listDocumentStructureIdsIncludingInactive(scope, documentId) {
@@ -1903,6 +1937,7 @@ export function createInMemoryStudioRepository(
       return { suggestion: cloneSuggestion(suggestion), version: null };
     }
   };
+  return repository;
 }
 
 function isExcludedOwner(

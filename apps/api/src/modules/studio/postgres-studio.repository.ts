@@ -713,6 +713,7 @@ async function insertCitations(
 
 export function createPostgresStudioRepository(db: OperationalPool): StudioRepository {
   return {
+    handlesPermanentDeletionCleanup: true,
     async listDocuments(scope, input) {
       const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
       const conditions = ["workspace_id=$1", "owner_profile_id=$2"];

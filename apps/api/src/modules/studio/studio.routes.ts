@@ -76,6 +76,9 @@ function studioRouteError(error: unknown) {
   if (error.message === "STUDIO_DOCUMENT_NOT_TRASHED") {
     return new ApiError(409, "STUDIO_DOCUMENT_NOT_TRASHED", "Mova o documento para a lixeira antes de excluí-lo definitivamente.");
   }
+  if (error.message === "STUDIO_DOCUMENT_DELETE_IN_PROGRESS") {
+    return new ApiError(409, "STUDIO_DOCUMENT_DELETE_IN_PROGRESS", "A exclusão definitiva deste documento já está em andamento.");
+  }
   if (error.message === "STUDIO_EDITOR_JSON_INVALID") {
     return new ApiError(400, "STUDIO_EDITOR_JSON_INVALID", "O conteúdo do editor excede os limites de segurança.");
   }

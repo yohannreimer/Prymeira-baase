@@ -522,6 +522,7 @@ export type StudioService = {
 };
 
 export type StudioRepository = {
+  handlesPermanentDeletionCleanup?: boolean;
   listDocuments(scope: StudioOwnerScope, input: StudioDocumentQuery): Promise<StudioDocumentPage>;
   findDocument(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument | null>;
   createDocument(input: Omit<
@@ -532,6 +533,11 @@ export type StudioRepository = {
   trashDocument(scope: StudioOwnerScope, documentId: string, trashedAt: string): Promise<StudioDocument>;
   restoreDocumentFromTrash(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument>;
   permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string): Promise<boolean>;
+  permanentlyDeleteDocumentWithCleanup?(
+    scope: StudioOwnerScope,
+    documentId: string,
+    cleanup: (sourceIds: readonly string[]) => Promise<void>
+  ): Promise<boolean>;
   listDocumentStructureIdsIncludingInactive(scope: StudioOwnerScope, documentId: string): Promise<string[]>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;

@@ -41,7 +41,7 @@ describe("StudioService documents", () => {
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", created.id)).resolves.toBe(false);
   });
 
-  it("removes semantic memory before permanently deleting a trashed document", async () => {
+  it("removes semantic memory and proactive signals after permanently deleting a trashed document", async () => {
     const repository = createInMemoryStudioRepository();
     const removed: string[] = [];
     const removedSignals: string[][] = [];
@@ -62,7 +62,7 @@ describe("StudioService documents", () => {
     expect(removedSignals).toEqual([[ritual.id]]);
   });
 
-  it("keeps a trashed document when proactive cleanup fails", async () => {
+  it("keeps a trashed document when claimed proactive cleanup fails", async () => {
     const repository = createInMemoryStudioRepository();
     const service = createStudioService(repository, {
       removeProactiveSignals: async () => { throw new Error("PROACTIVE_CLEANUP_FAILED"); }
@@ -73,6 +73,59 @@ describe("StudioService documents", () => {
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id))
       .rejects.toThrow("PROACTIVE_CLEANUP_FAILED");
     await expect(service.getDocument(scope, document.id)).resolves.toMatchObject({ status: "trashed" });
+    await expect(service.restoreDocumentFromTrash(scope, "owner_a", document.id))
+      .resolves.toMatchObject({ status: "active" });
+  });
+
+  it("does not let a concurrent restore reactivate a document after permanent deletion cleanup starts", async () => {
+    const repository = createInMemoryStudioRepository();
+    let cleanupStarted!: () => void;
+    let releaseCleanup!: () => void;
+    const started = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const service = createStudioService(repository, {
+      removeProactiveSignals: async () => {
+        cleanupStarted();
+        await blocked;
+      }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.createStructure(scope, "owner_a", document.id, {
+      kind: "ritual", cadence_json: null,
+      properties_json: { intention: "Revisar", guide_questions: [] }
+    });
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    const deleting = service.permanentlyDeleteDocument(scope, "owner_a", document.id);
+    await started;
+    const restoring = service.restoreDocumentFromTrash(scope, "owner_a", document.id);
+    releaseCleanup();
+    const [deleteResult, restoreResult] = await Promise.allSettled([deleting, restoring]);
+
+    expect(deleteResult).toEqual({ status: "fulfilled", value: true });
+    expect(restoreResult).toEqual({
+      status: "rejected",
+      reason: expect.objectContaining({ message: "STUDIO_DOCUMENT_DELETE_IN_PROGRESS" })
+    });
+    await expect(repository.findDocument(scope, document.id)).resolves.toBeNull();
+  });
+
+  it("delegates cleanup entirely to a repository that owns the deletion transaction", async () => {
+    const repository = createInMemoryStudioRepository();
+    const { permanentlyDeleteDocumentWithCleanup: _coordinatedDelete, ...transactionalRepository } = repository;
+    transactionalRepository.handlesPermanentDeletionCleanup = true;
+    let externalCleanupCalls = 0;
+    const service = createStudioService(transactionalRepository, {
+      removeMemory: async () => { externalCleanupCalls += 1; },
+      removeProactiveSignals: async () => { externalCleanupCalls += 1; }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(true);
+    expect(externalCleanupCalls).toBe(0);
+    await expect(service.restoreDocumentFromTrash(scope, "owner_a", document.id))
+      .rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
   });
 
   it("creates, gets, and updates an owner document without mutating editor JSON", async () => {
