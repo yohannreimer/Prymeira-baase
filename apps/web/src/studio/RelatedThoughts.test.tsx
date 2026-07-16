@@ -11,7 +11,7 @@ describe("RelatedThoughts", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       requests.push(url);
-      if (url.includes("/related")) return json({ related: [{
+      if (url.includes("/related")) return json({ index: readyIndex(), related: [{
         document: rawDocument(), excerpt: "Tema de expansão", score: 0.82,
         explanation: "Explora uma ideia próxima, mesmo usando palavras diferentes."
       }] });
@@ -35,14 +35,14 @@ describe("RelatedThoughts", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       calls += 1;
       if (calls === 1) throw new Error("offline");
-      return json({ related: [] });
+      return json({ index: readyIndex(), related: [] });
     });
     render(<RelatedThoughts documentId="source" />);
     await user.click(screen.getByRole("button", { name: "Encontrar conexões" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/não puderam ser carregadas/i);
     await user.click(within(alert).getByRole("button", { name: "Tentar novamente" }));
-    expect(await screen.findByText(/conexões aparecem conforme/i)).toBeInTheDocument();
+    expect(await screen.findByText("Nenhuma conexão encontrada")).toBeInTheDocument();
     expect(calls).toBe(2);
   });
 
@@ -53,7 +53,7 @@ describe("RelatedThoughts", () => {
     const relationRequests: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.includes("/related")) return json({ related: [related("related_1", "Primeiro"), related("related_2", "Segundo")] });
+      if (url.includes("/related")) return json({ index: readyIndex(), related: [related("related_1", "Primeiro"), related("related_2", "Segundo")] });
       if (init?.method === "POST") {
         relationRequests.push(String(init.body));
         const target = JSON.parse(String(init.body)).target_document_id;
@@ -83,6 +83,49 @@ describe("RelatedThoughts", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Conexão aceita com Primeiro" })).toBeDisabled());
     expect(relationRequests).toHaveLength(3);
   });
+
+  it.each([
+    ["pending", "Preparando conexões deste pensamento…"],
+    ["processing", "Conectando este pensamento à sua memória…"],
+    ["failed", "As conexões não puderam ser preparadas."],
+    ["stale", "Este pensamento mudou desde a última conexão."],
+    ["unavailable", "As conexões estão indisponíveis neste momento."]
+  ] as const)("shows the honest %s index state rather than a false empty result", async (status, message) => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json({
+      index: {
+        status,
+        code: status === "pending" || status === "processing" ? null : `STUDIO_${status.toUpperCase()}`,
+        indexedVersionId: null
+      },
+      related: []
+    }));
+    render(<RelatedThoughts documentId="source" />);
+    await user.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.queryByText("Nenhuma conexão encontrada")).not.toBeInTheDocument();
+  });
+
+  it("announces a genuinely ready empty memory separately", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json({ index: readyIndex(), related: [] }));
+    render(<RelatedThoughts documentId="source" />);
+    await user.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+    expect(await screen.findByText("Nenhuma conexão encontrada")).toHaveAttribute("role", "status");
+  });
+
+  it("aborts the in-flight connection request when it leaves the document", async () => {
+    let requestSignal: AbortSignal | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      requestSignal = init?.signal as AbortSignal;
+      return new Promise<Response>(() => undefined);
+    });
+    const view = render(<RelatedThoughts documentId="source" />);
+    fireEvent.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+    await waitFor(() => expect(requestSignal).not.toBeNull());
+    view.unmount();
+    expect(requestSignal!.aborted).toBe(true);
+  });
 });
 
 function rawDocument() { return {
@@ -95,6 +138,7 @@ function json(value: unknown) { return new Response(JSON.stringify(value), { sta
 function related(id: string, title: string) {
   return { document: { ...rawDocument(), id, title }, excerpt: `Trecho ${title}`, score: 0.8, explanation: `Explicação ${title}` };
 }
+function readyIndex() { return { status: "ready", code: null, indexedVersionId: "version_ready" }; }
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;

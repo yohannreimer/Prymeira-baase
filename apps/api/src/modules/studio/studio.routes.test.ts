@@ -6,6 +6,7 @@ import { initializePostgresRuntime } from "../../server-initialization";
 import { createMockAiProvider } from "../ai/providers/mock-ai.provider";
 import { createInMemoryStudioRepository } from "./in-memory-studio.repository";
 import type { StudioMemoryIndex } from "./studio-memory";
+import { StudioVectorPrerequisiteError } from "./postgres-studio-memory";
 
 const ownerA = {
   "x-baase-workspace-id": "workspace_a",
@@ -158,14 +159,30 @@ describe("Studio routes", () => {
       vector: { status: "unavailable", code: "STUDIO_EMBEDDINGS_UNAVAILABLE" },
       maintenance: { status: "unavailable", code: "STUDIO_MAINTENANCE_UNAVAILABLE" }
     });
+    const created = await app.inject({
+      method: "POST", url: "/studio/documents", headers: ownerA, payload: documentPayload
+    });
+    const connections = await app.inject({
+      method: "GET", url: `/studio/documents/${created.json().document.id}/related`, headers: ownerA
+    });
+    expect(connections.statusCode).toBe(200);
+    expect(connections.json()).toEqual({
+      index: { status: "unavailable", code: "AI_PROVIDER_UNAVAILABLE", indexedVersionId: null },
+      related: []
+    });
   });
 
-  it("maps unavailable Studio AI to a safe 503 response", async () => {
+  it.each([
+    [new Error("AI_PROVIDER_UNAVAILABLE"), "unavailable", "AI_PROVIDER_UNAVAILABLE"],
+    [new StudioVectorPrerequisiteError(new Error("private database detail")), "unavailable", "STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE"],
+    [new Error("STUDIO_MEMORY_EMBEDDING_DIMENSION_MISMATCH"), "failed", "STUDIO_MEMORY_EMBEDDING_DIMENSION_MISMATCH"]
+  ] as const)("projects connection lookup failures honestly without leaking details", async (failure, status, code) => {
     const unavailableIndex: StudioMemoryIndex = {
       async indexVersion() { return false; },
       async removeDocument() { return false; },
-      async findRelated() { throw new Error("AI_PROVIDER_UNAVAILABLE"); }
+      async findRelated() { throw failure; }
     };
+    const repository = createInMemoryStudioRepository();
     const app = buildApp({
       runtimeConfig: readRuntimeConfig({
         BAASE_RUNTIME_MODE: "production",
@@ -173,7 +190,10 @@ describe("Studio routes", () => {
         BAASE_STUDIO_ENABLED: "true",
         BAASE_STUDIO_VECTOR_ENABLED: "true"
       }),
-      studioMemoryIndex: unavailableIndex
+      studioRepository: repository,
+      studioMemoryIndex: unavailableIndex,
+      aiProvider: createMockAiProvider(),
+      studioVectorPersistent: true
     });
     const created = await app.inject({
       method: "POST",
@@ -181,17 +201,43 @@ describe("Studio routes", () => {
       headers: ownerA,
       payload: documentPayload
     });
+    const claim = await repository.claimNextIndexJob(new Date().toISOString());
+    await repository.completeIndexJob({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", jobId: claim!.id, claimToken: claim!.claimToken!
+    });
     const response = await app.inject({
       method: "GET",
       url: `/studio/documents/${created.json().document.id}/related`,
       headers: ownerA
     });
 
-    expect(response.statusCode).toBe(503);
-    expect(response.json().error).toEqual({
-      code: "AI_PROVIDER_UNAVAILABLE",
-      message: "A inteligência artificial do Estúdio está indisponível no momento.",
-      details: {}
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      index: { status, code, indexedVersionId: claim!.snapshotId },
+      related: []
+    });
+    expect(JSON.stringify(response.json())).not.toContain("private");
+  });
+
+  it("returns pending index state instead of pretending there are no connections", async () => {
+    const app = buildApp({
+      studioRepository: createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" }),
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "production", BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true", BAASE_STUDIO_VECTOR_ENABLED: "true"
+      }),
+      aiProvider: createMockAiProvider(),
+      studioVectorPersistent: true
+    });
+    const created = await app.inject({
+      method: "POST", url: "/studio/documents", headers: ownerA, payload: documentPayload
+    });
+    const response = await app.inject({
+      method: "GET", url: `/studio/documents/${created.json().document.id}/related`, headers: ownerA
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      index: { status: "pending", code: null, indexedVersionId: null }, related: []
     });
   });
 
@@ -732,15 +778,31 @@ describe("Studio routes", () => {
       workspaceId: "workspace_a", ownerProfileId: "owner_a", title: "Capacidade", bodyJson: {},
       bodyText: "Preparar o time", captureMode: "text", inboxState: "reviewed", isFocused: false, status: "active"
     });
-    const app = buildApp({ studioRepository: repository, studioMemoryIndex: {
+    const app = buildApp({ studioRepository: repository, studioVectorPersistent: true,
+      aiProvider: createMockAiProvider(),
+      runtimeConfig: readRuntimeConfig({
+        BAASE_RUNTIME_MODE: "production", BAASE_AUTH_MODE: "local",
+        BAASE_STUDIO_ENABLED: "true", BAASE_STUDIO_VECTOR_ENABLED: "true"
+      }), studioMemoryIndex: {
       async indexVersion() { return true; }, async removeDocument() { return true; },
       async findRelated() { return [{ documentId: target.id, versionId: "version", chunkIndex: 0,
         excerpt: "Preparar o time", score: 0.8, vectorScore: 0.75, lexicalScore: 0.2,
         recencyScore: 1, updatedAt: target.updatedAt, cursor: "cursor" }]; }
     } });
+    let indexedVersionId: string | null = null;
+    for (let claim = await repository.claimNextIndexJob("2026-07-13T12:00:00.000Z"); claim;
+      claim = await repository.claimNextIndexJob("2026-07-13T12:00:00.000Z")) {
+      await repository.completeIndexJob({
+        workspaceId: "workspace_a", ownerProfileId: "owner_a",
+        jobId: claim.id, claimToken: claim.claimToken!
+      });
+      if (claim.documentId === source.id) indexedVersionId = claim.snapshotId;
+    }
+    expect(indexedVersionId).not.toBeNull();
 
     const related = await app.inject({ method: "GET", url: `/studio/documents/${source.id}/related`, headers: ownerA });
     expect(related.statusCode).toBe(200);
+    expect(related.json().index).toEqual({ status: "ready", code: null, indexedVersionId });
     expect(related.json().related[0]).toMatchObject({
       document: { id: target.id }, explanation: "Explora uma ideia próxima, mesmo usando palavras diferentes."
     });

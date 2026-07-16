@@ -380,10 +380,13 @@
 .studio-related article > button:last-child { background: transparent; border: 0; color: var(--accent-ink); justify-self: start; padding: 4px 0; }
 .studio-related__error,
 .studio-related__relation-error { color: var(--danger, var(--ink)); font-size: 12px; line-height: 1.5; }
+.studio-related__notice { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .studio-related__error p,
-.studio-related__relation-error p { margin: 0; }
+.studio-related__relation-error p,
+.studio-related__notice p { margin: 0; }
 .studio-related__error button,
-.studio-related__relation-error button { background: transparent; border: 0; color: var(--accent-ink); min-height: 44px; padding: 4px 0; }
+.studio-related__relation-error button,
+.studio-related__notice button { background: transparent; border: 0; color: var(--accent-ink); min-height: 44px; padding: 4px 0; }
 
 @media (max-width: 1200px) {
   .studio-writing-layout { display: block; }

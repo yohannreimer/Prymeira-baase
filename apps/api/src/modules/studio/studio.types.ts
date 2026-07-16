@@ -40,6 +40,11 @@ export type StudioOperationalResourceType =
 export type StudioContextFactKind = "direct" | "inferred";
 export type StudioRelationType = "related_to" | "supports" | "contradicts" | "originated" | "informs" | "supersedes";
 export type StudioIndexJobStatus = "pending" | "processing" | "failed" | "completed";
+export type StudioDocumentIndexState = {
+  status: "pending" | "processing" | "ready" | "failed" | "stale" | "unavailable";
+  code: string | null;
+  indexedVersionId: string | null;
+};
 export type StudioAssetKind = "audio" | "image" | "file" | "link_snapshot";
 export type StudioAssetExtractionStatus = "pending" | "processing" | "ready" | "failed";
 export type StudioAssetLifecycleStatus = "active" | "deleting";

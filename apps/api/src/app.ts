@@ -476,7 +476,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioService,
     studioMemoryIndex,
     studioRitualService,
-    studioReadiness
+    studioReadiness,
+    studioRepository
   ));
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));

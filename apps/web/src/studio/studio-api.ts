@@ -40,6 +40,7 @@ import type {
   StudioCitation,
   StudioSuggestion,
   StudioRelatedThought,
+  StudioRelatedThoughtsResponse,
   StudioInternalCitationTarget,
   StudioProactivitySettings,
   StudioProactiveSignal,
@@ -1310,11 +1311,25 @@ function mapStudioOperationalLink(raw: Record<string, unknown>): StudioOperation
   };
 }
 
-export async function getStudioRelatedThoughts(documentId: string, signal?: AbortSignal): Promise<StudioRelatedThought[]> {
-  const response = await studioRequest<{ related: Array<{ document: RawStudioDocument; excerpt: string; explanation: string; score: number }> }>(
-    `/documents/${encodeURIComponent(documentId)}/related?limit=6`, { signal }
+export async function getStudioRelatedThoughts(
+  documentId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<StudioRelatedThoughtsResponse> {
+  const response = await studioRequest<{
+    index: { status: StudioRelatedThoughtsResponse["index"]["status"]; code: string | null; indexedVersionId?: string | null; indexed_version_id?: string | null };
+    related: Array<{ document: RawStudioDocument; excerpt: string; explanation: string; score: number }>;
+  }>(
+    `/documents/${encodeURIComponent(documentId)}/related?limit=6`, { signal }, fetcher
   );
-  return response.related.map((item) => ({ ...item, document: mapStudioDocument(item.document) }));
+  return {
+    index: {
+      status: response.index.status,
+      code: response.index.code,
+      indexedVersionId: response.index.indexedVersionId ?? response.index.indexed_version_id ?? null
+    },
+    related: response.related.map((item) => ({ ...item, document: mapStudioDocument(item.document) }))
+  };
 }
 
 export async function acceptStudioRelation(

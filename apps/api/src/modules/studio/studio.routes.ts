@@ -29,8 +29,12 @@ import {
   patchStudioRitualSessionSchema,
   finishStudioRitualSessionSchema
 } from "./studio.schemas";
-import type { StudioOwnerScope, StudioService } from "./studio.types";
-import type { StudioMemoryIndex } from "./studio-memory";
+import type { StudioOwnerScope, StudioRepository, StudioService } from "./studio.types";
+import {
+  projectStudioDocumentIndexState,
+  projectStudioIndexFailure,
+  type StudioMemoryIndex
+} from "./studio-memory";
 import type { StudioRitualService } from "./studio-ritual.service";
 import type { StudioReadiness } from "./studio-readiness";
 
@@ -173,7 +177,8 @@ export async function registerStudioRoutes(
   service: StudioService,
   memoryIndex?: StudioMemoryIndex,
   ritualService?: StudioRitualService,
-  readiness?: StudioReadiness
+  readiness?: StudioReadiness,
+  repository?: StudioRepository
 ) {
   app.get("/studio/readiness", async (request) => {
     requireStudioScope(request);
@@ -202,12 +207,34 @@ export async function registerStudioRoutes(
     const query = studioRelatedQuerySchema.parse(request.query);
     readNoBody(request);
     const source = await runStudioOperation(() => service.getDocument(scope, params.documentId));
-    if (!memoryIndex || !source.bodyText.trim()) return { related: [] };
-    const matches = await runStudioOperation(() => memoryIndex.findRelated(scope, {
-      documentId: source.id,
-      query: [source.title, source.bodyText].filter(Boolean).join("\n\n").slice(0, 8_000),
-      limit: query.limit
-    }));
+    if (!memoryIndex || !repository) return {
+      index: { status: "unavailable", code: "STUDIO_MEMORY_INDEX_UNAVAILABLE", indexedVersionId: null },
+      related: []
+    };
+    const index = await projectStudioDocumentIndexState(repository, scope, source);
+    const unavailableCapability = [readiness?.embeddings, readiness?.vector]
+      .find((capability) => capability?.status === "unavailable");
+    if (unavailableCapability) return {
+      index: {
+        status: "unavailable",
+        code: unavailableCapability.code ?? "STUDIO_MEMORY_INDEX_UNAVAILABLE",
+        indexedVersionId: index.indexedVersionId
+      },
+      related: []
+    };
+    if (index.status !== "ready") return { index, related: [] };
+    const connectionQuery = [source.title, source.bodyText].filter(Boolean).join("\n\n").slice(0, 8_000).trim();
+    if (!connectionQuery) return { index, related: [] };
+    let matches;
+    try {
+      matches = await memoryIndex.findRelated(scope, {
+        documentId: source.id,
+        query: connectionQuery,
+        limit: query.limit
+      });
+    } catch (error) {
+      return { index: projectStudioIndexFailure(error, index.indexedVersionId), related: [] };
+    }
     const related = await Promise.all(matches.map(async (match) => {
       const document = await runStudioOperation(() => service.getDocument(scope, match.documentId));
       return {
@@ -217,7 +244,7 @@ export async function registerStudioRoutes(
         explanation: relatedExplanation(match.vectorScore, match.lexicalScore)
       };
     }));
-    return { related };
+    return { index, related };
   });
 
   app.post("/studio/documents/:documentId/relations", async (request) => {

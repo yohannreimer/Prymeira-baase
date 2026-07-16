@@ -251,6 +251,17 @@ export type StudioRelatedThought = {
   score: number;
 };
 
+export type StudioDocumentIndexState = {
+  status: "pending" | "processing" | "ready" | "failed" | "stale" | "unavailable";
+  code: string | null;
+  indexedVersionId: string | null;
+};
+
+export type StudioRelatedThoughtsResponse = {
+  index: StudioDocumentIndexState;
+  related: StudioRelatedThought[];
+};
+
 export type StudioApprovalMode = "direct" | "approval_required";
 export type StudioEvidencePolicy = "optional" | "photo_required" | "comment_required" | "photo_or_comment_required";
 export type StudioOperationDraft =

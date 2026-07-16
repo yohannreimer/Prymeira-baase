@@ -2,6 +2,7 @@ import { tagStudioMaintenanceFailure, type StudioMaintenanceClaimBudget } from "
 import type {
   StudioDocument,
   StudioDocumentVersion,
+  StudioDocumentIndexState,
   StudioIndexJob,
   StudioOwnerScope,
   StudioRepository
@@ -61,6 +62,65 @@ export type StudioMemoryIndex = {
     signal?: AbortSignal;
   }): Promise<StudioMemoryMatch[]>;
 };
+
+export async function projectStudioDocumentIndexState(
+  repository: StudioRepository,
+  scope: StudioOwnerScope,
+  document: StudioDocument
+): Promise<StudioDocumentIndexState> {
+  if (document.workspaceId !== scope.workspaceId || document.ownerProfileId !== scope.ownerProfileId) {
+    return { status: "pending", code: null, indexedVersionId: null };
+  }
+  const jobs = (await repository.listIndexJobs(scope))
+    .filter((job) => job.documentId === document.id)
+    .sort((left, right) => right.documentRevision - left.documentRevision
+      || right.updatedAt.localeCompare(left.updatedAt)
+      || right.id.localeCompare(left.id));
+  const completed = jobs.find((job) => job.status === "completed") ?? null;
+  const current = jobs.find((job) => job.documentRevision === document.revision) ?? null;
+
+  if (!current) {
+    return completed
+      ? { status: "stale", code: "STUDIO_MEMORY_INDEX_STALE", indexedVersionId: completed.snapshotId }
+      : { status: "pending", code: null, indexedVersionId: null };
+  }
+  if (current.status === "completed") {
+    return { status: "ready", code: null, indexedVersionId: current.snapshotId };
+  }
+  if (current.status === "failed") {
+    return projectStudioIndexFailure(
+      new Error(safeStudioIndexCode(current.lastErrorCode)),
+      completed?.snapshotId ?? null
+    );
+  }
+  if (current.status === "pending" && completed) {
+    return {
+      status: "stale",
+      code: "STUDIO_MEMORY_INDEX_STALE",
+      indexedVersionId: completed.snapshotId
+    };
+  }
+  return {
+    status: current.status,
+    code: null,
+    indexedVersionId: completed?.snapshotId ?? null
+  };
+}
+
+export function projectStudioIndexFailure(
+  error: unknown,
+  indexedVersionId: string | null
+): StudioDocumentIndexState {
+  const code = error instanceof Error ? safeStudioIndexCode(error.message) : "STUDIO_MEMORY_INDEX_FAILED";
+  const unavailable = code === "AI_PROVIDER_UNAVAILABLE"
+    || code === "STUDIO_MEMORY_VECTOR_PREREQUISITE_UNAVAILABLE"
+    || code === "STUDIO_MEMORY_INDEX_UNAVAILABLE";
+  return { status: unavailable ? "unavailable" : "failed", code, indexedVersionId };
+}
+
+function safeStudioIndexCode(code: string | null): string {
+  return code && /^[A-Z][A-Z0-9_]{2,100}$/u.test(code) ? code : "STUDIO_MEMORY_INDEX_FAILED";
+}
 
 type StoredChunk = StudioOwnerScope & {
   documentId: string;

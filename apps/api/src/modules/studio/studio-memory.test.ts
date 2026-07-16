@@ -12,6 +12,7 @@ import {
   createInMemoryStudioMemoryIndex,
   createStudioMemoryIndexProcessor,
   embedStudioTexts,
+  projectStudioDocumentIndexState,
   type StudioMemoryEmbedder,
   type StudioMemoryIndex
 } from "./studio-memory";
@@ -23,6 +24,50 @@ const ownerB = { workspaceId: "workspace_a", ownerProfileId: "owner_b" };
 const fixedNow = "2026-07-14T12:00:00.000Z";
 
 describe("Studio semantic memory", () => {
+  it("projects pending, processing, failed, ready and stale index state from the owner-scoped job ledger", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => fixedNow });
+    const service = createStudioService(repository);
+    const document = await service.createDocument(ownerA, "owner_a", input("Índice honesto"));
+
+    await expect(projectStudioDocumentIndexState(repository, ownerA, document)).resolves.toEqual({
+      status: "pending", code: null, indexedVersionId: null
+    });
+
+    const claimed = await repository.claimNextIndexJob(fixedNow);
+    await expect(projectStudioDocumentIndexState(repository, ownerA, document)).resolves.toEqual({
+      status: "processing", code: null, indexedVersionId: null
+    });
+
+    await repository.failIndexJob({
+      ...ownerA, jobId: claimed!.id, claimToken: claimed!.claimToken!,
+      lastErrorCode: "private provider detail", nextAttemptAt: null
+    });
+    await expect(projectStudioDocumentIndexState(repository, ownerA, document)).resolves.toEqual({
+      status: "failed", code: "STUDIO_MEMORY_INDEX_FAILED", indexedVersionId: null
+    });
+
+    const readyRepository = createInMemoryStudioRepository({ now: () => fixedNow });
+    const readyDocument = await createStudioService(readyRepository)
+      .createDocument(ownerA, "owner_a", input("Pronto"));
+    const readyClaim = await readyRepository.claimNextIndexJob(fixedNow);
+    await readyRepository.completeIndexJob({
+      ...ownerA, jobId: readyClaim!.id, claimToken: readyClaim!.claimToken!
+    });
+    await expect(projectStudioDocumentIndexState(readyRepository, ownerA, readyDocument)).resolves.toEqual({
+      status: "ready", code: null, indexedVersionId: readyClaim!.snapshotId
+    });
+
+    const changed = await readyRepository.updateDocument({
+      ...readyDocument, bodyText: "Mudou depois do índice"
+    }, readyDocument.revision);
+    await expect(projectStudioDocumentIndexState(readyRepository, ownerA, changed)).resolves.toEqual({
+      status: "stale", code: "STUDIO_MEMORY_INDEX_STALE", indexedVersionId: readyClaim!.snapshotId
+    });
+    await expect(projectStudioDocumentIndexState(readyRepository, ownerB, changed)).resolves.toEqual({
+      status: "pending", code: null, indexedVersionId: null
+    });
+  });
+
   it("keeps vector setup out of pg-mem migrations and scopes SQL before distance ranking", () => {
     const schema = readFileSync(resolve(process.cwd(), "src/db/operational-schema.ts"), "utf8");
     const adapter = readFileSync(resolve(process.cwd(), "src/modules/studio/postgres-studio-memory.ts"), "utf8");

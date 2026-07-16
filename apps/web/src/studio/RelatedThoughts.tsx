@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { acceptStudioRelation, getStudioRelatedThoughts } from "./studio-api";
-import type { StudioRelatedThought } from "./studio.types";
+import type { StudioDocumentIndexState, StudioRelatedThought } from "./studio.types";
 
 type Props = { documentId: string; onOpenDocument?(documentId: string): void };
 
 export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
   const [thoughts, setThoughts] = useState<StudioRelatedThought[]>([]);
+  const [index, setIndex] = useState<StudioDocumentIndexState | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
@@ -17,12 +18,21 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
   useEffect(() => {
     if (!expanded) return;
     const controller = new AbortController();
+    let poll: ReturnType<typeof setTimeout> | undefined;
     setThoughts([]);
+    setIndex(null);
     setState("loading");
-    void getStudioRelatedThoughts(documentId, controller.signal).then((items) => {
-      if (!controller.signal.aborted) { setThoughts(items); setState("ready"); }
+    void getStudioRelatedThoughts(documentId, controller.signal).then((response) => {
+      if (!controller.signal.aborted) {
+        setThoughts(response.related);
+        setIndex(response.index);
+        setState("ready");
+        if (response.index.status === "pending" || response.index.status === "processing") {
+          poll = setTimeout(() => setReloadKey((key) => key + 1), 2_000);
+        }
+      }
     }).catch(() => { if (!controller.signal.aborted) setState("error"); });
-    return () => controller.abort();
+    return () => { controller.abort(); if (poll) clearTimeout(poll); };
   }, [documentId, expanded, reloadKey]);
 
   useEffect(() => {
@@ -30,6 +40,7 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
     setPendingIds(new Set());
     setRelationErrors(new Map());
     pendingLocksRef.current.clear();
+    setIndex(null);
   }, [documentId]);
 
   async function accept(targetId: string) {
@@ -67,7 +78,12 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
       <p>As conexões não puderam ser carregadas agora.</p>
       <button type="button" onClick={() => setReloadKey((key) => key + 1)}>Tentar novamente</button>
     </div> : null}
-    {state === "ready" && !thoughts.length ? <p className="studio-related__empty">As conexões aparecem conforme sua memória no Estúdio cresce.</p> : null}
+    {state === "ready" && index?.status === "pending" ? <p className="studio-related__empty" role="status">Preparando conexões deste pensamento…</p> : null}
+    {state === "ready" && index?.status === "processing" ? <p className="studio-related__empty" role="status">Conectando este pensamento à sua memória…</p> : null}
+    {state === "ready" && index?.status === "failed" ? <IndexNotice message="As conexões não puderam ser preparadas." onRetry={() => setReloadKey((key) => key + 1)} /> : null}
+    {state === "ready" && index?.status === "stale" ? <IndexNotice message="Este pensamento mudou desde a última conexão." onRetry={() => setReloadKey((key) => key + 1)} /> : null}
+    {state === "ready" && index?.status === "unavailable" ? <IndexNotice message="As conexões estão indisponíveis neste momento." onRetry={() => setReloadKey((key) => key + 1)} /> : null}
+    {state === "ready" && index?.status === "ready" && !thoughts.length ? <p className="studio-related__empty" role="status">Nenhuma conexão encontrada</p> : null}
     {thoughts.map((thought) => <article key={thought.document.id}>
       <button type="button" className="studio-related__open" onClick={() => onOpenDocument?.(thought.document.id)}>
         <strong>{thought.document.title || "Sem título"}</strong><span>{thought.excerpt}</span>
@@ -91,4 +107,11 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
       </button>
     </article>)}
   </section>;
+}
+
+function IndexNotice({ message, onRetry }: { message: string; onRetry(): void }) {
+  return <div className="studio-related__notice" role="status">
+    <p>{message}</p>
+    <button type="button" onClick={onRetry}>Tentar novamente</button>
+  </div>;
 }

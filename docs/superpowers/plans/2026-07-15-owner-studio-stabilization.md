@@ -1008,7 +1008,7 @@ git commit -m "feat(studio): add trash view and retention cleanup"
 - Test: `apps/api/src/modules/studio/studio.routes.test.ts`
 - Test: `apps/web/src/studio/RelatedThoughts.test.tsx`
 
-- [ ] **Step 1: Write API/UI state tests**
+- [x] **Step 1: Write API/UI state tests**
 
 ```ts
 expect((await request("GET", `/studio/documents/${id}/related`, ownerA)).json()).toMatchObject({
@@ -1022,12 +1022,12 @@ expect(await screen.findByText("Preparando conexões deste pensamento…")).toBe
 expect(screen.queryByText("Nenhuma conexão encontrada")).not.toBeInTheDocument();
 ```
 
-- [ ] **Step 2: Run and verify the endpoint only returns `related`**
+- [x] **Step 2: Run and verify the endpoint only returns `related`**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Add a stable index projection**
+- [x] **Step 3: Add a stable index projection**
 
 ```ts
 export type StudioDocumentIndexState = {
@@ -1039,12 +1039,12 @@ export type StudioDocumentIndexState = {
 
 Return the projection with results. Map `StudioVectorPrerequisiteError` and embedding/provider failures to `unavailable`/`failed` instead of converting them to an empty list.
 
-- [ ] **Step 4: Run memory, route, and related-thought tests**
+- [x] **Step 4: Run memory, route, and related-thought tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-memory.test.ts src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/RelatedThoughts.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio apps/web/src/studio/RelatedThoughts.tsx apps/web/src/studio/studio-api.ts apps/web/src/studio/studio.types.ts

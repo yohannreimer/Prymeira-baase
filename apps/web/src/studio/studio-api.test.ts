@@ -17,6 +17,7 @@ import {
   getStudioDocumentAssets,
   getStudioDocument,
   getStudioHome,
+  getStudioRelatedThoughts,
   finishStudioRitualSession,
   listStudioCollections,
   listStudioDocumentVersions,
@@ -73,6 +74,23 @@ describe("Studio API client", () => {
   afterEach(() => {
     configureBaaseApiAuth(null);
     vi.restoreAllMocks();
+  });
+
+  it("maps the stable connection index projection without dropping related results", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({
+      index: { status: "ready", code: null, indexed_version_id: "version_7" },
+      related: [{ document: rawDocument, excerpt: "Margem", explanation: "Amplia este raciocínio.", score: 0.81 }]
+    }));
+    const controller = new AbortController();
+
+    await expect(getStudioRelatedThoughts("document / 1", controller.signal, fetcher)).resolves.toMatchObject({
+      index: { status: "ready", code: null, indexedVersionId: "version_7" },
+      related: [{ document: { id: "document_1", bodyText: "Crescer com margem." }, excerpt: "Margem", score: 0.81 }]
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document%20%2F%201/related?limit=6",
+      expect.objectContaining({ signal: controller.signal })
+    );
   });
 
   it("maps snake_case home, document, page, collections, search, and versions payloads", async () => {
