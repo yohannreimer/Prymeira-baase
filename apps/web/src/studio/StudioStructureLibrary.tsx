@@ -49,6 +49,7 @@ export default function StudioStructureLibrary({ kind, onOpenDocument }: StudioS
   const generationRef = useRef(0);
   const paginationControllerRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const loadMoreButtonRef = useRef<HTMLButtonElement>(null);
   const rowButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
@@ -130,11 +131,14 @@ export default function StudioStructureLibrary({ kind, onOpenDocument }: StudioS
         controller.signal
       );
       if (controller.signal.aborted || generationRef.current !== generation) return;
+      const paginationStillOwnsFocus = document.activeElement === loadMoreButtonRef.current;
       const appendedIds = [...new Set(page.items.map((item) => item.id))].filter((id) => !knownIds.has(id));
       setItems((current) => uniqueStructures([...current, ...page.items]));
       setNextCursor(page.nextCursor);
       setPaginationAnnouncement(paginationSuccessMessage(appendedIds.length, copy, page.nextCursor === null));
-      if (page.nextCursor === null) setFocusAfterPagination(appendedIds[0] ?? "heading");
+      if (page.nextCursor === null && paginationStillOwnsFocus) {
+        setFocusAfterPagination(appendedIds[0] ?? "heading");
+      }
     } catch {
       if (!controller.signal.aborted && generationRef.current === generation) {
         setPageError(true);
@@ -248,6 +252,7 @@ export default function StudioStructureLibrary({ kind, onOpenDocument }: StudioS
             <div className="studio-structure-library__pagination">
               {pageError ? <p role="alert">A próxima página não carregou. Você pode tentar novamente.</p> : null}
               <button
+                ref={loadMoreButtonRef}
                 type="button"
                 aria-disabled={loadingMore}
                 aria-busy={loadingMore}

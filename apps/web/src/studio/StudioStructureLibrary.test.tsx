@@ -147,6 +147,34 @@ describe("StudioStructureLibrary", () => {
     expect(screen.getByRole("status", { name: "Atualização da lista" })).toHaveTextContent("Nenhuma decisão nova. Você chegou ao fim.");
   });
 
+  it("does not steal focus when the owner moves away while the final page is pending", async () => {
+    const user = userEvent.setup();
+    const finalPage = deferred<{ items: StudioStructure[]; nextCursor: null }>();
+    mockedList
+      .mockResolvedValueOnce({
+        items: [structure({ id: "goal_1", documentId: "doc_1", documentTitle: "Meta inicial" })],
+        nextCursor: "cursor_final"
+      })
+      .mockImplementationOnce(() => finalPage.promise);
+
+    render(<StudioStructureLibrary kind="goal" onOpenDocument={vi.fn()} />);
+    const loadMore = await screen.findByRole("button", { name: "Carregar mais metas" });
+    loadMore.focus();
+    await user.click(loadMore);
+    const search = screen.getByRole("searchbox", { name: "Buscar metas por título" });
+    search.focus();
+    expect(search).toHaveFocus();
+
+    await act(async () => finalPage.resolve({
+      items: [structure({ id: "goal_2", documentId: "doc_2", documentTitle: "Meta nova" })],
+      nextCursor: null
+    }));
+
+    await screen.findByRole("button", { name: "Abrir Meta nova" });
+    expect(search).toHaveFocus();
+    expect(screen.getByRole("status", { name: "Atualização da lista" })).toHaveTextContent("1 meta adicionada. Você chegou ao fim.");
+  });
+
   it("abandons stale results when the kind changes", async () => {
     const decisionPage = deferred<{ items: StudioStructure[]; nextCursor: null }>();
     mockedList.mockImplementation((query) => query?.kind === "decision"
