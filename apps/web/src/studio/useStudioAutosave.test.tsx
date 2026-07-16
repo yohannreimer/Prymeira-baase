@@ -187,6 +187,81 @@ describe("useStudioAutosave", () => {
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
 
+  it("adopts a newer authoritative exit response when no outbox remains", async () => {
+    const meaningfulDraft = draft("Snapshot já salvo antes do checkpoint de saída");
+    const save = vi.fn(async () => saved(meaningfulDraft, 5));
+    const exitCheckpoint = vi.fn(async () => exitCheckpointResult(meaningfulDraft, 6));
+    const { result } = renderHook(() => useStudioAutosave(document, save, { exitCheckpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    await act(async () => Promise.resolve());
+
+    expect(exitCheckpoint).toHaveBeenCalledWith(5);
+    expect(result.current.document).toEqual(saved(meaningfulDraft, 6));
+  });
+
+  it("rebases a newer queued edit on an authoritative exit response without overwriting it", async () => {
+    const first = draft("Primeiro snapshot salvo");
+    const newer = draft("Edição local posterior ao checkpoint em voo");
+    const secondSave = deferred<StudioDocument>();
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const save = vi.fn()
+      .mockResolvedValueOnce(saved(first, 5))
+      .mockImplementationOnce(() => secondSave.promise);
+    const exitCheckpoint = vi.fn(() => exit.promise);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { exitCheckpoint }));
+
+    act(() => result.current.queueSave(first));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newer));
+    await act(async () => exit.resolve(exitCheckpointResult(first, 6)));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(result.current.document).toEqual(saved(first, 6));
+    expect(result.current.currentDraft).toEqual(newer);
+    expect(save).toHaveBeenLastCalledWith(newer, 6, expect.any(AbortSignal));
+    await act(async () => secondSave.resolve(saved(newer, 7)));
+  });
+
+  it("aborts and rebases a newer active edit when the exit response advances the server", async () => {
+    const first = draft("Base salva antes da resposta autoritativa");
+    const newer = draft("PATCH ativo que precisa sobreviver ao avanço");
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const staleSave = deferred<StudioDocument>();
+    const rebasedSave = deferred<StudioDocument>();
+    let staleSignal: AbortSignal | undefined;
+    const save = vi.fn()
+      .mockResolvedValueOnce(saved(first, 5))
+      .mockImplementationOnce((_draft, _revision, signal) => {
+        staleSignal = signal;
+        return staleSave.promise;
+      })
+      .mockImplementationOnce(() => rebasedSave.promise);
+    const { result } = renderHook(() => useStudioAutosave(document, save, {
+      exitCheckpoint: vi.fn(() => exit.promise)
+    }));
+
+    act(() => result.current.queueSave(first));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newer));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    expect(save).toHaveBeenLastCalledWith(newer, 5, expect.any(AbortSignal));
+
+    await act(async () => exit.resolve(exitCheckpointResult(first, 6)));
+
+    expect(staleSignal?.aborted).toBe(true);
+    expect(result.current.document).toEqual(saved(first, 6));
+    expect(result.current.currentDraft).toEqual(newer);
+    expect(save).toHaveBeenLastCalledWith(newer, 6, expect.any(AbortSignal));
+    await act(async () => staleSave.resolve(saved(newer, 6)));
+    expect(result.current.document).toEqual(saved(first, 6));
+    await act(async () => rebasedSave.resolve(saved(newer, 7)));
+  });
+
   it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
@@ -534,6 +609,25 @@ describe("useStudioAutosave", () => {
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
     await act(async () => pendingExit.resolve(exitCheckpointResult(firstDraft, 5)));
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
+  it("adopts an exact-match recovered outbox response and does not discard its later source prop", async () => {
+    storeEnvelope(firstDraft, 4);
+    const sourceAtFive = saved(firstDraft, 5);
+    const sourceAtSix = saved(firstDraft, 6);
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const exitCheckpoint = vi.fn(() => exit.promise);
+    const { result, rerender } = renderHook(
+      ({ source }) => useStudioAutosave(source, vi.fn(), { exitCheckpoint }),
+      { initialProps: { source: sourceAtFive } }
+    );
+
+    await act(async () => exit.resolve(exitCheckpointResult(firstDraft, 6)));
+    expect(result.current.document).toEqual(sourceAtSix);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+
+    rerender({ source: sourceAtSix });
+    expect(result.current.document).toEqual(sourceAtSix);
   });
 
   it("retries a recovered lost-ack outbox after the first checkpoint attempt fails", async () => {

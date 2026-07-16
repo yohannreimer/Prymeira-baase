@@ -400,6 +400,12 @@ function checkpointSnapshot(document: StudioDocument): StudioCheckpointSnapshot 
   };
 }
 
+function newestQueuedDraft(...items: Array<QueuedDraft | null>) {
+  return items.reduce<QueuedDraft | null>((newest, item) => (
+    item && (!newest || item.envelope.generation > newest.envelope.generation) ? item : newest
+  ), null);
+}
+
 export function useStudioAutosave(
   sourceDocument: StudioDocument,
   save: SaveStudioDocument,
@@ -546,11 +552,13 @@ export function useStudioAutosave(
     exitSaveInFlightRef.current = operation;
     void exitCheckpoint(knownRevision).then(({ document, version }) => {
       if (documentIdRef.current !== operation.documentId || exitSaveInFlightRef.current !== operation) return;
+      const shouldAdoptDocument = document.revision > viewRef.current.document.revision;
       if (document.revision > revisionRef.current) revisionRef.current = document.revision;
       checkpointedRevisionRef.current = Math.max(checkpointedRevisionRef.current, document.revision);
       const snapshot = checkpointSnapshot(document);
       checkpointPolicyRef.current?.recordSaved(snapshot, Date.now());
       checkpointPolicyRef.current?.recordCheckpoint(Date.now(), snapshot);
+      let outboxMismatch = false;
       if (clearOutbox && item && exitOutboxRef.current?.documentId === operation.documentId
         && exitOutboxRef.current.envelope.generation === operation.generation
         && document.revision >= knownRevision) {
@@ -562,15 +570,59 @@ export function useStudioAutosave(
           } else if (mountedRef.current) {
             setView((current) => ({ ...current, storageUnavailable: true }));
           }
-        } else if (mountedRef.current) {
+        } else {
+          outboxMismatch = true;
+        }
+      }
+
+      if (outboxMismatch && item && mountedRef.current) {
+        setView((current) => ({
+          ...current,
+          document,
+          currentDraft: item.envelope.draft,
+          conflictDraft: item.envelope.draft,
+          state: "conflict"
+        }));
+      } else if (shouldAdoptDocument) {
+        const newerLocal = newestQueuedDraft(
+          queuedRef.current,
+          activeSaveRef.current,
+          retryRef.current
+        );
+        const localToRebase = newerLocal?.documentId === operation.documentId
+          && newerLocal.envelope.generation > operation.generation ? newerLocal : null;
+        let rebased: QueuedDraft | null = null;
+        let restartSave = false;
+        let storageSucceeded = true;
+        if (localToRebase) {
+          restartSave = activeSaveRef.current?.documentId === operation.documentId
+            && activeSaveRef.current.envelope.generation > operation.generation;
+          if (restartSave) {
+            controllerRef.current?.abort();
+            controllerRef.current = null;
+            activeSaveRef.current = null;
+            savingRef.current = false;
+          }
+          rebased = {
+            ...localToRebase,
+            envelope: { ...localToRebase.envelope, baseRevision: document.revision }
+          };
+          queuedRef.current = rebased;
+          retryRef.current = rebased;
+          storageSucceeded = writeStoredDraft(operation.documentId, rebased.envelope);
+        }
+        if (mountedRef.current) {
           setView((current) => ({
             ...current,
             document,
-            currentDraft: item.envelope.draft,
-            conflictDraft: item.envelope.draft,
-            state: "conflict"
+            adoptedSourceRevision: null,
+            currentDraft: rebased?.envelope.draft ?? current.currentDraft,
+            conflictDraft: current.state === "conflict" ? current.conflictDraft : null,
+            state: current.state === "conflict" ? "conflict" : rebased ? "dirty" : current.state,
+            storageUnavailable: storageSucceeded ? current.storageUnavailable : true
           }));
         }
+        if (restartSave) void runNextRef.current();
       }
       void version;
     }).catch(() => undefined).finally(() => {
