@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioStructureLibrary, { formatStudioCalendarDate } from "./StudioStructureLibrary";
@@ -92,6 +92,59 @@ describe("StudioStructureLibrary", () => {
       fetch,
       expect.any(AbortSignal)
     );
+  });
+
+  it("keeps pagination focusable while loading, announces the final page and focuses its first new item", async () => {
+    const user = userEvent.setup();
+    const finalPage = deferred<{ items: StudioStructure[]; nextCursor: null }>();
+    mockedList
+      .mockResolvedValueOnce({
+        items: [structure({ id: "plan_1", documentId: "doc_1", documentTitle: "Plano inicial", kind: "plan" })],
+        nextCursor: "cursor_final"
+      })
+      .mockImplementationOnce(() => finalPage.promise);
+
+    render(<StudioStructureLibrary kind="plan" onOpenDocument={vi.fn()} />);
+    const loadMore = await screen.findByRole("button", { name: "Carregar mais planos" });
+    loadMore.focus();
+    await user.click(loadMore);
+
+    expect(loadMore).toHaveFocus();
+    expect(loadMore).toHaveAttribute("aria-disabled", "true");
+    expect(loadMore).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status", { name: "Atualização da lista" })).toHaveTextContent("Carregando mais planos.");
+
+    await act(async () => finalPage.resolve({
+      items: [structure({ id: "plan_2", documentId: "doc_2", documentTitle: "Plano recém-carregado", kind: "plan" })],
+      nextCursor: null
+    }));
+
+    const newItem = await screen.findByRole("button", { name: "Abrir Plano recém-carregado" });
+    await waitFor(() => expect(newItem).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Carregar mais planos" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Atualização da lista" })).toHaveTextContent("1 plano adicionado. Você chegou ao fim.");
+  });
+
+  it("returns pagination focus to the stable heading when the final page adds no unique item", async () => {
+    const user = userEvent.setup();
+    mockedList
+      .mockResolvedValueOnce({
+        items: [structure({ id: "decision_1", documentId: "doc_1", documentTitle: "Escolha existente", kind: "decision" })],
+        nextCursor: "cursor_final"
+      })
+      .mockResolvedValueOnce({
+        items: [structure({ id: "decision_1", documentId: "doc_1", documentTitle: "Escolha repetida", kind: "decision" })],
+        nextCursor: null
+      });
+
+    render(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
+    const loadMore = await screen.findByRole("button", { name: "Carregar mais decisões" });
+    loadMore.focus();
+    await user.click(loadMore);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Decisões" })).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole("status", { name: "Atualização da lista" })).toHaveTextContent("Nenhuma decisão nova. Você chegou ao fim.");
   });
 
   it("abandons stale results when the kind changes", async () => {

@@ -534,7 +534,7 @@
 .studio-structure-library__no-results { align-items: center; border-block: 1px solid var(--line2); color: var(--muted); display: flex; font-size: 12px; gap: 16px; justify-content: space-between; padding: 20px 4px; }
 .studio-structure-library__pagination { align-items: center; display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; padding: 20px 0 0; }
 .studio-structure-library__pagination p { color: var(--danger-ink); font-size: 11.5px; margin: 0; }
-.studio-structure-library__pagination button:disabled { cursor: wait; opacity: .55; }
+.studio-structure-library__pagination button[aria-disabled="true"] { cursor: wait; opacity: .55; }
 .studio-structure-library__pagination button:focus-visible,
 .studio-structure-library__message button:focus-visible,
 .studio-structure-library__no-results button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
