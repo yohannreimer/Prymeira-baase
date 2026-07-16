@@ -472,12 +472,12 @@ export function useStudioAutosave(
     });
   }, []);
 
-  const scheduleCheckpoint = useCallback((savedDocument: StudioDocument) => {
+  const recordCompletedSave = useCallback((savedDocument: StudioDocument, scheduleSignificantPause: boolean) => {
     cancelCheckpointWork();
     const policy = checkpointPolicyRef.current;
     if (!checkpointRef.current || !policy) return;
     policy.recordSaved(checkpointSnapshot(savedDocument), Date.now());
-    if (!policy.significantPausePending()) return;
+    if (!scheduleSignificantPause || !policy.significantPausePending()) return;
     checkpointTimerRef.current = setTimeout(() => {
       checkpointTimerRef.current = null;
       const candidate = policy.consumeAt(Date.now());
@@ -538,8 +538,8 @@ export function useStudioAutosave(
         storageSucceeded = writeStoredDraft(item.documentId, rebased.envelope);
       } else {
         storageSucceeded = clearMatchingStoredDraft(item.documentId, item.envelope);
-        scheduleCheckpoint(savedDocument);
       }
+      recordCompletedSave(savedDocument, pending?.documentId !== item.documentId);
       if (storageSucceeded) markStorageAvailable();
       else markStorageUnavailable();
       setView((current) => ({
@@ -570,7 +570,7 @@ export function useStudioAutosave(
         if (mountedRef.current && queuedRef.current?.documentId === documentIdRef.current) await runNextRef.current();
       }
     }
-  }, [markStorageAvailable, markStorageUnavailable, scheduleCheckpoint]);
+  }, [markStorageAvailable, markStorageUnavailable, recordCompletedSave]);
   runNextRef.current = runNext;
 
   const scheduleQueued = useCallback(() => {

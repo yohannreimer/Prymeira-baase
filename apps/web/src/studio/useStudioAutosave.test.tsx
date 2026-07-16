@@ -106,6 +106,31 @@ describe("useStudioAutosave", () => {
     expect(checkpoint).toHaveBeenCalledWith(6, "significant_pause", expect.any(AbortSignal));
   });
 
+  it("keeps a completed save exit-eligible while the next draft is still saving", async () => {
+    const first = deferred<StudioDocument>();
+    const second = deferred<StudioDocument>();
+    const firstMeaningfulDraft = draft("Uma primeira mudança longa já persistida");
+    const newerMeaningfulDraft = draft("Uma segunda mudança longa ainda sendo persistida");
+    const save = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const checkpoint = vi.fn(async (_revision: number, _reason: string, _signal?: AbortSignal) => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(firstMeaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => result.current.queueSave(newerMeaningfulDraft));
+    await act(async () => first.resolve(saved(firstMeaningfulDraft, 5)));
+    expect(save).toHaveBeenCalledTimes(2);
+
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+
+    await act(async () => second.resolve(saved(newerMeaningfulDraft, 6)));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(checkpoint.mock.calls.map(([revision]) => revision)).toEqual([5, 6]);
+  });
+
   it("creates a document-exit checkpoint for the last meaningful completed save", async () => {
     const meaningfulDraft = draft("Uma mudança suficientemente longa antes de sair");
     const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
