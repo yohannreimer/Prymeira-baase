@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import type { StudioDocumentVersion } from "./studio.types";
@@ -11,12 +11,22 @@ afterEach(() => {
 
 it("loads a bounded version drawer, groups legacy history, and paginates older checkpoints", async () => {
   const user = userEvent.setup();
-  const versions = [
+  const firstPage = [
     version(14, false, "manual", "Direção atual"),
-    ...Array.from({ length: 10 }, (_, index) => version(13 - index, false, "significant_pause", `Pausa ${index + 1}`)),
-    version(2, true, "legacy_autosave", "Registro legado")
+    ...Array.from({ length: 9 }, (_, index) => version(13 - index, false, "significant_pause", `Pausa ${index + 1}`))
   ];
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(response({ versions: versions.map(rawVersion) }));
+  const duplicate = firstPage.at(-1)!;
+  const legacy = version(2, true, "legacy_autosave", "Registro legado");
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/versions?limit=10")) {
+      return response({ versions: firstPage.map(rawVersion), nextCursor: "cursor_2" });
+    }
+    if (url.endsWith("/versions?limit=10&cursor=cursor_2")) {
+      return response({ versions: [rawVersion(duplicate), rawVersion(legacy)], nextCursor: null });
+    }
+    return response({}, 404);
+  });
 
   render(
     <StudioVersionDrawer
@@ -31,13 +41,46 @@ it("loads a bounded version drawer, groups legacy history, and paginates older c
   expect(drawer).toHaveAttribute("aria-modal", "true");
   expect(within(drawer).getByRole("heading", { name: "Histórico de versões" })).toHaveFocus();
   expect(within(drawer).getByText("Versão atual")).toBeVisible();
-  expect(within(drawer).getByText("Histórico anterior")).toHaveAttribute("aria-expanded", "false");
+  expect(within(drawer).queryByText("Histórico anterior")).not.toBeInTheDocument();
   expect(within(drawer).queryByText("Registro legado")).not.toBeInTheDocument();
 
   await user.click(within(drawer).getByRole("button", { name: "Carregar versões anteriores" }));
-  expect(within(drawer).getByText("Pausa 10")).toBeVisible();
+  expect(await within(drawer).findByText("Histórico anterior")).toHaveAttribute("aria-expanded", "false");
+  expect(fetchSpy).toHaveBeenNthCalledWith(2,
+    "/api/studio/documents/doc_1/versions?limit=10&cursor=cursor_2",
+    expect.objectContaining({ signal: expect.any(AbortSignal) })
+  );
+  expect(within(drawer).getAllByRole("button", { name: new RegExp(`Versão ${duplicate.versionNumber}`, "u") })).toHaveLength(1);
   await user.click(within(drawer).getByText("Histórico anterior"));
   expect(within(drawer).getByText("Registro legado")).toBeVisible();
+  expect(within(drawer).queryByRole("button", { name: "Carregar versões anteriores" })).not.toBeInTheDocument();
+});
+
+it("aborts an obsolete page and ignores its late response after the document changes", async () => {
+  const oldPage = deferred<Response>();
+  const oldSignal = { current: null as AbortSignal | null };
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes("/documents/doc_1/versions")) {
+      oldSignal.current = init?.signal as AbortSignal;
+      return oldPage.promise;
+    }
+    if (url.includes("/documents/doc_2/versions")) {
+      return Promise.resolve(response({ versions: [rawVersion({ ...version(1, false, "manual", "Documento novo"), documentId: "doc_2" })], nextCursor: null }));
+    }
+    return Promise.resolve(response({}, 404));
+  });
+
+  const { rerender } = render(
+    <StudioVersionDrawer documentId="doc_1" open onClose={vi.fn()} onRestore={vi.fn()} />
+  );
+  await waitFor(() => expect(oldSignal.current).not.toBeNull());
+  rerender(<StudioVersionDrawer documentId="doc_2" open onClose={vi.fn()} onRestore={vi.fn()} />);
+
+  expect(oldSignal.current?.aborted).toBe(true);
+  expect(await screen.findByRole("button", { name: /Versão 1, atual: Documento novo/u })).toBeVisible();
+  await act(async () => oldPage.resolve(response({ versions: [rawVersion(version(9, false, "manual", "Resposta obsoleta"))], nextCursor: null })));
+  expect(screen.queryByText("Resposta obsoleta")).not.toBeInTheDocument();
 });
 
 it("contains focus, closes from Escape and the backdrop, and restores through confirmation", async () => {
@@ -137,4 +180,10 @@ function rawVersion(item: StudioDocumentVersion) {
 
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => { resolve = fulfill; });
+  return { promise, resolve };
 }

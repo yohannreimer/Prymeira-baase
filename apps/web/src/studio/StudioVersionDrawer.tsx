@@ -36,11 +36,15 @@ export default function StudioVersionDrawer({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const retryRef = useRef<HTMLButtonElement>(null);
   const focusFirstVersionRef = useRef(false);
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
+  const requestGenerationRef = useRef(0);
   const [versions, setVersions] = useState<StudioDocumentVersion[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [reloadKey, setReloadKey] = useState(0);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
   const [legacyOpen, setLegacyOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -52,22 +56,34 @@ export default function StudioVersionDrawer({
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
+    const generation = ++requestGenerationRef.current;
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = null;
     setState("loading");
-    setVisibleCount(PAGE_SIZE);
+    setVersions([]);
+    setNextCursor(null);
+    setLoadingMore(false);
+    setLoadMoreError(false);
     setLegacyOpen(false);
     setRestoreError(null);
-    void listStudioDocumentVersions(documentId, fetch, controller.signal).then((loaded) => {
-      if (controller.signal.aborted) return;
-      const newestFirst = [...loaded].sort((left, right) => right.versionNumber - left.versionNumber);
+    void listStudioDocumentVersions(documentId, { limit: PAGE_SIZE }, controller.signal).then((page) => {
+      if (controller.signal.aborted || requestGenerationRef.current !== generation) return;
+      const newestFirst = [...page.versions].sort((left, right) => right.versionNumber - left.versionNumber);
       setVersions(newestFirst);
+      setNextCursor(page.nextCursor);
       setSelectedId((current) => newestFirst.some((version) => version.id === current)
         ? current
         : newestFirst.find((version) => !version.isLegacy)?.id ?? newestFirst[0]?.id ?? null);
       setState("ready");
     }).catch(() => {
-      if (!controller.signal.aborted) setState("error");
+      if (!controller.signal.aborted && requestGenerationRef.current === generation) setState("error");
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
+      if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
+    };
   }, [documentId, open, reloadKey]);
 
   useEffect(() => {
@@ -134,6 +150,28 @@ export default function StudioVersionDrawer({
     setReloadKey((key) => key + 1);
   }
 
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    const cursor = nextCursor;
+    const generation = requestGenerationRef.current;
+    const controller = new AbortController();
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = controller;
+    setLoadingMore(true);
+    setLoadMoreError(false);
+    try {
+      const page = await listStudioDocumentVersions(documentId, { limit: PAGE_SIZE, cursor }, controller.signal);
+      if (controller.signal.aborted || requestGenerationRef.current !== generation) return;
+      setVersions((current) => mergeVersions(current, page.versions));
+      setNextCursor(page.nextCursor);
+    } catch {
+      if (!controller.signal.aborted && requestGenerationRef.current === generation) setLoadMoreError(true);
+    } finally {
+      if (!controller.signal.aborted && requestGenerationRef.current === generation) setLoadingMore(false);
+      if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
+    }
+  }
+
   async function restore() {
     if (!selected || !canRestore || restoring) return;
     if (!window.confirm(`Restaurar a versão ${selected.versionNumber} como uma nova versão?`)) return;
@@ -193,7 +231,7 @@ export default function StudioVersionDrawer({
                 <span>{checkpoints.length}</span>
               </div>
               <div className="studio-version-drawer__list">
-                {checkpoints.slice(0, visibleCount).map((version, index) => (
+                {checkpoints.map((version, index) => (
                   <VersionButton
                     key={version.id}
                     version={version}
@@ -203,13 +241,6 @@ export default function StudioVersionDrawer({
                   />
                 ))}
               </div>
-              {visibleCount < checkpoints.length ? (
-                <button
-                  className="studio-version-drawer__load"
-                  type="button"
-                  onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
-                >Carregar versões anteriores</button>
-              ) : null}
             </section>
           ) : null}
 
@@ -240,6 +271,22 @@ export default function StudioVersionDrawer({
                 </div>
               ) : null}
             </section>
+          ) : null}
+
+          {state === "ready" && nextCursor ? (
+            <div>
+              <button
+                className="studio-version-drawer__load"
+                type="button"
+                disabled={loadingMore}
+                onClick={() => void loadMore()}
+              >{loadingMore
+                  ? "Carregando versões anteriores…"
+                  : loadMoreError
+                    ? "Tentar carregar versões anteriores"
+                    : "Carregar versões anteriores"}</button>
+              {loadMoreError ? <p className="studio-version-drawer__load-error" role="alert">Não foi possível carregar versões anteriores.</p> : null}
+            </div>
           ) : null}
 
           {state === "ready" && selected ? (
@@ -300,6 +347,12 @@ function formatVersionDate(value: string) {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function mergeVersions(current: StudioDocumentVersion[], incoming: StudioDocumentVersion[]) {
+  const byId = new Map(current.map((version) => [version.id, version]));
+  for (const version of incoming) if (!byId.has(version.id)) byId.set(version.id, version);
+  return [...byId.values()].sort((left, right) => right.versionNumber - left.versionNumber);
 }
 
 function focusableElements(container: HTMLElement | null) {

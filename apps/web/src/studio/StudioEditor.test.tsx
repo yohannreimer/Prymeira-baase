@@ -996,7 +996,7 @@ describe("StudioEditor", () => {
     const onDocumentChange = vi.fn();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
+      if (url.endsWith("/versions?limit=10")) return response({ versions: [rawVersion], nextCursor: null });
       if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") {
         return response({
           document: { ...rawDocument, revision: 5, body_text: rawVersion.body_text, body_json: rawVersion.body_json },
@@ -1027,7 +1027,7 @@ describe("StudioEditor", () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
+      if (url.endsWith("/versions?limit=10")) return response({ versions: [rawVersion], nextCursor: null });
       if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") {
         return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
       }
@@ -1063,7 +1063,7 @@ describe("StudioEditor", () => {
     const restore = deferred<Response>();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
+      if (url.endsWith("/versions?limit=10")) return Promise.resolve(response({ versions: [rawVersion], nextCursor: null }));
       if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") return restore.promise;
       if (url.endsWith("/documents") && init?.method === "POST") {
         return Promise.resolve(response({ document: { ...rawDocument, id: "document_current_copy", revision: 1 } }, 201));
@@ -1100,7 +1100,7 @@ describe("StudioEditor", () => {
     const restore = deferred<Response>();
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
+      if (url.endsWith("/versions?limit=10")) return Promise.resolve(response({ versions: [rawVersion], nextCursor: null }));
       if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") return restore.promise;
       return Promise.resolve(response({}, 404));
     });
@@ -1196,7 +1196,7 @@ describe("StudioEditor", () => {
     const user = userEvent.setup();
     let attempts = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (!String(input).endsWith("/versions")) return response({}, 404);
+      if (!String(input).endsWith("/versions?limit=10")) return response({}, 404);
       attempts += 1;
       if (attempts === 1) return response({ error: { code: "TEMPORARY", message: "Falhou." } }, 503);
       return response({ versions: [rawVersion] });

@@ -698,15 +698,23 @@ export async function removeStudioDocumentFromCollection(
 
 export async function listStudioDocumentVersions(
   documentId: string,
-  fetcher: StudioFetcher = fetch,
-  signal?: AbortSignal
-): Promise<StudioDocumentVersion[]> {
+  query: { limit?: number; cursor?: string } = {},
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<{ versions: StudioDocumentVersion[]; nextCursor: string | null }> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const suffix = params.size ? `?${params.toString()}` : "";
   const response = await studioRequest<RawStudioVersionsResponse>(
-    `/documents/${encodeURIComponent(documentId)}/versions`,
+    `/documents/${encodeURIComponent(documentId)}/versions${suffix}`,
     { signal },
     fetcher
   );
-  return response.versions.map(mapStudioDocumentVersion);
+  return {
+    versions: response.versions.map(mapStudioDocumentVersion),
+    nextCursor: response.next_cursor !== undefined ? response.next_cursor : response.nextCursor ?? null
+  };
 }
 
 export async function restoreStudioDocumentVersion(

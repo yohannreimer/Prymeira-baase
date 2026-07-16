@@ -499,7 +499,11 @@ export type RawStudioDocumentPageResponse = {
 };
 export type RawStudioCollectionsResponse = { collections: RawStudioCollection[] };
 export type RawStudioSearchResponse = { results: RawStudioSearchResult[] };
-export type RawStudioVersionsResponse = { versions: RawStudioDocumentVersion[] };
+export type RawStudioVersionsResponse = {
+  versions: RawStudioDocumentVersion[];
+  next_cursor?: string | null;
+  nextCursor?: string | null;
+};
 export type RawStudioStructureResponse = { structure: RawStudioStructure };
 export type RawStudioStructuresResponse = {
   structures: RawStudioStructure[];

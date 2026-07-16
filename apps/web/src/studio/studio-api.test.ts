@@ -102,7 +102,7 @@ describe("Studio API client", () => {
       if (input.startsWith("/api/studio/search?")) {
         return jsonResponse({ results: [{ document_id: "document_1", title: "Plano anual", excerpt: "Crescer com margem", updated_at: "2026-07-12", collections: [{ id: "collection_1", name: "Estratégia" }] }] });
       }
-      return jsonResponse({ versions: [{ id: "version_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", document_id: "document_1", version_number: 3, body_json: { type: "doc" }, body_text: "Crescer com margem.", origin: "user", actor_profile_id: "profile_owner", ai_run_id: null, created_at: "2026-07-12", title: "Checkpoint de decisão", checkpoint_reason: "manual", source_revision: 3, is_legacy: false }] });
+      return jsonResponse({ versions: [{ id: "version_1", workspace_id: "workspace_a", owner_profile_id: "profile_owner", document_id: "document_1", version_number: 3, body_json: { type: "doc" }, body_text: "Crescer com margem.", origin: "user", actor_profile_id: "profile_owner", ai_run_id: null, created_at: "2026-07-12", title: "Checkpoint de decisão", checkpoint_reason: "manual", source_revision: 3, is_legacy: false }], next_cursor: "cursor_2" });
     });
 
     await expect(getStudioHome(fetcher)).resolves.toMatchObject({
@@ -130,13 +130,15 @@ describe("Studio API client", () => {
     await expect(searchStudioDocuments("margem & foco", 10, fetcher)).resolves.toEqual([
       expect.objectContaining({ documentId: "document_1", updatedAt: "2026-07-12", collections: [{ id: "collection_1", name: "Estratégia" }] })
     ]);
-    await expect(listStudioDocumentVersions("document_1", fetcher)).resolves.toEqual([
-      expect.objectContaining({ documentId: "document_1", versionNumber: 3, actorProfileId: "profile_owner", title: "Checkpoint de decisão", checkpointReason: "manual", sourceRevision: 3, isLegacy: false })
-    ]);
+    await expect(listStudioDocumentVersions("document_1", { limit: 25, cursor: "cursor_1" }, undefined, fetcher)).resolves.toEqual({
+      versions: [expect.objectContaining({ documentId: "document_1", versionNumber: 3, actorProfileId: "profile_owner", title: "Checkpoint de decisão", checkpointReason: "manual", sourceRevision: 3, isLegacy: false })],
+      nextCursor: "cursor_2"
+    });
 
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&limit=20&cursor=cursor+1");
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents?status=active&inbox_state=pending_review&collection_id=collection+%2F+1");
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/search?query=margem+%26+foco&limit=10");
+    expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/studio/documents/document_1/versions?limit=25&cursor=cursor_1");
   });
 
   it("maps camelCase checkpoint and trash metadata", () => {
