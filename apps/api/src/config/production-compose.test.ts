@@ -66,6 +66,8 @@ function expectStorageContract(compose: string): void {
   expect(minio).not.toContain("network_swarm_public");
   expect(minio).toContain("MINIO_API_STALE_UPLOADS_EXPIRY: 24h");
   expect(minio).toContain("MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL: 1h");
+  expect(minio).toContain('test: ["CMD", "mc", "ready", "local"]');
+  expect(minio).not.toContain("wget");
 
   for (const key of webForbiddenStorageKeys) {
     expect(web).not.toMatch(new RegExp(`^\\s+${key}:`, "m"));
