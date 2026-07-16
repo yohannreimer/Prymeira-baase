@@ -90,6 +90,7 @@ export type StudioProactivityStore = {
     signals: StudioProactiveSignal[];
   }>;
   deleteOwnerData?(scope: StudioOwnerScope): Promise<void>;
+  deleteSignalsForSources?(scope: StudioOwnerScope, sourceIds: readonly string[]): Promise<void>;
 };
 
 type RitualSessionStarter = {
@@ -354,6 +355,20 @@ export function createInMemoryStudioProactivityStore(options: {
       }
       for (let index = dueRituals.length - 1; index >= 0; index -= 1) {
         if (sameScope(dueRituals[index]!, scope)) dueRituals.splice(index, 1);
+      }
+    },
+
+    async deleteSignalsForSources(scope, sourceIds) {
+      const sources = new Set(sourceIds);
+      if (sources.size === 0) return;
+      for (let index = signals.length - 1; index >= 0; index -= 1) {
+        const signal = signals[index]!;
+        if (sameScope(signal, scope) && sources.has(signal.sourceId)
+          && ["ritual_reminder", "stale_goal", "decision_review"].includes(signal.type)) signals.splice(index, 1);
+      }
+      for (let index = dueRituals.length - 1; index >= 0; index -= 1) {
+        const ritual = dueRituals[index]!;
+        if (sameScope(ritual, scope) && sources.has(ritual.ritualId)) dueRituals.splice(index, 1);
       }
     },
 

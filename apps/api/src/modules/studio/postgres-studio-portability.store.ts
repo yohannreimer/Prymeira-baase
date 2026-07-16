@@ -49,6 +49,7 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
       const exportedDocuments = documents.filter((document) => exportedDocumentIds.has(String(document.id)));
       const exportedStructures = structures.filter((structure) => exportedDocumentIds.has(String(structure.document_id)));
       const exportedStructureIds = ids(exportedStructures);
+      const exportedStructureKinds = new Map(exportedStructures.map((structure) => [String(structure.id), String(structure.kind)]));
       const exportedConversations = conversations.filter((conversation) => conversation.document_id == null
         || exportedDocumentIds.has(String(conversation.document_id)));
       const exportedConversationIds = ids(exportedConversations);
@@ -76,7 +77,14 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
         relations: relations.filter((relation) => exportedDocumentIds.has(String(relation.source_document_id))
           && exportedDocumentIds.has(String(relation.target_document_id))),
         memoryRows: memoryRows.filter((row) => exportedDocumentIds.has(String(row.document_id))),
-        proactivitySettings, proactiveSignals
+        proactivitySettings,
+        proactiveSignals: proactiveSignals.filter((signal) => {
+          const type = signal.signal_type;
+          if (type === "ritual_reminder") return exportedStructureKinds.get(String(signal.source_id)) === "ritual";
+          if (type === "stale_goal") return exportedStructureKinds.get(String(signal.source_id)) === "goal";
+          if (type === "decision_review") return exportedStructureKinds.get(String(signal.source_id)) === "decision";
+          return true;
+        })
       } satisfies StudioPortabilitySnapshot;
     },
 

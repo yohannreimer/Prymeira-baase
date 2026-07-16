@@ -448,7 +448,7 @@ export function createInMemoryStudioPortabilityStore(input: {
       if (input.proactivity) {
         const rows = await input.proactivity.readPortabilityRows(scope);
         snapshot.proactivitySettings = rows.settings ? [clone(rows.settings)] : [];
-        snapshot.proactiveSignals = clone(rows.signals);
+        snapshot.proactiveSignals = filterStructureSignals(snapshot.structures, clone(rows.signals));
       }
       return snapshot;
     },
@@ -618,6 +618,23 @@ export function createInMemoryStudioPortabilityStore(input: {
       return clone([...exportRecords.values()]);
     }
   };
+}
+
+function filterStructureSignals(structures: PortableRow[], signals: object[]): object[] {
+  const retained = new Map(structures.flatMap((structure) => {
+    const id = structure.id;
+    const kind = structure.kind;
+    return typeof id === "string" && typeof kind === "string" ? [[id, kind] as const] : [];
+  }));
+  return signals.filter((signal) => {
+    const row = signal as Record<string, unknown>;
+    const type = row.type ?? row.signal_type;
+    const sourceId = row.sourceId ?? row.source_id;
+    if (type === "ritual_reminder") return retained.get(String(sourceId)) === "ritual";
+    if (type === "stale_goal") return retained.get(String(sourceId)) === "goal";
+    if (type === "decision_review") return retained.get(String(sourceId)) === "decision";
+    return true;
+  });
 }
 
 type PlannedZipEntry = {

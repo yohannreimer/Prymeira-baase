@@ -939,6 +939,20 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         );
         if (!locked.rows[0]) return false;
         if (locked.rows[0].status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+        const structureRows = await client.query<{ id: string }>(
+          `SELECT id FROM studio_structures
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        const structureIds = structureRows.rows.map((structure) => structure.id);
+        if (structureIds.length > 0) {
+          await client.query(
+            `DELETE FROM studio_proactive_signals
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND source_id=ANY($3::text[])
+               AND signal_type IN ('ritual_reminder','stale_goal','decision_review')`,
+            [scope.workspaceId, scope.ownerProfileId, structureIds]
+          );
+        }
         const assets = await client.query<{ id: string; object_key: string | null }>(
           `SELECT id,object_key FROM studio_assets
            WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,

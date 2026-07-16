@@ -192,4 +192,26 @@ describe("Studio proactivity service", () => {
     expect(dismissed.status).toBe("dismissed");
     await expect(service.listSignals(ownerA, 10, new Date("2026-07-16T12:00:00.000Z"))).resolves.toEqual([]);
   });
+
+  it("deletes structural signals only inside the exact owner scope", async () => {
+    const due = (ownerProfileId: string) => ({ workspaceId: "workspace_a", ownerProfileId,
+      ritualId: "shared_structure_id", title: ownerProfileId, scheduledFor: "2026-07-14T11:00:00.000Z" });
+    const store = createInMemoryStudioProactivityStore({
+      now: () => now.toISOString(),
+      dueRituals: [due("owner_a"), due("owner_b")]
+    });
+    const service = createStudioProactivityService({
+      store, ritualService: { startSession: vi.fn(async () => ({ status: "ready" as const })) }, now: () => now
+    });
+    await service.updateSettings(ownerA, { ritualReminder: true });
+    await service.updateSettings(ownerB, { ritualReminder: true });
+    await service.runDuePreparations(now, 2);
+    await store.deleteSignalsForSources!(ownerA, ["shared_structure_id"]);
+
+    expect((await store.readPortabilityRows!(ownerA)).signals).toEqual([]);
+    expect((await store.readPortabilityRows!(ownerB)).signals).toEqual([
+      expect.objectContaining({ sourceId: "shared_structure_id", ownerProfileId: "owner_b" })
+    ]);
+    expect(store.getDueRituals()).toEqual([due("owner_b")]);
+  });
 });

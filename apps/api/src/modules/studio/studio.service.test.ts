@@ -44,8 +44,10 @@ describe("StudioService documents", () => {
   it("removes semantic memory before permanently deleting a trashed document", async () => {
     const repository = createInMemoryStudioRepository();
     const removed: string[] = [];
+    const removedSignals: string[] = [];
     const service = createStudioService(repository, {
-      removeMemory: async (_scope, documentId) => { removed.push(documentId); }
+      removeMemory: async (_scope, documentId) => { removed.push(documentId); },
+      removeProactiveSignals: async (_scope, documentId) => { removedSignals.push(documentId); }
     });
     const document = await service.createDocument(scope, "owner_a", documentInput());
     await service.trashDocument(scope, "owner_a", document.id);
@@ -53,6 +55,7 @@ describe("StudioService documents", () => {
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(true);
     await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(false);
     expect(removed).toEqual([document.id]);
+    expect(removedSignals).toEqual([document.id]);
   });
 
   it("creates, gets, and updates an owner document without mutating editor JSON", async () => {

@@ -125,6 +125,15 @@ describe("Postgres Studio portability store", () => {
         if (sql.includes("FROM studio_assets")) return { rows: [
           { id: "asset_active", document_id: "active" }, { id: "asset_trashed", document_id: "trashed" }
         ] as T[] };
+        if (sql.includes("FROM studio_structures")) return { rows: [
+          { id: "ritual_active", document_id: "active", kind: "ritual" },
+          { id: "ritual_trashed", document_id: "trashed", kind: "ritual" }
+        ] as T[] };
+        if (sql.includes("FROM studio_proactive_signals")) return { rows: [
+          { id: "signal_active", signal_type: "ritual_reminder", source_id: "ritual_active" },
+          { id: "signal_trashed", signal_type: "ritual_reminder", source_id: "ritual_trashed" },
+          { id: "signal_operational", signal_type: "operational_change", source_id: "task_a" }
+        ] as T[] };
         if (sql.includes("FROM studio_memory_chunks")) return { rows: [
           { id: "memory_active", document_id: "active" }, { id: "memory_trashed", document_id: "trashed" }
         ] as T[] };
@@ -139,6 +148,8 @@ describe("Postgres Studio portability store", () => {
     expect(snapshot.versions.map((row) => row.id)).toEqual(["version_active"]);
     expect(snapshot.assets.map((row) => row.id)).toEqual(["asset_active"]);
     expect(snapshot.memoryRows.map((row) => row.id)).toEqual(["memory_active"]);
+    expect(snapshot.proactiveSignals?.map((row) => (row as { id: string }).id))
+      .toEqual(["signal_active", "signal_operational"]);
   });
 });
 

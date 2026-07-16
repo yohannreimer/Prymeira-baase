@@ -366,6 +366,27 @@ describe("Studio portability service", () => {
       proactivitySettings: [], proactiveSignals: []
     });
   });
+
+  it("exports structural proactive signals only while their typed structure is retained", async () => {
+    const ownerSnapshot = snapshot("owner_a", null);
+    ownerSnapshot.structures = [{ id: "ritual_kept", kind: "ritual" }, { id: "goal_kept", kind: "goal" }];
+    const signals = [
+      { id: "keep_ritual", type: "ritual_reminder", sourceId: "ritual_kept" },
+      { id: "drop_wrong_type", type: "ritual_reminder", sourceId: "goal_kept" },
+      { id: "drop_deleted", type: "decision_review", sourceId: "decision_deleted" },
+      { id: "keep_operational", type: "operational_change", sourceId: "task_a" }
+    ];
+    const store = createInMemoryStudioPortabilityStore({
+      snapshots: [ownerSnapshot],
+      proactivity: {
+        async readPortabilityRows() { return { settings: null, signals }; },
+        async deleteOwnerData() {}
+      }
+    });
+
+    expect((await store.readSnapshot({ workspaceId: "workspace_a", ownerProfileId: "owner_a" })).proactiveSignals)
+      .toEqual([signals[0], signals[3]]);
+  });
 });
 
 function snapshot(ownerProfileId: string, objectKey: string | null): StudioPortabilitySnapshot {

@@ -310,6 +310,16 @@ export function createPostgresStudioProactivityStore(db: OperationalPool): Studi
           [scope.workspaceId, scope.ownerProfileId]
         );
       });
+    },
+
+    async deleteSignalsForSources(scope, sourceIds) {
+      if (sourceIds.length === 0) return;
+      await db.query(
+        `DELETE FROM studio_proactive_signals
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND source_id=ANY($3::text[])
+           AND signal_type IN ('ritual_reminder','stale_goal','decision_review')`,
+        [scope.workspaceId, scope.ownerProfileId, [...new Set(sourceIds)]]
+      );
     }
   };
 }

@@ -1682,6 +1682,47 @@ async function createPostgresRepositoryFixture(): Promise<PostgresRepositoryFixt
 
 repositoryContract("PostgreSQL", createPostgresRepositoryFixture, !testDatabaseUrl);
 
+describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio permanent deletion dependents", () => {
+  it("rolls back proactive-signal deletion and never deletes another owner's matching source id", async () => {
+    const fixture = await createPostgresRepositoryFixture();
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const otherScope = { ...scope, ownerProfileId: "owner_b" };
+    try {
+      const document = await fixture.repository.createDocument(documentInput());
+      const ritual = await fixture.repository.createStructure({ ...scope, documentId: document.id, kind: "ritual",
+        lifecycleStatus: "active", horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
+        propertiesJson: { intention: "Revisar" } });
+      const insertSignal = (ownerProfileId: string, id: string) => fixture.pool.query(
+        `INSERT INTO studio_proactive_signals
+          (id,workspace_id,owner_profile_id,signal_type,source_id,source_scheduled_for,title,reason,status,next_reminder_at)
+         VALUES ($1,$2,$3,'ritual_reminder',$4,$5,$6,'reason','active',$5)`,
+        [id, scope.workspaceId, ownerProfileId, ritual.id, "2026-07-16T12:00:00.000Z", id]
+      );
+      await insertSignal(scope.ownerProfileId, "signal_owner_a");
+      await insertSignal(otherScope.ownerProfileId, "signal_owner_b");
+      await fixture.repository.trashDocument(scope, document.id, "2026-07-16T13:00:00.000Z");
+      await fixture.pool.query(`CREATE FUNCTION reject_studio_document_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'forced delete failure'; END $$`);
+      await fixture.pool.query(`CREATE TRIGGER reject_studio_document_delete
+        BEFORE DELETE ON studio_documents FOR EACH ROW EXECUTE FUNCTION reject_studio_document_delete()`);
+
+      await expect(fixture.repository.permanentlyDeleteDocument(scope, document.id)).rejects.toThrow("forced delete failure");
+      expect((await fixture.pool.query<{ owner_profile_id: string }>(
+        `SELECT owner_profile_id FROM studio_proactive_signals WHERE source_id=$1 ORDER BY owner_profile_id`, [ritual.id]
+      )).rows.map((row) => row.owner_profile_id)).toEqual(["owner_a", "owner_b"]);
+
+      await fixture.pool.query("DROP TRIGGER reject_studio_document_delete ON studio_documents");
+      await fixture.pool.query("DROP FUNCTION reject_studio_document_delete()");
+      await expect(fixture.repository.permanentlyDeleteDocument(scope, document.id)).resolves.toBe(true);
+      expect((await fixture.pool.query<{ owner_profile_id: string }>(
+        `SELECT owner_profile_id FROM studio_proactive_signals WHERE source_id=$1 ORDER BY owner_profile_id`, [ritual.id]
+      )).rows.map((row) => row.owner_profile_id)).toEqual(["owner_b"]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});
+
 describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () => {
   it("keeps derived values stable through focus, archive, and restore updates", async () => {
     const fixture = await createPostgresRepositoryFixture();

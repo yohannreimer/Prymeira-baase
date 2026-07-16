@@ -28,6 +28,7 @@ type StudioServiceOptions = {
   now?: () => string;
   telemetry?: StudioTelemetrySink;
   removeMemory?: (scope: StudioOwnerScope, documentId: string) => Promise<void>;
+  removeProactiveSignals?: (scope: StudioOwnerScope, documentId: string) => Promise<void>;
 };
 
 const HOME_DOCUMENT_LIMIT = 10;
@@ -300,6 +301,7 @@ export function createStudioService(
       const current = await repository.findDocument(scope, id);
       if (!current) return false;
       if (current.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+      await options.removeProactiveSignals?.(scope, id);
       await options.removeMemory?.(scope, id);
       return repository.permanentlyDeleteDocument(scope, id);
     },
