@@ -9,6 +9,12 @@ import { formatStudioMaterialSize } from "./StudioMaterialList";
 import type { StudioAsset } from "./studio.types";
 
 type Download = { url: string; expiresInSeconds: number };
+type PreviewDownload = Download & { assetId: string; generation: number };
+type PreviewState = {
+  assetId: string;
+  generation: number;
+  value: "idle" | "loading" | "ready" | "error";
+};
 
 export type StudioMaterialInspectorProps = {
   asset: StudioAsset;
@@ -63,11 +69,16 @@ export default function StudioMaterialInspector({
   const titleRef = useRef<HTMLHeadingElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const actionGenerationRef = useRef(0);
+  const previewGenerationRef = useRef({ assetId: asset.id, kind: asset.kind, generation: 0 });
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
-  const pendingAudioDownloadRef = useRef<Download | null>(null);
-  const pendingAudioSeekRef = useRef<{ url: string; position: number } | null>(null);
-  const [preview, setPreview] = useState<Download | null>(null);
-  const [previewState, setPreviewState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const pendingAudioDownloadRef = useRef<PreviewDownload | null>(null);
+  const pendingAudioSeekRef = useRef<{ assetId: string; generation: number; url: string; position: number } | null>(null);
+  const [preview, setPreview] = useState<PreviewDownload | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<PreviewState>({
+    assetId: asset.id,
+    generation: 0,
+    value: "idle"
+  });
   const [previewCycle, setPreviewCycle] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [insertState, setInsertState] = useState<"idle" | "working" | "success" | "error">("idle");
@@ -76,13 +87,29 @@ export default function StudioMaterialInspector({
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteState, setDeleteState] = useState<"idle" | "working" | "error">("idle");
 
-  useEffect(() => {
+  if (previewGenerationRef.current.assetId !== asset.id || previewGenerationRef.current.kind !== asset.kind) {
+    previewGenerationRef.current = {
+      assetId: asset.id,
+      kind: asset.kind,
+      generation: previewGenerationRef.current.generation + 1
+    };
     actionGenerationRef.current += 1;
+    pendingAudioDownloadRef.current = null;
+    pendingAudioSeekRef.current = null;
+  }
+  const previewGeneration = previewGenerationRef.current.generation;
+  const activePreview = preview?.assetId === asset.id && preview.generation === previewGeneration
+    ? preview
+    : null;
+  const previewState = previewStatus.assetId === asset.id && previewStatus.generation === previewGeneration
+    ? previewStatus.value
+    : "idle";
+
+  useEffect(() => {
     setExpanded(false);
     setInsertState("idle");
     setRetryState("idle");
     setDownloadState("idle");
-    setPreviewCycle(0);
     setDeleteConfirm(false);
     setDeleteState("idle");
   }, [asset.id]);
@@ -147,30 +174,37 @@ export default function StudioMaterialInspector({
   useEffect(() => {
     if (!open || (asset.kind !== "audio" && asset.kind !== "image")) {
       setPreview(null);
-      setPreviewState("idle");
+      setPreviewStatus({ assetId: asset.id, generation: previewGeneration, value: "idle" });
       return;
     }
+    const generation = previewGeneration;
     const controller = new AbortController();
     let renewal: ReturnType<typeof setTimeout> | null = null;
-    setPreviewState("loading");
+    setPreviewStatus({ assetId: asset.id, generation, value: "loading" });
     void getDownload(asset.id, controller.signal).then((result) => {
-      if (controller.signal.aborted) return;
+      const isCurrent = previewGenerationRef.current.assetId === asset.id
+        && previewGenerationRef.current.kind === asset.kind
+        && previewGenerationRef.current.generation === generation;
+      if (controller.signal.aborted || !isCurrent) return;
+      const identified = { ...result, assetId: asset.id, generation };
       const player = audioPlayerRef.current;
       if (asset.kind === "audio" && player && !player.paused && !player.ended) {
-        pendingAudioDownloadRef.current = result;
+        pendingAudioDownloadRef.current = identified;
       } else {
         pendingAudioDownloadRef.current = null;
         pendingAudioSeekRef.current = asset.kind === "audio" && player
           ? {
+            assetId: asset.id,
+            generation,
             url: result.url,
             position: player.ended
               ? 0
               : Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0
           }
           : null;
-        setPreview(result);
+        setPreview(identified);
       }
-      setPreviewState("ready");
+      setPreviewStatus({ assetId: asset.id, generation, value: "ready" });
       const lifetime = Math.max(0, result.expiresInSeconds * 1_000);
       if (lifetime > 0) {
         renewal = setTimeout(() => {
@@ -178,16 +212,19 @@ export default function StudioMaterialInspector({
         }, Math.max(1_000, lifetime - Math.min(30_000, Math.max(1_000, lifetime * 0.1))));
       }
     }).catch(() => {
-      if (!controller.signal.aborted) {
+      const isCurrent = previewGenerationRef.current.assetId === asset.id
+        && previewGenerationRef.current.kind === asset.kind
+        && previewGenerationRef.current.generation === generation;
+      if (!controller.signal.aborted && isCurrent) {
         pendingAudioDownloadRef.current = null;
-        setPreviewState("error");
+        setPreviewStatus({ assetId: asset.id, generation, value: "error" });
       }
     });
     return () => {
       controller.abort();
       if (renewal) clearTimeout(renewal);
     };
-  }, [asset.id, asset.kind, getDownload, open, previewCycle]);
+  }, [asset.id, asset.kind, getDownload, open, previewCycle, previewGeneration]);
 
   if (!open) return null;
 
@@ -200,6 +237,10 @@ export default function StudioMaterialInspector({
   function adoptPendingAudioDownload(ended = false) {
     const pendingDownload = pendingAudioDownloadRef.current;
     const player = audioPlayerRef.current;
+    if (pendingDownload && (pendingDownload.assetId !== asset.id || pendingDownload.generation !== previewGeneration)) {
+      pendingAudioDownloadRef.current = null;
+      return;
+    }
     const playbackEnded = ended || Boolean(player?.ended);
     if (!pendingDownload) {
       if (playbackEnded && pendingAudioSeekRef.current) {
@@ -211,15 +252,24 @@ export default function StudioMaterialInspector({
       ? 0
       : player && Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0;
     pendingAudioDownloadRef.current = null;
-    pendingAudioSeekRef.current = { url: pendingDownload.url, position };
-    setPreviewState("ready");
+    pendingAudioSeekRef.current = {
+      assetId: asset.id,
+      generation: previewGeneration,
+      url: pendingDownload.url,
+      position
+    };
+    setPreviewStatus({ assetId: asset.id, generation: previewGeneration, value: "ready" });
     setPreview(pendingDownload);
   }
 
   function restorePendingAudioPosition() {
     const pendingSeek = pendingAudioSeekRef.current;
     const player = audioPlayerRef.current;
-    if (!pendingSeek || !player || preview?.url !== pendingSeek.url) return;
+    if (!pendingSeek
+      || pendingSeek.assetId !== asset.id
+      || pendingSeek.generation !== previewGeneration
+      || !player
+      || activePreview?.url !== pendingSeek.url) return;
     pendingAudioSeekRef.current = null;
     try {
       player.currentTime = pendingSeek.position;
@@ -323,14 +373,15 @@ export default function StudioMaterialInspector({
 
         <div className="studio-material-inspector__scroll">
           <section className="studio-material-inspector__preview" aria-label="Prévia do material">
-            {asset.kind === "image" && preview?.url ? (
-              <img src={preview.url} alt={`Prévia de ${asset.displayName}`} />
-            ) : asset.kind === "audio" && preview?.url ? (
+            {asset.kind === "image" && activePreview?.url ? (
+              <img src={activePreview.url} alt={`Prévia de ${asset.displayName}`} />
+            ) : asset.kind === "audio" && activePreview?.url ? (
               <audio
+                key={`${asset.id}:${previewGeneration}`}
                 ref={audioPlayerRef}
                 controls
                 preload="metadata"
-                src={preview.url}
+                src={activePreview.url}
                 aria-label={`Ouvir áudio original: ${asset.displayName}`}
                 onPause={() => adoptPendingAudioDownload(false)}
                 onEnded={() => adoptPendingAudioDownload(true)}
@@ -338,7 +389,8 @@ export default function StudioMaterialInspector({
                 onError={() => {
                   pendingAudioDownloadRef.current = null;
                   pendingAudioSeekRef.current = null;
-                  setPreviewState("error");
+                  setPreview(null);
+                  setPreviewStatus({ assetId: asset.id, generation: previewGeneration, value: "error" });
                 }}
               />
             ) : asset.kind === "link_snapshot" && externalUrl ? (
@@ -354,6 +406,11 @@ export default function StudioMaterialInspector({
             )}
             {previewState === "loading" ? <p role="status">Preparando prévia…</p> : null}
             {previewState === "error" ? <p role="alert">Não foi possível carregar a prévia. O original continua preservado.</p> : null}
+            {previewState === "error" && asset.kind === "audio" ? (
+              <button type="button" onClick={() => setPreviewCycle((cycle) => cycle + 1)}>
+                Carregar áudio original
+              </button>
+            ) : null}
           </section>
 
           <section className="studio-material-inspector__processing" aria-labelledby={`${titleId}-processing`}>

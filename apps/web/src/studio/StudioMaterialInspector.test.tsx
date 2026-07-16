@@ -55,6 +55,107 @@ it("previews each material kind without exposing unsafe inline content", async (
   expect(screen.getByRole("link", { name: "Abrir link original" })).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
 });
 
+it("never shows image A inside image B while B preview is pending or fails", async () => {
+  const imageB = deferred<{ url: string; expiresInSeconds: number }>();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/image-a", expiresInSeconds: 600 })
+    .mockImplementationOnce(() => imageB.promise);
+  const view = render(<StudioMaterialInspector
+    asset={asset({ id: "image-a", kind: "image", displayName: "a.png", mimeType: "image/png" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  expect(await screen.findByRole("img", { name: "Prévia de a.png" })).toHaveAttribute("src", "https://private.example/image-a");
+
+  view.rerender(<StudioMaterialInspector
+    asset={asset({ id: "image-b", kind: "image", displayName: "b.png", mimeType: "image/png" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  expect(screen.getByRole("dialog", { name: "Material b.png" })).toBeVisible();
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+
+  await act(async () => imageB.reject(new Error("preview failed")));
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível carregar a prévia");
+});
+
+it("never leaves audio A playable inside audio B while B preview is pending or fails", async () => {
+  const audioB = deferred<{ url: string; expiresInSeconds: number }>();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/audio-a", expiresInSeconds: 600 })
+    .mockImplementationOnce(() => audioB.promise);
+  const view = render(<StudioMaterialInspector
+    asset={asset({ id: "audio-a", kind: "audio", displayName: "a.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  expect(await screen.findByLabelText("Ouvir áudio original: a.wav")).toHaveAttribute("src", "https://private.example/audio-a");
+
+  view.rerender(<StudioMaterialInspector
+    asset={asset({ id: "audio-b", kind: "audio", displayName: "b.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  expect(screen.getByRole("dialog", { name: "Material b.wav" })).toBeVisible();
+  expect(screen.queryByLabelText("Ouvir áudio original: b.wav")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Ouvir áudio original: a.wav")).not.toBeInTheDocument();
+
+  await act(async () => audioB.reject(new Error("preview failed")));
+  expect(screen.queryByRole("audio")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível carregar a prévia");
+});
+
+it("offers an explicit audio retry after the initial URL fails", async () => {
+  const getDownload = vi.fn()
+    .mockRejectedValueOnce(new Error("temporary failure"))
+    .mockResolvedValueOnce({ url: "https://private.example/audio-recovered", expiresInSeconds: 600 });
+  render(<StudioMaterialInspector
+    asset={asset({ id: "audio", kind: "audio", displayName: "nota.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+
+  expect(await screen.findByRole("button", { name: "Carregar áudio original" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+  expect(await screen.findByLabelText("Ouvir áudio original: nota.wav")).toHaveAttribute(
+    "src",
+    "https://private.example/audio-recovered"
+  );
+  expect(getDownload).toHaveBeenCalledTimes(2);
+});
+
+it("offers the same safe retry when an audio URL renewal fails", async () => {
+  vi.useFakeTimers();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+    .mockRejectedValueOnce(new Error("renewal failed"))
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 });
+  render(<StudioMaterialInspector
+    asset={asset({ id: "audio", kind: "audio", displayName: "nota.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  await act(async () => { await Promise.resolve(); });
+  const player = screen.getByLabelText("Ouvir áudio original: nota.wav");
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+  expect(screen.getByRole("button", { name: "Carregar áudio original" })).toBeVisible();
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+
+  fireEvent.click(screen.getByRole("button", { name: "Carregar áudio original" }));
+  await act(async () => { await Promise.resolve(); });
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+  expect(getDownload).toHaveBeenCalledTimes(3);
+});
+
 it("keeps a playing audio URL and position stable until a safe renewal event", async () => {
   vi.useFakeTimers();
   const renewal = deferred<{ url: string; expiresInSeconds: number }>();
@@ -277,6 +378,10 @@ function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }

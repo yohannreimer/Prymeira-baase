@@ -256,8 +256,7 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
       rule.media === coarse
       && rule.selectors.some((selector) => selector.startsWith(".studio-material-composer"))
     ))).toHaveLength(0);
-    expect(cssRule(".studio-document-assets .studio-asset-status a", coarse).get("min-height")).toBe("44px");
-    const audio = cssRule(".studio-asset-status__original audio", coarse);
+    const audio = cssRule(".studio-material-inspector__preview audio", coarse);
     expect(audio.get("height")).toBe("44px");
     expect(audio.get("max-width")).toBe("100%");
     expect(audio.get("min-height")).toBe("44px");
@@ -267,8 +266,7 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
     const materialRules = studioCssRules.filter((rule) => rule.selectors.some((selector) => (
       selector.startsWith(".studio-material-composer")
       || selector.startsWith(".studio-document-assets")
-      || selector.startsWith(".studio-asset-status")
-      || selector.startsWith(".studio-asset-transcript")
+      || selector.startsWith(".studio-material-inspector")
     )));
     expect(materialRules.length).toBeGreaterThan(0);
     for (const rule of materialRules) {
@@ -276,9 +274,7 @@ describe("Owner Studio accessibility and adaptive quiet ops", () => {
       expect(values, rule.selectors.join(", ")).not.toMatch(/linear-gradient|#[0-9a-f]{3,8}|\brgba?\(/iu);
     }
     for (const selector of [
-      ".studio-document-assets",
-      ".studio-asset-status",
-      ".studio-asset-status__processing"
+      ".studio-document-assets"
     ]) {
       const declarations = cssRule(selector);
       expect(declarations.has("background"), selector).toBe(false);
