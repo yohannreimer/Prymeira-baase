@@ -21,6 +21,17 @@ const config = {
 };
 
 describe("S3 atomic multipart uploads", () => {
+  it("signs a sanitized attachment disposition for friendly export filenames", async () => {
+    const url = await createS3ObjectStorage(config).createDownloadUrl("private/export.zip", 900, {
+      downloadFilename: "cópia\r\nInjected: yes.zip"
+    });
+    const disposition = new URL(url).searchParams.get("response-content-disposition");
+    expect(disposition).toContain("attachment;");
+    expect(disposition).toContain("filename*=UTF-8''");
+    expect(disposition).not.toMatch(/[\r\n]/u);
+    expect(disposition).not.toContain("Injected: yes");
+  });
+
   it("verifies native MinIO readiness without lifecycle requests", async () => {
     const commands: unknown[] = [];
     const client = {

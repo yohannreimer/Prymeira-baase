@@ -28,6 +28,7 @@ describe("StudioPrivacySettings", () => {
     expect(screen.getByText(/Inclui documentos e metadados privados do Estúdio/u)).toBeVisible();
     const link = await screen.findByRole("link", { name: "Baixar cópia privada" }, { timeout: 2_000 });
     expect(link).toHaveAttribute("href", "https://private.test/export");
+    expect(link).toHaveAttribute("download", "prymeira-baase-estudio-2026-07-14.zip");
     expect(link).toHaveAttribute("rel", "noreferrer");
     expect(screen.getByText("prymeira-baase-estudio-2026-07-14.zip")).toBeVisible();
     expect(screen.getByText("1,5 KB")).toBeVisible();
@@ -79,6 +80,42 @@ describe("StudioPrivacySettings", () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  it("does not let a late export request reappear after private deletion starts", async () => {
+    const user = userEvent.setup();
+    let resolveExport!: (response: Response) => void;
+    const delayedExport = new Promise<Response>((resolve) => { resolveExport = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/export")) return delayedExport;
+      if (String(input).endsWith("/data")) return deletionResponse();
+      return new Response(null, { status: 404 });
+    });
+    render(<StudioPrivacySettings />);
+    await user.click(screen.getByRole("button", { name: "Preparar exportação" }));
+    await deletePrivateStudio(user);
+    resolveExport(jsonExport("ready", "late-post"));
+    await Promise.resolve();
+    expect(screen.queryByRole("link", { name: "Baixar cópia privada" })).not.toBeInTheDocument();
+    expect(screen.queryByText("prymeira-baase-estudio-late-post.zip")).not.toBeInTheDocument();
+  });
+
+  it("does not let a late export poll reappear after private deletion starts", async () => {
+    const user = userEvent.setup();
+    let resolvePoll!: (response: Response) => void;
+    const delayedPoll = new Promise<Response>((resolve) => { resolvePoll = resolve; });
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonExport("pending", "polling"))
+      .mockImplementationOnce(() => delayedPoll)
+      .mockResolvedValueOnce(deletionResponse());
+    render(<StudioPrivacySettings />);
+    await user.click(screen.getByRole("button", { name: "Preparar exportação" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await deletePrivateStudio(user);
+    resolvePoll(jsonExport("ready", "late-poll"));
+    await Promise.resolve();
+    expect(screen.queryByRole("link", { name: "Baixar cópia privada" })).not.toBeInTheDocument();
+    expect(screen.queryByText("prymeira-baase-estudio-late-poll.zip")).not.toBeInTheDocument();
+  });
+
   it("requires the exact irreversible confirmation and reports safe cleanup", async () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ deletion: {
@@ -118,4 +155,16 @@ function jsonExport(status: "pending" | "processing" | "ready" | "failed" | "exp
     expiresAt: "2026-07-14T15:15:00.000Z",
     downloadUrl: status === "ready" ? `https://private.test/${id}` : null
   } }), { status: status === "pending" || status === "failed" || status === "expired" ? 202 : 200, headers: { "content-type": "application/json" } });
+}
+
+function deletionResponse() {
+  return new Response(JSON.stringify({ deletion: {
+    requestId: "delete_1", status: "completed", pendingObjectCount: 0, cleanupContinues: false
+  } }), { status: 202, headers: { "content-type": "application/json" } });
+}
+
+async function deletePrivateStudio(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByRole("textbox", { name: "Confirmação de exclusão" }), "EXCLUIR MEU ESTÚDIO");
+  await user.click(screen.getByRole("button", { name: "Excluir meu Estúdio" }));
+  expect(await screen.findByText(/conteúdo privado foi removido/i)).toBeVisible();
 }

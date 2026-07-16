@@ -25,6 +25,10 @@ export type AbortAtomicUploadInput = {
   uploadId: string;
 };
 
+export type DownloadUrlOptions = {
+  downloadFilename?: string;
+};
+
 export type ObjectStorage = {
   ensureReady(): Promise<void>;
   put(input: PutObjectInput, options?: { signal?: AbortSignal }): Promise<void>;
@@ -40,6 +44,18 @@ export type ObjectStorage = {
     contentType: string | null;
     sizeBytes: number | null;
   }>;
-  createDownloadUrl(key: string, expiresInSeconds: number): Promise<string>;
+  createDownloadUrl(key: string, expiresInSeconds: number, options?: DownloadUrlOptions): Promise<string>;
   delete(key: string, options?: { signal?: AbortSignal }): Promise<void>;
 };
+
+export function attachmentContentDisposition(filename: string): string {
+  const singleLine = filename.split(/[\r\n]/u, 1)[0]?.trim() || "download";
+  const fallback = singleLine.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/[^\x20-\x7E]/gu, "_")
+    .replace(/["\\]/gu, "_")
+    .trim() || "download";
+  const encoded = encodeURIComponent(singleLine).replace(/[!'()*]/gu, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}

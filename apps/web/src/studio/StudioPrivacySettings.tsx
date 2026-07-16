@@ -86,6 +86,11 @@ export default function StudioPrivacySettings() {
 
   async function deleteStudio() {
     if (confirmation !== DELETE_CONFIRMATION) return;
+    exportGenerationRef.current += 1;
+    exportRequestRef.current?.abort();
+    exportRequestRef.current = null;
+    setExported(null);
+    setExportState("idle");
     setDeleteState("loading");
     try {
       const response = await studioRequest<StudioDeletionResponse>("/data", {
@@ -197,7 +202,7 @@ function ExportStatusCard({ exported }: { exported: StudioExportResponse["export
         <dd>{formatDateTime(exported.expiresAt)}</dd>
       </div> : null}
     </dl>
-    {exported.status === "ready" && exported.downloadUrl ? <a className="studio-export-card__download" href={exported.downloadUrl} rel="noreferrer">
+    {exported.status === "ready" && exported.downloadUrl ? <a className="studio-export-card__download" href={exported.downloadUrl} download={exported.filename} rel="noreferrer">
       <i className="ph-light ph-download-simple" aria-hidden="true" /> Baixar cópia privada
     </a> : null}
   </section>;

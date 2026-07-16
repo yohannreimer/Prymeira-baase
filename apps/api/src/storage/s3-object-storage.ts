@@ -17,7 +17,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import type { BaaseMultipartCleanupMode } from "../config/runtime";
-import type { ObjectStorage } from "./object-storage";
+import { attachmentContentDisposition, type ObjectStorage } from "./object-storage";
 import { hasSafeMultipartLifecycle } from "./s3-lifecycle-policy";
 
 export type S3ObjectStorageConfig = {
@@ -174,8 +174,14 @@ export function createS3ObjectStorage(config: S3ObjectStorageConfig, clientOverr
         sizeBytes: response.ContentLength ?? null
       };
     },
-    createDownloadUrl(key, expiresInSeconds) {
-      return getSignedUrl(sdkClient, new GetObjectCommand({ Bucket: config.bucket, Key: key }), { expiresIn: expiresInSeconds });
+    createDownloadUrl(key, expiresInSeconds, options) {
+      return getSignedUrl(sdkClient, new GetObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        ResponseContentDisposition: options?.downloadFilename
+          ? attachmentContentDisposition(options.downloadFilename)
+          : undefined
+      }), { expiresIn: expiresInSeconds });
     },
     async delete(key, options) {
       await client.send(

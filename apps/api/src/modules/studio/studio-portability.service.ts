@@ -199,7 +199,8 @@ export function createStudioPortabilityService(options: {
       return options.store.signExport({ scope, id: exportId, now: signingAt.toISOString() }, authorizeActor(actor), async (ready) => exportProjection(
         ready, "ready", await options.objectStorage.createDownloadUrl(
           ready.objectKey,
-          Math.max(1, Math.min(EXPORT_URL_TTL_SECONDS, Math.ceil((Date.parse(ready.expiresAt) - signingAt.getTime()) / 1_000)))
+          Math.max(1, Math.min(EXPORT_URL_TTL_SECONDS, Math.ceil((Date.parse(ready.expiresAt) - signingAt.getTime()) / 1_000))),
+          { downloadFilename: ready.filename }
         )
       ));
     },
@@ -235,8 +236,8 @@ export function createStudioPortabilityService(options: {
           }, { signal });
           const stored = await options.objectStorage.get(claim.objectKey, { signal });
           stored.body.destroy();
-          if (stored.sizeBytes === null || stored.sizeBytes < 0) {
-            throw portabilityError("STUDIO_EXPORT_METADATA_UNAVAILABLE");
+          if (stored.sizeBytes === null || stored.sizeBytes !== archive.sizeBytes) {
+            throw portabilityError("STUDIO_EXPORT_SIZE_MISMATCH");
           }
           return { result: undefined, sizeBytes: stored.sizeBytes };
         });

@@ -58,7 +58,12 @@ describe("Studio portability service", () => {
       expiresAt: "2026-07-14T15:15:00.000Z"
     });
     expect(downloadable.sizeBytes).toBeGreaterThan(0);
-    expect(downloadable.downloadUrl).toContain("expires_in=900");
+    const downloadUrl = downloadable.downloadUrl;
+    expect(downloadUrl).toContain("expires_in=900");
+    expect(downloadUrl).toContain("response-content-disposition=");
+    if (!downloadUrl) throw new Error("expected private download URL");
+    expect(new URL(downloadUrl).searchParams.get("response-content-disposition"))
+      .toContain("prymeira-baase-estudio-2026-07-14.zip");
     const exportKey = storage.keys().find((key) => key.includes("/exports/"));
     expect(exportKey).toMatch(/^workspaces\/workspace_a\/studio\/owner_a\/exports\/.+\.zip$/u);
     const archive = await readObject(storage, exportKey!);
@@ -116,6 +121,36 @@ describe("Studio portability service", () => {
     await expect(deleting).resolves.toMatchObject({ status: "completed" });
     expect(storage.keys().filter((key) => key.includes(requested.exportId))).toEqual([]);
     await expect(service.getExport(ownerA, requested.exportId)).rejects.toThrow("STUDIO_EXPORT_NOT_FOUND");
+  });
+
+  it.each([
+    ["truncated", -1],
+    ["mismatched", 1]
+  ])("rejects %s stored export metadata, cleans the object, and allows a fresh export", async (_label, delta) => {
+    const storage = createInMemoryObjectStorage();
+    const originalGet = storage.get.bind(storage);
+    storage.get = vi.fn(async (key, options) => {
+      const object = await originalGet(key, options);
+      return { ...object, sizeBytes: Math.max(0, (object.sizeBytes ?? 0) + delta) };
+    });
+    const store = createInMemoryStudioPortabilityStore({ snapshots: [snapshot("owner_a", null)] });
+    const service = createStudioPortabilityService({
+      store, objectStorage: storage, verifyOwner: async () => true
+    });
+
+    const corrupted = await service.exportData(ownerA);
+    await service.processNextExport();
+    await expect(service.getExport(ownerA, corrupted.exportId)).resolves.toMatchObject({
+      status: "failed", sizeBytes: null, downloadUrl: null
+    });
+    expect(storage.keys().some((key) => key.includes(corrupted.exportId))).toBe(false);
+
+    storage.get = originalGet;
+    const retried = await service.exportData(ownerA);
+    await service.processNextExport();
+    await expect(service.getExport(ownerA, retried.exportId)).resolves.toMatchObject({
+      status: "ready", sizeBytes: expect.any(Number)
+    });
   });
 
   it("revalidates the persisted owner immediately before publication and download signing", async () => {

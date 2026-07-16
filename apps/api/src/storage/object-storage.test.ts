@@ -19,6 +19,21 @@ describe("ObjectStorage private reads", () => {
     expect(object).toMatchObject({ contentType: "text/plain", sizeBytes: 6 });
   });
 
+  it("binds a sanitized attachment filename to private download URLs", async () => {
+    const storage = createInMemoryObjectStorage();
+    await storage.put({
+      key: "private/export", body: Readable.from("secret"), contentType: "application/zip", sizeBytes: 6
+    });
+    const url = await storage.createDownloadUrl("private/export", 900, {
+      downloadFilename: "cópia\r\nInjected: yes.zip"
+    });
+    const disposition = new URL(url).searchParams.get("response-content-disposition");
+    expect(disposition).toContain("attachment;");
+    expect(disposition).toContain("filename*=UTF-8''");
+    expect(disposition).not.toMatch(/[\r\n]/u);
+    expect(disposition).not.toContain("Injected: yes");
+  });
+
   it("normalizes SDK streams and byte arrays to Node Readable", async () => {
     for (const sdkBody of [Readable.from("node"), new Uint8Array(Buffer.from("bytes"))]) {
       const stream = objectBodyToNodeReadable(sdkBody);

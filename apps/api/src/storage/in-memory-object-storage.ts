@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import type { CompleteAtomicUploadInput, ObjectStorage, PutObjectInput } from "./object-storage";
+import { attachmentContentDisposition, type CompleteAtomicUploadInput, type ObjectStorage, type PutObjectInput } from "./object-storage";
 
 export type InMemoryObjectStorage = ObjectStorage & {
   failNextPut(error: Error): void;
@@ -116,9 +116,13 @@ export function createInMemoryObjectStorage(): InMemoryObjectStorage {
         sizeBytes: object.sizeBytes
       };
     },
-    async createDownloadUrl(key, expiresInSeconds) {
+    async createDownloadUrl(key, expiresInSeconds, options) {
       if (!objects.has(key)) throw new Error("OBJECT_NOT_FOUND");
-      return `memory://${encodeURIComponent(key)}?expires_in=${expiresInSeconds}`;
+      const params = new URLSearchParams({ expires_in: String(expiresInSeconds) });
+      if (options?.downloadFilename) {
+        params.set("response-content-disposition", attachmentContentDisposition(options.downloadFilename));
+      }
+      return `memory://${encodeURIComponent(key)}?${params.toString()}`;
     },
     async delete(key, options) {
       throwIfAborted(options?.signal);
