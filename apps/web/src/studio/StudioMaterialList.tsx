@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getStudioAsset } from "./studio-api";
 import type {
   StudioAsset,
@@ -111,7 +111,7 @@ function StudioMaterialRow({
   const onAssetChangeRef = useRef(onAssetChange);
   onAssetChangeRef.current = onAssetChange;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const adopted = freshestAsset(currentRef.current, asset);
     currentRef.current = adopted;
     setCurrent(adopted);
@@ -119,15 +119,15 @@ function StudioMaterialRow({
 
   useEffect(() => {
     const controller = new AbortController();
-    let latest = currentRef.current;
     void (async () => {
-      if (!shouldPoll(latest)) return;
+      if (!shouldPoll(currentRef.current)) return;
       let attempt = 0;
-      while (shouldPoll(latest)) {
+      while (shouldPoll(currentRef.current)) {
         const configuredDelay = pollDelays[Math.min(attempt, Math.max(0, pollDelays.length - 1))];
         const delay = Number.isFinite(configuredDelay) ? Math.max(1, configuredDelay ?? 1) : 5_000;
         await wait(delay, controller.signal);
         attempt += 1;
+        if (!shouldPoll(currentRef.current)) return;
         let refreshed: StudioAsset;
         try {
           refreshed = await getStatus(asset.id, controller.signal);
@@ -136,14 +136,14 @@ function StudioMaterialRow({
           continue;
         }
         if (controller.signal.aborted) return;
-        const adopted = freshestAsset(latest, refreshed);
-        if (adopted !== latest) {
-          latest = adopted;
+        if (refreshed.id !== asset.id || refreshed.documentId !== asset.documentId) continue;
+        const baseline = currentRef.current;
+        const adopted = freshestAsset(baseline, refreshed);
+        if (adopted !== baseline) {
           currentRef.current = adopted;
           setCurrent(adopted);
           onAssetChangeRef.current?.(adopted);
         }
-        if (!shouldPoll(latest)) return;
       }
     })().catch(() => undefined);
     return () => controller.abort();

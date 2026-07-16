@@ -186,7 +186,7 @@ it("keeps the capped delay between transient polling failures", async () => {
   vi.useFakeTimers();
   const getStatus = vi.fn().mockRejectedValue(new Error("temporary"));
 
-  render(<StudioMaterialList
+  const view = render(<StudioMaterialList
     assets={[asset({ extractionStatus: "pending" })]}
     onSelect={vi.fn()}
     getStatus={getStatus}
@@ -201,6 +201,89 @@ it("keeps the capped delay between transient polling failures", async () => {
   expect(getStatus).toHaveBeenCalledTimes(1);
   await act(async () => vi.advanceTimersByTimeAsync(1));
   expect(getStatus).toHaveBeenCalledTimes(2);
+  view.unmount();
+  vi.useRealTimers();
+});
+
+it("does not let an in-flight stale response replace a fresher parent asset", async () => {
+  vi.useFakeTimers();
+  let resolveStale!: (value: StudioAsset) => void;
+  const staleResponse = new Promise<StudioAsset>((resolve) => {
+    resolveStale = resolve;
+  });
+  const getStatus = vi.fn().mockReturnValue(staleResponse);
+  const onAssetChange = vi.fn();
+  const onSelect = vi.fn();
+  const pollDelays = [10] as const;
+  const initial = asset({ extractionStatus: "processing", displayName: "initial.pdf" });
+  const freshParent = asset({
+    extractionStatus: "processing",
+    displayName: "fresh-parent.pdf",
+    updatedAt: "2026-07-16T10:02:00.000Z"
+  });
+  const view = render(<StudioMaterialList
+    assets={[initial]}
+    onSelect={onSelect}
+    onAssetChange={onAssetChange}
+    getStatus={getStatus}
+    pollDelays={pollDelays}
+  />);
+
+  await act(async () => vi.advanceTimersByTimeAsync(10));
+  expect(getStatus).toHaveBeenCalledTimes(1);
+  view.rerender(<StudioMaterialList
+    assets={[freshParent]}
+    onSelect={onSelect}
+    onAssetChange={onAssetChange}
+    getStatus={getStatus}
+    pollDelays={pollDelays}
+  />);
+  expect(screen.getByRole("button", { name: "Abrir fresh-parent.pdf" })).toBeInTheDocument();
+
+  await act(async () => {
+    resolveStale(asset({
+      extractionStatus: "processing",
+      displayName: "stale-response.pdf",
+      updatedAt: "2026-07-16T10:01:00.000Z"
+    }));
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("button", { name: "Abrir fresh-parent.pdf" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Abrir stale-response.pdf" })).not.toBeInTheDocument();
+  expect(onAssetChange).not.toHaveBeenCalled();
+  view.unmount();
+  vi.useRealTimers();
+});
+
+it("keeps the freshest asset across out-of-order poll responses", async () => {
+  vi.useFakeTimers();
+  const onAssetChange = vi.fn();
+  const newest = asset({
+    extractionStatus: "processing",
+    displayName: "newest.pdf",
+    updatedAt: "2026-07-16T10:02:00.000Z"
+  });
+  const older = asset({
+    extractionStatus: "processing",
+    displayName: "older.pdf",
+    updatedAt: "2026-07-16T10:01:00.000Z"
+  });
+  const getStatus = vi.fn().mockResolvedValueOnce(newest).mockResolvedValueOnce(older);
+
+  const view = render(<StudioMaterialList
+    assets={[asset({ extractionStatus: "processing", displayName: "initial.pdf" })]}
+    onSelect={vi.fn()}
+    onAssetChange={onAssetChange}
+    getStatus={getStatus}
+    pollDelays={[10]}
+  />);
+
+  await act(async () => vi.advanceTimersByTimeAsync(20));
+  expect(getStatus).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("button", { name: "Abrir newest.pdf" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Abrir older.pdf" })).not.toBeInTheDocument();
+  expect(onAssetChange).toHaveBeenCalledTimes(1);
+  view.unmount();
   vi.useRealTimers();
 });
 
