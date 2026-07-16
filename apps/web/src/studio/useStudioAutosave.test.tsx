@@ -131,7 +131,7 @@ describe("useStudioAutosave", () => {
     expect(checkpoint.mock.calls.map(([revision]) => revision)).toEqual([5, 6]);
   });
 
-  it("atomically saves and checkpoints a pending PATCH on pagehide", async () => {
+  it("keeps the pending PATCH and outbox until the small exit checkpoint acknowledges it", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
     let saveSignal: AbortSignal | undefined;
@@ -140,30 +140,35 @@ describe("useStudioAutosave", () => {
       return pendingSave.promise;
     });
     const checkpoint = vi.fn(async () => undefined);
-    const saveExitCheckpoint = vi.fn(() => pendingExit.promise);
-    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint, saveExitCheckpoint }));
+    const exitCheckpoint = vi.fn(() => pendingExit.promise);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint, exitCheckpoint }));
     const meaningfulDraft = draft("Uma mudança pendente preservada atomicamente");
 
     act(() => result.current.queueSave(meaningfulDraft));
     await act(async () => vi.advanceTimersByTimeAsync(700));
     act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
 
-    expect(saveSignal?.aborted).toBe(true);
-    expect(saveExitCheckpoint).toHaveBeenCalledWith(meaningfulDraft, 4);
+    expect(saveSignal?.aborted).toBe(false);
+    expect(exitCheckpoint).toHaveBeenCalledWith(4);
     expect(checkpoint).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+    await act(async () => pendingSave.resolve(saved(meaningfulDraft, 5)));
+    expect(exitCheckpoint).toHaveBeenCalledWith(5);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
     await act(async () => pendingExit.resolve(exitCheckpointResult(meaningfulDraft, 5)));
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
     expect(result.current.document.revision).toBe(5);
     expect(result.current.state).toBe("saved");
   });
 
-  it("ignores a late atomic exit result after switching documents", async () => {
+  it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
     const save = vi.fn(() => pendingSave.promise);
-    const saveExitCheckpoint = vi.fn(() => pendingExit.promise);
+    const exitCheckpoint = vi.fn(() => pendingExit.promise);
     const otherDocument = makeDocument({ id: "document_2", revision: 8, title: "Outro", bodyText: "Outro" });
     const { result, rerender } = renderHook(
-      ({ source }) => useStudioAutosave(source, save, { saveExitCheckpoint }),
+      ({ source }) => useStudioAutosave(source, save, { exitCheckpoint }),
       { initialProps: { source: document } }
     );
     const meaningfulDraft = draft("Mudança do documento anterior");
@@ -485,6 +490,23 @@ describe("useStudioAutosave", () => {
     await act(async () => result.current.retry());
     expect(save).toHaveBeenLastCalledWith(firstDraft, 4, expect.any(AbortSignal));
     expect(result.current.state).toBe("saved");
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
+  it("recovers a lost save acknowledgement and clears the outbox only after checkpoint acknowledgement", async () => {
+    storeEnvelope(firstDraft, 4);
+    const serverDocument = saved(firstDraft, 5);
+    const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const save = vi.fn(async () => serverDocument);
+    const exitCheckpoint = vi.fn(() => pendingExit.promise);
+
+    const { result } = renderHook(() => useStudioAutosave(serverDocument, save, { exitCheckpoint }));
+
+    expect(result.current.state).toBe("saved");
+    expect(save).not.toHaveBeenCalled();
+    expect(exitCheckpoint).toHaveBeenCalledWith(5);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+    await act(async () => pendingExit.resolve(exitCheckpointResult(firstDraft, 5)));
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
 

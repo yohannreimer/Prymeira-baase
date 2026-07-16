@@ -567,14 +567,9 @@ export async function createStudioCheckpoint(
   return mapStudioDocumentVersion(response.version);
 }
 
-export async function saveStudioExitCheckpoint(
+export async function createStudioExitCheckpoint(
   documentId: string,
-  input: {
-    expected_revision: number;
-    title: string | null;
-    body_json: Record<string, unknown>;
-    body_text: string;
-  },
+  input: { known_revision: number },
   fetcher: StudioFetcher = fetch
 ): Promise<{ document: StudioDocument; version: StudioDocumentVersion }> {
   const response = await studioRequest<{

@@ -59,11 +59,8 @@ export const createStudioCheckpointSchema = z.object({
   expected_revision: z.number().int().positive(),
   reason: z.enum(["significant_pause", "document_exit", "structure_changed", "accepted_ai_suggestion", "transcript_inserted", "restored", "manual"])
 }).strict();
-export const saveStudioExitCheckpointSchema = z.object({
-  expected_revision: z.number().int().positive(),
-  title: titleSchema.nullable(),
-  body_json: editorJsonSchema,
-  body_text: z.string().max(500_000)
+export const createStudioExitCheckpointSchema = z.object({
+  known_revision: z.number().int().positive()
 }).strict();
 export const restoreStudioVersionSchema = z.object({ expected_revision: z.number().int().positive() }).strict();
 

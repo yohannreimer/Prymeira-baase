@@ -238,12 +238,7 @@ export type StudioVersionQuery = { cursor?: string; limit: number };
 export type StudioVersionPage = { items: StudioDocumentVersion[]; nextCursor: string | null };
 export type CreateStudioCheckpoint = { expected_revision: number; reason: StudioCheckpointReason };
 export type StudioCheckpointResult = { version: StudioDocumentVersion; inserted: boolean };
-export type SaveStudioExitCheckpoint = {
-  expected_revision: number;
-  title: string | null;
-  body_json: Record<string, unknown>;
-  body_text: string;
-};
+export type CreateStudioExitCheckpoint = { known_revision: number };
 export type StudioExitCheckpointResult = { document: StudioDocument; version: StudioDocumentVersion };
 
 export type StudioStructure = StudioOwnerScope & {
@@ -499,7 +494,7 @@ export type StudioService = {
   listVersions(scope: StudioOwnerScope, id: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, id: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   createCheckpoint(scope: StudioOwnerScope, actorProfileId: string, id: string, input: CreateStudioCheckpoint): Promise<StudioDocumentVersion>;
-  saveExitCheckpoint(scope: StudioOwnerScope, actorProfileId: string, id: string, input: SaveStudioExitCheckpoint): Promise<StudioExitCheckpointResult>;
+  createExitCheckpoint(scope: StudioOwnerScope, actorProfileId: string, id: string, input: CreateStudioExitCheckpoint): Promise<StudioExitCheckpointResult>;
   restoreVersion(scope: StudioOwnerScope, actorProfileId: string, id: string, versionId: string, input: { expected_revision: number }): Promise<{ document: StudioDocument; version: StudioDocumentVersion }>;
   search(scope: StudioOwnerScope, query: string, limit: number): Promise<StudioSearchResult[]>;
   listCollections(scope: StudioOwnerScope): Promise<StudioCollection[]>;
@@ -533,7 +528,7 @@ export type StudioRepository = {
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;
   createCheckpoint(scope: StudioOwnerScope, documentId: string, actorProfileId: string, input: CreateStudioCheckpoint): Promise<StudioCheckpointResult>;
-  saveExitCheckpoint(scope: StudioOwnerScope, documentId: string, actorProfileId: string, input: SaveStudioExitCheckpoint): Promise<StudioExitCheckpointResult>;
+  createExitCheckpoint(scope: StudioOwnerScope, documentId: string, actorProfileId: string, input: CreateStudioExitCheckpoint): Promise<StudioExitCheckpointResult>;
   restoreDocumentVersion(scope: StudioOwnerScope, documentId: string, versionId: string, actorProfileId: string, expectedRevision: number): Promise<{ document: StudioDocument; version: StudioDocumentVersion }>;
   findStructure(scope: StudioOwnerScope, structureId: string): Promise<StudioStructure | null>;
   createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;

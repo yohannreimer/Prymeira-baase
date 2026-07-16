@@ -27,7 +27,7 @@ import {
   restoreStudioDocument,
   retryStudioAsset,
   searchStudioDocuments,
-  saveStudioExitCheckpoint,
+  createStudioExitCheckpoint,
   mapStudioDocument,
   mapStudioDocumentVersion,
   studioRequest,
@@ -327,39 +327,36 @@ describe("Studio API client", () => {
     });
   });
 
-  it("atomically saves a navigation checkpoint with keepalive and preserves conflicts", async () => {
+  it("creates a small navigation checkpoint with keepalive and preserves conflicts", async () => {
     const fetcher = vi.fn(async (_input: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      if (body.title === "Conflito") return jsonResponse({
+      if (body.known_revision === 99) return jsonResponse({
         error: { code: "STUDIO_DOCUMENT_CHANGED", message: "O documento mudou." }
       }, 409);
       return jsonResponse({
-        document: { ...rawDocument, revision: 4, title: body.title, body_json: body.body_json, body_text: body.body_text },
+        document: { ...rawDocument, revision: 4 },
         version: {
           id: "version_exit", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
-          document_id: "document_1", version_number: 4, body_json: body.body_json, body_text: body.body_text,
+          document_id: "document_1", version_number: 4, body_json: rawDocument.body_json, body_text: rawDocument.body_text,
           origin: "user", actor_profile_id: "profile_owner", ai_run_id: null,
-          created_at: "2026-07-15T10:00:00.000Z", title: body.title,
+          created_at: "2026-07-15T10:00:00.000Z", title: rawDocument.title,
           checkpoint_reason: "document_exit", source_revision: 4, is_legacy: false
         }
       });
     });
-    const input = {
-      expected_revision: 3,
-      title: "Saída",
-      body_json: { type: "doc" },
-      body_text: "Snapshot"
-    };
+    const input = { known_revision: 3 };
 
-    await expect(saveStudioExitCheckpoint("document / 1", input, fetcher)).resolves.toMatchObject({
-      document: { revision: 4, title: "Saída" },
+    await expect(createStudioExitCheckpoint("document / 1", input, fetcher)).resolves.toMatchObject({
+      document: { revision: 4 },
       version: { checkpointReason: "document_exit", sourceRevision: 4 }
     });
     expect(fetcher).toHaveBeenCalledWith(
       "/api/studio/documents/document%20%2F%201/exit-checkpoint",
       expect.objectContaining({ method: "POST", keepalive: true })
     );
-    await expect(saveStudioExitCheckpoint("document_1", { ...input, title: "Conflito" }, fetcher))
+    expect(String(fetcher.mock.calls[0]?.[1]?.body)).toBe(JSON.stringify({ known_revision: 3 }));
+    expect(new TextEncoder().encode(String(fetcher.mock.calls[0]?.[1]?.body)).byteLength).toBeLessThan(64 * 1024);
+    await expect(createStudioExitCheckpoint("document_1", { known_revision: 99 }, fetcher))
       .rejects.toMatchObject({ status: 409, code: "STUDIO_DOCUMENT_CHANGED" });
   });
 

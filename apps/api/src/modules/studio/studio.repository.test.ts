@@ -395,33 +395,58 @@ function repositoryContract(
       });
     });
 
-    it("atomically saves and deduplicates a document-exit checkpoint", async () => {
+    it("checkpoints the durable revision without overwriting concurrent saves", async () => {
       await withRepository(async (repository) => {
         const created = await repository.createDocument(documentInput());
         const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
-        const input = {
-          expected_revision: created.revision,
-          title: "Saída preservada",
-          body_json: { type: "doc", content: [{ type: "paragraph" }] },
-          body_text: "Conteúdo preservado na navegação"
-        };
+        const beforePatch = await repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          known_revision: created.revision
+        });
+        expect(beforePatch.document.revision).toBe(1);
+        expect(beforePatch.version.sourceRevision).toBe(1);
+        const updated = await repository.updateDocument({
+          ...created, title: "PATCH venceu", bodyText: "Conteúdo durável", revision: created.revision
+        }, created.revision);
+        const first = await repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          known_revision: created.revision
+        });
+        const retry = await repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          known_revision: updated.revision
+        });
 
-        const [first, retry] = await Promise.all([
-          repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, input),
-          repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, input)
-        ]);
-
-        expect(first.document).toMatchObject({ revision: 2, title: "Saída preservada" });
+        expect(first.document).toMatchObject({ revision: 2, title: "PATCH venceu", bodyText: "Conteúdo durável" });
         expect(retry.document).toEqual(first.document);
         expect(retry.version.id).toBe(first.version.id);
         expect(first.version).toMatchObject({ checkpointReason: "document_exit", sourceRevision: 2 });
-        expect(await repository.listVersions(scope, created.id)).toHaveLength(2);
+        expect(await repository.listVersions(scope, created.id)).toHaveLength(3);
         expect(await repository.listIndexJobs(scope)).toHaveLength(2);
 
-        await expect(repository.saveExitCheckpoint(scope, created.id, created.ownerProfileId, {
-          ...input,
-          body_text: "Conteúdo concorrente diferente"
+        await expect(repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          known_revision: updated.revision + 1
         })).rejects.toThrow("STUDIO_DOCUMENT_STALE");
+      });
+    });
+
+    it("serializes a racing PATCH and exit checkpoint without losing the PATCH", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
+        const [updated, racedCheckpoint] = await Promise.all([
+          repository.updateDocument({
+            ...created, title: "PATCH concorrente", bodyText: "Estado concorrente", revision: created.revision
+          }, created.revision),
+          repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+            known_revision: created.revision
+          })
+        ]);
+
+        expect(updated).toMatchObject({ revision: 2, title: "PATCH concorrente", bodyText: "Estado concorrente" });
+        expect([1, 2]).toContain(racedCheckpoint.version.sourceRevision);
+        const finalCheckpoint = await repository.createExitCheckpoint(scope, created.id, created.ownerProfileId, {
+          known_revision: created.revision
+        });
+        expect(finalCheckpoint.document).toMatchObject({ revision: 2, title: "PATCH concorrente", bodyText: "Estado concorrente" });
+        expect(finalCheckpoint.version.sourceRevision).toBe(2);
       });
     });
 

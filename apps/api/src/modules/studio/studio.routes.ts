@@ -14,7 +14,7 @@ import {
   studioDocumentVersionParamsSchema,
   studioVersionListQuerySchema,
   createStudioCheckpointSchema,
-  saveStudioExitCheckpointSchema,
+  createStudioExitCheckpointSchema,
   restoreStudioVersionSchema,
   studioEmptyRouteSchema,
   studioAssetIdempotencyKeySchema,
@@ -424,8 +424,8 @@ export async function registerStudioRoutes(
     const scope = requireStudioScope(request);
     const params = studioDocumentParamsSchema.parse(request.params);
     readNoQuery(request);
-    const body = saveStudioExitCheckpointSchema.parse(request.body);
-    return runStudioOperation(() => service.saveExitCheckpoint(
+    const body = createStudioExitCheckpointSchema.parse(request.body);
+    return runStudioOperation(() => service.createExitCheckpoint(
       scope,
       scope.ownerProfileId,
       params.documentId,

@@ -101,14 +101,14 @@ describe("StudioEditor", () => {
           body_text: payload.body_text
         } });
       }
-      if (url.endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST") {
-        return response({ version: {
+      if (url.endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST") {
+        return response({ document: { ...rawDocument, revision: 5 }, version: {
           ...rawVersion,
           version_number: 3,
           source_revision: 5,
           checkpoint_reason: "document_exit",
           is_legacy: false
-        } }, 201);
+        } });
       }
       return response({}, 404);
     });
@@ -122,25 +122,22 @@ describe("StudioEditor", () => {
     window.dispatchEvent(new PageTransitionEvent("pagehide"));
 
     await waitFor(() => expect(fetchSpy.mock.calls.some(([input, init]) => (
-      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+      String(input).endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST"
     ))).toBe(true));
     const checkpointCall = fetchSpy.mock.calls.find(([input, init]) => (
-      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+      String(input).endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST"
     ));
     expect(checkpointCall?.[1]?.keepalive).toBe(true);
-    expect(JSON.parse(String(checkpointCall?.[1]?.body))).toEqual({
-      expected_revision: 5,
-      reason: "document_exit"
-    });
+    expect(JSON.parse(String(checkpointCall?.[1]?.body))).toEqual({ known_revision: 5 });
 
     view.unmount();
     await Promise.resolve();
     expect(fetchSpy.mock.calls.filter(([input, init]) => (
-      String(input).endsWith(`/documents/${document.id}/checkpoints`) && init?.method === "POST"
+      String(input).endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST"
     ))).toHaveLength(1);
   });
 
-  it("atomically saves a pending PATCH checkpoint with keepalive on pagehide", async () => {
+  it("keeps the pending PATCH and sends only a small checkpoint on pagehide", async () => {
     const editorRef = createRef<StudioEditorHandle>();
     const pendingPatch = deferred<Response>();
     let patchSignal: AbortSignal | null | undefined;
@@ -153,9 +150,9 @@ describe("StudioEditor", () => {
       if (url.endsWith(`/documents/${document.id}/exit-checkpoint`) && init?.method === "POST") {
         const payload = JSON.parse(String(init.body));
         return response({
-          document: { ...rawDocument, revision: 5, title: payload.title, body_json: payload.body_json, body_text: payload.body_text },
-          version: { ...rawVersion, version_number: 3, body_json: payload.body_json, body_text: payload.body_text,
-            checkpoint_reason: "document_exit", source_revision: 5, is_legacy: false }
+          document: { ...rawDocument, revision: payload.known_revision },
+          version: { ...rawVersion, version_number: 3,
+            checkpoint_reason: "document_exit", source_revision: payload.known_revision, is_legacy: false }
         });
       }
       return response({}, 404);
@@ -170,12 +167,10 @@ describe("StudioEditor", () => {
       String(input).endsWith(`/documents/${document.id}/exit-checkpoint`)
     ))).toBe(true));
     const exitCall = fetchSpy.mock.calls.find(([input]) => String(input).endsWith(`/documents/${document.id}/exit-checkpoint`));
-    expect(patchSignal?.aborted).toBe(true);
+    expect(patchSignal?.aborted).toBe(false);
     expect(exitCall?.[1]?.keepalive).toBe(true);
-    expect(JSON.parse(String(exitCall?.[1]?.body))).toMatchObject({
-      expected_revision: 4,
-      body_text: "Snapshot pendente para saída atômica"
-    });
+    expect(JSON.parse(String(exitCall?.[1]?.body))).toEqual({ known_revision: 4 });
+    expect(new TextEncoder().encode(String(exitCall?.[1]?.body)).byteLength).toBeLessThan(64 * 1024);
   });
 
   it("inserts transcript blocks between two existing paragraphs", async () => {
@@ -960,7 +955,7 @@ describe("StudioEditor", () => {
     await user.click(keepCopy);
 
     await waitFor(() => expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ id: "document_committed_copy" })));
-    const createCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    const createCalls = fetchSpy.mock.calls.filter(([input, init]) => String(input).endsWith("/documents") && init?.method === "POST");
     expect(createCalls).toHaveLength(2);
     expect(new Headers(createCalls[0]?.[1]?.headers).get("idempotency-key")).toBeTruthy();
     expect(new Headers(createCalls[1]?.[1]?.headers).get("idempotency-key"))
@@ -970,8 +965,8 @@ describe("StudioEditor", () => {
     rerender(<StudioEditor document={copiedDocument} onDocumentChange={onDocumentChange} debounceMs={0} />);
     await user.type(screen.getByRole("textbox", { name: "Título do documento" }), " novamente");
     await user.click(await screen.findByRole("button", { name: "Manter minha cópia como novo documento" }));
-    await waitFor(() => expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(3));
-    const changedConflictCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([input, init]) => String(input).endsWith("/documents") && init?.method === "POST")).toHaveLength(3));
+    const changedConflictCalls = fetchSpy.mock.calls.filter(([input, init]) => String(input).endsWith("/documents") && init?.method === "POST");
     expect(new Headers(changedConflictCalls[2]?.[1]?.headers).get("idempotency-key"))
       .not.toBe(new Headers(changedConflictCalls[1]?.[1]?.headers).get("idempotency-key"));
   });

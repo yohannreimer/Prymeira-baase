@@ -936,42 +936,21 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       });
     },
 
-    async saveExitCheckpoint(scope, documentId, actorProfileId, input) {
+    async createExitCheckpoint(scope, documentId, actorProfileId, input) {
       return withOperationalTransaction(db, async (client) => {
         const locked = await client.query<StudioDocumentRow>(
           `SELECT * FROM studio_documents WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
           [scope.workspaceId, scope.ownerProfileId, documentId]
         );
         if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
-        const current = documentFromRow(locked.rows[0]);
-        const requested = { ...current, title: input.title, bodyJson: input.body_json, bodyText: input.body_text };
-        const sameSnapshot = sameCheckpoint({ ...requested, id: "exit_snapshot", documentId, versionNumber: 0,
-          origin: "user", actorProfileId, aiRunId: null, createdAt: current.updatedAt, isLegacy: false }, current);
-        let document = current;
-        if (current.revision === input.expected_revision && !sameSnapshot) {
-          const search = prepareStudioSearchFields(input.title, input.body_text);
-          const updated = await client.query<StudioDocumentRow>(
-            `UPDATE studio_documents SET title=$4,body_json=$5::jsonb,body_text=$6,
-               search_title_folded=$7,search_body_folded=$8,search_tokens=$9::text[],search_prefix_tokens=$10::text[],
-               revision=revision+1,updated_at=NOW()
-             WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$11 RETURNING *`,
-            [scope.workspaceId, scope.ownerProfileId, documentId, input.title, JSON.stringify(input.body_json), input.body_text,
-              search.titleFolded, search.bodyFolded, search.tokens, search.prefixTokens, input.expected_revision]
-          );
-          if (!updated.rows[0]) throw new Error("STUDIO_DOCUMENT_STALE");
-          document = documentFromRow(updated.rows[0]);
-          await insertIndexJob(client, document);
-        } else if (!(current.revision === input.expected_revision
-          || (current.revision === input.expected_revision + 1 && sameSnapshot))) {
-          throw new Error("STUDIO_DOCUMENT_STALE");
-        }
+        const document = documentFromRow(locked.rows[0]);
+        if (document.revision < input.known_revision) throw new Error("STUDIO_DOCUMENT_STALE");
         const latest = await client.query<StudioDocumentVersionRow>(
           `SELECT * FROM studio_document_versions WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
            ORDER BY version_number DESC,id DESC LIMIT 1`, [scope.workspaceId, scope.ownerProfileId, documentId]
         );
         const latestVersion = latest.rows[0] ? versionFromRow(latest.rows[0]) : null;
-        if (latestVersion?.checkpointReason === "document_exit"
-          && latestVersion.sourceRevision === document.revision && sameCheckpoint(latestVersion, document)) {
+        if (latestVersion && sameCheckpoint(latestVersion, document)) {
           return { document, version: latestVersion };
         }
         const version = await insertVersion(client, { ...scope, documentId, title: document.title,
