@@ -43,7 +43,13 @@ describe("StudioPrivacySettings", () => {
     await user.click(screen.getByRole("button", { name: "Preparar exportação" }));
     expect(await screen.findByText(/não conseguimos concluir/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Gerar nova cópia" }));
-    expect(await screen.findByText(/expirou/i)).toBeVisible();
+    expect(await screen.findByText("Esta cópia expirou")).toBeVisible();
+    const expiredLabel = screen.getByText("Expirou");
+    expect(expiredLabel).toBeVisible();
+    expect(expiredLabel.nextElementSibling).toHaveTextContent(
+      new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" })
+        .format(new Date("2026-07-14T15:15:00.000Z"))
+    );
     expect(screen.getByRole("button", { name: "Gerar nova cópia" })).toBeVisible();
     await new Promise((resolve) => setTimeout(resolve, 1_300));
     expect(fetchSpy).toHaveBeenCalledTimes(2);

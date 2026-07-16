@@ -192,7 +192,10 @@ function ExportStatusCard({ exported }: { exported: StudioExportResponse["export
       <div><dt>Solicitada</dt><dd>{formatDateTime(exported.requestedAt)}</dd></div>
       <div><dt>Arquivo</dt><dd>{exported.filename}</dd></div>
       {exported.sizeBytes !== null ? <div><dt>Tamanho</dt><dd>{formatBytes(exported.sizeBytes)}</dd></div> : null}
-      {exported.status === "ready" ? <div><dt>Expira</dt><dd>{formatDateTime(exported.expiresAt)}</dd></div> : null}
+      {exported.status === "ready" || exported.status === "expired" ? <div>
+        <dt>{exported.status === "ready" ? "Expira" : "Expirou"}</dt>
+        <dd>{formatDateTime(exported.expiresAt)}</dd>
+      </div> : null}
     </dl>
     {exported.status === "ready" && exported.downloadUrl ? <a className="studio-export-card__download" href={exported.downloadUrl} rel="noreferrer">
       <i className="ph-light ph-download-simple" aria-hidden="true" /> Baixar cópia privada
