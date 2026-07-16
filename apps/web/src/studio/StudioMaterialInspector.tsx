@@ -68,6 +68,7 @@ export default function StudioMaterialInspector({
   const dialogRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
   const actionGenerationRef = useRef(0);
   const previewGenerationRef = useRef({ assetId: asset.id, kind: asset.kind, generation: 0 });
   const audioPlayerRef = useRef<HTMLAudioElement>(null);
@@ -86,6 +87,7 @@ export default function StudioMaterialInspector({
   const [downloadState, setDownloadState] = useState<"idle" | "working" | "error">("idle");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteState, setDeleteState] = useState<"idle" | "working" | "error">("idle");
+  onCloseRef.current = onClose;
 
   if (previewGenerationRef.current.assetId !== asset.id || previewGenerationRef.current.kind !== asset.kind) {
     previewGenerationRef.current = {
@@ -133,7 +135,7 @@ export default function StudioMaterialInspector({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -169,7 +171,7 @@ export default function StudioMaterialInspector({
       const returnTarget = returnFocusRef.current;
       if (returnTarget?.isConnected) returnTarget.focus();
     };
-  }, [onClose, open]);
+  }, [open]);
 
   useEffect(() => {
     if (!open || (asset.kind !== "audio" && asset.kind !== "image")) {

@@ -15,6 +15,7 @@ export type StudioMaterialListProps = {
   onSelect(asset: StudioAsset): void;
   onAssetChange?(asset: StudioAsset): void;
   selectedAssetId?: string | null;
+  onRowRef?(assetId: string, node: HTMLButtonElement | null): void;
   getStatus?: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
   pollDelays?: readonly number[];
 };
@@ -72,6 +73,7 @@ function StudioMaterialRow({
   selected,
   onSelect,
   onAssetChange,
+  onRowRef,
   getStatus,
   pollDelays
 }: {
@@ -79,6 +81,7 @@ function StudioMaterialRow({
   selected: boolean;
   onSelect(asset: StudioAsset): void;
   onAssetChange?(asset: StudioAsset): void;
+  onRowRef?(assetId: string, node: HTMLButtonElement | null): void;
   getStatus: (assetId: string, signal?: AbortSignal) => Promise<StudioAsset>;
   pollDelays: readonly number[];
 }) {
@@ -130,6 +133,7 @@ function StudioMaterialRow({
   return (
     <li className="studio-material-list__item">
       <button
+        ref={(node) => onRowRef?.(current.id, node)}
         type="button"
         className="studio-material-list__row"
         aria-label={`Abrir ${current.displayName}`}
@@ -165,6 +169,7 @@ export default function StudioMaterialList({
   onSelect,
   onAssetChange,
   selectedAssetId = null,
+  onRowRef,
   getStatus = getStudioAsset,
   pollDelays = DEFAULT_POLL_DELAYS
 }: StudioMaterialListProps) {
@@ -179,6 +184,7 @@ export default function StudioMaterialList({
           selected={selectedAssetId === asset.id}
           onSelect={onSelect}
           onAssetChange={onAssetChange}
+          onRowRef={onRowRef}
           getStatus={getStatus}
           pollDelays={pollDelays}
         />

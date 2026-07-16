@@ -11,7 +11,7 @@ import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { useStudioCollections } from "./useStudioCollections";
 import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
-import type { StudioEditorHandle } from "./StudioEditor";
+import type { StudioEditorHandle, StudioEditorInsertionSnapshot } from "./StudioEditor";
 import "./studio.css";
 
 const StudioEditor = lazy(() => import("./StudioEditor"));
@@ -41,8 +41,7 @@ type DocumentOpenError = { kind: "unavailable" | "temporary"; documentId: string
 type TranscriptInsertion = {
   documentId: string;
   text: string;
-  baselineRevision: number;
-  baselineOccurrences: number;
+  insertion: StudioEditorInsertionSnapshot;
   persistedRevision: number | null;
   promise: Promise<boolean> | null;
   completed: boolean;
@@ -52,15 +51,21 @@ function waitForInsertionPoll(delayMs: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
-function countTextOccurrences(body: string, text: string) {
-  if (!text) return 0;
-  let count = 0;
-  let cursor = 0;
-  while ((cursor = body.indexOf(text, cursor)) !== -1) {
-    count += 1;
-    cursor += text.length;
-  }
-  return count;
+function canonicalBodyValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalBodyValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => [key, canonicalBodyValue(child)]));
+}
+
+function studioBodySignature(bodyJson: Record<string, unknown>, bodyText: string) {
+  return JSON.stringify({ bodyJson: canonicalBodyValue(bodyJson), bodyText });
+}
+
+function matchesInsertion(document: StudioDocument, insertion: StudioEditorInsertionSnapshot) {
+  return document.revision > insertion.baseRevision
+    && studioBodySignature(document.bodyJson, document.bodyText) === insertion.signature;
 }
 
 function validTimestamp(value: string | null | undefined) {
@@ -150,32 +155,28 @@ export default function StudioPage({ onOpenInternalSource }: {
       if (known.promise) return known.promise;
     }
 
-    const operation = known?.documentId === document.id && known.text === normalized
-      ? known
-      : {
+    let operation = known?.documentId === document.id && known.text === normalized ? known : null;
+    if (!operation) {
+      const insertion = editorRef.current?.insertTextAtLastSelectionWithSnapshot(normalized) ?? null;
+      if (!insertion) return Promise.resolve(false);
+      operation = {
         documentId: document.id,
         text: normalized,
-        baselineRevision: document.revision,
-        baselineOccurrences: countTextOccurrences(document.bodyText, normalized),
+        insertion,
         persistedRevision: null,
         promise: null,
         completed: false
       };
+    }
 
     operation.promise = (async () => {
       if (operation.persistedRevision === null) {
-        const inserted = known === operation
-          ? true
-          : editorRef.current?.insertTextAtLastSelection(normalized) ?? false;
-        if (!inserted) return false;
-
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await waitForInsertionPoll(Math.min(800, 150 + attempt * 45));
           if (selectedDocumentId.current !== operation.documentId) return false;
           try {
             const persisted = await getStudioDocument(operation.documentId);
-            if (persisted.revision > operation.baselineRevision
-              && countTextOccurrences(persisted.bodyText, normalized) > operation.baselineOccurrences) {
+            if (matchesInsertion(persisted, operation.insertion)) {
               operation.persistedRevision = persisted.revision;
               break;
             }
@@ -198,7 +199,7 @@ export default function StudioPage({ onOpenInternalSource }: {
           if (!(error instanceof StudioApiError) || error.status !== 409 || attempt > 0) return false;
           try {
             const fresh = await getStudioDocument(operation.documentId);
-            if (countTextOccurrences(fresh.bodyText, normalized) <= operation.baselineOccurrences) return false;
+            if (!matchesInsertion(fresh, operation.insertion)) return false;
             operation.persistedRevision = fresh.revision;
           } catch {
             return false;
@@ -639,6 +640,9 @@ function DocumentAssets({
   onDeleted(assetId: string): void;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const materialRowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const composerFocusRef = useRef<HTMLButtonElement>(null);
+  const focusAfterDeleteRef = useRef<string | null | undefined>(undefined);
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
 
   useEffect(() => {
@@ -651,14 +655,26 @@ function DocumentAssets({
     }
   }, [assets, selectedAssetId]);
 
+  useEffect(() => {
+    const target = focusAfterDeleteRef.current;
+    if (target === undefined) return;
+    focusAfterDeleteRef.current = undefined;
+    if (target) materialRowRefs.current.get(target)?.focus();
+    else composerFocusRef.current?.focus();
+  }, [assets]);
+
   return (
     <div className="studio-document-assets" role="region" aria-label="Materiais do documento">
-      <StudioMaterialComposer documentId={documentId} onAttached={onAttached} />
+      <StudioMaterialComposer documentId={documentId} onAttached={onAttached} fallbackFocusRef={composerFocusRef} />
       <StudioMaterialList
         assets={assets}
         selectedAssetId={selectedAssetId}
         onSelect={(asset) => setSelectedAssetId(asset.id)}
         onAssetChange={onAttached}
+        onRowRef={(assetId, node) => {
+          if (node) materialRowRefs.current.set(assetId, node);
+          else materialRowRefs.current.delete(assetId);
+        }}
       />
       {selectedAsset ? (
         <StudioMaterialInspector
@@ -668,6 +684,10 @@ function DocumentAssets({
           onAssetChange={onAttached}
           onInsertText={(text) => onInsertTranscript(selectedAsset.id, text)}
           onDeleted={(assetId) => {
+            const deletedIndex = assets.findIndex((asset) => asset.id === assetId);
+            focusAfterDeleteRef.current = assets[deletedIndex + 1]?.id
+              ?? assets[deletedIndex - 1]?.id
+              ?? null;
             setSelectedAssetId(null);
             onDeleted(assetId);
           }}

@@ -658,6 +658,189 @@ describe("StudioPage", () => {
     expect(checkpointBodies).toHaveLength(1);
   }, 8_000);
 
+  it("checkpoints a selected-range replacement even when the transcript occurrence count stays equal", async () => {
+    const user = userEvent.setup();
+    const transcript = String(rawAsset.extracted_text);
+    const originalText = `Antes ${transcript} depois`;
+    const sourceDocument = {
+      ...rawDocument,
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: originalText }] }] },
+      body_text: originalText
+    };
+    let persistedDocument: Record<string, unknown> = sourceDocument;
+    const checkpointBodies: Array<Record<string, unknown>> = [];
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "GET") {
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [rawAsset] });
+      if (url.endsWith(`/api/studio/assets/${rawAsset.id}/download`)) {
+        return jsonResponse({ url: "https://private.example/reflexao.wav", expires_in_seconds: 600 });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "PATCH") {
+        const payload = JSON.parse(String(init?.body));
+        persistedDocument = {
+          ...sourceDocument,
+          revision: 2,
+          body_json: payload.body_json,
+          body_text: payload.body_text,
+          updated_at: "2026-07-16T12:01:00.000Z"
+        };
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/checkpoints`) && method === "POST") {
+        checkpointBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ version: {
+          id: "version_replaced_transcript",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: rawDocument.id,
+          version_number: 1,
+          title: sourceDocument.title,
+          body_json: persistedDocument.body_json,
+          body_text: persistedDocument.body_text,
+          origin: "user",
+          actor_profile_id: "profile_owner",
+          ai_run_id: null,
+          checkpoint_reason: "transcript_inserted",
+          source_revision: 2,
+          is_legacy: false,
+          created_at: "2026-07-16T12:01:01.000Z"
+        } }, 201);
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+    const body = await screen.findByRole("textbox", { name: "Conteúdo do documento" });
+    await setTipTapRange(body, "Antes ".length, "Antes ".length + transcript.length);
+    await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
+    await user.click(screen.getByRole("button", { name: "Inserir no documento" }));
+
+    await waitFor(() => expect(checkpointBodies).toEqual([{
+      expected_revision: 2,
+      reason: "transcript_inserted"
+    }]), { timeout: 4_000 });
+    expect(String(persistedDocument.body_text).match(new RegExp(transcript, "gu"))).toHaveLength(1);
+    expect(await screen.findByText("Texto inserido e versão preservada.")).toBeVisible();
+  }, 8_000);
+
+  it("retries a transcript checkpoint conflict against the exact saved draft without inserting twice", async () => {
+    const user = userEvent.setup();
+    const sourceDocument = {
+      ...rawDocument,
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Contexto" }] }] },
+      body_text: "Contexto"
+    };
+    let persistedDocument: Record<string, unknown> = sourceDocument;
+    const checkpointBodies: Array<Record<string, unknown>> = [];
+    let checkpointAttempt = 0;
+    let patchCount = 0;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "GET") {
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [rawAsset] });
+      if (url.endsWith(`/api/studio/assets/${rawAsset.id}/download`)) {
+        return jsonResponse({ url: "https://private.example/reflexao.wav", expires_in_seconds: 600 });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "PATCH") {
+        patchCount += 1;
+        const payload = JSON.parse(String(init?.body));
+        persistedDocument = {
+          ...sourceDocument,
+          revision: 2,
+          body_json: payload.body_json,
+          body_text: payload.body_text,
+          updated_at: "2026-07-16T12:01:00.000Z"
+        };
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/checkpoints`) && method === "POST") {
+        checkpointAttempt += 1;
+        checkpointBodies.push(JSON.parse(String(init?.body)));
+        if (checkpointAttempt === 1) {
+          persistedDocument = { ...persistedDocument, revision: 3, updated_at: "2026-07-16T12:02:00.000Z" };
+          return jsonResponse({ error: { code: "REVISION_CONFLICT", message: "conflict" } }, 409);
+        }
+        return jsonResponse({ version: {
+          id: "version_after_conflict",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: rawDocument.id,
+          version_number: 1,
+          title: sourceDocument.title,
+          body_json: persistedDocument.body_json,
+          body_text: persistedDocument.body_text,
+          origin: "user",
+          actor_profile_id: "profile_owner",
+          ai_run_id: null,
+          checkpoint_reason: "transcript_inserted",
+          source_revision: 3,
+          is_legacy: false,
+          created_at: "2026-07-16T12:02:01.000Z"
+        } }, 201);
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+    await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
+    await user.click(screen.getByRole("button", { name: "Inserir no documento" }));
+    expect(await screen.findByText("Texto inserido e versão preservada.", {}, { timeout: 4_000 })).toBeVisible();
+    expect(checkpointBodies).toEqual([
+      { expected_revision: 2, reason: "transcript_inserted" },
+      { expected_revision: 3, reason: "transcript_inserted" }
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Inserir no documento" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(patchCount).toBe(1);
+    expect(checkpointBodies).toHaveLength(2);
+    expect(String(persistedDocument.body_text).match(new RegExp(String(rawAsset.extracted_text), "gu"))).toHaveLength(1);
+  }, 8_000);
+
+  it("moves focus to the next material and then to add material as deleted openers disappear", async () => {
+    const user = userEvent.setup();
+    const secondAsset = rawAssetWith({
+      id: "asset_second",
+      display_name: "segunda-reflexao.wav",
+      created_at: "2026-07-16T12:01:00.000Z",
+      updated_at: "2026-07-16T12:01:00.000Z"
+    });
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "GET") {
+        return jsonResponse({ document: rawDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) {
+        return jsonResponse({ assets: [rawAsset, secondAsset] });
+      }
+      if (url.includes("/api/studio/assets/") && url.endsWith("/download")) {
+        return jsonResponse({ url: "https://private.example/reflexao.wav", expires_in_seconds: 600 });
+      }
+      if (url.includes("/api/studio/assets/") && method === "DELETE") return jsonResponse({});
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
+    await user.click(screen.getByRole("button", { name: "Excluir material" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Abrir segunda-reflexao.wav" })).toHaveFocus());
+
+    await user.click(screen.getByRole("button", { name: "Abrir segunda-reflexao.wav" }));
+    await user.click(screen.getByRole("button", { name: "Excluir material" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar exclusão" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Adicionar arquivo" })).toHaveFocus());
+  });
+
   it("uses the current document's compact material selection after switching documents", async () => {
     const user = userEvent.setup();
     const documentA = {
@@ -1267,6 +1450,20 @@ async function setTipTapSelection(editor: HTMLElement, offset: number) {
   const range = document.createRange();
   range.setStart(textNode, offset);
   range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  fireEvent(document, new Event("selectionchange"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+}
+
+async function setTipTapRange(editor: HTMLElement, start: number, end: number) {
+  const textNode = editor.querySelector("p")?.firstChild;
+  if (!textNode) throw new Error("Expected a paragraph text node");
+  editor.focus();
+  const range = document.createRange();
+  range.setStart(textNode, start);
+  range.setEnd(textNode, end);
   const selection = window.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);

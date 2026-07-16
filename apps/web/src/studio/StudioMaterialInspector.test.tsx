@@ -352,6 +352,24 @@ it("traps focus, closes from escape and backdrop, then returns focus to the open
   opener.remove();
 });
 
+it("keeps the focused inspector control across parent rerenders and uses the latest close callback", async () => {
+  const user = userEvent.setup();
+  const firstClose = vi.fn();
+  const latestClose = vi.fn();
+  const material = asset({ extractedText: "Texto para consultar" });
+  const view = render(<StudioMaterialInspector asset={material} open onClose={firstClose} />);
+  const expand = screen.getByRole("button", { name: "Ver texto completo" });
+  expand.focus();
+  expect(expand).toHaveFocus();
+
+  view.rerender(<StudioMaterialInspector asset={{ ...material }} open onClose={latestClose} />);
+  expect(expand).toHaveFocus();
+
+  await user.keyboard("{Escape}");
+  expect(firstClose).not.toHaveBeenCalled();
+  expect(latestClose).toHaveBeenCalledTimes(1);
+});
+
 function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
   return {
     id: "asset_pdf",

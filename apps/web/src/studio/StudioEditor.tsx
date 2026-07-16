@@ -39,7 +39,27 @@ type StudioEditorProps = {
 
 export type StudioEditorHandle = {
   insertTextAtLastSelection(text: string): boolean;
+  insertTextAtLastSelectionWithSnapshot(text: string): StudioEditorInsertionSnapshot | null;
 };
+
+export type StudioEditorInsertionSnapshot = {
+  baseRevision: number;
+  bodyJson: Record<string, unknown>;
+  bodyText: string;
+  signature: string;
+};
+
+function canonicalBodyValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalBodyValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => [key, canonicalBodyValue(child)]));
+}
+
+function insertionSignature(bodyJson: Record<string, unknown>, bodyText: string) {
+  return JSON.stringify({ bodyJson: canonicalBodyValue(bodyJson), bodyText });
+}
 
 const saveLabels: Record<AutosaveState, string> = {
   idle: "Pronto para escrever",
@@ -154,41 +174,40 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
     }
   });
 
-  useImperativeHandle(ref, () => ({
-    insertTextAtLastSelection(text: string) {
-      const normalizedText = text.trim();
-      if (!editor || editor.isDestroyed || !normalizedText) return false;
-      const paragraphs = normalizedText
-        .split(/\r?\n/u)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => ({
-          type: "paragraph",
-          content: [{ type: "text", text: line }]
-        }));
-      if (paragraphs.length === 0) return false;
+  function insertTextAtLastSelectionWithSnapshot(text: string): StudioEditorInsertionSnapshot | null {
+    const normalizedText = text.trim();
+    if (!editor || editor.isDestroyed || !normalizedText) return null;
+    const paragraphs = normalizedText
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => ({
+        type: "paragraph",
+        content: [{ type: "text", text: line }]
+      }));
+    if (paragraphs.length === 0) return null;
 
-      const currentDocument = editor.state.doc;
-      const documentSize = currentDocument.content.size;
-      const savedSelection = lastSelectionRef.current;
-      const hasValidSelectionBounds = savedSelection !== null
-        && savedSelection.isTextSelection
-        && Number.isInteger(savedSelection.from)
-        && Number.isInteger(savedSelection.to)
-        && savedSelection.from > 0
-        && savedSelection.to >= savedSelection.from
-        && savedSelection.to < documentSize;
-      const hasValidSelection = hasValidSelectionBounds
-        && currentDocument.resolve(savedSelection.from).parent.inlineContent
-        && currentDocument.resolve(savedSelection.to).parent.inlineContent;
-      const chain = editor.chain().focus();
-      if (hasValidSelection) {
-        return chain
-          .setTextSelection({ from: savedSelection!.from, to: savedSelection!.to })
-          .insertContent(paragraphs)
-          .run();
-      }
-
+    const currentDocument = editor.state.doc;
+    const documentSize = currentDocument.content.size;
+    const savedSelection = lastSelectionRef.current;
+    const hasValidSelectionBounds = savedSelection !== null
+      && savedSelection.isTextSelection
+      && Number.isInteger(savedSelection.from)
+      && Number.isInteger(savedSelection.to)
+      && savedSelection.from > 0
+      && savedSelection.to >= savedSelection.from
+      && savedSelection.to < documentSize;
+    const hasValidSelection = hasValidSelectionBounds
+      && currentDocument.resolve(savedSelection.from).parent.inlineContent
+      && currentDocument.resolve(savedSelection.to).parent.inlineContent;
+    const chain = editor.chain().focus();
+    let inserted: boolean;
+    if (hasValidSelection) {
+      inserted = chain
+        .setTextSelection({ from: savedSelection!.from, to: savedSelection!.to })
+        .insertContent(paragraphs)
+        .run();
+    } else {
       const isEmptyDocument = currentDocument.childCount === 0
         || (currentDocument.childCount === 1
           && currentDocument.firstChild?.isTextblock
@@ -196,9 +215,25 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       const fallbackPosition = isEmptyDocument
         ? { from: 0, to: documentSize }
         : documentSize;
-      return chain.insertContentAt(fallbackPosition, paragraphs).run();
+      inserted = chain.insertContentAt(fallbackPosition, paragraphs).run();
     }
-  }), [editor]);
+    if (!inserted) return null;
+    const bodyJson = editor.getJSON();
+    const bodyText = editor.getText(studioEditorTextOptions);
+    return {
+      baseRevision: autosave.document.revision,
+      bodyJson,
+      bodyText,
+      signature: insertionSignature(bodyJson, bodyText)
+    };
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertTextAtLastSelection(text: string) {
+      return insertTextAtLastSelectionWithSnapshot(text) !== null;
+    },
+    insertTextAtLastSelectionWithSnapshot
+  }), [editor, autosave.document.revision]);
 
   const toolbarState = useEditorState({
     editor,

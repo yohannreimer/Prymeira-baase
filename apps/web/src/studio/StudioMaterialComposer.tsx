@@ -4,7 +4,8 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type FormEvent
+  type FormEvent,
+  type RefObject
 } from "react";
 import { attachStudioFile, attachStudioLink } from "./studio-api";
 import StudioAudioRecorder from "./StudioAudioRecorder";
@@ -13,6 +14,7 @@ import type { StudioAsset } from "./studio.types";
 export type StudioMaterialComposerProps = {
   documentId: string;
   onAttached(asset: StudioAsset): void;
+  fallbackFocusRef?: RefObject<HTMLButtonElement | null>;
   attachFile?: typeof attachStudioFile;
   attachLink?: typeof attachStudioLink;
 };
@@ -164,6 +166,7 @@ export default function StudioMaterialComposer(props: StudioMaterialComposerProp
 function StudioMaterialComposerSession({
   documentId,
   onAttached,
+  fallbackFocusRef,
   attachFile,
   attachLink
 }: StudioMaterialComposerSessionProps) {
@@ -412,7 +415,10 @@ function StudioMaterialComposerSession({
         />
         <button
           className="studio-material-composer__action"
-          ref={fileTriggerRef}
+          ref={(node) => {
+            fileTriggerRef.current = node;
+            if (fallbackFocusRef) fallbackFocusRef.current = node;
+          }}
           type="button"
           disabled={competingActionUnavailable}
           onClick={() => fileInputRef.current?.click()}
