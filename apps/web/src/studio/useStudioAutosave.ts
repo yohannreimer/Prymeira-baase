@@ -55,6 +55,8 @@ type QueuedDraft = {
   envelope: StoredDraftEnvelope;
 };
 
+type RetryDisposition = "automatic" | "conflict" | null;
+
 type AutosaveView = {
   document: StudioDocument;
   adoptedSourceRevision: number | null;
@@ -429,6 +431,7 @@ export function useStudioAutosave(
   const initialRecovery = initialRecoveryRef.current;
   const [view, setView] = useState<AutosaveView>(() => recoveryView(sourceDocument, initialRecovery));
   const viewRef = useRef(view);
+  const retryDispositionRef = useRef<RetryDisposition>(view.state === "conflict" ? "conflict" : null);
   const documentIdRef = useRef(sourceDocument.id);
   const revisionRef = useRef(sourceDocument.revision);
   const initialEnvelope = initialRecovery.kind === "valid" ? initialRecovery.envelope : null;
@@ -572,6 +575,7 @@ export function useStudioAutosave(
           }
         } else {
           outboxMismatch = true;
+          retryDispositionRef.current = "conflict";
         }
       }
 
@@ -622,7 +626,7 @@ export function useStudioAutosave(
             storageUnavailable: storageSucceeded ? current.storageUnavailable : true
           }));
         }
-        if (rebased && viewRef.current.state !== "conflict") void runNextRef.current();
+        if (rebased && retryDispositionRef.current !== "conflict") void runNextRef.current();
       }
       void version;
     }).catch(() => undefined).finally(() => {
@@ -677,6 +681,7 @@ export function useStudioAutosave(
       if (!mountedRef.current || controller.signal.aborted || item.documentId !== documentIdRef.current) return;
       revisionRef.current = savedDocument.revision;
       retryRef.current = null;
+      retryDispositionRef.current = null;
       const pending = queuedRef.current as QueuedDraft | null;
       let storageSucceeded: boolean;
       if (pending?.documentId === item.documentId) {
@@ -712,13 +717,15 @@ export function useStudioAutosave(
     } catch (error) {
       if (!mountedRef.current || controller.signal.aborted || item.documentId !== documentIdRef.current) return;
       const freshest = queuedRef.current?.documentId === item.documentId ? queuedRef.current : item;
+      const isConflict = error instanceof StudioApiError && error.status === 409;
+      retryDispositionRef.current = isConflict ? "conflict" : "automatic";
       queuedRef.current = null;
       retryRef.current = freshest;
       setView((current) => ({
         ...current,
         currentDraft: freshest.envelope.draft,
-        conflictDraft: error instanceof StudioApiError && error.status === 409 ? freshest.envelope.draft : null,
-        state: error instanceof StudioApiError && error.status === 409
+        conflictDraft: isConflict ? freshest.envelope.draft : null,
+        state: isConflict
           ? "conflict"
           : error instanceof TypeError ? "offline" : "error"
       }));
@@ -746,6 +753,7 @@ export function useStudioAutosave(
     cancelCheckpointWork();
     checkpointPolicyRef.current?.cancelPending();
     const preserveConflict = viewRef.current.state === "conflict";
+    if (!preserveConflict) retryDispositionRef.current = null;
     generationRef.current += 1;
     const envelope = makeEnvelope(draft, revisionRef.current, generationRef.current);
     const queued = { documentId: documentIdRef.current, envelope };
@@ -766,6 +774,7 @@ export function useStudioAutosave(
 
   const retry = useCallback(async () => {
     if (savingRef.current || !retryRef.current || retryRef.current.documentId !== documentIdRef.current) return;
+    retryDispositionRef.current = null;
     queuedRef.current = retryRef.current;
     setView((current) => ({ ...current, conflictDraft: null }));
     await runNextRef.current();
@@ -782,6 +791,7 @@ export function useStudioAutosave(
     exitOutboxRef.current = null;
     exitOutboxDurableRevisionRef.current = null;
     exitSaveInFlightRef.current = null;
+    retryDispositionRef.current = null;
     revisionRef.current = serverDocument.revision;
     generationRef.current += 1;
     const cleared = !discardLocalDraft || clearStoredDraft(documentIdRef.current);
@@ -805,6 +815,7 @@ export function useStudioAutosave(
     const queued = { documentId: documentIdRef.current, envelope };
     queuedRef.current = null;
     retryRef.current = queued;
+    retryDispositionRef.current = "conflict";
     if (writeStoredDraft(documentIdRef.current, envelope)) markStorageAvailable();
     else markStorageUnavailable();
     setView((current) => ({
@@ -871,6 +882,7 @@ export function useStudioAutosave(
         controllerRef.current = null;
         savingRef.current = false;
         queuedRef.current = null;
+        retryDispositionRef.current = "conflict";
         setView((latest) => ({
           ...latest,
           adoptedSourceRevision: null,
@@ -887,6 +899,7 @@ export function useStudioAutosave(
       controllerRef.current = null;
       queuedRef.current = null;
       retryRef.current = null;
+      retryDispositionRef.current = null;
       revisionRef.current = sourceDocument.revision;
       checkpointedRevisionRef.current = sourceDocument.revision;
       exitCheckpointsInFlightRef.current.clear();
@@ -933,6 +946,7 @@ export function useStudioAutosave(
     generationRef.current = recovery.kind === "valid" ? recovery.envelope.generation : 0;
     queuedRef.current = nextQueue;
     retryRef.current = nextQueue;
+    retryDispositionRef.current = recoveryView(sourceDocument, recovery).state === "conflict" ? "conflict" : null;
     exitOutboxRef.current = recovery.kind === "valid" ? {
       documentId: sourceDocument.id,
       envelope: recovery.envelope

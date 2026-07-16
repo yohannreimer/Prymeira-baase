@@ -324,6 +324,44 @@ describe("useStudioAutosave", () => {
     expect(result.current.currentDraft).toBeNull();
   });
 
+  it("keeps a same-batch 409 retry manual when the authoritative exit resolves with it", async () => {
+    const first = draft("Base salva antes do lote concorrente");
+    const newer = draft("Draft do 409 resolvido no mesmo lote do exit");
+    const authoritative = saved(first, 6);
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const conflictingSave = deferred<StudioDocument>();
+    const save = vi.fn()
+      .mockResolvedValueOnce(saved(first, 5))
+      .mockImplementationOnce(() => conflictingSave.promise)
+      .mockResolvedValueOnce(saved(newer, 7));
+    const { result } = renderHook(() => useStudioAutosave(document, save, {
+      exitCheckpoint: vi.fn(() => exit.promise)
+    }));
+
+    act(() => result.current.queueSave(first));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newer));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    await act(async () => {
+      conflictingSave.reject(new StudioApiError(409, "STUDIO_DOCUMENT_CHANGED", "Mudou no servidor."));
+      exit.resolve(exitCheckpointResult(first, 6));
+      await Promise.resolve();
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(result.current.document).toEqual(authoritative);
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.conflictDraft).toEqual(newer);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+
+    act(() => result.current.resolveConflict(authoritative, true));
+    expect(result.current.state).toBe("saved");
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
   it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
