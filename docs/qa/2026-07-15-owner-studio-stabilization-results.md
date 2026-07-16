@@ -25,12 +25,13 @@ Fresh evidence from the final branch run:
 - `pnpm test`: exit 0 — shared 17 passed; API 985 passed and 135 environment-conditional skipped; web 541 passed.
 - `pnpm typecheck`: exit 0 across shared, API, and web. The first run found one test-mock tuple inference error; the signature was corrected and the full command rerun successfully.
 - `pnpm build`: exit 0 across shared, API, and web. Vite emitted only its existing large-chunk advisory.
-- `pnpm test:e2e`: exit 0 — 19 Chromium scenarios passed and the 2 production-only scenarios were explicitly skipped because the opt-in variables were absent.
+- `pnpm test:e2e`: exit 0 — 19 local Chromium scenarios passed; the default config excludes production smoke and starts only its local fixture servers.
+- `pnpm exec playwright test -c playwright.production.config.ts`: exit 0 — the dedicated config started no local servers and explicitly skipped its 2 production scenarios because the opt-in variables were absent.
 - `docker compose -f docker-compose.prod.yml config >/dev/null`: exit 0. Compose warned that local secret variables were unset and therefore substituted blank validation values; no secret was printed.
 - `git diff main...HEAD --check`: exit 0 after the Task 20 commit, covering the complete branch rather than only the pre-commit worktree.
 
 ## Environment-dependent release gates
 
 - Production/OpenAI smoke: not run because both `BAASE_PRODUCTION_URL` and `BAASE_PRODUCTION_AUTH_STATE` were absent. Playwright reported both production tests as skipped. A skip is not production-release approval.
-- Disposable pgvector migration rehearsal: not run. `docker info` returned server `29.2.1`, but the daemon failed both named-volume creation and image metadata access with `/var/lib/docker/... input/output error`. No user or production volume was touched. The migration-copy and `SELECT extversion` release gates remain unchecked.
+- Disposable pgvector migration rehearsal: not run. `docker info` returned server `29.2.1`, but the daemon failed both named-volume creation and image metadata access with `/var/lib/docker/... input/output error`. A reviewed `BAASE_REHEARSAL_DUMP` sanitized from the latest production schema/data was also not supplied. No user or production volume was touched. The migration-copy and `SELECT extversion` release gates remain unchecked.
 - Deployment, deployed smoke, and legacy production-data accessibility remain operator gates in `docs/operations/owner-studio.md`; they cannot truthfully be checked by a local branch run.

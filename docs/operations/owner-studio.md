@@ -17,19 +17,32 @@ Take the normal PostgreSQL backup/snapshot and record the currently deployed API
 
 ## Disposable migration rehearsal
 
-Use an isolated database and volume; never point this command at production:
+The rehearsal must restore the latest **sanitized custom-format dump** copied from the production schema/data before applying the candidate migrations. It must not use an empty database and must never connect the migration command to production. The sanitization process must remove account credentials, tokens, document bodies, extracted material text, assistant messages, object keys/URLs, and other private owner content while preserving table shapes, foreign keys, lifecycle states, and representative legacy rows.
+
+Set `BAASE_REHEARSAL_DUMP` to that reviewed `.dump` artifact and use an isolated database and volume:
 
 ```bash
+test -r "$BAASE_REHEARSAL_DUMP"
 project="baase-studio-rehearsal-$(date +%s)"
-docker run -d --rm --name "$project" -e POSTGRES_PASSWORD=rehearsal -e POSTGRES_DB=baase -p 127.0.0.1::5432 pgvector/pgvector:pg16
+volume="${project}-data"
+docker volume create "$volume"
+docker run -d --name "$project" -e POSTGRES_PASSWORD=rehearsal -e POSTGRES_DB=baase -p 127.0.0.1::5432 -v "$volume:/var/lib/postgresql/data" pgvector/pgvector:pg16
 port="$(docker port "$project" 5432/tcp | sed 's/.*://')"
 until docker exec "$project" pg_isready -U postgres -d baase; do sleep 1; done
+docker exec -i "$project" pg_restore --clean --if-exists --no-owner --no-acl -U postgres -d baase < "$BAASE_REHEARSAL_DUMP"
+counts_sql="SELECT json_build_object('documents',(SELECT count(*) FROM studio_documents),'assets',(SELECT count(*) FROM studio_assets),'structures',(SELECT count(*) FROM studio_structures),'collections',(SELECT count(*) FROM studio_collections),'versions',(SELECT count(*) FROM studio_document_versions),'legacy_versions',(SELECT count(*) FROM studio_document_versions WHERE is_legacy = true));"
+docker exec "$project" psql -U postgres -d baase -Atc "$counts_sql" > /tmp/baase-studio-before.json
 DATABASE_URL="postgresql://postgres:rehearsal@127.0.0.1:${port}/baase" pnpm --filter @prymeira/baase-api db:migrate-operational
 docker exec "$project" psql -U postgres -d baase -Atc "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
-docker stop "$project"
+docker exec "$project" psql -U postgres -d baase -Atc "$counts_sql" > /tmp/baase-studio-after.json
+diff -u /tmp/baase-studio-before.json /tmp/baase-studio-after.json
+legacy_count="$(docker exec "$project" psql -U postgres -d baase -Atc "SELECT count(*) FROM studio_document_versions WHERE is_legacy = true;")"
+test "$legacy_count" -gt 0
+docker rm -f "$project"
+docker volume rm "$volume"
 ```
 
-The migration command must exit 0 and the query must return exactly one non-empty version row.
+The migration command and count diff must exit 0, the vector query must return exactly one non-empty version row, and the legacy/material/structure/collection queries must remain readable. Preserve the sanitized dump as release evidence under restricted access; never commit it.
 
 ## MinIO bootstrap check
 
@@ -66,10 +79,12 @@ Check public runtime readiness without secrets, then run the authenticated owner
 curl --fail --silent https://baase.prymeiradigital.com.br/api/readiness | jq '{ok,mode,ai,studio,object_storage}'
 BAASE_PRODUCTION_URL=https://baase.prymeiradigital.com.br \
 BAASE_PRODUCTION_AUTH_STATE=/secure/owner-auth-state.json \
-pnpm exec playwright test --project=production-smoke tests/e2e/owner-studio-production-smoke.spec.ts
+pnpm exec playwright test -c playwright.production.config.ts
 ```
 
-The Studio readiness response must report `ready` for `ai`, `embeddings`, `vector`, and `maintenance`. The smoke reads only the safe readiness/home projections and never logs private content. It exercises the configured `gpt-5.6-terra` path only when both opt-in variables are present.
+The dedicated production config starts no local fixture/API/web server. The smoke captures the Bearer header from an authenticated app request without printing it, then reuses it for readiness, disposable document creation, trash, and permanent deletion. In tightly controlled automation, `BAASE_PRODUCTION_BEARER_TOKEN` may provide the same Bearer token explicitly; keep it in the secret store and never put it in command history or logs.
+
+The Studio readiness response must report `ready` for `ai`, `embeddings`, `vector`, and `maintenance`. The Copilot assertion waits for the SSE turn to reach its terminal UI state and validates the terminal response before cleanup. The smoke uses only fixed synthetic text and never logs prompts, responses, tokens, or private content. It exercises the configured `gpt-5.6-terra` path only when both required opt-in variables are present.
 
 After the smoke, manually confirm with the same owner that pre-existing documents, compact materials, structures, collections, and legacy versions open without mutation.
 
