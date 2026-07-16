@@ -63,6 +63,9 @@ export default function StudioMaterialInspector({
   const titleRef = useRef<HTMLHeadingElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const actionGenerationRef = useRef(0);
+  const audioPlayerRef = useRef<HTMLAudioElement>(null);
+  const pendingAudioDownloadRef = useRef<Download | null>(null);
+  const pendingAudioSeekRef = useRef<{ url: string; position: number } | null>(null);
   const [preview, setPreview] = useState<Download | null>(null);
   const [previewState, setPreviewState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [previewCycle, setPreviewCycle] = useState(0);
@@ -83,6 +86,15 @@ export default function StudioMaterialInspector({
     setDeleteConfirm(false);
     setDeleteState("idle");
   }, [asset.id]);
+
+  useEffect(() => {
+    pendingAudioDownloadRef.current = null;
+    pendingAudioSeekRef.current = null;
+    return () => {
+      pendingAudioDownloadRef.current = null;
+      pendingAudioSeekRef.current = null;
+    };
+  }, [asset.id, asset.kind]);
 
   useEffect(() => {
     if (!open) return;
@@ -143,7 +155,21 @@ export default function StudioMaterialInspector({
     setPreviewState("loading");
     void getDownload(asset.id, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
-      setPreview(result);
+      const player = audioPlayerRef.current;
+      if (asset.kind === "audio" && player && !player.paused && !player.ended) {
+        pendingAudioDownloadRef.current = result;
+      } else {
+        pendingAudioDownloadRef.current = null;
+        pendingAudioSeekRef.current = asset.kind === "audio" && player
+          ? {
+            url: result.url,
+            position: player.ended
+              ? 0
+              : Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0
+          }
+          : null;
+        setPreview(result);
+      }
       setPreviewState("ready");
       const lifetime = Math.max(0, result.expiresInSeconds * 1_000);
       if (lifetime > 0) {
@@ -152,7 +178,10 @@ export default function StudioMaterialInspector({
         }, Math.max(1_000, lifetime - Math.min(30_000, Math.max(1_000, lifetime * 0.1))));
       }
     }).catch(() => {
-      if (!controller.signal.aborted) setPreviewState("error");
+      if (!controller.signal.aborted) {
+        pendingAudioDownloadRef.current = null;
+        setPreviewState("error");
+      }
     });
     return () => {
       controller.abort();
@@ -167,6 +196,37 @@ export default function StudioMaterialInspector({
   const canInsert = asset.extractionStatus === "ready" && Boolean(extraction) && Boolean(onInsertText);
   const externalUrl = safeExternalUrl(asset.sourceUrl);
   const size = formatStudioMaterialSize(asset.sizeBytes);
+
+  function adoptPendingAudioDownload(ended = false) {
+    const pendingDownload = pendingAudioDownloadRef.current;
+    const player = audioPlayerRef.current;
+    const playbackEnded = ended || Boolean(player?.ended);
+    if (!pendingDownload) {
+      if (playbackEnded && pendingAudioSeekRef.current) {
+        pendingAudioSeekRef.current = { ...pendingAudioSeekRef.current, position: 0 };
+      }
+      return;
+    }
+    const position = playbackEnded
+      ? 0
+      : player && Number.isFinite(player.currentTime) ? Math.max(0, player.currentTime) : 0;
+    pendingAudioDownloadRef.current = null;
+    pendingAudioSeekRef.current = { url: pendingDownload.url, position };
+    setPreviewState("ready");
+    setPreview(pendingDownload);
+  }
+
+  function restorePendingAudioPosition() {
+    const pendingSeek = pendingAudioSeekRef.current;
+    const player = audioPlayerRef.current;
+    if (!pendingSeek || !player || preview?.url !== pendingSeek.url) return;
+    pendingAudioSeekRef.current = null;
+    try {
+      player.currentTime = pendingSeek.position;
+    } catch {
+      pendingAudioSeekRef.current = pendingSeek;
+    }
+  }
 
   async function insertText() {
     if (!extraction || !onInsertText || insertState === "working") return;
@@ -266,7 +326,21 @@ export default function StudioMaterialInspector({
             {asset.kind === "image" && preview?.url ? (
               <img src={preview.url} alt={`Prévia de ${asset.displayName}`} />
             ) : asset.kind === "audio" && preview?.url ? (
-              <audio controls preload="metadata" src={preview.url} aria-label={`Ouvir áudio original: ${asset.displayName}`} />
+              <audio
+                ref={audioPlayerRef}
+                controls
+                preload="metadata"
+                src={preview.url}
+                aria-label={`Ouvir áudio original: ${asset.displayName}`}
+                onPause={() => adoptPendingAudioDownload(false)}
+                onEnded={() => adoptPendingAudioDownload(true)}
+                onLoadedMetadata={restorePendingAudioPosition}
+                onError={() => {
+                  pendingAudioDownloadRef.current = null;
+                  pendingAudioSeekRef.current = null;
+                  setPreviewState("error");
+                }}
+              />
             ) : asset.kind === "link_snapshot" && externalUrl ? (
               <a href={externalUrl} target="_blank" rel="noopener noreferrer">
                 <i aria-hidden="true" className="ph-light ph-arrow-square-out" />

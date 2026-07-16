@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import StudioMaterialInspector from "./StudioMaterialInspector";
 import type { StudioAsset } from "./studio.types";
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.style.overflow = "";
 });
 
@@ -52,6 +53,129 @@ it("previews each material kind without exposing unsafe inline content", async (
   />);
   expect(screen.getByRole("link", { name: "Abrir link original" })).toHaveAttribute("href", "https://example.com");
   expect(screen.getByRole("link", { name: "Abrir link original" })).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
+});
+
+it("keeps a playing audio URL and position stable until a safe renewal event", async () => {
+  vi.useFakeTimers();
+  const renewal = deferred<{ url: string; expiresInSeconds: number }>();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+    .mockImplementationOnce(() => renewal.promise);
+  render(<StudioMaterialInspector
+    asset={asset({ id: "audio", kind: "audio", displayName: "nota.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  await act(async () => { await Promise.resolve(); });
+  const player = screen.getByLabelText("Ouvir áudio original: nota.wav") as HTMLAudioElement;
+  let paused = false;
+  Object.defineProperty(player, "paused", { configurable: true, get: () => paused });
+  Object.defineProperty(player, "ended", { configurable: true, value: false });
+  player.currentTime = 84.25;
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+  await act(async () => renewal.resolve({ url: "https://private.example/audio-v2", expiresInSeconds: 600 }));
+
+  expect(screen.getByLabelText("Ouvir áudio original: nota.wav")).toBe(player);
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+  expect(player.currentTime).toBe(84.25);
+  expect(player.paused).toBe(false);
+
+  paused = true;
+  fireEvent.pause(player);
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+  player.currentTime = 0;
+  fireEvent.loadedMetadata(player);
+  expect(player.currentTime).toBe(84.25);
+  expect(player.paused).toBe(true);
+});
+
+it("renews a paused audio in place and restores its position after metadata", async () => {
+  vi.useFakeTimers();
+  const renewal = deferred<{ url: string; expiresInSeconds: number }>();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+    .mockImplementationOnce(() => renewal.promise);
+  render(<StudioMaterialInspector
+    asset={asset({ id: "audio", kind: "audio", displayName: "nota.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  await act(async () => { await Promise.resolve(); });
+  const player = screen.getByLabelText("Ouvir áudio original: nota.wav") as HTMLAudioElement;
+  Object.defineProperty(player, "paused", { configurable: true, value: true });
+  Object.defineProperty(player, "ended", { configurable: true, value: false });
+  player.currentTime = 32.5;
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+  await act(async () => renewal.resolve({ url: "https://private.example/audio-v2", expiresInSeconds: 600 }));
+
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+  player.currentTime = 0;
+  fireEvent.loadedMetadata(player);
+  expect(player.currentTime).toBe(32.5);
+  expect(player.paused).toBe(true);
+});
+
+it("adopts a renewed URL from an ended audio at position zero", async () => {
+  vi.useFakeTimers();
+  const getDownload = vi.fn()
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v1", expiresInSeconds: 600 })
+    .mockResolvedValueOnce({ url: "https://private.example/audio-v2", expiresInSeconds: 600 });
+  render(<StudioMaterialInspector
+    asset={asset({ id: "audio", kind: "audio", displayName: "nota.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  await act(async () => { await Promise.resolve(); });
+  const player = screen.getByLabelText("Ouvir áudio original: nota.wav") as HTMLAudioElement;
+  let ended = false;
+  Object.defineProperty(player, "paused", { configurable: true, get: () => ended });
+  Object.defineProperty(player, "ended", { configurable: true, get: () => ended });
+  player.currentTime = 51.25;
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(570_001); });
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v1");
+  ended = true;
+  fireEvent.ended(player);
+  expect(player).toHaveAttribute("src", "https://private.example/audio-v2");
+  player.currentTime = 9;
+  fireEvent.loadedMetadata(player);
+  expect(player.currentTime).toBe(0);
+});
+
+it("ignores a late audio URL and cancels renewal after the inspected asset changes", async () => {
+  vi.useFakeTimers();
+  const obsolete = deferred<{ url: string; expiresInSeconds: number }>();
+  const getDownload = vi.fn()
+    .mockImplementationOnce(() => obsolete.promise)
+    .mockResolvedValueOnce({ url: "https://private.example/audio-b", expiresInSeconds: 600 });
+  const view = render(<StudioMaterialInspector
+    asset={asset({ id: "audio-a", kind: "audio", displayName: "a.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+
+  view.rerender(<StudioMaterialInspector
+    asset={asset({ id: "audio-b", kind: "audio", displayName: "b.wav", mimeType: "audio/wav" })}
+    open
+    onClose={vi.fn()}
+    getDownload={getDownload}
+  />);
+  await act(async () => { await Promise.resolve(); });
+  const player = screen.getByLabelText("Ouvir áudio original: b.wav");
+  expect(player).toHaveAttribute("src", "https://private.example/audio-b");
+
+  await act(async () => obsolete.resolve({ url: "https://private.example/audio-a-late", expiresInSeconds: 600 }));
+  expect(player).toHaveAttribute("src", "https://private.example/audio-b");
+
+  view.unmount();
+  await vi.advanceTimersByTimeAsync(600_001);
+  expect(getDownload).toHaveBeenCalledTimes(2);
 });
 
 it("waits for persisted insertion and reports save failures without claiming success", async () => {
@@ -149,4 +273,10 @@ function asset(overrides: Partial<StudioAsset> = {}): StudioAsset {
     updatedAt: "2026-07-16T12:00:00.000Z",
     ...overrides
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
