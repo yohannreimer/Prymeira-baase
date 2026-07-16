@@ -555,7 +555,7 @@ git commit -m "feat(studio): checkpoint meaningful editing pauses"
 - Modify: `apps/web/src/studio/StudioEditor.tsx`
 - Modify: `apps/web/src/studio/studio.css`
 
-- [ ] **Step 1: Write the drawer behavior test**
+- [x] **Step 1: Write the drawer behavior test**
 
 ```tsx
 render(<StudioVersionDrawer documentId="doc_1" open onClose={onClose} />);
@@ -564,12 +564,12 @@ expect(screen.getByText("Histórico anterior")).toHaveAttribute("aria-expanded",
 expect(screen.getByRole("button", { name: "Carregar versões anteriores" })).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and verify the component is missing**
+- [x] **Step 2: Run and verify the component is missing**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Build the accessible drawer**
+- [x] **Step 3: Build the accessible drawer**
 
 ```tsx
 <aside className="studio-version-drawer" role="dialog" aria-modal="true" aria-labelledby="studio-history-title">
@@ -583,12 +583,12 @@ Expected: FAIL.
 
 Paginate new checkpoints, collapse legacy entries, restore focus to the trigger, and keep the main document height unchanged.
 
-- [ ] **Step 4: Run drawer/editor/accessibility tests**
+- [x] **Step 4: Run drawer/editor/accessibility tests**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioVersionDrawer.test.tsx src/studio/StudioEditor.test.tsx src/studio/studio-accessibility.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio/StudioVersionDrawer* apps/web/src/studio/StudioEditor.tsx apps/web/src/studio/studio.css

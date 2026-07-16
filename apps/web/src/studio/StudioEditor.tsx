@@ -14,8 +14,8 @@ import {
   createStudioDocument,
   createStudioCheckpoint,
   getStudioDocument,
-  listStudioDocumentVersions,
   createStudioExitCheckpoint,
+  restoreStudioDocumentVersion,
   updateStudioDocument
 } from "./studio-api";
 import type { StudioCitation, StudioDocument, StudioDocumentVersion, StudioInternalCitationTarget } from "./studio.types";
@@ -23,6 +23,7 @@ import { createStudioEditorExtensions, studioEditorTextOptions } from "./studio-
 import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from "./useStudioAutosave";
 import RelatedThoughts from "./RelatedThoughts";
 import StudioStructures from "./StudioStructures";
+import StudioVersionDrawer from "./StudioVersionDrawer";
 
 const StudioCopilot = lazy(() => import("./StudioCopilot"));
 
@@ -57,12 +58,6 @@ function documentContent(document: StudioDocument, recovered: StudioDocumentDraf
 function operationKey() {
   return globalThis.crypto?.randomUUID?.()
     ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function formatVersionDate(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"
-  }).format(new Date(value));
 }
 
 const StudioEditor = forwardRef<StudioEditorHandle, StudioEditorProps>((props, ref) => (
@@ -109,11 +104,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   const notifiedRevisionRef = useRef(sourceDocument.revision);
   const appliedSourceRevisionRef = useRef(sourceDocument.revision);
   const versionsTriggerRef = useRef<HTMLButtonElement>(null);
-  const versionsHeadingRef = useRef<HTMLHeadingElement>(null);
-  const firstVersionButtonRef = useRef<HTMLButtonElement>(null);
-  const versionsRetryButtonRef = useRef<HTMLButtonElement>(null);
   const restoreVersionsTriggerFocusRef = useRef(false);
-  const focusVersionAfterRetryRef = useRef(false);
   const conflictCopyOperationRef = useRef<{ signature: string; key: string } | null>(null);
   const editGenerationRef = useRef(0);
   const lastSelectionRef = useRef<{ from: number; to: number; isTextSelection: boolean } | null>(null);
@@ -123,12 +114,8 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   const [linkUrl, setLinkUrl] = useState("");
   const [resolving, setResolving] = useState<"reload" | "copy" | null>(null);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [versionFeedback, setVersionFeedback] = useState<string | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
-  const [versions, setVersions] = useState<StudioDocumentVersion[]>([]);
-  const [selectedVersion, setSelectedVersion] = useState<StudioDocumentVersion | null>(null);
-  const [versionsState, setVersionsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [versionsReloadKey, setVersionsReloadKey] = useState(0);
-  const [restoring, setRestoring] = useState(false);
   const [selectedText, setSelectedText] = useState("");
 
   titleRef.current = title;
@@ -288,51 +275,13 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   }, [autosave.adoptedSourceRevision, autosave.document, editor, sourceDocument.id]);
 
   useEffect(() => {
-    if (!versionsOpen) return;
-    const controller = new AbortController();
-    setVersionsState("loading");
-    void listStudioDocumentVersions(sourceDocument.id, fetch, controller.signal).then((loaded) => {
-      if (controller.signal.aborted) return;
-      const newestFirst = [...loaded].sort((left, right) => right.versionNumber - left.versionNumber);
-      setVersions(newestFirst);
-      setSelectedVersion((current) => current
-        ? newestFirst.find((version) => version.id === current.id) ?? newestFirst[0] ?? null
-        : newestFirst[0] ?? null);
-      setVersionsState("ready");
-    }).catch(() => {
-      if (!controller.signal.aborted) setVersionsState("error");
-    });
-    return () => controller.abort();
-  }, [sourceDocument.id, versionsOpen, versionsReloadKey]);
-
-  useEffect(() => {
     if (!versionsOpen) {
       if (restoreVersionsTriggerFocusRef.current) {
         restoreVersionsTriggerFocusRef.current = false;
         versionsTriggerRef.current?.focus();
       }
-      return;
     }
-    versionsHeadingRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      restoreVersionsTriggerFocusRef.current = true;
-      setVersionsOpen(false);
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [versionsOpen]);
-
-  useEffect(() => {
-    if (!focusVersionAfterRetryRef.current) return;
-    if (versionsState === "ready") {
-      focusVersionAfterRetryRef.current = false;
-      firstVersionButtonRef.current?.focus();
-    } else if (versionsState === "error") {
-      versionsRetryButtonRef.current?.focus();
-    }
-  }, [versionsState]);
 
   const conflictSignature = autosave.state === "conflict" && autosave.conflictDraft
     ? `${sourceDocument.id}:${JSON.stringify(autosave.conflictDraft)}`
@@ -424,17 +373,15 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
     setLinkUrl("");
   }
 
-  async function restoreSelectedVersion() {
-    if (!selectedVersion || (autosave.state !== "saved" && autosave.state !== "idle")) return;
+  async function restoreVersion(selectedVersion: StudioDocumentVersion) {
+    if (autosave.state !== "saved" && autosave.state !== "idle") return;
     const token = ++asyncActionTokenRef.current;
     const snapshot = captureEditorGeneration();
-    setRestoring(true);
     setResolutionError(null);
+    setVersionFeedback(null);
     try {
-      const restored = await updateStudioDocument(sourceDocument.id, {
-        expected_revision: autosave.document.revision,
-        body_json: selectedVersion.bodyJson,
-        body_text: selectedVersion.bodyText
+      const restored = await restoreStudioDocumentVersion(sourceDocument.id, selectedVersion.id, {
+        expected_revision: autosave.document.revision
       });
       if (!isCurrentEditorGeneration(snapshot)) {
         autosave.markConflict(getCurrentEditorDraft());
@@ -443,7 +390,8 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         setVersionsOpen(false);
         return;
       }
-      applyDocument(restored);
+      applyDocument(restored.document);
+      setVersionFeedback(`Versão ${selectedVersion.versionNumber} restaurada como uma nova versão.`);
       closeVersions();
     } catch (error) {
       if (error instanceof Error && "status" in error && error.status === 409) {
@@ -462,9 +410,8 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         setVersionsOpen(false);
       } else {
         setResolutionError("Não foi possível restaurar esta versão agora.");
+        throw error;
       }
-    } finally {
-      if (asyncActionTokenRef.current === token) setRestoring(false);
     }
   }
 
@@ -481,15 +428,10 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
     ? "Servidor indisponível"
     : saveLabels[autosave.state];
 
-  function closeVersions() {
+  const closeVersions = useCallback(() => {
     restoreVersionsTriggerFocusRef.current = true;
     setVersionsOpen(false);
-  }
-
-  function retryVersions() {
-    focusVersionAfterRetryRef.current = true;
-    setVersionsReloadKey((key) => key + 1);
-  }
+  }, []);
 
   return (
     <div className="studio-writing-layout">
@@ -613,53 +555,15 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         </div>
       ) : null}
       {resolutionError ? <p className="studio-editor__resolution-error" role="alert">{resolutionError}</p> : null}
+      {versionFeedback ? <p className="studio-editor__version-feedback" role="status">{versionFeedback}</p> : null}
 
-      {versionsOpen ? (
-        <aside id="studio-version-history" className="studio-versions" role="region" aria-label="Histórico de versões">
-          <header>
-            <div><p className="mono">Histórico</p><h3 ref={versionsHeadingRef} tabIndex={-1}>Versões preservadas</h3></div>
-            <button type="button" aria-label="Fechar histórico de versões" onClick={closeVersions}>
-              <i aria-hidden="true" className="ph-light ph-x" />
-            </button>
-          </header>
-          {versionsState === "loading" ? <p role="status">Carregando versões…</p> : null}
-          {versionsState === "error" ? (
-            <div className="studio-versions__error" role="alert">
-              <p>Não foi possível carregar o histórico.</p>
-              <button ref={versionsRetryButtonRef} type="button" onClick={retryVersions}>Tentar carregar versões novamente</button>
-            </div>
-          ) : null}
-          {versionsState === "ready" ? (
-            <div className="studio-versions__body">
-              <div className="studio-versions__list" aria-label="Versões disponíveis">
-                {versions.map((version) => (
-                  <button
-                    type="button"
-                    key={version.id}
-                    ref={version === versions[0] ? firstVersionButtonRef : undefined}
-                    aria-current={selectedVersion?.id === version.id ? "true" : undefined}
-                    onClick={() => setSelectedVersion(version)}
-                  >
-                    <strong>Versão {version.versionNumber}</strong>
-                    <span>{formatVersionDate(version.createdAt)}</span>
-                  </button>
-                ))}
-              </div>
-              {selectedVersion ? (
-                <div className="studio-versions__preview">
-                  <div role="document" aria-label={`Prévia imutável da versão ${selectedVersion.versionNumber}`}>
-                    {selectedVersion.bodyText || "Esta versão não possui texto."}
-                  </div>
-                  <button type="button" disabled={restoring || hasUnsavedChanges} onClick={() => void restoreSelectedVersion()}>
-                    {restoring ? "Restaurando…" : "Restaurar como nova versão"}
-                  </button>
-                  {hasUnsavedChanges ? <small>Salve ou resolva as alterações atuais antes de restaurar.</small> : null}
-                </div>
-              ) : <p>Nenhuma versão disponível.</p>}
-            </div>
-          ) : null}
-        </aside>
-      ) : null}
+      <StudioVersionDrawer
+        documentId={sourceDocument.id}
+        open={versionsOpen}
+        onClose={closeVersions}
+        onRestore={restoreVersion}
+        canRestore={!hasUnsavedChanges}
+      />
       {materialRegion}
     </article>
     <aside className="studio-editor__context" aria-label="Conexões deste documento">

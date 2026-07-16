@@ -14,6 +14,7 @@ describe("StudioEditor", () => {
     installLocalStorage();
     installTipTapDomGeometry();
     window.localStorage.clear();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -990,21 +991,24 @@ describe("StudioEditor", () => {
     expect(payload.body_text).toContain("Nova direção");
   });
 
-  it("previews immutable versions and restores one through a new PATCH", async () => {
+  it("previews immutable versions and restores one through the version endpoint", async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
-      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
-        return response({ document: { ...rawDocument, revision: 5, body_text: rawVersion.body_text, body_json: rawVersion.body_json } });
+      if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") {
+        return response({
+          document: { ...rawDocument, revision: 5, body_text: rawVersion.body_text, body_json: rawVersion.body_json },
+          version: { ...rawVersion, id: "version_3", version_number: 3, checkpoint_reason: "restored", source_revision: 5, is_legacy: false }
+        });
       }
       return response({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
     });
     render(<StudioEditor document={document} onDocumentChange={onDocumentChange} />);
 
     await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
-    const drawer = await screen.findByRole("region", { name: "Histórico de versões" });
+    const drawer = await screen.findByRole("dialog", { name: "Histórico de versões" });
     await user.click(within(drawer).getByRole("button", { name: /Versão 2/u }));
 
     expect(within(drawer).getByRole("document", { name: "Prévia imutável da versão 2" }))
@@ -1012,13 +1016,11 @@ describe("StudioEditor", () => {
     await user.click(within(drawer).getByRole("button", { name: "Restaurar como nova versão" }));
 
     await waitFor(() => expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 })));
-    expect(screen.queryByRole("region", { name: "Histórico de versões" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Histórico de versões" })).not.toBeInTheDocument();
+    expect(screen.getByText("Versão 2 restaurada como uma nova versão.")).toHaveAttribute("role", "status");
     await waitFor(() => expect(screen.getByRole("button", { name: "Ver histórico de versões" })).toHaveFocus());
-    const patchCall = fetchSpy.mock.calls.find(([, init]) => init?.method === "PATCH");
-    expect(JSON.parse(String(patchCall?.[1]?.body))).toMatchObject({
-      expected_revision: 4,
-      body_text: "Direção anterior preservada."
-    });
+    const restoreCall = fetchSpy.mock.calls.find(([input, init]) => String(input).endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST");
+    expect(JSON.parse(String(restoreCall?.[1]?.body))).toEqual({ expected_revision: 4 });
   });
 
   it("turns a restore 409 into the same explicit conflict recovery flow", async () => {
@@ -1026,7 +1028,7 @@ describe("StudioEditor", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith("/versions")) return response({ versions: [rawVersion] });
-      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") {
+      if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") {
         return response({ error: { code: "STUDIO_DOCUMENT_CHANGED", message: "Mudou no servidor." } }, 409);
       }
       if (url.endsWith("/documents") && init?.method === "POST") {
@@ -1045,7 +1047,7 @@ describe("StudioEditor", () => {
     await user.click(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" }));
 
     const copyCall = await waitFor(() => {
-      const call = fetchSpy.mock.calls.find(([, init]) => init?.method === "POST");
+      const call = fetchSpy.mock.calls.find(([input, init]) => String(input).endsWith("/documents") && init?.method === "POST");
       expect(call).toBeDefined();
       return call!;
     });
@@ -1062,7 +1064,7 @@ describe("StudioEditor", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
       if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
-      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") return restore.promise;
+      if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") return restore.promise;
       if (url.endsWith("/documents") && init?.method === "POST") {
         return Promise.resolve(response({ document: { ...rawDocument, id: "document_current_copy", revision: 1 } }, 201));
       }
@@ -1083,7 +1085,7 @@ describe("StudioEditor", () => {
     const conflict = await screen.findByRole("alert", { name: "Conflito de versões" });
     await user.click(within(conflict).getByRole("button", { name: "Manter minha cópia como novo documento" }));
     const copyCall = await waitFor(() => {
-      const call = fetchSpy.mock.calls.find(([, init]) => init?.method === "POST");
+      const call = fetchSpy.mock.calls.find(([input, init]) => String(input).endsWith("/documents") && init?.method === "POST");
       expect(call).toBeDefined();
       return call!;
     });
@@ -1098,7 +1100,7 @@ describe("StudioEditor", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
       if (url.endsWith("/versions")) return Promise.resolve(response({ versions: [rawVersion] }));
-      if (url.endsWith(`/documents/${document.id}`) && init?.method === "PATCH") return restore.promise;
+      if (url.endsWith(`/versions/${rawVersion.id}/restore`) && init?.method === "POST") return restore.promise;
       return Promise.resolve(response({}, 404));
     });
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
@@ -1178,13 +1180,13 @@ describe("StudioEditor", () => {
     expect(trigger).toHaveAttribute("aria-controls", "studio-version-history");
     await user.click(trigger);
 
-    const drawer = await screen.findByRole("region", { name: "Histórico de versões" });
+    const drawer = await screen.findByRole("dialog", { name: "Histórico de versões" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(drawer).toHaveAttribute("id", "studio-version-history");
-    expect(within(drawer).getByRole("heading", { name: "Versões preservadas" })).toHaveFocus();
+    expect(within(drawer).getByRole("heading", { name: "Histórico de versões" })).toHaveFocus();
 
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Histórico de versões" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Histórico de versões" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
@@ -1201,7 +1203,7 @@ describe("StudioEditor", () => {
     render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "Ver histórico de versões" }));
-    const drawer = await screen.findByRole("region", { name: "Histórico de versões" });
+    const drawer = await screen.findByRole("dialog", { name: "Histórico de versões" });
     const retry = await within(drawer).findByRole("button", { name: "Tentar carregar versões novamente" });
     await user.click(retry);
 

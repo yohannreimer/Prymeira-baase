@@ -709,6 +709,27 @@ export async function listStudioDocumentVersions(
   return response.versions.map(mapStudioDocumentVersion);
 }
 
+export async function restoreStudioDocumentVersion(
+  documentId: string,
+  versionId: string,
+  input: { expected_revision: number },
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<{ document: StudioDocument; version: StudioDocumentVersion }> {
+  const response = await studioRequest<{
+    document: RawStudioDocument;
+    version: RawStudioDocumentVersion;
+  }>(
+    `/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    { method: "POST", body: JSON.stringify(input), signal },
+    fetcher
+  );
+  return {
+    document: mapStudioDocument(response.document),
+    version: mapStudioDocumentVersion(response.version)
+  };
+}
+
 export type StudioStructurePage = { items: StudioStructure[]; nextCursor: string | null };
 
 export async function listStudioStructures(

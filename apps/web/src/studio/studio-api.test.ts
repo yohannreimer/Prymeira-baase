@@ -25,6 +25,7 @@ import {
   removeStudioDocumentFromCollection,
   renameStudioCollection,
   restoreStudioDocument,
+  restoreStudioDocumentVersion,
   retryStudioAsset,
   searchStudioDocuments,
   createStudioExitCheckpoint,
@@ -152,6 +153,31 @@ describe("Studio API client", () => {
       createdAt: "2026-07-12T10:00:00.000Z", title: "Checkpoint", checkpointReason: "manual",
       sourceRevision: 1, isLegacy: false
     })).toMatchObject({ title: "Checkpoint", checkpointReason: "manual", sourceRevision: 1, isLegacy: false });
+  });
+
+  it("restores an encoded immutable version through the dedicated endpoint", async () => {
+    const restoredVersion = {
+      id: "version / 2", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
+      document_id: "document / 1", version_number: 3, body_json: {}, body_text: "Restaurado",
+      origin: "user" as const, actor_profile_id: "profile_owner", ai_run_id: null,
+      created_at: "2026-07-16T10:00:00.000Z", checkpoint_reason: "restored" as const,
+      source_revision: 5, is_legacy: false
+    };
+    const fetcher = vi.fn(async () => jsonResponse({
+      document: { ...rawDocument, id: "document / 1", revision: 5, body_text: "Restaurado" },
+      version: restoredVersion
+    }));
+
+    await expect(restoreStudioDocumentVersion(
+      "document / 1", "version / 2", { expected_revision: 4 }, undefined, fetcher
+    )).resolves.toMatchObject({
+      document: { revision: 5, bodyText: "Restaurado" },
+      version: { checkpointReason: "restored", sourceRevision: 5 }
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/documents/document%20%2F%201/versions/version%20%2F%202/restore",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ expected_revision: 4 }) })
+    );
   });
 
   it("merges JSON and owner auth headers, preserves caller headers and AbortSignal", async () => {
