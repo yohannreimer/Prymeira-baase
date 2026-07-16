@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { acceptStudioRelation, getStudioRelatedThoughts } from "./studio-api";
 import type { StudioDocumentIndexState, StudioRelatedThought } from "./studio.types";
 
@@ -14,6 +14,27 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
   const [relationErrors, setRelationErrors] = useState<Map<string, string>>(new Map());
   const [reloadKey, setReloadKey] = useState(0);
   const pendingLocksRef = useRef(new Set<string>());
+  const acceptanceControllersRef = useRef(new Map<string, AbortController>());
+  const mountedRef = useRef(true);
+  const acceptanceContextRef = useRef({ documentId, generation: 0 });
+  const relatedContentId = useId();
+  if (acceptanceContextRef.current.documentId !== documentId) {
+    acceptanceContextRef.current = {
+      documentId,
+      generation: acceptanceContextRef.current.generation + 1
+    };
+  }
+  const acceptanceGeneration = acceptanceContextRef.current.generation;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      for (const controller of acceptanceControllersRef.current.values()) controller.abort();
+      acceptanceControllersRef.current.clear();
+      pendingLocksRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (!expanded) return;
@@ -40,13 +61,28 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
     setAccepted(new Set());
     setPendingIds(new Set());
     setRelationErrors(new Map());
-    pendingLocksRef.current.clear();
     setIndex(null);
-  }, [documentId]);
+    return () => {
+      const prefix = `${acceptanceGeneration}:`;
+      for (const [key, controller] of acceptanceControllersRef.current) {
+        if (!key.startsWith(prefix)) continue;
+        controller.abort();
+        acceptanceControllersRef.current.delete(key);
+        pendingLocksRef.current.delete(key);
+      }
+    };
+  }, [acceptanceGeneration, documentId]);
 
   async function accept(targetId: string) {
-    if (pendingLocksRef.current.has(targetId) || accepted.has(targetId)) return;
-    pendingLocksRef.current.add(targetId);
+    const operation = { documentId, generation: acceptanceGeneration };
+    const lockKey = `${operation.generation}:${operation.documentId}:${targetId}`;
+    if (pendingLocksRef.current.has(lockKey) || accepted.has(targetId)) return;
+    const controller = new AbortController();
+    pendingLocksRef.current.add(lockKey);
+    acceptanceControllersRef.current.set(lockKey, controller);
+    const isCurrent = () => mountedRef.current
+      && acceptanceContextRef.current.documentId === operation.documentId
+      && acceptanceContextRef.current.generation === operation.generation;
     setPendingIds((current) => new Set(current).add(targetId));
     setRelationErrors((current) => {
       const next = new Map(current);
@@ -54,26 +90,34 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
       return next;
     });
     try {
-      await acceptStudioRelation(documentId, targetId);
-      setAccepted((current) => new Set(current).add(targetId));
+      await acceptStudioRelation(operation.documentId, targetId, controller.signal);
+      if (isCurrent()) setAccepted((current) => new Set(current).add(targetId));
     } catch {
-      const title = thoughts.find((thought) => thought.document.id === targetId)?.document.title || "este pensamento";
-      setRelationErrors((current) => new Map(current).set(targetId, `Não foi possível manter a conexão com ${title}. Nenhuma outra conexão foi afetada.`));
+      if (isCurrent() && !controller.signal.aborted) {
+        const title = thoughts.find((thought) => thought.document.id === targetId)?.document.title || "este pensamento";
+        setRelationErrors((current) => new Map(current).set(targetId, `Não foi possível manter a conexão com ${title}. Nenhuma outra conexão foi afetada.`));
+      }
     } finally {
-      pendingLocksRef.current.delete(targetId);
-      setPendingIds((current) => {
-        const next = new Set(current);
-        next.delete(targetId);
-        return next;
-      });
+      pendingLocksRef.current.delete(lockKey);
+      if (acceptanceControllersRef.current.get(lockKey) === controller) {
+        acceptanceControllersRef.current.delete(lockKey);
+      }
+      if (isCurrent()) {
+        setPendingIds((current) => {
+          const next = new Set(current);
+          next.delete(targetId);
+          return next;
+        });
+      }
     }
   }
 
   return <section className="studio-related" aria-labelledby="studio-related-title">
     <header><div><p className="mono">Memória</p><h3 id="studio-related-title">Pensamentos relacionados</h3></div>
-      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Recolher" : "Encontrar conexões"}</button>
+      <button type="button" aria-expanded={expanded} aria-controls={relatedContentId} onClick={() => setExpanded((value) => !value)}>{expanded ? "Recolher" : "Encontrar conexões"}</button>
     </header>
     {!expanded ? <p className="studio-related__empty">Conecte ideias que apareceram em momentos diferentes.</p> : null}
+    {expanded ? <div id={relatedContentId} className="studio-related__content">
     {state === "loading" ? <p role="status">Buscando conexões…</p> : null}
     {state === "error" ? <div className="studio-related__error" role="alert">
       <p>As conexões não puderam ser carregadas agora.</p>
@@ -107,6 +151,7 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
         {accepted.has(thought.document.id) ? "Conexão aceita" : pendingIds.has(thought.document.id) ? "Conectando…" : "Manter esta conexão"}
       </button>
     </article>)}
+    </div> : null}
   </section>;
 }
 

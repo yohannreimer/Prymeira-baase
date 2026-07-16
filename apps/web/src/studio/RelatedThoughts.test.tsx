@@ -175,6 +175,72 @@ describe("RelatedThoughts", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(["resolve", "reject"] as const)(
+    "keeps document B acceptance isolated when document A completes with %s",
+    async (settlement) => {
+      const user = userEvent.setup();
+      const acceptanceA = deferred<Response>();
+      const acceptanceB = deferred<Response>();
+      const relationRequests: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/related")) return json({ index: readyIndex(), related: [related("shared_target", "Mesmo destino")] });
+        if (init?.method === "POST") {
+          relationRequests.push(url);
+          return url.includes("/documents/document_a/") ? acceptanceA.promise : acceptanceB.promise;
+        }
+        return json({});
+      });
+      const view = render(<RelatedThoughts documentId="document_a" />);
+      await user.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+      await user.click(await screen.findByRole("button", { name: "Manter conexão com Mesmo destino" }));
+      expect(screen.getByRole("button", { name: "Conectando com Mesmo destino" })).toBeDisabled();
+
+      view.rerender(<RelatedThoughts documentId="document_b" />);
+      const acceptB = await screen.findByRole("button", { name: "Manter conexão com Mesmo destino" });
+      await user.click(acceptB);
+      expect(screen.getByRole("button", { name: "Conectando com Mesmo destino" })).toBeDisabled();
+
+      if (settlement === "resolve") acceptanceA.resolve(json({ id: "relation_a" }));
+      else acceptanceA.reject(new Error("offline A"));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+      expect(screen.getByRole("button", { name: "Conectando com Mesmo destino" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Conexão aceita com Mesmo destino" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Conectando com Mesmo destino" }));
+      expect(relationRequests).toHaveLength(2);
+
+      acceptanceB.resolve(json({ id: "relation_b" }));
+      expect(await screen.findByRole("button", { name: "Conexão aceita com Mesmo destino" })).toBeDisabled();
+      expect(relationRequests).toEqual([
+        expect.stringContaining("/documents/document_a/relations"),
+        expect.stringContaining("/documents/document_b/relations")
+      ]);
+    }
+  );
+
+  it("removes loaded connection results and actions from interaction while collapsed", async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => json({
+      index: readyIndex(), related: [related("related_1", "Conexão guardada")]
+    }));
+    render(<RelatedThoughts documentId="source" />);
+    const toggle = screen.getByRole("button", { name: "Encontrar conexões" });
+    await user.click(toggle);
+    expect(await screen.findByRole("button", { name: "Manter conexão com Conexão guardada" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Recolher" }));
+    expect(screen.queryByRole("button", { name: "Manter conexão com Conexão guardada" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Trecho Conexão guardada")).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-controls");
+
+    await user.click(toggle);
+    expect(await screen.findByRole("button", { name: "Manter conexão com Conexão guardada" })).toBeVisible();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });
 
 function rawDocument() { return {
