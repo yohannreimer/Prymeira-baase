@@ -1,11 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import StudioHome from "./StudioHome";
+import StudioMaterialInspector from "./StudioMaterialInspector";
 import StudioMaterialList from "./StudioMaterialList";
 import StudioMaterialComposer from "./StudioMaterialComposer";
 import StudioLibrary from "./StudioLibrary";
 import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
-import { getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
+import { createStudioCheckpoint, getStudioDocument, getStudioDocumentAssets, StudioApiError } from "./studio-api";
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { useStudioCollections } from "./useStudioCollections";
 import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget } from "./studio.types";
@@ -36,6 +37,31 @@ type DocumentAssetState = {
 };
 
 type DocumentOpenError = { kind: "unavailable" | "temporary"; documentId: string };
+
+type TranscriptInsertion = {
+  documentId: string;
+  text: string;
+  baselineRevision: number;
+  baselineOccurrences: number;
+  persistedRevision: number | null;
+  promise: Promise<boolean> | null;
+  completed: boolean;
+};
+
+function waitForInsertionPoll(delayMs: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+function countTextOccurrences(body: string, text: string) {
+  if (!text) return 0;
+  let count = 0;
+  let cursor = 0;
+  while ((cursor = body.indexOf(text, cursor)) !== -1) {
+    count += 1;
+    cursor += text.length;
+  }
+  return count;
+}
 
 function validTimestamp(value: string | null | undefined) {
   if (!value) return null;
@@ -105,14 +131,87 @@ export default function StudioPage({ onOpenInternalSource }: {
   const searchOpenController = useRef<AbortController | null>(null);
   const documentRequestGeneration = useRef(0);
   const selectedDocumentId = useRef<string | null>(null);
+  const selectedDocumentRef = useRef<StudioDocument | null>(null);
+  const transcriptInsertionsRef = useRef(new Map<string, TranscriptInsertion>());
   const documentErrorActionRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<StudioEditorHandle>(null);
   const navigationRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const collectionStore = useStudioCollections();
   const active = studioNavigation.find((item) => item.key === section) ?? studioNavigation[0]!;
-  const insertTranscript = useCallback((text: string) => (
-    editorRef.current?.insertTextAtLastSelection(text) ?? false
-  ), []);
+  selectedDocumentRef.current = selectedDocument;
+
+  const insertTranscript = useCallback((assetId: string, text: string): Promise<boolean> => {
+    const document = selectedDocumentRef.current;
+    const normalized = text.trim();
+    if (!document || !normalized || selectedDocumentId.current !== document.id) return Promise.resolve(false);
+    const known = transcriptInsertionsRef.current.get(assetId);
+    if (known?.documentId === document.id && known.text === normalized) {
+      if (known.completed) return Promise.resolve(true);
+      if (known.promise) return known.promise;
+    }
+
+    const operation = known?.documentId === document.id && known.text === normalized
+      ? known
+      : {
+        documentId: document.id,
+        text: normalized,
+        baselineRevision: document.revision,
+        baselineOccurrences: countTextOccurrences(document.bodyText, normalized),
+        persistedRevision: null,
+        promise: null,
+        completed: false
+      };
+
+    operation.promise = (async () => {
+      if (operation.persistedRevision === null) {
+        const inserted = known === operation
+          ? true
+          : editorRef.current?.insertTextAtLastSelection(normalized) ?? false;
+        if (!inserted) return false;
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await waitForInsertionPoll(Math.min(800, 150 + attempt * 45));
+          if (selectedDocumentId.current !== operation.documentId) return false;
+          try {
+            const persisted = await getStudioDocument(operation.documentId);
+            if (persisted.revision > operation.baselineRevision
+              && countTextOccurrences(persisted.bodyText, normalized) > operation.baselineOccurrences) {
+              operation.persistedRevision = persisted.revision;
+              break;
+            }
+          } catch {
+            // Autosave and local recovery remain responsible for preserving the inserted text.
+          }
+        }
+      }
+      if (operation.persistedRevision === null) return false;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await createStudioCheckpoint(operation.documentId, {
+            expected_revision: operation.persistedRevision,
+            reason: "transcript_inserted"
+          });
+          operation.completed = true;
+          return true;
+        } catch (error) {
+          if (!(error instanceof StudioApiError) || error.status !== 409 || attempt > 0) return false;
+          try {
+            const fresh = await getStudioDocument(operation.documentId);
+            if (countTextOccurrences(fresh.bodyText, normalized) <= operation.baselineOccurrences) return false;
+            operation.persistedRevision = fresh.revision;
+          } catch {
+            return false;
+          }
+        }
+      }
+      return false;
+    })().finally(() => {
+      operation.promise = null;
+    });
+    transcriptInsertionsRef.current.set(assetId, operation);
+    return operation.promise;
+  }, []);
 
   useEffect(() => {
     pageMountedRef.current = true;
@@ -289,6 +388,14 @@ export default function StudioPage({ onOpenInternalSource }: {
       : current);
   }
 
+  function removeDocumentAsset(assetId: string) {
+    transcriptInsertionsRef.current.delete(assetId);
+    setAssetState((current) => ({
+      ...current,
+      assets: current.assets.filter((asset) => asset.id !== assetId)
+    }));
+  }
+
   return (
     <section className="studio-screen screen" aria-labelledby="studio-title">
       <header className="studio-intro">
@@ -352,6 +459,7 @@ export default function StudioPage({ onOpenInternalSource }: {
                       onAttached={attachDocumentAsset}
                       onRetry={() => setAssetsReloadKey((key) => key + 1)}
                       onInsertTranscript={insertTranscript}
+                      onDeleted={removeDocumentAsset}
                     />
                   )}
                 />
@@ -517,7 +625,8 @@ function DocumentAssets({
   error,
   onAttached,
   onRetry,
-  onInsertTranscript
+  onInsertTranscript,
+  onDeleted
 }: {
   documentId: string;
   documentTitle: string;
@@ -526,9 +635,11 @@ function DocumentAssets({
   error: boolean;
   onAttached(asset: StudioAsset): void;
   onRetry(): void;
-  onInsertTranscript(text: string): boolean | Promise<boolean>;
+  onInsertTranscript(assetId: string, text: string): Promise<boolean>;
+  onDeleted(assetId: string): void;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
 
   useEffect(() => {
     setSelectedAssetId(null);
@@ -549,6 +660,19 @@ function DocumentAssets({
         onSelect={(asset) => setSelectedAssetId(asset.id)}
         onAssetChange={onAttached}
       />
+      {selectedAsset ? (
+        <StudioMaterialInspector
+          asset={selectedAsset}
+          open
+          onClose={() => setSelectedAssetId(null)}
+          onAssetChange={onAttached}
+          onInsertText={(text) => onInsertTranscript(selectedAsset.id, text)}
+          onDeleted={(assetId) => {
+            setSelectedAssetId(null);
+            onDeleted(assetId);
+          }}
+        />
+      ) : null}
       {loading && assets.length === 0 ? (
         <p
           className="studio-document-assets__status"

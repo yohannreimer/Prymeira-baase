@@ -5,6 +5,7 @@ import {
   retryStudioAsset
 } from "./studio-api";
 import type { StudioAsset } from "./studio.types";
+import type { StudioAssetExtractionStatus } from "./studio.types";
 
 type Download = { url: string; expiresInSeconds: number };
 
@@ -22,7 +23,14 @@ const DEFAULT_POLL_DELAYS = Array.from({ length: 18 }, (_, index) => (
   Math.min(5_000, Math.round(750 * 1.5 ** index))
 ));
 
-function shouldPoll(asset: StudioAsset) {
+export const studioAssetStatusPresentation: Record<StudioAssetExtractionStatus, { label: string; icon: string }> = {
+  pending: { label: "Aguardando processamento", icon: "ph-clock" },
+  processing: { label: "Processando", icon: "ph-circle-notch" },
+  ready: { label: "Pronto", icon: "ph-check" },
+  failed: { label: "Falha no processamento", icon: "ph-warning-circle" }
+};
+
+export function studioAssetNeedsPolling(asset: StudioAsset) {
   return asset.extractionStatus === "pending"
     || asset.extractionStatus === "processing"
     || (asset.extractionStatus === "failed" && asset.nextAttemptAt !== null);
@@ -50,7 +58,7 @@ function validTimestamp(value: string | null | undefined) {
   return Number.isNaN(timestamp) ? null : timestamp;
 }
 
-function freshestAsset(current: StudioAsset, incoming: StudioAsset) {
+export function freshestStudioAsset(current: StudioAsset, incoming: StudioAsset) {
   if (current.id !== incoming.id) return incoming;
   const currentUpdatedAt = validTimestamp(current.updatedAt);
   const incomingUpdatedAt = validTimestamp(incoming.updatedAt);
@@ -105,7 +113,7 @@ export default function StudioAssetProcessingStatus({
 
   function adoptCurrent(next: StudioAsset, notifyParent = false) {
     const previous = currentRef.current;
-    const adopted = freshestAsset(previous, next);
+    const adopted = freshestStudioAsset(previous, next);
     if (adopted === previous) return previous;
     if (previous.id !== adopted.id
       || previous.extractionStatus !== adopted.extractionStatus
@@ -202,13 +210,13 @@ export default function StudioAssetProcessingStatus({
     setPollExhausted(false);
     let latest = currentRef.current;
     void (async () => {
-      if (!shouldPoll(latest)) return;
+      if (!studioAssetNeedsPolling(latest)) return;
       for (const delay of pollDelays) {
         await wait(delay, controller.signal);
         const refreshed = await getStatus(asset.id, controller.signal);
         if (controller.signal.aborted) return;
         latest = adoptCurrent(refreshed, true);
-        if (!shouldPoll(latest)) return;
+        if (!studioAssetNeedsPolling(latest)) return;
       }
       if (!controller.signal.aborted) setPollExhausted(true);
     })().catch(() => {

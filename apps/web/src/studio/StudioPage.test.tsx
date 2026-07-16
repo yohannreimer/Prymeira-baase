@@ -583,12 +583,80 @@ describe("StudioPage", () => {
     await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
 
     expect(body).toHaveTextContent("Antes depois");
+    expect(screen.getByRole("dialog", { name: "Material reflexao.wav" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Inserir no documento" })).toBeVisible();
     expect(screen.queryByText("Escolher uma direção com calma.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Adicionar transcrição ao documento" })).not.toBeInTheDocument();
     expect(fetchSpy.mock.calls.some(([url, init]) => (
       String(url).endsWith(`/api/studio/documents/${rawDocument.id}`) && init?.method === "PATCH"
     ))).toBe(false);
   });
+
+  it("preserves exactly one transcript checkpoint only after the inserted text is persisted", async () => {
+    const user = userEvent.setup();
+    const sourceDocument = {
+      ...rawDocument,
+      body_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Contexto atual" }] }] },
+      body_text: "Contexto atual"
+    };
+    let persistedDocument: Record<string, unknown> = sourceDocument;
+    const checkpointBodies: Array<Record<string, unknown>> = [];
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "GET") {
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/assets`)) return jsonResponse({ assets: [rawAsset] });
+      if (url.endsWith(`/api/studio/assets/${rawAsset.id}/download`)) {
+        return jsonResponse({ url: "https://private.example/reflexao.wav", expires_in_seconds: 600 });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}`) && method === "PATCH") {
+        const payload = JSON.parse(String(init?.body));
+        persistedDocument = {
+          ...sourceDocument,
+          revision: 2,
+          body_json: payload.body_json,
+          body_text: payload.body_text,
+          updated_at: "2026-07-16T12:01:00.000Z"
+        };
+        return jsonResponse({ document: persistedDocument });
+      }
+      if (url.endsWith(`/api/studio/documents/${rawDocument.id}/checkpoints`) && method === "POST") {
+        checkpointBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ version: {
+          id: "version_transcript",
+          workspace_id: "workspace_a",
+          owner_profile_id: "profile_owner",
+          document_id: rawDocument.id,
+          version_number: 1,
+          title: sourceDocument.title,
+          body_json: persistedDocument.body_json,
+          body_text: persistedDocument.body_text,
+          origin: "user",
+          actor_profile_id: "profile_owner",
+          ai_run_id: null,
+          checkpoint_reason: "transcript_inserted",
+          source_revision: 2,
+          is_legacy: false,
+          created_at: "2026-07-16T12:01:01.000Z"
+        } }, 201);
+      }
+      return jsonResponse({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    window.history.replaceState(null, "", `/#estudio/document/${rawDocument.id}`);
+    render(<StudioPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Abrir reflexao.wav" }));
+    await user.click(screen.getByRole("button", { name: "Inserir no documento" }));
+
+    await waitFor(() => expect(checkpointBodies).toEqual([{
+      expected_revision: 2,
+      reason: "transcript_inserted"
+    }]), { timeout: 4_000 });
+    expect(await screen.findByText("Texto inserido e versão preservada.")).toBeVisible();
+    expect(checkpointBodies).toHaveLength(1);
+  }, 8_000);
 
   it("uses the current document's compact material selection after switching documents", async () => {
     const user = userEvent.setup();

@@ -10,6 +10,7 @@ import {
   createStudioCheckpoint,
   createStudioDocument,
   createStudioStructure,
+  deleteStudioAsset,
   deleteStudioCollection,
   getStudioAsset,
   getStudioAssetDownload,
@@ -611,5 +612,17 @@ describe("Studio API client", () => {
     expect(fetcher.mock.calls[1]?.[1]?.method).toBe("POST");
     expect(fetcher.mock.calls[1]?.[1]?.body).toBe("{}");
     expect(fetcher.mock.calls.every(([, init]) => init?.signal === controller.signal)).toBe(true);
+  });
+
+  it("deletes an owner-scoped Studio asset through the material lifecycle endpoint", async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    const controller = new AbortController();
+
+    await expect(deleteStudioAsset("asset / 1", controller.signal, fetcher)).resolves.toBeUndefined();
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/studio/assets/asset%20%2F%201",
+      expect.objectContaining({ method: "DELETE", signal: controller.signal })
+    );
   });
 });

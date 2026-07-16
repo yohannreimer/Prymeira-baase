@@ -1514,6 +1514,258 @@
   background: var(--panel2);
 }
 
+.studio-material-inspector-layer {
+  inset: 0;
+  position: fixed;
+  z-index: 185;
+}
+
+.studio-material-inspector__backdrop {
+  background: color-mix(in srgb, var(--ink) 20%, transparent);
+  border: 0;
+  inset: 0;
+  padding: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.studio-material-inspector {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  bottom: 16px;
+  box-shadow: 0 24px 70px -30px color-mix(in srgb, var(--ink) 48%, transparent);
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  position: absolute;
+  right: 16px;
+  top: 72px;
+  width: 430px;
+}
+
+.studio-material-inspector__header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.studio-material-inspector__header > div {
+  min-width: 0;
+}
+
+.studio-material-inspector__header p {
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: .08em;
+  margin: 0 0 4px;
+  text-transform: uppercase;
+}
+
+.studio-material-inspector__header h2 {
+  font-size: 18px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-material-inspector__header > button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.studio-material-inspector__scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 18px 22px;
+}
+
+.studio-material-inspector__preview,
+.studio-material-inspector__processing,
+.studio-material-inspector__actions,
+.studio-material-inspector__danger {
+  border-top: 1px solid var(--line2);
+  display: grid;
+  gap: 12px;
+  padding: 18px 0;
+}
+
+.studio-material-inspector__preview {
+  border-top: 0;
+}
+
+.studio-material-inspector__preview img {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  display: block;
+  max-height: 260px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.studio-material-inspector__preview audio {
+  width: 100%;
+}
+
+.studio-material-inspector__preview > a,
+.studio-material-inspector__file {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12.5px;
+  gap: 10px;
+  line-height: 1.55;
+  min-height: 56px;
+  padding: 8px 2px;
+}
+
+.studio-material-inspector__preview > a {
+  color: var(--accent-ink);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.studio-material-inspector__file > i {
+  color: var(--faint);
+  font-size: 28px;
+}
+
+.studio-material-inspector__preview p,
+.studio-material-inspector__processing p,
+.studio-material-inspector__actions p,
+.studio-material-inspector__danger p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.studio-material-inspector__preview p[role="alert"],
+.studio-material-inspector__processing p[role="alert"],
+.studio-material-inspector__actions p[role="alert"],
+.studio-material-inspector__danger p[role="alert"] {
+  color: var(--danger-ink);
+}
+
+.studio-material-inspector__section-heading {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.studio-material-inspector__section-heading h3 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.studio-material-inspector__section-heading span {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 10.5px;
+  gap: 5px;
+}
+
+.studio-material-inspector__section-heading span[data-status="ready"] {
+  color: var(--accent-ink);
+}
+
+.studio-material-inspector__section-heading span[data-status="failed"] {
+  color: var(--danger-ink);
+}
+
+.studio-material-inspector__extraction {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.65;
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.studio-material-inspector button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  min-height: 40px;
+  padding: 8px 11px;
+}
+
+.studio-material-inspector__processing > button,
+.studio-material-inspector__actions > button,
+.studio-material-inspector__danger > button {
+  justify-self: start;
+}
+
+.studio-material-inspector button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
+
+.studio-material-inspector button.danger,
+.studio-material-inspector__danger > button {
+  color: var(--danger-ink);
+}
+
+.studio-material-inspector__danger > div {
+  display: grid;
+  gap: 10px;
+}
+
+.studio-material-inspector__danger > div > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.studio-material-inspector button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.studio-material-inspector button:focus-visible,
+.studio-material-inspector a:focus-visible,
+.studio-material-inspector audio:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .studio-material-inspector button:hover:not(:disabled):not(.primary),
+  .studio-material-inspector__preview > a:hover {
+    background: var(--panel2);
+    color: var(--ink);
+  }
+}
+
 @media (hover: hover) {
   .studio-material-list__row:hover {
     background: var(--panel2);
@@ -2801,6 +3053,20 @@
 .studio-ritual-complete li small { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; padding: 4px 8px; }
 
 @media (max-width: 720px) {
+  .studio-material-inspector {
+    border-radius: 10px;
+    bottom: 10px;
+    max-width: none;
+    right: 10px;
+    top: 68px;
+    width: calc(100vw - 20px);
+  }
+
+  .studio-material-inspector__header,
+  .studio-material-inspector__scroll {
+    padding-inline: 14px;
+  }
+
   .studio-version-drawer {
     border-radius: 10px;
     bottom: 10px;

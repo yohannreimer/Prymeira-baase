@@ -655,7 +655,7 @@ git commit -m "feat(studio): present compact document materials"
 - Modify: `apps/web/src/studio/StudioPage.tsx`
 - Modify: `apps/web/src/studio/studio.css`
 
-- [ ] **Step 1: Write inspector interaction tests**
+- [x] **Step 1: Write inspector interaction tests**
 
 ```tsx
 render(<StudioMaterialInspector asset={readyPdf} open onClose={onClose} onInsertText={onInsertText} />);
@@ -666,12 +666,12 @@ await user.click(screen.getByRole("button", { name: "Ver texto completo" }));
 expect(screen.getByText(readyPdf.extractedText!)).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and verify the inspector is absent**
+- [x] **Step 2: Run and verify the inspector is absent**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement per-kind inspector actions**
+- [x] **Step 3: Implement per-kind inspector actions**
 
 ```tsx
 <aside role="dialog" aria-modal="true" aria-labelledby="material-inspector-title" className="studio-material-inspector">
@@ -688,12 +688,12 @@ Expected: FAIL.
 
 Reuse audio URL renewal and retry logic from `StudioAssetProcessingStatus`; reduce that component to polling/status primitives instead of full layout. After `onInsertText` persists the new draft, call `createStudioCheckpoint` with reason `transcript_inserted`.
 
-- [ ] **Step 4: Run material regression suites**
+- [x] **Step 4: Run material regression suites**
 
 Run: `pnpm --filter @prymeira/baase-web test -- src/studio/StudioMaterialInspector.test.tsx src/studio/StudioAssetProcessingStatus.test.tsx src/studio/StudioPage.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/studio/StudioMaterialInspector* apps/web/src/studio/StudioAssetProcessingStatus.tsx apps/web/src/studio/StudioPage.tsx apps/web/src/studio/studio.css

@@ -515,6 +515,18 @@ export async function getStudioAssetDownload(
   };
 }
 
+export async function deleteStudioAsset(
+  assetId: string,
+  signal?: AbortSignal,
+  fetcher: StudioFetcher = fetch
+): Promise<void> {
+  await studioRequest<unknown>(
+    `/assets/${encodeURIComponent(assetId)}`,
+    { method: "DELETE", signal },
+    fetcher
+  );
+}
+
 export async function getStudioDocument(
   documentId: string,
   fetcher: StudioFetcher = fetch,

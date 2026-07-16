@@ -1,8 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getStudioAsset } from "./studio-api";
+import {
+  freshestStudioAsset,
+  studioAssetNeedsPolling,
+  studioAssetStatusPresentation
+} from "./StudioAssetProcessingStatus";
 import type {
   StudioAsset,
-  StudioAssetExtractionStatus,
   StudioAssetKind
 } from "./studio.types";
 
@@ -26,13 +30,6 @@ const kindPresentation: Record<StudioAssetKind, { label: string; icon: string }>
   link_snapshot: { label: "Link", icon: "ph-link" }
 };
 
-const statusPresentation: Record<StudioAssetExtractionStatus, { label: string; icon: string }> = {
-  pending: { label: "Aguardando processamento", icon: "ph-clock" },
-  processing: { label: "Processando", icon: "ph-circle-notch" },
-  ready: { label: "Pronto", icon: "ph-check" },
-  failed: { label: "Falha no processamento", icon: "ph-warning-circle" }
-};
-
 function materialKind(asset: StudioAsset) {
   if (asset.kind === "file" && asset.mimeType === "application/pdf") {
     return { label: "PDF", icon: "ph-file-pdf" };
@@ -53,27 +50,6 @@ function metadata(asset: StudioAsset) {
   const kind = materialKind(asset).label;
   const size = formatStudioMaterialSize(asset.sizeBytes);
   return size ? `${kind} · ${size}` : kind;
-}
-
-function validTimestamp(value: string | null | undefined) {
-  if (!value) return null;
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? null : timestamp;
-}
-
-function freshestAsset(current: StudioAsset, incoming: StudioAsset) {
-  if (current.id !== incoming.id) return incoming;
-  const currentUpdatedAt = validTimestamp(current.updatedAt);
-  const incomingUpdatedAt = validTimestamp(incoming.updatedAt);
-  return incomingUpdatedAt !== null && (currentUpdatedAt === null || incomingUpdatedAt > currentUpdatedAt)
-    ? incoming
-    : current;
-}
-
-function shouldPoll(asset: StudioAsset) {
-  return asset.extractionStatus === "pending"
-    || asset.extractionStatus === "processing"
-    || (asset.extractionStatus === "failed" && asset.nextAttemptAt !== null);
 }
 
 function wait(delay: number, signal: AbortSignal) {
@@ -112,7 +88,7 @@ function StudioMaterialRow({
   onAssetChangeRef.current = onAssetChange;
 
   useLayoutEffect(() => {
-    const adopted = freshestAsset(currentRef.current, asset);
+    const adopted = freshestStudioAsset(currentRef.current, asset);
     currentRef.current = adopted;
     setCurrent(adopted);
   }, [asset]);
@@ -120,14 +96,14 @@ function StudioMaterialRow({
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
-      if (!shouldPoll(currentRef.current)) return;
+      if (!studioAssetNeedsPolling(currentRef.current)) return;
       let attempt = 0;
-      while (shouldPoll(currentRef.current)) {
+      while (studioAssetNeedsPolling(currentRef.current)) {
         const configuredDelay = pollDelays[Math.min(attempt, Math.max(0, pollDelays.length - 1))];
         const delay = Number.isFinite(configuredDelay) ? Math.max(1, configuredDelay ?? 1) : 5_000;
         await wait(delay, controller.signal);
         attempt += 1;
-        if (!shouldPoll(currentRef.current)) return;
+        if (!studioAssetNeedsPolling(currentRef.current)) return;
         let refreshed: StudioAsset;
         try {
           refreshed = await getStatus(asset.id, controller.signal);
@@ -138,7 +114,7 @@ function StudioMaterialRow({
         if (controller.signal.aborted) return;
         if (refreshed.id !== asset.id || refreshed.documentId !== asset.documentId) continue;
         const baseline = currentRef.current;
-        const adopted = freshestAsset(baseline, refreshed);
+        const adopted = freshestStudioAsset(baseline, refreshed);
         if (adopted !== baseline) {
           currentRef.current = adopted;
           setCurrent(adopted);
@@ -150,7 +126,7 @@ function StudioMaterialRow({
   }, [asset.id, asset.extractionStatus, asset.nextAttemptAt, getStatus, pollDelays]);
 
   const kind = materialKind(current);
-  const status = statusPresentation[current.extractionStatus];
+  const status = studioAssetStatusPresentation[current.extractionStatus];
   return (
     <li className="studio-material-list__item">
       <button
