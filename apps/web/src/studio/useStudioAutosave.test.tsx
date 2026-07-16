@@ -161,6 +161,32 @@ describe("useStudioAutosave", () => {
     expect(result.current.state).toBe("saved");
   });
 
+  it("retries a matching exit outbox on a later pagehide after a transient checkpoint failure", async () => {
+    const pendingSave = deferred<StudioDocument>();
+    const meaningfulDraft = draft("Saída retomada depois de uma falha transitória");
+    const save = vi.fn(() => pendingSave.promise);
+    const exitCheckpoint = vi.fn()
+      .mockResolvedValueOnce(exitCheckpointResult(draft("Original"), 4))
+      .mockRejectedValueOnce(new TypeError("checkpoint offline"))
+      .mockResolvedValueOnce(exitCheckpointResult(meaningfulDraft, 5));
+    const { result } = renderHook(() => useStudioAutosave(document, save, { exitCheckpoint }));
+
+    act(() => result.current.queueSave(meaningfulDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    await act(async () => Promise.resolve());
+    await act(async () => pendingSave.resolve(saved(meaningfulDraft, 5)));
+
+    expect(exitCheckpoint).toHaveBeenCalledTimes(2);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    await act(async () => Promise.resolve());
+
+    expect(exitCheckpoint).toHaveBeenCalledTimes(3);
+    expect(exitCheckpoint).toHaveBeenLastCalledWith(5);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
   it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
@@ -507,6 +533,43 @@ describe("useStudioAutosave", () => {
     expect(exitCheckpoint).toHaveBeenCalledWith(5);
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
     await act(async () => pendingExit.resolve(exitCheckpointResult(firstDraft, 5)));
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
+  it("retries a recovered lost-ack outbox after the first checkpoint attempt fails", async () => {
+    storeEnvelope(firstDraft, 4);
+    const serverDocument = saved(firstDraft, 5);
+    const exitCheckpoint = vi.fn()
+      .mockRejectedValueOnce(new TypeError("checkpoint offline"))
+      .mockResolvedValueOnce(exitCheckpointResult(firstDraft, 5));
+    renderHook(() => useStudioAutosave(serverDocument, vi.fn(), { exitCheckpoint }));
+
+    await act(async () => Promise.resolve());
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    await act(async () => Promise.resolve());
+
+    expect(exitCheckpoint).toHaveBeenCalledTimes(2);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
+  });
+
+  it("preserves the outbox and surfaces conflict when checkpoint returns newer different content", async () => {
+    storeEnvelope(firstDraft, 4);
+    const serverDocument = saved(firstDraft, 5);
+    const concurrentDocument = saved(secondDraft, 6);
+    const exitCheckpoint = vi.fn(async () => exitCheckpointResult(secondDraft, 6));
+    const { result } = renderHook(() => useStudioAutosave(serverDocument, vi.fn(), { exitCheckpoint }));
+
+    await act(async () => Promise.resolve());
+
+    expect(result.current.document).toEqual(concurrentDocument);
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.conflictDraft).toEqual(firstDraft);
+    expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).not.toBeNull();
+
+    act(() => result.current.resolveConflict(concurrentDocument, true));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(exitCheckpoint).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(studioDraftStorageKey(document.id))).toBeNull();
   });
 

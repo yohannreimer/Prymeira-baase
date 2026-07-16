@@ -80,6 +80,16 @@ function serializeDraft(draft: StudioDocumentDraft) {
   return JSON.stringify(draft);
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -352,11 +362,9 @@ function clearQuarantinedDraft(documentId: string) {
 }
 
 function draftMatchesDocument(draft: StudioDocumentDraft, document: StudioDocument) {
-  return serializeDraft(draft) === serializeDraft({
-    title: document.title,
-    bodyJson: document.bodyJson,
-    bodyText: document.bodyText
-  });
+  return draft.title === document.title
+    && draft.bodyText === document.bodyText
+    && canonicalJson(draft.bodyJson) === canonicalJson(document.bodyJson);
 }
 
 function recoveryView(sourceDocument: StudioDocument, recovery: StoredDraftRead): AutosaveView {
@@ -418,6 +426,11 @@ export function useStudioAutosave(
   const documentIdRef = useRef(sourceDocument.id);
   const revisionRef = useRef(sourceDocument.revision);
   const initialEnvelope = initialRecovery.kind === "valid" ? initialRecovery.envelope : null;
+  const initialOutboxDurableRevision = initialEnvelope
+    && initialEnvelope.baseRevision < sourceDocument.revision
+    && draftMatchesDocument(initialEnvelope.draft, sourceDocument)
+    ? sourceDocument.revision
+    : null;
   const generationRef = useRef(initialEnvelope?.generation ?? 0);
   const saveRef = useRef(save);
   const queuedRef = useRef<QueuedDraft | null>(recoveredQueue(sourceDocument.id, sourceDocument.revision, initialRecovery));
@@ -432,6 +445,7 @@ export function useStudioAutosave(
     documentId: sourceDocument.id,
     envelope: initialEnvelope
   } : null);
+  const exitOutboxDurableRevisionRef = useRef<number | null>(initialOutboxDurableRevision);
   const checkpointTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const checkpointControllerRef = useRef<AbortController | null>(null);
   const checkpointInFlightRef = useRef<StudioCheckpointSnapshot | null>(null);
@@ -540,8 +554,23 @@ export function useStudioAutosave(
       if (clearOutbox && item && exitOutboxRef.current?.documentId === operation.documentId
         && exitOutboxRef.current.envelope.generation === operation.generation
         && document.revision >= knownRevision) {
-        clearMatchingStoredDraft(operation.documentId, item.envelope);
-        exitOutboxRef.current = null;
+        if (draftMatchesDocument(item.envelope.draft, document)) {
+          const cleared = clearMatchingStoredDraft(operation.documentId, item.envelope);
+          if (cleared) {
+            exitOutboxRef.current = null;
+            exitOutboxDurableRevisionRef.current = null;
+          } else if (mountedRef.current) {
+            setView((current) => ({ ...current, storageUnavailable: true }));
+          }
+        } else if (mountedRef.current) {
+          setView((current) => ({
+            ...current,
+            document,
+            currentDraft: item.envelope.draft,
+            conflictDraft: item.envelope.draft,
+            state: "conflict"
+          }));
+        }
       }
       void version;
     }).catch(() => undefined).finally(() => {
@@ -552,10 +581,17 @@ export function useStudioAutosave(
   }, []);
 
   const checkpointOnExit = useCallback(() => {
-    const item = queuedRef.current ?? activeSaveRef.current ?? retryRef.current;
-    if (item?.documentId === documentIdRef.current) exitOutboxRef.current = item;
+    const pending = queuedRef.current ?? activeSaveRef.current ?? retryRef.current;
+    if (pending?.documentId === documentIdRef.current) {
+      if (exitOutboxRef.current?.envelope.generation !== pending.envelope.generation) {
+        exitOutboxDurableRevisionRef.current = null;
+      }
+      exitOutboxRef.current = pending;
+    }
+    const item = pending ?? exitOutboxRef.current;
     cancelCheckpointWork();
-    if (requestExitCheckpoint(revisionRef.current, item ?? null, false)) return;
+    const durableRevision = item === exitOutboxRef.current ? exitOutboxDurableRevisionRef.current : null;
+    if (requestExitCheckpoint(durableRevision ?? revisionRef.current, item ?? null, durableRevision !== null)) return;
     const candidate = checkpointPolicyRef.current?.pendingForExit() ?? null;
     if (candidate) runCheckpoint(candidate, "document_exit");
   }, [cancelCheckpointWork, requestExitCheckpoint, runCheckpoint]);
@@ -605,7 +641,10 @@ export function useStudioAutosave(
         storageSucceeded = awaitingExitCheckpoint
           ? true
           : clearMatchingStoredDraft(item.documentId, item.envelope);
-        if (awaitingExitCheckpoint) requestExitCheckpoint(savedDocument.revision, item, true);
+        if (awaitingExitCheckpoint) {
+          exitOutboxDurableRevisionRef.current = savedDocument.revision;
+          requestExitCheckpoint(savedDocument.revision, item, true);
+        }
       }
       recordCompletedSave(savedDocument, pending?.documentId !== item.documentId);
       if (storageSucceeded) markStorageAvailable();
@@ -688,6 +727,9 @@ export function useStudioAutosave(
     activeSaveRef.current = null;
     queuedRef.current = null;
     retryRef.current = null;
+    exitOutboxRef.current = null;
+    exitOutboxDurableRevisionRef.current = null;
+    exitSaveInFlightRef.current = null;
     revisionRef.current = serverDocument.revision;
     generationRef.current += 1;
     const cleared = !discardLocalDraft || clearStoredDraft(documentIdRef.current);
@@ -799,6 +841,7 @@ export function useStudioAutosave(
       exitCheckpointRetryRef.current = null;
       exitSaveInFlightRef.current = null;
       exitOutboxRef.current = null;
+      exitOutboxDurableRevisionRef.current = null;
       cancelCheckpointWork();
       checkpointPolicyRef.current = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
       checkpointPolicyRef.current.recordSaved(checkpointSnapshot(sourceDocument), Date.now());
@@ -842,6 +885,11 @@ export function useStudioAutosave(
       documentId: sourceDocument.id,
       envelope: recovery.envelope
     } : null;
+    exitOutboxDurableRevisionRef.current = recovery.kind === "valid"
+      && recovery.envelope.baseRevision < sourceDocument.revision
+      && draftMatchesDocument(recovery.envelope.draft, sourceDocument)
+      ? sourceDocument.revision
+      : null;
     setView(recoveryView(sourceDocument, recovery));
     if (recovery.kind === "valid" && recovery.envelope.baseRevision < sourceDocument.revision
       && draftMatchesDocument(recovery.envelope.draft, sourceDocument)) {
