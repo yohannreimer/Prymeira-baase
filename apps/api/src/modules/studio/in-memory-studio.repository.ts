@@ -181,6 +181,15 @@ export function createInMemoryStudioRepository(
   const ritualSessions: StudioRitualSession[] = [];
   const clock = options.now ?? (() => new Date().toISOString());
   const now = () => normalizeTimestamp(clock());
+  let checkpointLock: Promise<void> = Promise.resolve();
+
+  async function acquireCheckpointLock() {
+    const previous = checkpointLock;
+    let release!: () => void;
+    checkpointLock = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    return release;
+  }
 
   function appendStoredVersion(
     input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">,
@@ -459,16 +468,40 @@ export function createInMemoryStudioRepository(
     },
 
     async createCheckpoint(scope, documentId, actorProfileId, input) {
-      const document = documents.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
-      if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
-      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
-      const latest = versions.filter((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId)
-        .sort((left, right) => right.versionNumber - left.versionNumber)[0];
-      if (latest && sameCheckpoint(latest, document)) return { version: cloneVersion(latest), inserted: false };
-      const version = appendStoredVersion({ ...scope, documentId, title: document.title, bodyJson: document.bodyJson, bodyText: document.bodyText,
-        origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason, sourceRevision: document.revision, isLegacy: false });
-      enqueueIndexJob(document);
-      return { version, inserted: true };
+      const release = await acquireCheckpointLock();
+      try {
+        const document = documents.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
+        if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
+        const latest = versions.filter((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId)
+          .sort((left, right) => right.versionNumber - left.versionNumber)[0];
+        if (latest && sameCheckpoint(latest, document)) return { version: cloneVersion(latest), inserted: false };
+        const version = appendStoredVersion({ ...scope, documentId, title: document.title, bodyJson: document.bodyJson, bodyText: document.bodyText,
+          origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason, sourceRevision: document.revision, isLegacy: false });
+        enqueueIndexJob(document);
+        return { version, inserted: true };
+      } finally { release(); }
+    },
+
+    async restoreDocumentVersion(scope, documentId, versionId, actorProfileId, expectedRevision) {
+      const index = documents.findIndex((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
+      if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const persisted = documents[index]!;
+      if (persisted.revision !== expectedRevision) throw new Error("STUDIO_DOCUMENT_STALE");
+      const source = versions.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId
+        && item.documentId === documentId && item.id === versionId);
+      if (!source) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
+      const restored: StudioDocument = {
+        ...persisted, title: source.title ?? null, bodyJson: structuredClone(source.bodyJson),
+        bodyText: source.bodyText.replace(/\s+/gu, " ").trim(), revision: persisted.revision + 1,
+        updatedAt: nextTimestamp(now, persisted.updatedAt)
+      };
+      const checkpoint = appendStoredVersion({ ...scope, documentId, title: restored.title, bodyJson: restored.bodyJson,
+        bodyText: restored.bodyText, origin: "user", actorProfileId, aiRunId: null, checkpointReason: "restored",
+        sourceRevision: restored.revision, isLegacy: false });
+      documents[index] = restored;
+      enqueueIndexJob(restored);
+      return { document: cloneDocument(restored), version: checkpoint };
     },
 
     async findStructure(scope, structureId) {

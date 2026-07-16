@@ -312,19 +312,7 @@ export function createStudioService(
 
     async restoreVersion(scope, actorProfileId, id, versionId, input) {
       assertActor(scope, actorProfileId);
-      const document = await requireDocument(repository, scope, id);
-      if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
-      const version = await repository.findVersion(scope, id, versionId);
-      if (!version) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
-      assertStudioEditorJson(version.bodyJson);
-      const restored = await repository.updateDocument({
-        ...document, title: version.title ?? null, bodyJson: structuredClone(version.bodyJson), bodyText: normalizeBodyText(version.bodyText)
-      }, document.revision);
-      const checkpoint = await repository.appendVersion({
-        ...scope, documentId: id, title: restored.title, bodyJson: structuredClone(restored.bodyJson), bodyText: restored.bodyText,
-        origin: "user", actorProfileId, aiRunId: null, checkpointReason: "restored", sourceRevision: restored.revision, isLegacy: false
-      });
-      return { document: restored, version: checkpoint };
+      return repository.restoreDocumentVersion(scope, id, versionId, actorProfileId, input.expected_revision);
     },
 
     search(scope, query, limit) {

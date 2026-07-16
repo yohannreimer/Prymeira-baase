@@ -1538,6 +1538,32 @@ describe.skipIf(!testDatabaseUrl)("PostgreSQL Studio derived search fields", () 
 });
 
 describe("PostgreSQL repository bundle", () => {
+  it("rolls back the draft restore when writing its restored checkpoint fails", async () => {
+    const calls: string[] = [];
+    const documentRow = { id: "document_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", capture_key: null,
+      title: "Current", body_json: {}, body_text: "current", revision: 2, capture_mode: "text", inbox_state: "reviewed",
+      is_focused: false, status: "active", created_at: "2026-07-10T10:00:00.000Z", updated_at: "2026-07-13T10:00:00.000Z",
+      archived_at: null, trashed_at: null, pre_trash_status: null };
+    const sourceRow = { id: "version_a", workspace_id: "workspace_a", owner_profile_id: "owner_a", document_id: "document_a",
+      version_number: 1, body_json: {}, body_text: "restored", origin: "user", actor_profile_id: "owner_a", ai_run_id: null,
+      created_at: "2026-07-10T10:00:00.000Z", title: "Restored", checkpoint_reason: "manual", source_revision: 1, is_legacy: false };
+    const client = {
+      async query<T>(text: string) {
+        calls.push(text);
+        if (text.includes("INSERT INTO studio_document_versions")) throw new Error("version write failed");
+        if (text.includes("studio_document_versions")) return { rows: [sourceRow] as T[] };
+        if (text.includes("studio_documents") && text.includes("SELECT")) return { rows: [documentRow] as T[] };
+        if (text.includes("UPDATE studio_documents")) return { rows: [{ ...documentRow, title: "Restored", body_text: "restored", revision: 3 }] as T[] };
+        return { rows: [] as T[] };
+      }, release() {}
+    };
+    const repository = createPostgresStudioRepository({ async query<T>() { return { rows: [] as T[] }; }, async connect() { return client; } });
+    await expect(repository.restoreDocumentVersion({ workspaceId: "workspace_a", ownerProfileId: "owner_a" }, "document_a", "version_a", "owner_a", 2))
+      .rejects.toThrow("version write failed");
+    expect(calls).toContain("ROLLBACK");
+    expect(calls).not.toContain("COMMIT");
+  });
+
   it("maps checkpoint and trash columns from PostgreSQL rows", async () => {
     const pool: OperationalPool = {
       async query<T>(text: string) {

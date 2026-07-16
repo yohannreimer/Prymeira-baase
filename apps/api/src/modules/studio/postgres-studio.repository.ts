@@ -935,6 +935,41 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       });
     },
 
+    async restoreDocumentVersion(scope, documentId, versionId, actorProfileId, expectedRevision) {
+      return withOperationalTransaction(db, async (client) => {
+        const locked = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const current = documentFromRow(locked.rows[0]);
+        if (current.revision !== expectedRevision) throw new Error("STUDIO_DOCUMENT_STALE");
+        const sourceResult = await client.query<StudioDocumentVersionRow>(
+          `SELECT * FROM studio_document_versions WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3 AND id=$4 FOR KEY SHARE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId, versionId]
+        );
+        if (!sourceResult.rows[0]) throw new Error("STUDIO_DOCUMENT_VERSION_NOT_FOUND");
+        const source = versionFromRow(sourceResult.rows[0]);
+        const bodyText = source.bodyText.replace(/\s+/gu, " ").trim();
+        const search = prepareStudioSearchFields(source.title ?? null, bodyText);
+        const updatedResult = await client.query<StudioDocumentRow>(
+          `UPDATE studio_documents SET title=$4,body_json=$5::jsonb,body_text=$6,
+             search_title_folded=$7,search_body_folded=$8,search_tokens=$9::text[],search_prefix_tokens=$10::text[],
+             revision=revision+1,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 AND revision=$11 RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, documentId, source.title ?? null, JSON.stringify(source.bodyJson), bodyText,
+            search.titleFolded, search.bodyFolded, search.tokens, search.prefixTokens, expectedRevision]
+        );
+        if (!updatedResult.rows[0]) throw new Error("STUDIO_DOCUMENT_STALE");
+        const document = documentFromRow(updatedResult.rows[0]);
+        await insertIndexJob(client, document);
+        const version = await insertVersion(client, { ...scope, documentId, title: document.title, bodyJson: document.bodyJson,
+          bodyText: document.bodyText, origin: "user", actorProfileId, aiRunId: null, checkpointReason: "restored",
+          sourceRevision: document.revision, isLegacy: false });
+        return { document, version };
+      });
+    },
+
     async findStructure(scope, structureId) {
       const result = await db.query<StudioStructureRow>(
         `SELECT * FROM studio_structures WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,

@@ -525,6 +525,7 @@ export type StudioRepository = {
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;
   createCheckpoint(scope: StudioOwnerScope, documentId: string, actorProfileId: string, input: CreateStudioCheckpoint): Promise<StudioCheckpointResult>;
+  restoreDocumentVersion(scope: StudioOwnerScope, documentId: string, versionId: string, actorProfileId: string, expectedRevision: number): Promise<{ document: StudioDocument; version: StudioDocumentVersion }>;
   findStructure(scope: StudioOwnerScope, structureId: string): Promise<StudioStructure | null>;
   createStructure(input: Omit<StudioStructure, "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt">): Promise<StudioStructure>;
   updateStructure(input: StudioStructure, expectedRevision: number): Promise<StudioStructure>;
