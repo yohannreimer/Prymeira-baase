@@ -20,9 +20,13 @@ it("keeps a very long PDF extraction out of the document and selects its compact
 
   expect(screen.getByText("strategy.pdf")).toBeVisible();
   expect(screen.getByText("PDF · 2,4 MB")).toBeVisible();
-  expect(screen.getByText("Pronto")).toBeVisible();
+  const row = screen.getByRole("button", { name: "Abrir strategy.pdf" });
+  const liveStatus = screen.getByRole("status");
+  expect(liveStatus).toHaveTextContent("Pronto");
+  expect(row.contains(liveStatus)).toBe(false);
+  expect(row.parentElement).toContainElement(liveStatus);
   expect(screen.queryByText(/Long text Long text/u)).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Abrir strategy.pdf" }));
+  await user.click(row);
   expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "asset_pdf" }));
 });
 
@@ -37,9 +41,11 @@ it("labels every material kind and extraction state without adding inline action
   expect(within(list).getByText("Áudio · 117,2 KB")).toBeVisible();
   expect(within(list).getByText("Imagem · 117,2 KB")).toBeVisible();
   expect(within(list).getByText("Link")).toBeVisible();
-  expect(within(list).getByText("Processando")).toBeVisible();
-  expect(within(list).getByText("Aguardando processamento")).toBeVisible();
-  expect(within(list).getByText("Falha no processamento")).toBeVisible();
+  expect(within(list).getAllByRole("status").map((status) => status.textContent)).toEqual([
+    "Processando",
+    "Aguardando processamento",
+    "Falha no processamento"
+  ]);
   expect(within(list).queryByRole("heading")).not.toBeInTheDocument();
   expect(within(list).queryByRole("button", { name: /transcrição|baixar|excluir/iu })).not.toBeInTheDocument();
 });
@@ -147,6 +153,54 @@ it("aborts an obsolete poll when the document asset identity changes", async () 
   });
   expect(onAssetChange).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Abrir material.pdf" })).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+it("keeps capped polling alive beyond the initial backoff schedule", async () => {
+  vi.useFakeTimers();
+  const pending = asset({ extractionStatus: "processing" });
+  const ready = asset({
+    extractionStatus: "ready",
+    updatedAt: "2026-07-16T10:01:00.000Z"
+  });
+  let attempts = 0;
+  const getStatus = vi.fn().mockImplementation(async () => {
+    attempts += 1;
+    return attempts > 20 ? ready : pending;
+  });
+
+  render(<StudioMaterialList
+    assets={[pending]}
+    onSelect={vi.fn()}
+    getStatus={getStatus}
+    pollDelays={[1, 2, 3]}
+  />);
+
+  await act(async () => vi.advanceTimersByTimeAsync(63));
+  expect(getStatus).toHaveBeenCalledTimes(21);
+  expect(screen.getByRole("status")).toHaveTextContent("Pronto");
+  vi.useRealTimers();
+});
+
+it("keeps the capped delay between transient polling failures", async () => {
+  vi.useFakeTimers();
+  const getStatus = vi.fn().mockRejectedValue(new Error("temporary"));
+
+  render(<StudioMaterialList
+    assets={[asset({ extractionStatus: "pending" })]}
+    onSelect={vi.fn()}
+    getStatus={getStatus}
+    pollDelays={[10]}
+  />);
+
+  await act(async () => vi.advanceTimersByTimeAsync(9));
+  expect(getStatus).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(getStatus).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(9));
+  expect(getStatus).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(getStatus).toHaveBeenCalledTimes(2);
   vi.useRealTimers();
 });
 

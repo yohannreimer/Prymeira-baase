@@ -122,8 +122,12 @@ function StudioMaterialRow({
     let latest = currentRef.current;
     void (async () => {
       if (!shouldPoll(latest)) return;
-      for (const delay of pollDelays) {
+      let attempt = 0;
+      while (shouldPoll(latest)) {
+        const configuredDelay = pollDelays[Math.min(attempt, Math.max(0, pollDelays.length - 1))];
+        const delay = Number.isFinite(configuredDelay) ? Math.max(1, configuredDelay ?? 1) : 5_000;
         await wait(delay, controller.signal);
+        attempt += 1;
         let refreshed: StudioAsset;
         try {
           refreshed = await getStatus(asset.id, controller.signal);
@@ -143,7 +147,7 @@ function StudioMaterialRow({
       }
     })().catch(() => undefined);
     return () => controller.abort();
-  }, [asset.id, asset.extractionStatus, asset.nextAttemptAt, asset.updatedAt, getStatus, pollDelays]);
+  }, [asset.id, asset.extractionStatus, asset.nextAttemptAt, getStatus, pollDelays]);
 
   const kind = materialKind(current);
   const status = statusPresentation[current.extractionStatus];
@@ -166,15 +170,16 @@ function StudioMaterialRow({
         <span
           className="studio-material-list__status"
           data-status={current.extractionStatus}
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
+          aria-hidden="true"
         >
           <i aria-hidden="true" className={`ph-light ${status.icon}`} />
           <span>{status.label}</span>
         </span>
         <i aria-hidden="true" className="studio-material-list__open ph-light ph-caret-right" />
       </button>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {status.label}
+      </span>
     </li>
   );
 }
