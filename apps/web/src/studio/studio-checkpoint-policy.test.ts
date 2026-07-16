@@ -78,4 +78,24 @@ describe("studio checkpoint policy", () => {
 
     expect(policy.pendingForExit()).toBeNull();
   });
+
+  it.each([
+    ["title", { revision: 2, title: "Renamed", bodyJson: { type: "doc" }, bodyText: "Same" }],
+    ["body JSON", {
+      revision: 2,
+      title: "Same",
+      bodyJson: { type: "doc", content: [{ type: "paragraph", attrs: { align: "center" } }] },
+      bodyText: "Same"
+    }],
+    ["short text", { revision: 2, title: "Same", bodyJson: { type: "doc" }, bodyText: "Same!" }]
+  ])("keeps a %s-only save eligible for document exit but not significant pause", (_label, changed) => {
+    const policy = createCheckpointPolicy({ pauseMs: 30_000, minimumChangedCharacters: 20 });
+    policy.recordSaved({ revision: 1, title: "Same", bodyJson: { type: "doc" }, bodyText: "Same" }, 0);
+    policy.recordCheckpoint(0);
+
+    policy.recordSaved(changed, 1_000);
+
+    expect(policy.dueAt(31_000)).toBe(false);
+    expect(policy.pendingForExit()).toEqual(changed);
+  });
 });

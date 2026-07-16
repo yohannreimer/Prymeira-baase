@@ -120,6 +120,60 @@ describe("useStudioAutosave", () => {
     expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
   });
 
+  it("checkpoints a short saved text correction on pagehide without treating it as a significant pause", async () => {
+    const shortCorrection = draft("Original!");
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(shortCorrection));
+    await act(async () => vi.advanceTimersByTimeAsync(30_700));
+    expect(checkpoint).not.toHaveBeenCalled();
+
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+  });
+
+  it("checkpoints a formatting-only body JSON save on unmount", async () => {
+    const formattedDraft: StudioDocumentDraft = {
+      title: document.title,
+      bodyText: document.bodyText,
+      bodyJson: {
+        type: "doc",
+        content: [{
+          type: "paragraph",
+          content: [{ type: "text", text: "Original", marks: [{ type: "bold" }] }]
+        }]
+      }
+    };
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result, unmount } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(formattedDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    unmount();
+
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+  });
+
+  it("checkpoints a title-only save on pagehide", async () => {
+    const titleOnlyDraft: StudioDocumentDraft = {
+      title: "Plano anual revisado",
+      bodyText: document.bodyText,
+      bodyJson: document.bodyJson
+    };
+    const save = vi.fn(async (next: StudioDocumentDraft, revision: number) => saved(next, revision + 1));
+    const checkpoint = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useStudioAutosave(document, save, { checkpoint }));
+
+    act(() => result.current.queueSave(titleOnlyDraft));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+
+    expect(checkpoint).toHaveBeenCalledWith(5, "document_exit", undefined);
+  });
+
   it("does not duplicate an in-flight pagehide checkpoint during unmount", async () => {
     const pendingCheckpoint = deferred<void>();
     const meaningfulDraft = draft("Uma mudança suficientemente longa antes de navegar");

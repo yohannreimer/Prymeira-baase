@@ -1,5 +1,7 @@
 export type StudioCheckpointSnapshot = {
   revision: number;
+  title?: string | null;
+  bodyJson?: Record<string, unknown>;
   bodyText: string;
 };
 
@@ -10,6 +12,22 @@ type StudioCheckpointPolicyOptions = {
 
 function normalizeBodyText(value: string) {
   return value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([key, item]) => [key, stableValue(item)]));
+}
+
+function documentSignature(snapshot: StudioCheckpointSnapshot) {
+  return JSON.stringify({
+    title: snapshot.title ?? null,
+    bodyJson: stableValue(snapshot.bodyJson ?? null),
+    bodyText: snapshot.bodyText
+  });
 }
 
 function changedCharacterCount(previous: string, next: string) {
@@ -31,55 +49,63 @@ function changedCharacterCount(previous: string, next: string) {
 export function createCheckpointPolicy(options: StudioCheckpointPolicyOptions) {
   let checkpoint: StudioCheckpointSnapshot | null = null;
   let latestSaved: StudioCheckpointSnapshot | null = null;
-  let pending: { snapshot: StudioCheckpointSnapshot; savedAt: number } | null = null;
+  let significantPause: { snapshot: StudioCheckpointSnapshot; savedAt: number } | null = null;
 
   const isMeaningful = (snapshot: StudioCheckpointSnapshot) => changedCharacterCount(
     checkpoint?.bodyText ?? "",
     snapshot.bodyText
   ) >= options.minimumChangedCharacters;
+  const pendingExit = () => latestSaved
+    && (!checkpoint || documentSignature(latestSaved) !== documentSignature(checkpoint))
+    ? { ...latestSaved }
+    : null;
 
   return {
     recordSaved(snapshot: StudioCheckpointSnapshot, savedAt: number) {
       latestSaved = { ...snapshot };
-      pending = isMeaningful(snapshot) ? { snapshot: { ...snapshot }, savedAt } : null;
+      significantPause = isMeaningful(snapshot) ? { snapshot: { ...snapshot }, savedAt } : null;
     },
 
     dueAt(now: number) {
-      return pending !== null && now - pending.savedAt >= options.pauseMs;
+      return significantPause !== null && now - significantPause.savedAt >= options.pauseMs;
     },
 
     pendingAt(now: number) {
-      return pending !== null && now - pending.savedAt >= options.pauseMs
-        ? { ...pending.snapshot }
+      return significantPause !== null && now - significantPause.savedAt >= options.pauseMs
+        ? { ...significantPause.snapshot }
         : null;
     },
 
     pendingForExit() {
-      return pending ? { ...pending.snapshot } : null;
+      return pendingExit();
+    },
+
+    significantPausePending() {
+      return significantPause !== null;
     },
 
     consumeAt(now: number) {
-      const snapshot = pending !== null && now - pending.savedAt >= options.pauseMs
-        ? { ...pending.snapshot }
+      const snapshot = significantPause !== null && now - significantPause.savedAt >= options.pauseMs
+        ? { ...significantPause.snapshot }
         : null;
-      if (snapshot) pending = null;
+      if (snapshot) significantPause = null;
       return snapshot;
     },
 
     consumeForExit() {
-      const snapshot = pending ? { ...pending.snapshot } : null;
-      pending = null;
-      return snapshot;
+      return pendingExit();
     },
 
     cancelPending() {
-      pending = null;
+      significantPause = null;
     },
 
     recordCheckpoint(_checkpointedAt: number, completedSnapshot?: StudioCheckpointSnapshot) {
-      const snapshot = completedSnapshot ?? pending?.snapshot ?? latestSaved;
+      const snapshot = completedSnapshot ?? significantPause?.snapshot ?? latestSaved;
       if (snapshot && (!checkpoint || snapshot.revision >= checkpoint.revision)) checkpoint = { ...snapshot };
-      if (!pending || (snapshot && pending.snapshot.revision <= snapshot.revision)) pending = null;
+      if (!significantPause || (snapshot && significantPause.snapshot.revision <= snapshot.revision)) {
+        significantPause = null;
+      }
     }
   };
 }
