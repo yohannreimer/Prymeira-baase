@@ -491,6 +491,9 @@ export type StudioService = {
   updateDocument(scope: StudioOwnerScope, actorProfileId: string, id: string, input: UpdateStudioDocument): Promise<StudioDocument>;
   archiveDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
   restoreDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
+  trashDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
+  restoreDocumentFromTrash(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioDocument>;
+  permanentlyDeleteDocument(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<boolean>;
   setFocused(scope: StudioOwnerScope, actorProfileId: string, id: string, focused: boolean): Promise<StudioDocument>;
   listVersions(scope: StudioOwnerScope, id: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, id: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
@@ -526,6 +529,9 @@ export type StudioRepository = {
     "id" | "revision" | "createdAt" | "updatedAt" | "archivedAt" | "captureKey"
   > & { captureKey?: string | null }): Promise<StudioDocument>;
   updateDocument(input: StudioDocument, expectedRevision: number): Promise<StudioDocument>;
+  trashDocument(scope: StudioOwnerScope, documentId: string, trashedAt: string): Promise<StudioDocument>;
+  restoreDocumentFromTrash(scope: StudioOwnerScope, documentId: string): Promise<StudioDocument>;
+  permanentlyDeleteDocument(scope: StudioOwnerScope, documentId: string): Promise<boolean>;
   listVersions(scope: StudioOwnerScope, documentId: string): Promise<StudioDocumentVersion[]>;
   listVersionPage(scope: StudioOwnerScope, documentId: string, query: StudioVersionQuery): Promise<StudioVersionPage>;
   findVersion(scope: StudioOwnerScope, documentId: string, versionId: string): Promise<StudioDocumentVersion | null>;

@@ -73,6 +73,9 @@ function studioRouteError(error: unknown) {
       "Já existe uma captura ativa com esta chave."
     );
   }
+  if (error.message === "STUDIO_DOCUMENT_NOT_TRASHED") {
+    return new ApiError(409, "STUDIO_DOCUMENT_NOT_TRASHED", "Mova o documento para a lixeira antes de excluí-lo definitivamente.");
+  }
   if (error.message === "STUDIO_EDITOR_JSON_INVALID") {
     return new ApiError(400, "STUDIO_EDITOR_JSON_INVALID", "O conteúdo do editor excede os limites de segurança.");
   }
@@ -400,6 +403,47 @@ export async function registerStudioRoutes(
         params.documentId
       ))
     };
+  });
+
+  app.post("/studio/documents/:documentId/trash", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    readNoBody(request);
+    return {
+      document: await runStudioOperation(() => service.trashDocument(
+        scope,
+        scope.ownerProfileId,
+        params.documentId
+      ))
+    };
+  });
+
+  app.post("/studio/documents/:documentId/restore-from-trash", async (request) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    readNoBody(request);
+    return {
+      document: await runStudioOperation(() => service.restoreDocumentFromTrash(
+        scope,
+        scope.ownerProfileId,
+        params.documentId
+      ))
+    };
+  });
+
+  app.delete("/studio/documents/:documentId", async (request, reply) => {
+    const scope = requireStudioScope(request);
+    const params = studioDocumentParamsSchema.parse(request.params);
+    readNoQuery(request);
+    readNoBody(request);
+    await runStudioOperation(() => service.permanentlyDeleteDocument(
+      scope,
+      scope.ownerProfileId,
+      params.documentId
+    ));
+    return reply.status(204).send();
   });
 
   app.get("/studio/documents/:documentId/versions", async (request) => {

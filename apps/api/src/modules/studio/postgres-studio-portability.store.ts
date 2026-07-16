@@ -45,9 +45,37 @@ export function createPostgresStudioPortabilityStore(pool: OperationalPool): Stu
         rows(pool, "studio_proactivity_settings", values),
         rows(pool, "studio_proactive_signals", values)
       ]);
+      const exportedDocumentIds = ids(documents.filter((document) => document.status !== "trashed"));
+      const exportedDocuments = documents.filter((document) => exportedDocumentIds.has(String(document.id)));
+      const exportedStructures = structures.filter((structure) => exportedDocumentIds.has(String(structure.document_id)));
+      const exportedStructureIds = ids(exportedStructures);
+      const exportedConversations = conversations.filter((conversation) => conversation.document_id == null
+        || exportedDocumentIds.has(String(conversation.document_id)));
+      const exportedConversationIds = ids(exportedConversations);
+      const exportedMessages = messages.filter((message) => exportedConversationIds.has(String(message.conversation_id)));
+      const exportedMessageIds = ids(exportedMessages);
+      const exportedSuggestions = suggestions.filter((suggestion) =>
+        (suggestion.document_id == null || exportedDocumentIds.has(String(suggestion.document_id)))
+        && (suggestion.conversation_id == null || exportedConversationIds.has(String(suggestion.conversation_id))));
+      const exportedSuggestionIds = ids(exportedSuggestions);
       return {
-        ...scope, documents, versions, assets, structures, collections, collectionItems,
-        ritualSessions, conversations, messages, suggestions, citations, relations, memoryRows,
+        ...scope,
+        documents: exportedDocuments,
+        versions: versions.filter((version) => exportedDocumentIds.has(String(version.document_id))),
+        assets: assets.filter((asset) => exportedDocumentIds.has(String(asset.document_id))),
+        structures: exportedStructures,
+        collections,
+        collectionItems: collectionItems.filter((item) => exportedDocumentIds.has(String(item.document_id))),
+        ritualSessions: ritualSessions.filter((session) => exportedStructureIds.has(String(session.ritual_id))),
+        conversations: exportedConversations,
+        messages: exportedMessages,
+        suggestions: exportedSuggestions,
+        citations: citations.filter((citation) =>
+          (citation.message_id != null && exportedMessageIds.has(String(citation.message_id)))
+          || (citation.suggestion_id != null && exportedSuggestionIds.has(String(citation.suggestion_id)))),
+        relations: relations.filter((relation) => exportedDocumentIds.has(String(relation.source_document_id))
+          && exportedDocumentIds.has(String(relation.target_document_id))),
+        memoryRows: memoryRows.filter((row) => exportedDocumentIds.has(String(row.document_id))),
         proactivitySettings, proactiveSignals
       } satisfies StudioPortabilitySnapshot;
     },
@@ -416,6 +444,10 @@ async function rows(pool: OperationalPool, table: string, values: string[]): Pro
     values
   );
   return result.rows;
+}
+
+function ids(rows: Row[]): Set<string> {
+  return new Set(rows.flatMap((row) => row.id == null ? [] : [String(row.id)]));
 }
 
 async function optionalMemoryRows(pool: OperationalPool, values: string[]): Promise<Row[]> {

@@ -27,6 +27,7 @@ import { safeStudioTelemetrySink, type StudioTelemetrySink } from "./studio-tele
 type StudioServiceOptions = {
   now?: () => string;
   telemetry?: StudioTelemetrySink;
+  removeMemory?: (scope: StudioOwnerScope, documentId: string) => Promise<void>;
 };
 
 const HOME_DOCUMENT_LIMIT = 10;
@@ -282,6 +283,25 @@ export function createStudioService(
         (document) => document.status === "active" && document.archivedAt === null,
         (document) => ({ ...document, status: "active", archivedAt: null })
       );
+    },
+
+    async trashDocument(scope, actorProfileId, id) {
+      assertActor(scope, actorProfileId);
+      return repository.trashDocument(scope, id, currentTimestamp(clock));
+    },
+
+    async restoreDocumentFromTrash(scope, actorProfileId, id) {
+      assertActor(scope, actorProfileId);
+      return repository.restoreDocumentFromTrash(scope, id);
+    },
+
+    async permanentlyDeleteDocument(scope, actorProfileId, id) {
+      assertActor(scope, actorProfileId);
+      const current = await repository.findDocument(scope, id);
+      if (!current) return false;
+      if (current.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+      await options.removeMemory?.(scope, id);
+      return repository.permanentlyDeleteDocument(scope, id);
     },
 
     async setFocused(scope, actorProfileId, id, focused) {

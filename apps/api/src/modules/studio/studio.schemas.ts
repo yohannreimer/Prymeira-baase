@@ -77,7 +77,7 @@ export const studioCollectionDocumentParamsSchema = z.object({
 export const studioDocumentListQuerySchema = z.object({
   cursor: z.string().trim().min(1).max(2_048).regex(/^[A-Za-z0-9_-]+$/u).optional(),
   limit: routeLimitSchema.default(50),
-  status: z.enum(["active", "archived"]).optional(),
+  status: z.enum(["active", "archived", "trashed"]).optional(),
   inbox_state: z.enum(["pending_review", "reviewed"]).optional(),
   collection_id: routeIdSchema.optional()
 }).strict();

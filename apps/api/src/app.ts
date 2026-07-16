@@ -197,7 +197,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     maintenanceAvailable: options.studioMaintenanceAvailable ?? true
   });
   const studioService = createStudioService(studioRepository, {
-    now: options.now ? () => options.now!().toISOString() : undefined
+    now: options.now ? () => options.now!().toISOString() : undefined,
+    removeMemory: (scope, documentId) => studioMemoryIndex.removeDocument(scope, documentId).then(() => undefined)
   });
   const studioContextBuilder = createStudioContextBuilder({
     companyRepository,

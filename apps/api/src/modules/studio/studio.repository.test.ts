@@ -101,6 +101,65 @@ function repositoryContract(
       });
     });
 
+    it("trashes, restores, and permanently deletes every document dependency idempotently", async () => {
+      await withRepository(async (repository) => {
+        const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+        const document = await repository.createDocument(documentInput());
+        const peer = await repository.createDocument(documentInput({ bodyText: "Peer" }));
+        const collection = await repository.createCollection({ ...scope, name: "Strategy" });
+        await repository.addCollectionMembership({ ...scope, collectionId: collection.id, documentId: document.id });
+        await repository.createRelation({ ...scope, sourceDocumentId: document.id, targetDocumentId: peer.id,
+          relationType: "related_to", createdByProfileId: scope.ownerProfileId });
+        await repository.createStructure({ ...scope, documentId: document.id, kind: "plan", lifecycleStatus: "active",
+          horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
+          propertiesJson: { outcome: "Outcome", steps: [] } });
+        await repository.createAsset({ ...scope, documentId: document.id, kind: "file", displayName: "notes.txt",
+          objectKey: "studio/private/notes.txt", sourceUrl: null, finalUrl: null, fetchedAt: null,
+          mimeType: "text/plain", sizeBytes: 5, extractionStatus: "ready", extractedText: "notes",
+          extractionMetadata: {}, lastErrorCode: null, attemptCount: 0, nextAttemptAt: null });
+
+        const trashed = await repository.trashDocument(scope, document.id, "2026-07-16T12:00:00.000Z");
+        expect(trashed).toMatchObject({ status: "trashed", preTrashStatus: "active",
+          trashedAt: "2026-07-16T12:00:00.000Z", revision: document.revision + 1 });
+        expect(await repository.trashDocument(scope, document.id, "2026-07-17T12:00:00.000Z")).toEqual(trashed);
+        expect((await repository.listIndexJobs(scope)).some((job) =>
+          job.documentId === document.id && job.documentRevision === trashed.revision)).toBe(true);
+        await expect(repository.trashDocument({ ...scope, ownerProfileId: "owner_b" }, document.id,
+          "2026-07-16T12:00:00.000Z")).rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
+
+        const restored = await repository.restoreDocumentFromTrash(scope, document.id);
+        expect(restored).toMatchObject({ status: "active", trashedAt: null, preTrashStatus: null });
+        expect(await repository.restoreDocumentFromTrash(scope, document.id)).toEqual(restored);
+        await repository.trashDocument(scope, document.id, "2026-07-16T12:30:00.000Z");
+
+        await expect(repository.permanentlyDeleteDocument({ ...scope, ownerProfileId: "owner_b" }, document.id))
+          .resolves.toBe(false);
+        await expect(repository.permanentlyDeleteDocument(scope, document.id)).resolves.toBe(true);
+        await expect(repository.permanentlyDeleteDocument(scope, document.id)).resolves.toBe(false);
+        expect(await repository.findDocument(scope, document.id)).toBeNull();
+        expect(await repository.listVersions(scope, document.id)).toEqual([]);
+        expect(await repository.listDocumentAssets(scope, document.id)).toEqual([]);
+        expect(await repository.listDocumentCollections(scope, document.id)).toEqual([]);
+        expect(await repository.listRelations(scope, document.id)).toEqual([]);
+        expect((await repository.listStructures(scope, { documentId: document.id, limit: 10 })).items).toEqual([]);
+        expect((await repository.listIndexJobs(scope)).filter((job) => job.documentId === document.id)).toEqual([]);
+        expect(await repository.listAssetCleanupJobs(scope)).toEqual([
+          expect.objectContaining({ assetId: null, objectKey: "studio/private/notes.txt", status: "pending" })
+        ]);
+        expect(await repository.findDocument(scope, peer.id)).not.toBeNull();
+      });
+    });
+
+    it("rejects permanent deletion until the owner has moved the document to trash", async () => {
+      await withRepository(async (repository) => {
+        const document = await repository.createDocument(documentInput());
+        await expect(repository.permanentlyDeleteDocument({
+          workspaceId: document.workspaceId, ownerProfileId: document.ownerProfileId
+        }, document.id)).rejects.toThrow("STUDIO_DOCUMENT_NOT_TRASHED");
+        expect(await repository.findDocument(document, document.id)).toEqual(document);
+      });
+    });
+
     it("keeps only the initial immutable version across ordinary draft saves", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };

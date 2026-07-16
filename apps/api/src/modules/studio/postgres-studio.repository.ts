@@ -878,6 +878,149 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       });
     },
 
+    async trashDocument(scope, documentId, trashedAt) {
+      return withOperationalTransaction(db, async (client) => {
+        const locked = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const current = documentFromRow(locked.rows[0]);
+        if (current.status === "trashed") return current;
+        const updated = await client.query<StudioDocumentRow>(
+          `UPDATE studio_documents SET status='trashed',pre_trash_status=$4,trashed_at=$5,
+             revision=revision+1,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, documentId, current.status, trashedAt]
+        );
+        const document = documentFromRow(updated.rows[0]!);
+        await insertIndexJob(client, document);
+        return document;
+      });
+    },
+
+    async restoreDocumentFromTrash(scope, documentId) {
+      return withOperationalTransaction(db, async (client) => {
+        const locked = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        const current = documentFromRow(locked.rows[0]);
+        if (current.status !== "trashed") return current;
+        const restoredStatus = current.preTrashStatus === "archived" ? "archived" : "active";
+        const updated = await client.query<StudioDocumentRow>(
+          `UPDATE studio_documents SET status=$4,
+             archived_at=CASE WHEN $4='active' THEN NULL ELSE archived_at END,
+             trashed_at=NULL,pre_trash_status=NULL,revision=revision+1,updated_at=NOW()
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING *`,
+          [scope.workspaceId, scope.ownerProfileId, documentId, restoredStatus]
+        );
+        const document = documentFromRow(updated.rows[0]!);
+        if (document.status === "active") await insertIndexJob(client, document);
+        return document;
+      }).catch((error: unknown) => {
+        const postgresError = error as { code?: string; constraint?: string };
+        if (postgresError.code === "23505" && postgresError.constraint === "studio_documents_capture_uidx") {
+          throw new Error("STUDIO_DOCUMENT_CAPTURE_KEY_ACTIVE");
+        }
+        throw error;
+      });
+    },
+
+    async permanentlyDeleteDocument(scope, documentId) {
+      return withOperationalTransaction(db, async (client) => {
+        const locked = await client.query<StudioDocumentRow>(
+          `SELECT * FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 FOR UPDATE`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        if (!locked.rows[0]) return false;
+        if (locked.rows[0].status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+        const assets = await client.query<{ id: string; object_key: string | null }>(
+          `SELECT id,object_key FROM studio_assets
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        const uploads = await client.query<{ object_key: string }>(
+          `SELECT object_key FROM studio_asset_upload_intents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        const objectKeys = new Set([
+          ...assets.rows.flatMap((asset) => asset.object_key ? [asset.object_key] : []),
+          ...uploads.rows.map((upload) => upload.object_key)
+        ]);
+        for (const objectKey of objectKeys) {
+          await client.query(
+            `INSERT INTO studio_asset_cleanup_jobs
+               (id,workspace_id,owner_profile_id,asset_id,object_key,status,next_attempt_at)
+             VALUES ($1,$2,$3,NULL,$4,'pending',NOW())
+             ON CONFLICT (workspace_id,owner_profile_id,object_key)
+               WHERE object_key IS NOT NULL DO UPDATE SET
+                 status=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.status ELSE 'pending' END,
+                 attempt_count=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.attempt_count ELSE 0 END,
+                 next_attempt_at=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.next_attempt_at ELSE NOW() END,
+                 last_error_code=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.last_error_code ELSE NULL END,
+                 claim_token=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.claim_token ELSE NULL END,
+                 lease_expires_at=CASE WHEN studio_asset_cleanup_jobs.status='processing'
+                   THEN studio_asset_cleanup_jobs.lease_expires_at ELSE NULL END,
+                 updated_at=NOW()`,
+            [generatedId("studio_asset_cleanup"), scope.workspaceId, scope.ownerProfileId, objectKey]
+          );
+        }
+        const assetIds = assets.rows.map((asset) => asset.id);
+        if (assetIds.length > 0) {
+          await client.query(
+            `DELETE FROM studio_asset_cleanup_jobs
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND asset_id=ANY($3::text[]) AND object_key IS NULL`,
+            [scope.workspaceId, scope.ownerProfileId, assetIds]
+          );
+          await client.query(
+            `UPDATE studio_asset_cleanup_jobs SET asset_id=NULL,updated_at=NOW()
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND asset_id=ANY($3::text[])`,
+            [scope.workspaceId, scope.ownerProfileId, assetIds]
+          );
+        }
+        await client.query(
+          `DELETE FROM studio_operational_links
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND source_document_id=$3`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        const memoryTables = await client.query<{ chunks: string | null; state: string | null }>(
+          `SELECT to_regclass('studio_memory_chunks')::text AS chunks,
+                  to_regclass('studio_memory_document_state')::text AS state`
+        );
+        if (memoryTables.rows[0]?.chunks) {
+          await client.query(
+            `DELETE FROM studio_memory_chunks
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
+            [scope.workspaceId, scope.ownerProfileId, documentId]
+          );
+        }
+        if (memoryTables.rows[0]?.state) {
+          await client.query(
+            `DELETE FROM studio_memory_document_state
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3`,
+            [scope.workspaceId, scope.ownerProfileId, documentId]
+          );
+        }
+        const deleted = await client.query<{ id: string }>(
+          `DELETE FROM studio_documents
+           WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3 RETURNING id`,
+          [scope.workspaceId, scope.ownerProfileId, documentId]
+        );
+        return deleted.rows.length === 1;
+      });
+    },
+
     async listVersions(scope, documentId) {
       const result = await db.query<StudioDocumentVersionRow>(
         `SELECT * FROM studio_document_versions

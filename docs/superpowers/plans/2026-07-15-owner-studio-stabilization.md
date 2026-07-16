@@ -892,7 +892,7 @@ git commit -m "fix(studio): reconcile collection persistence"
 - Test: `apps/api/src/modules/studio/studio.routes.test.ts`
 - Test: `apps/api/src/modules/studio/studio.repository.test.ts`
 
-- [ ] **Step 1: Write lifecycle and idempotency tests**
+- [x] **Step 1: Write lifecycle and idempotency tests**
 
 ```ts
 await request("POST", `/studio/documents/${id}/trash`, ownerA);
@@ -903,12 +903,12 @@ expect((await request("DELETE", `/studio/documents/${id}`, ownerA)).statusCode).
 expect((await request("DELETE", `/studio/documents/${id}`, ownerA)).statusCode).toBe(204);
 ```
 
-- [ ] **Step 2: Run and confirm routes are missing**
+- [x] **Step 2: Run and confirm routes are missing**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement the lifecycle transactionally**
+- [x] **Step 3: Implement the lifecycle transactionally**
 
 ```ts
 async trashDocument(scope, actorProfileId, id) {
@@ -928,12 +928,12 @@ async trashDocument(scope, actorProfileId, id) {
 Permanent deletion must remove DB dependents in one transaction and enqueue object deletion jobs for active asset keys. Owner-scope all predicates.
 Moving to trash must enqueue the current checkpoint for index removal so trashed content stops appearing in connections before the 30-day purge.
 
-- [ ] **Step 4: Run lifecycle, portability, and isolation suites**
+- [x] **Step 4: Run lifecycle, portability, and isolation suites**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/modules/studio/studio.repository.test.ts src/modules/studio/studio-portability.service.test.ts`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio

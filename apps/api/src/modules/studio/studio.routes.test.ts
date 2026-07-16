@@ -52,6 +52,64 @@ function createApp() {
 }
 
 describe("Studio routes", () => {
+  it("moves documents through the owner-scoped trash lifecycle idempotently", async () => {
+    const app = createApp();
+    const createdResponse = await app.inject({
+      method: "POST", url: "/studio/documents", headers: ownerA, payload: documentPayload
+    });
+    const created = createdResponse.json().document;
+
+    const activeDelete = await app.inject({
+      method: "DELETE", url: `/studio/documents/${created.id}`, headers: ownerA
+    });
+    expect(activeDelete.statusCode).toBe(409);
+    expect(activeDelete.json().error.code).toBe("STUDIO_DOCUMENT_NOT_TRASHED");
+
+    const otherOwnerDelete = await app.inject({
+      method: "DELETE", url: `/studio/documents/${created.id}`, headers: ownerB
+    });
+    expect(otherOwnerDelete.statusCode).toBe(204);
+
+    const firstTrash = await app.inject({
+      method: "POST", url: `/studio/documents/${created.id}/trash`, headers: ownerA
+    });
+    expect(firstTrash.statusCode).toBe(200);
+    expect(firstTrash.json().document).toMatchObject({
+      status: "trashed", preTrashStatus: "active", trashedAt: expect.any(String)
+    });
+    const repeatedTrash = await app.inject({
+      method: "POST", url: `/studio/documents/${created.id}/trash`, headers: ownerA
+    });
+    expect(repeatedTrash.json().document).toEqual(firstTrash.json().document);
+
+    const trashedList = await app.inject({
+      method: "GET", url: "/studio/documents?status=trashed", headers: ownerA
+    });
+    expect(trashedList.json().documents.map((document: { id: string }) => document.id)).toEqual([created.id]);
+
+    const restored = await app.inject({
+      method: "POST", url: `/studio/documents/${created.id}/restore-from-trash`, headers: ownerA
+    });
+    expect(restored.json().document).toMatchObject({ status: "active", trashedAt: null, preTrashStatus: null });
+    const repeatedRestore = await app.inject({
+      method: "POST", url: `/studio/documents/${created.id}/restore-from-trash`, headers: ownerA
+    });
+    expect(repeatedRestore.json().document).toEqual(restored.json().document);
+
+    await app.inject({ method: "POST", url: `/studio/documents/${created.id}/trash`, headers: ownerA });
+    expect((await app.inject({ method: "DELETE", url: `/studio/documents/${created.id}`, headers: ownerA })).statusCode)
+      .toBe(204);
+    expect((await app.inject({ method: "DELETE", url: `/studio/documents/${created.id}`, headers: ownerA })).statusCode)
+      .toBe(204);
+    expect((await app.inject({ method: "GET", url: `/studio/documents/${created.id}`, headers: ownerA })).statusCode)
+      .toBe(404);
+
+    for (const headers of [manager, employee]) {
+      expect((await app.inject({ method: "POST", url: `/studio/documents/${created.id}/trash`, headers })).statusCode)
+        .toBe(403);
+    }
+  });
+
   it("returns the safe readiness projection only to the owner", async () => {
     const app = buildApp({
       runtimeConfig: readRuntimeConfig({

@@ -293,27 +293,45 @@ export function createInMemoryStudioRepository(
       const scoped = <T extends { workspaceId: string; ownerProfileId: string }>(values: T[]) => values
         .filter((value) => value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId)
         .map((value) => structuredClone(value));
+      const exportedDocuments = scoped(documents).filter((document) => document.status !== "trashed");
+      const exportedDocumentIds = new Set(exportedDocuments.map((document) => document.id));
+      const exportedStructures = scoped(structures).filter((structure) => exportedDocumentIds.has(structure.documentId));
+      const exportedStructureIds = new Set(exportedStructures.map((structure) => structure.id));
+      const exportedConversations = scoped(conversations)
+        .filter((conversation) => conversation.documentId === null || exportedDocumentIds.has(conversation.documentId));
+      const exportedConversationIds = new Set(exportedConversations.map((conversation) => conversation.id));
+      const exportedSuggestions = scoped(suggestions)
+        .filter((suggestion) => suggestion.documentId === null || exportedDocumentIds.has(suggestion.documentId));
+      const exportedSuggestionIds = new Set(exportedSuggestions.map((suggestion) => suggestion.id));
+      const exportedMessages = scoped(messages).filter((message) => exportedConversationIds.has(message.conversationId));
+      const exportedMessageIds = new Set(exportedMessages.map((message) => message.id));
+      const exportedAssets = scoped(assets).filter((asset) => exportedDocumentIds.has(asset.documentId));
+      const exportedUploadIntents = scoped(assetUploadIntents)
+        .filter((intent) => exportedDocumentIds.has(intent.documentId));
       return {
         ...scope,
-        documents: scoped(documents),
-        versions: scoped(versions),
-        assets: scoped(assets),
-        structures: scoped(structures),
+        documents: exportedDocuments,
+        versions: scoped(versions).filter((version) => exportedDocumentIds.has(version.documentId)),
+        assets: exportedAssets,
+        structures: exportedStructures,
         collections: scoped(collections),
-        collectionItems: scoped(memberships),
-        ritualSessions: scoped(ritualSessions),
-        conversations: scoped(conversations),
-        messages: scoped(messages),
-        suggestions: scoped(suggestions),
-        citations: scoped(citations),
-        relations: scoped(relations),
+        collectionItems: scoped(memberships).filter((membership) => exportedDocumentIds.has(membership.documentId)),
+        ritualSessions: scoped(ritualSessions).filter((session) => exportedStructureIds.has(session.ritualId)),
+        conversations: exportedConversations,
+        messages: exportedMessages,
+        suggestions: exportedSuggestions,
+        citations: scoped(citations).filter((citation) =>
+          (citation.messageId !== null && exportedMessageIds.has(citation.messageId))
+          || (citation.suggestionId !== null && exportedSuggestionIds.has(citation.suggestionId))),
+        relations: scoped(relations).filter((relation) => exportedDocumentIds.has(relation.sourceDocumentId)
+          && exportedDocumentIds.has(relation.targetDocumentId)),
         memoryRows: [],
         privateObjectKeys: [
-          ...scoped(assets).flatMap((asset) => asset.objectKey ? [asset.objectKey] : []),
-          ...scoped(assetUploadIntents).map((intent) => intent.objectKey),
+          ...exportedAssets.flatMap((asset) => asset.objectKey ? [asset.objectKey] : []),
+          ...exportedUploadIntents.map((intent) => intent.objectKey),
           ...scoped(assetCleanupJobs).flatMap((job) => job.objectKey ? [job.objectKey] : [])
         ],
-        activeUploads: scoped(assetUploadIntents).flatMap((intent) => intent.storageUploadId
+        activeUploads: exportedUploadIntents.flatMap((intent) => intent.storageUploadId
           ? [{ objectKey: intent.objectKey, storageUploadId: intent.storageUploadId }]
           : [])
       } satisfies StudioPortabilitySnapshot;
@@ -442,6 +460,107 @@ export function createInMemoryStudioRepository(
       documents[index] = updated;
       enqueueIndexJob(updated);
       return cloneDocument(updated);
+    },
+
+    async trashDocument(scope, documentId, trashedAt) {
+      const index = documents.findIndex((document) => document.workspaceId === scope.workspaceId
+        && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
+      if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const current = documents[index]!;
+      if (current.status === "trashed") return cloneDocument(current);
+      const updated: StudioDocument = {
+        ...current,
+        status: "trashed",
+        preTrashStatus: current.status,
+        trashedAt,
+        revision: current.revision + 1,
+        updatedAt: nextTimestamp(now, current.updatedAt)
+      };
+      documents[index] = updated;
+      enqueueIndexJob(updated);
+      return cloneDocument(updated);
+    },
+
+    async restoreDocumentFromTrash(scope, documentId) {
+      const index = documents.findIndex((document) => document.workspaceId === scope.workspaceId
+        && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
+      if (index === -1) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+      const current = documents[index]!;
+      if (current.status !== "trashed") return cloneDocument(current);
+      const restoredStatus = current.preTrashStatus === "archived" ? "archived" : "active";
+      const updated: StudioDocument = {
+        ...current,
+        status: restoredStatus,
+        archivedAt: restoredStatus === "active" ? null : current.archivedAt,
+        trashedAt: null,
+        preTrashStatus: null,
+        revision: current.revision + 1,
+        updatedAt: nextTimestamp(now, current.updatedAt)
+      };
+      documents[index] = updated;
+      if (restoredStatus === "active") enqueueIndexJob(updated);
+      return cloneDocument(updated);
+    },
+
+    async permanentlyDeleteDocument(scope, documentId) {
+      const documentIndex = documents.findIndex((document) => document.workspaceId === scope.workspaceId
+        && document.ownerProfileId === scope.ownerProfileId && document.id === documentId);
+      if (documentIndex === -1) return false;
+      if (documents[documentIndex]!.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
+      const owned = <T extends { workspaceId: string; ownerProfileId: string }>(value: T) =>
+        value.workspaceId === scope.workspaceId && value.ownerProfileId === scope.ownerProfileId;
+      const removedAssets = assets.filter((asset) => owned(asset) && asset.documentId === documentId);
+      const removedAssetIds = new Set(removedAssets.map((asset) => asset.id));
+      const removedIntents = assetUploadIntents.filter((intent) => owned(intent) && intent.documentId === documentId);
+      const objectKeys = new Set([
+        ...removedAssets.flatMap((asset) => asset.objectKey ? [asset.objectKey] : []),
+        ...removedIntents.map((intent) => intent.objectKey)
+      ]);
+      const timestamp = now();
+      for (const objectKey of objectKeys) {
+        const existing = assetCleanupJobs.find((job) => owned(job) && job.objectKey === objectKey);
+        if (!existing) {
+          assetCleanupJobs.push({ ...scope, id: `studio_asset_cleanup_${randomUUID()}`, assetId: null,
+            objectKey, status: "pending", attemptCount: 0, nextAttemptAt: timestamp, lastErrorCode: null,
+            claimToken: null, leaseExpiresAt: null, createdAt: timestamp, updatedAt: timestamp });
+        } else if (existing.status !== "processing") {
+          Object.assign(existing, { status: "pending", attemptCount: 0, nextAttemptAt: timestamp,
+            lastErrorCode: null, claimToken: null, leaseExpiresAt: null, updatedAt: timestamp });
+        }
+      }
+      for (const job of assetCleanupJobs) {
+        if (owned(job) && job.assetId !== null && removedAssetIds.has(job.assetId)) job.assetId = null;
+      }
+      const removedStructureIds = new Set(structures.filter((structure) => owned(structure)
+        && structure.documentId === documentId).map((structure) => structure.id));
+      const removedConversationIds = new Set(conversations.filter((conversation) => owned(conversation)
+        && conversation.documentId === documentId).map((conversation) => conversation.id));
+      const removedMessageIds = new Set(messages.filter((message) => owned(message)
+        && removedConversationIds.has(message.conversationId)).map((message) => message.id));
+      const removedSuggestionIds = new Set(suggestions.filter((suggestion) => owned(suggestion)
+        && (suggestion.documentId === documentId
+          || (suggestion.conversationId !== null && removedConversationIds.has(suggestion.conversationId))))
+        .map((suggestion) => suggestion.id));
+      const removeWhere = <T>(values: T[], predicate: (value: T) => boolean) => {
+        for (let index = values.length - 1; index >= 0; index -= 1) if (predicate(values[index]!)) values.splice(index, 1);
+      };
+      removeWhere(citations, (citation) => owned(citation)
+        && ((citation.messageId !== null && removedMessageIds.has(citation.messageId))
+          || (citation.suggestionId !== null && removedSuggestionIds.has(citation.suggestionId))));
+      removeWhere(messages, (message) => owned(message) && removedConversationIds.has(message.conversationId));
+      removeWhere(suggestions, (suggestion) => owned(suggestion) && removedSuggestionIds.has(suggestion.id));
+      removeWhere(conversations, (conversation) => owned(conversation) && removedConversationIds.has(conversation.id));
+      removeWhere(ritualSessions, (session) => owned(session) && removedStructureIds.has(session.ritualId));
+      removeWhere(structures, (structure) => owned(structure) && structure.documentId === documentId);
+      removeWhere(relations, (relation) => owned(relation)
+        && (relation.sourceDocumentId === documentId || relation.targetDocumentId === documentId));
+      removeWhere(indexJobs, (job) => owned(job) && job.documentId === documentId);
+      removeWhere(memberships, (membership) => owned(membership) && membership.documentId === documentId);
+      removeWhere(assetUploadIntents, (intent) => owned(intent) && intent.documentId === documentId);
+      removeWhere(assets, (asset) => owned(asset) && asset.documentId === documentId);
+      removeWhere(versions, (version) => owned(version) && version.documentId === documentId);
+      documents.splice(documentIndex, 1);
+      return true;
     },
 
     async listVersions(scope, documentId) {

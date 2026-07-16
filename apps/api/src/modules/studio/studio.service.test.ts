@@ -21,6 +21,40 @@ function documentInput(bodyText = "Primeira ideia") {
 }
 
 describe("StudioService documents", () => {
+  it("preserves the pre-trash state and enforces actor ownership", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-13T12:00:00.000Z" });
+    const service = createStudioService(repository, { now: () => "2026-07-16T15:30:00.000Z" });
+    const created = await service.createDocument(scope, "owner_a", documentInput());
+    const archived = await service.archiveDocument(scope, "owner_a", created.id);
+    const trashed = await service.trashDocument(scope, "owner_a", created.id);
+    expect(trashed).toMatchObject({ status: "trashed", preTrashStatus: "archived",
+      trashedAt: "2026-07-16T15:30:00.000Z", archivedAt: archived.archivedAt });
+    await expect(service.trashDocument(scope, "owner_b", created.id)).rejects
+      .toThrow("STUDIO_ACTOR_SCOPE_MISMATCH");
+    const restored = await service.restoreDocumentFromTrash(scope, "owner_a", created.id);
+    expect(restored).toMatchObject({ status: "archived", preTrashStatus: null, trashedAt: null,
+      archivedAt: archived.archivedAt });
+    await service.trashDocument(scope, "owner_a", created.id);
+    await expect(service.permanentlyDeleteDocument(scope, "owner_b", created.id)).rejects
+      .toThrow("STUDIO_ACTOR_SCOPE_MISMATCH");
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", created.id)).resolves.toBe(true);
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", created.id)).resolves.toBe(false);
+  });
+
+  it("removes semantic memory before permanently deleting a trashed document", async () => {
+    const repository = createInMemoryStudioRepository();
+    const removed: string[] = [];
+    const service = createStudioService(repository, {
+      removeMemory: async (_scope, documentId) => { removed.push(documentId); }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(true);
+    await expect(service.permanentlyDeleteDocument(scope, "owner_a", document.id)).resolves.toBe(false);
+    expect(removed).toEqual([document.id]);
+  });
+
   it("creates, gets, and updates an owner document without mutating editor JSON", async () => {
     const service = createService();
     const bodyJson = { type: "doc", content: [{ type: "paragraph" }] };

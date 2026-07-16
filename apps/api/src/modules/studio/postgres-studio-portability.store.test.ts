@@ -110,6 +110,36 @@ describe("Postgres Studio portability store", () => {
     expect(selects.every((call) => call.params?.[0] === "ws" && call.params?.[1] === "owner_a")).toBe(true);
     expect(selects.every((call) => call.sql.includes("workspace_id=$1 AND owner_profile_id=$2"))).toBe(true);
   });
+
+  it("excludes trashed document graphs and memory from a production snapshot", async () => {
+    const pool: OperationalPool = {
+      async connect() { throw new Error("not used"); },
+      async query<T>(sql: string) {
+        if (sql.includes("to_regclass")) return { rows: [{ relation: "studio_memory_chunks" }] as T[] };
+        if (sql.includes("FROM studio_documents")) return { rows: [
+          { id: "active", status: "active" }, { id: "trashed", status: "trashed" }
+        ] as T[] };
+        if (sql.includes("FROM studio_document_versions")) return { rows: [
+          { id: "version_active", document_id: "active" }, { id: "version_trashed", document_id: "trashed" }
+        ] as T[] };
+        if (sql.includes("FROM studio_assets")) return { rows: [
+          { id: "asset_active", document_id: "active" }, { id: "asset_trashed", document_id: "trashed" }
+        ] as T[] };
+        if (sql.includes("FROM studio_memory_chunks")) return { rows: [
+          { id: "memory_active", document_id: "active" }, { id: "memory_trashed", document_id: "trashed" }
+        ] as T[] };
+        return { rows: [] as T[] };
+      }
+    };
+
+    const snapshot = await createPostgresStudioPortabilityStore(pool).readSnapshot({
+      workspaceId: "ws", ownerProfileId: "owner"
+    });
+    expect(snapshot.documents.map((row) => row.id)).toEqual(["active"]);
+    expect(snapshot.versions.map((row) => row.id)).toEqual(["version_active"]);
+    expect(snapshot.assets.map((row) => row.id)).toEqual(["asset_active"]);
+    expect(snapshot.memoryRows.map((row) => row.id)).toEqual(["memory_active"]);
+  });
 });
 
 function normalized(sql: string): string {

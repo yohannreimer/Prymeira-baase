@@ -304,6 +304,24 @@ describe("Studio portability service", () => {
     ]);
   });
 
+  it("excludes trashed documents and their dependent rows from portability exports", async () => {
+    const repository = createInMemoryStudioRepository({ now: () => "2026-07-14T16:00:00.000Z" });
+    const studio = createStudioService(repository, { now: () => "2026-07-16T16:00:00.000Z" });
+    const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
+    const kept = await studio.createDocument(scope, "owner_a",
+      { title: "Mantido", body_json: { type: "doc", content: [] }, body_text: "A", capture_mode: "text" });
+    const trashed = await studio.createDocument(scope, "owner_a",
+      { title: "Na lixeira", body_json: { type: "doc", content: [] }, body_text: "B", capture_mode: "text" });
+    const collection = await studio.createCollection(scope, "owner_a", { name: "Planejamento" });
+    await studio.addDocumentToCollection(scope, "owner_a", collection.id, trashed.id);
+    await studio.trashDocument(scope, "owner_a", trashed.id);
+
+    const snapshot = await createInMemoryStudioPortabilityStore({ repository }).readSnapshot(scope);
+    expect(snapshot.documents).toEqual([expect.objectContaining({ id: kept.id })]);
+    expect(snapshot.versions.some((version) => version.documentId === trashed.id)).toBe(false);
+    expect(snapshot.collectionItems.some((item) => item.documentId === trashed.id)).toBe(false);
+  });
+
   it("aborts an active private multipart upload before deleting its object key", async () => {
     const storage = createInMemoryObjectStorage();
     const objectKey = "workspaces/workspace_a/studio/owner_a/assets/in-flight.pdf";
