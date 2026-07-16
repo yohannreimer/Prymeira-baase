@@ -301,10 +301,26 @@ export function createStudioService(
       const current = await repository.findDocument(scope, id);
       if (!current) return false;
       if (current.status !== "trashed") throw new Error("STUDIO_DOCUMENT_NOT_TRASHED");
-      const cleanup = (sourceIds: readonly string[]) => Promise.all([
-        options.removeProactiveSignals?.(scope, sourceIds),
-        options.removeMemory?.(scope, id)
-      ]).then(() => undefined);
+      const cleanup = async (sourceIds: readonly string[]) => {
+        const callbacks = [
+          options.removeProactiveSignals
+            ? () => options.removeProactiveSignals!(scope, sourceIds)
+            : null,
+          options.removeMemory
+            ? () => options.removeMemory!(scope, id)
+            : null
+        ].filter((callback): callback is () => Promise<void> => callback !== null);
+        const results = await Promise.allSettled(callbacks.map((callback) => Promise.resolve().then(callback)));
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length === 1) throw failures[0]!.reason;
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures.map((failure) => failure.reason),
+            "STUDIO_DOCUMENT_DELETE_CLEANUP_FAILED",
+            { cause: failures[0]!.reason }
+          );
+        }
+      };
       if (repository.permanentlyDeleteDocumentWithCleanup) {
         return repository.permanentlyDeleteDocumentWithCleanup(scope, id, cleanup);
       }

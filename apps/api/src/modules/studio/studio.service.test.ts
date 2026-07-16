@@ -77,6 +77,61 @@ describe("StudioService documents", () => {
       .resolves.toMatchObject({ status: "active" });
   });
 
+  it("holds the deletion claim until every cleanup settles when one fails early", async () => {
+    const repository = createInMemoryStudioRepository();
+    let memoryStarted!: () => void;
+    let releaseMemory!: () => void;
+    const started = new Promise<void>((resolve) => { memoryStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseMemory = resolve; });
+    const service = createStudioService(repository, {
+      removeProactiveSignals: async () => { throw new Error("PROACTIVE_CLEANUP_FAILED"); },
+      removeMemory: async () => {
+        memoryStarted();
+        await blocked;
+      }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    const deletionOutcome = service.permanentlyDeleteDocument(scope, "owner_a", document.id)
+      .then((value) => ({ value }), (error: unknown) => ({ error }));
+    await started;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await expect(service.restoreDocumentFromTrash(scope, "owner_a", document.id))
+      .rejects.toThrow("STUDIO_DOCUMENT_DELETE_IN_PROGRESS");
+    releaseMemory();
+
+    await expect(deletionOutcome).resolves.toEqual({
+      error: expect.objectContaining({ message: "PROACTIVE_CLEANUP_FAILED" })
+    });
+    await expect(service.getDocument(scope, document.id)).resolves.toMatchObject({ status: "trashed" });
+    await expect(service.restoreDocumentFromTrash(scope, "owner_a", document.id))
+      .resolves.toMatchObject({ status: "active" });
+  });
+
+  it("reports multiple cleanup failures deterministically without deleting the claimed document", async () => {
+    const repository = createInMemoryStudioRepository();
+    const proactiveError = new Error("PROACTIVE_CLEANUP_FAILED");
+    const memoryError = new Error("MEMORY_CLEANUP_FAILED");
+    const service = createStudioService(repository, {
+      removeProactiveSignals: async () => { throw proactiveError; },
+      removeMemory: async () => { throw memoryError; }
+    });
+    const document = await service.createDocument(scope, "owner_a", documentInput());
+    await service.trashDocument(scope, "owner_a", document.id);
+
+    const error = await service.permanentlyDeleteDocument(scope, "owner_a", document.id)
+      .then(() => null, (failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toMatchObject({
+      message: "STUDIO_DOCUMENT_DELETE_CLEANUP_FAILED",
+      cause: proactiveError,
+      errors: [proactiveError, memoryError]
+    });
+    await expect(service.getDocument(scope, document.id)).resolves.toMatchObject({ status: "trashed" });
+  });
+
   it("does not let a concurrent restore reactivate a document after permanent deletion cleanup starts", async () => {
     const repository = createInMemoryStudioRepository();
     let cleanupStarted!: () => void;
