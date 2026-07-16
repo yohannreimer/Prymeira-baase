@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createStudioCheckpointSchema,
   createStudioDocumentSchema,
   patchStudioDocumentSchema,
   studioAssetSchema,
@@ -45,6 +46,19 @@ describe("Studio schemas", () => {
       expected_revision: 1,
       title: "Próxima versão"
     })).toMatchObject({ expected_revision: 1, title: "Próxima versão" });
+  });
+
+  it("accepts bounded checkpoint idempotency keys and rejects unsafe keys", () => {
+    expect(createStudioCheckpointSchema.parse({
+      expected_revision: 2,
+      reason: "structure_changed",
+      checkpoint_key: "structure_changed:decision:decision_1:3"
+    })).toMatchObject({ checkpoint_key: "structure_changed:decision:decision_1:3" });
+    expect(() => createStudioCheckpointSchema.parse({
+      expected_revision: 2,
+      reason: "structure_changed",
+      checkpoint_key: "unsafe key"
+    })).toThrow();
   });
 
   it("keeps document lifecycle status out of generic patches", () => {

@@ -225,6 +225,7 @@ export function createInMemoryStudioRepository(
       ...structuredClone(input),
       title: input.title ?? null,
       checkpointReason: input.checkpointReason ?? "legacy_autosave",
+      checkpointKey: input.checkpointKey ?? null,
       sourceRevision: input.sourceRevision ?? null,
       isLegacy: input.isLegacy ?? true,
       id: `studio_version_${randomUUID()}`,
@@ -473,12 +474,19 @@ export function createInMemoryStudioRepository(
       try {
         const document = documents.find((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.id === documentId);
         if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+        if (input.checkpoint_key) {
+          const existing = versions.find((item) => item.workspaceId === scope.workspaceId
+            && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId
+            && item.checkpointKey === input.checkpoint_key);
+          if (existing) return { version: cloneVersion(existing), inserted: false };
+        }
         if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
         const latest = versions.filter((item) => item.workspaceId === scope.workspaceId && item.ownerProfileId === scope.ownerProfileId && item.documentId === documentId)
           .sort((left, right) => right.versionNumber - left.versionNumber)[0];
-        if (latest && sameCheckpoint(latest, document)) return { version: cloneVersion(latest), inserted: false };
+        if (!input.checkpoint_key && latest && sameCheckpoint(latest, document)) return { version: cloneVersion(latest), inserted: false };
         const version = appendStoredVersion({ ...scope, documentId, title: document.title, bodyJson: document.bodyJson, bodyText: document.bodyText,
-          origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason, sourceRevision: document.revision, isLegacy: false });
+          origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason, checkpointKey: input.checkpoint_key ?? null,
+          sourceRevision: document.revision, isLegacy: false });
         enqueueIndexJob(document);
         return { version, inserted: true };
       } finally { release(); }
@@ -592,6 +600,9 @@ export function createInMemoryStudioRepository(
       const appliedCursor: { createdAt: string; id: string } | null = cursor;
       const matches = structures.filter((structure) => structure.workspaceId === scope.workspaceId
         && structure.ownerProfileId === scope.ownerProfileId)
+        .filter((structure) => documents.some((document) => document.workspaceId === scope.workspaceId
+          && document.ownerProfileId === scope.ownerProfileId && document.id === structure.documentId
+          && document.status === "active"))
         .filter((structure) => !input.documentId || structure.documentId === input.documentId)
         .filter((structure) => !input.kind || structure.kind === input.kind)
         .filter((structure) => !input.lifecycleStatus || structure.lifecycleStatus === input.lifecycleStatus)
@@ -1747,6 +1758,7 @@ export function createInMemoryStudioRepository(
         actorProfileId,
         aiRunId: suggestion.aiRunId
       }, timestamp);
+      enqueueIndexJob(updated, timestamp);
       suggestion.status = "accepted";
       suggestion.acceptedVersionId = version.id;
       suggestion.decidedAt = timestamp;

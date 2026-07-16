@@ -183,6 +183,7 @@ export function mapStudioDocumentVersion(raw: RawStudioDocumentVersion): StudioD
     createdAt: required(raw.created_at, raw.createdAt, "created_at"),
     title: raw.title ?? null,
     checkpointReason: raw.checkpoint_reason ?? raw.checkpointReason,
+    checkpointKey: raw.checkpoint_key !== undefined ? raw.checkpoint_key : raw.checkpointKey ?? null,
     sourceRevision: raw.source_revision !== undefined ? raw.source_revision : raw.sourceRevision ?? null,
     isLegacy: raw.is_legacy ?? raw.isLegacy
   };
@@ -566,7 +567,7 @@ export async function updateStudioDocument(
 
 export async function createStudioCheckpoint(
   documentId: string,
-  input: { expected_revision: number; reason: StudioCheckpointReason },
+  input: { expected_revision: number; reason: StudioCheckpointReason; checkpoint_key?: string },
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch,
   options: { keepalive?: boolean } = {}

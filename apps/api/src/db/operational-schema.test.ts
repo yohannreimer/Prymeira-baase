@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -150,6 +150,26 @@ describe("operational schema", () => {
     const migration27 = source.slice(source.indexOf("  version: 27,"));
     expect(migration27).toContain("DROP CONSTRAINT IF EXISTS studio_documents_status_check");
     expect(migration27).toContain("CHECK (status IN ('active','archived','trashed'))");
+  });
+
+  it("adds owner-scoped checkpoint idempotency keys in migration 29", async () => {
+    await ensureOperationalSchema(db);
+    const columns = await db.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_name='studio_document_versions' and column_name='checkpoint_key'`
+    );
+    expect(columns.rows).toEqual([{ column_name: "checkpoint_key" }]);
+
+    await db.query(`insert into studio_documents
+      (id,workspace_id,owner_profile_id,body_json,body_text,capture_mode)
+      values ('checkpoint_key_document','workspace','owner','{}','', 'text')`);
+    await db.query(`insert into studio_document_versions
+      (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,checkpoint_key)
+      values ('checkpoint_key_a','workspace','owner','checkpoint_key_document',1,'{}','', 'user','owner','mutation:1')`);
+    await expect(db.query(`insert into studio_document_versions
+      (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,checkpoint_key)
+      values ('checkpoint_key_b','workspace','owner','checkpoint_key_document',2,'{}','', 'user','owner','mutation:1')`))
+      .rejects.toBeDefined();
   });
 
   it("keeps the owner Studio lexical GIN index in migration 9", async () => {

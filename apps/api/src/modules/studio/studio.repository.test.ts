@@ -395,6 +395,42 @@ function repositoryContract(
       });
     });
 
+    it("uses checkpoint keys as distinct idempotent mutation markers while preserving snapshot dedupe without a key", async () => {
+      await withRepository(async (repository) => {
+        const created = await repository.createDocument(documentInput());
+        const scope = { workspaceId: created.workspaceId, ownerProfileId: created.ownerProfileId };
+        const first = await repository.createCheckpoint(scope, created.id, created.ownerProfileId, {
+          expected_revision: created.revision,
+          reason: "structure_changed",
+          checkpoint_key: "structure_changed:decision:decision_1:1"
+        });
+        const retry = await repository.createCheckpoint(scope, created.id, created.ownerProfileId, {
+          expected_revision: created.revision + 99,
+          reason: "structure_changed",
+          checkpoint_key: "structure_changed:decision:decision_1:1"
+        });
+        const nextMutation = await repository.createCheckpoint(scope, created.id, created.ownerProfileId, {
+          expected_revision: created.revision,
+          reason: "structure_changed",
+          checkpoint_key: "structure_changed:decision:decision_1:2"
+        });
+        const legacyDedupe = await repository.createCheckpoint(scope, created.id, created.ownerProfileId, {
+          expected_revision: created.revision,
+          reason: "manual"
+        });
+
+        expect(first).toMatchObject({ inserted: true, version: {
+          checkpointReason: "structure_changed", checkpointKey: "structure_changed:decision:decision_1:1"
+        } });
+        expect(retry).toMatchObject({ inserted: false, version: { id: first.version.id } });
+        expect(nextMutation).toMatchObject({ inserted: true, version: {
+          checkpointReason: "structure_changed", checkpointKey: "structure_changed:decision:decision_1:2"
+        } });
+        expect(legacyDedupe).toMatchObject({ inserted: false, version: { id: nextMutation.version.id } });
+        expect(await repository.listVersions(scope, created.id)).toHaveLength(3);
+      });
+    });
+
     it("checkpoints the durable revision without overwriting concurrent saves", async () => {
       await withRepository(async (repository) => {
         const created = await repository.createDocument(documentInput());
@@ -1266,6 +1302,31 @@ function repositoryContract(
           documentId: document.id, lifecycleStatus: "active", limit: 4
         })).items).toEqual([]);
 
+        let archivedDocument = await repository.updateDocument({
+          ...document, status: "archived", archivedAt: "2026-07-16T12:00:00.000Z"
+        }, document.revision);
+        expect((await repository.listStructures(scope, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([]);
+        archivedDocument = await repository.updateDocument({
+          ...archivedDocument, status: "active", archivedAt: null
+        }, archivedDocument.revision);
+        expect((await repository.listStructures(scope, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([{ ...recreated, documentTitle: document.title }]);
+        const trashedDocument = await repository.updateDocument({
+          ...archivedDocument, status: "trashed", trashedAt: "2026-07-16T12:05:00.000Z", preTrashStatus: "active"
+        }, archivedDocument.revision);
+        expect((await repository.listStructures(scope, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([]);
+        await repository.updateDocument({
+          ...trashedDocument, status: "active", trashedAt: null, preTrashStatus: null
+        }, trashedDocument.revision);
+        expect((await repository.listStructures(scope, {
+          documentId: document.id, lifecycleStatus: "active", limit: 4
+        })).items).toEqual([{ ...recreated, documentTitle: document.title }]);
+
         const ritual = await repository.createStructure({
           ...scope, documentId: document.id, kind: "ritual", lifecycleStatus: "active",
           horizonAt: null, metricJson: null, cadenceJson: null, nextRunAt: null,
@@ -1715,9 +1776,9 @@ describe("PostgreSQL repository bundle", () => {
     }, 4)).resolves.toMatchObject({ trashedAt: "2026-07-13T10:00:00.000Z", preTrashStatus: "archived" });
 
     const inserts = calls.filter((call) => call.text.includes("INSERT INTO studio_document_versions"));
-    expect(inserts[0]?.text).toContain("title,checkpoint_reason,source_revision,is_legacy");
-    expect(inserts[0]?.params?.slice(-4)).toEqual(["Decisão", "manual", 5, false]);
-    expect(inserts[1]?.params?.slice(-4)).toEqual([null, "legacy_autosave", null, true]);
+    expect(inserts[0]?.text).toContain("title,checkpoint_reason,source_revision,is_legacy,checkpoint_key");
+    expect(inserts[0]?.params?.slice(-5)).toEqual(["Decisão", "manual", 5, false, null]);
+    expect(inserts[1]?.params?.slice(-5)).toEqual([null, "legacy_autosave", null, true, null]);
     const update = calls.find((call) => call.text.includes("UPDATE studio_documents SET"));
     expect(update?.text).toContain("trashed_at=$16,pre_trash_status=$17");
     expect(update?.params?.slice(-3)).toEqual(["2026-07-13T10:00:00.000Z", "archived", 4]);
@@ -1775,6 +1836,7 @@ describe("PostgreSQL repository bundle", () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.text).toMatch(/JOIN studio_documents documents[\s\S]*documents\.workspace_id=structures\.workspace_id[\s\S]*documents\.owner_profile_id=structures\.owner_profile_id/u);
+    expect(calls[0]!.text).toContain("documents.status='active'");
   });
 
   it("loads the next ritual and document title with one scoped join instead of N+1 reads", async () => {

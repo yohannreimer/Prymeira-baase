@@ -69,7 +69,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
       const columns = await pool.query<{ table_name: string; column_name: string }>(
         `select table_name,column_name from information_schema.columns
          where table_schema=current_schema()
-           and (table_name='studio_document_versions' and column_name in ('title','checkpoint_reason','source_revision','is_legacy')
+           and (table_name='studio_document_versions' and column_name in ('title','checkpoint_reason','source_revision','is_legacy','checkpoint_key')
              or table_name='studio_documents' and column_name in ('trashed_at','pre_trash_status'))`
       );
       expect(columns.rows.map(({ table_name, column_name }) => `${table_name}.${column_name}`)).toEqual(expect.arrayContaining([
@@ -77,6 +77,7 @@ describe.skipIf(!testDatabaseUrl)("operational schema on PostgreSQL 16", () => {
         "studio_document_versions.checkpoint_reason",
         "studio_document_versions.source_revision",
         "studio_document_versions.is_legacy",
+        "studio_document_versions.checkpoint_key",
         "studio_documents.trashed_at",
         "studio_documents.pre_trash_status"
       ]));

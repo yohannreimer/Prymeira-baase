@@ -1572,6 +1572,16 @@ const migrations: Migration[] = [{
     CREATE UNIQUE INDEX IF NOT EXISTS studio_index_jobs_document_revision_uidx
       ON studio_index_jobs (workspace_id,owner_profile_id,document_id,document_revision);
   `
+}, {
+  version: 29,
+  name: "studio_checkpoint_idempotency_keys",
+  sql: `
+    ALTER TABLE studio_document_versions
+      ADD COLUMN IF NOT EXISTS checkpoint_key TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_document_versions_checkpoint_key_uidx
+      ON studio_document_versions (workspace_id,owner_profile_id,document_id,checkpoint_key)
+      WHERE checkpoint_key IS NOT NULL;
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

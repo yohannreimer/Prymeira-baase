@@ -123,7 +123,7 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
       });
       setSelectedKind(kind);
       setLoadState("ready");
-      await finishStructureMutation(documentId, kind, setHistoryWarning);
+      await finishStructureMutation(documentId, saved, setHistoryWarning);
     } catch (caught) {
       setError(structureErrorMessage(caught));
       if (
@@ -143,13 +143,13 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
     setError(null);
     setHistoryWarning(null);
     try {
-      await archiveStudioStructure(structure.id);
+      const archived = await archiveStudioStructure(structure.id);
       const remaining = structures.filter((item) => item.id !== structure.id);
       setStructures(remaining);
       setSelectedKind((remaining[0]?.kind as SupportedKind | undefined) ?? null);
-      await finishStructureMutation(documentId, kind, setHistoryWarning);
+      await finishStructureMutation(documentId, archived, setHistoryWarning);
     } catch (caught) {
-      setError(structureErrorMessage(caught));
+      setError(archiveStructureErrorMessage(caught));
       if (caught instanceof StudioApiError && caught.code === "STUDIO_STRUCTURE_CHANGED") {
         setNeedsReload(true);
       }
@@ -238,18 +238,24 @@ export default function StudioStructures({ documentId, documentTitle }: StudioSt
 
 async function finishStructureMutation(
   documentId: string,
-  kind: SupportedKind,
+  structure: StudioStructure,
   setHistoryWarning: (message: string | null) => void
 ) {
+  const kind = structure.kind as SupportedKind;
+  const checkpointKey = `structure_changed:${kind}:${structure.id}:${structure.revision}`;
   let checkpointCreated = false;
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const document = await getStudioDocument(documentId);
       try {
-        await createStudioCheckpoint(documentId, {
+        const version = await createStudioCheckpoint(documentId, {
           expected_revision: document.revision,
-          reason: "structure_changed"
+          reason: "structure_changed",
+          checkpoint_key: checkpointKey
         });
+        if (version.checkpointReason !== "structure_changed" || version.checkpointKey !== checkpointKey) {
+          throw new Error("STUDIO_STRUCTURE_CHECKPOINT_MARKER_MISMATCH");
+        }
         checkpointCreated = true;
         break;
       } catch (error) {
@@ -282,4 +288,11 @@ function structureErrorMessage(error: unknown) {
     return "Este pensamento já possui uma estrutura deste tipo, criada em outra aba. Feche e abra os detalhes para carregá-la.";
   }
   return "Não foi possível salvar a estrutura agora. O documento original não foi alterado.";
+}
+
+function archiveStructureErrorMessage(error: unknown) {
+  if (error instanceof StudioApiError && error.code === "STUDIO_STRUCTURE_CHANGED") {
+    return "Esta estrutura mudou em outra aba. Feche e abra os detalhes antes de tentar arquivá-la novamente.";
+  }
+  return "Não foi possível arquivar a estrutura agora. Ela continua ativa.";
 }

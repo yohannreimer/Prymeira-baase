@@ -73,6 +73,7 @@ type StudioDocumentVersionRow = {
   created_at: string | Date;
   title: string | null;
   checkpoint_reason: StudioDocumentVersion["checkpointReason"];
+  checkpoint_key: string | null;
   source_revision: number | null;
   is_legacy: boolean;
 };
@@ -295,6 +296,7 @@ function versionFromRow(row: StudioDocumentVersionRow): StudioDocumentVersion {
     createdAt: iso(row.created_at),
     title: row.title,
     checkpointReason: row.checkpoint_reason,
+    checkpointKey: row.checkpoint_key ?? null,
     sourceRevision: row.source_revision,
     isLegacy: row.is_legacy
   };
@@ -642,12 +644,12 @@ async function insertVersion(
 ) {
   const result = await client.query<StudioDocumentVersionRow>(
     `INSERT INTO studio_document_versions
-       (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,ai_run_id,title,checkpoint_reason,source_revision,is_legacy)
+       (id,workspace_id,owner_profile_id,document_id,version_number,body_json,body_text,origin,actor_profile_id,ai_run_id,title,checkpoint_reason,source_revision,is_legacy,checkpoint_key)
      VALUES (
        $1,$2,$3,$4,
        (SELECT COALESCE(MAX(version_number),0)+1 FROM studio_document_versions
         WHERE workspace_id=$2 AND owner_profile_id=$3 AND document_id=$4),
-       $5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13
+       $5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14
      )
      RETURNING *`,
     [
@@ -663,7 +665,8 @@ async function insertVersion(
       input.title ?? null,
       input.checkpointReason ?? "legacy_autosave",
       input.sourceRevision ?? null,
-      input.isLegacy ?? true
+      input.isLegacy ?? true,
+      input.checkpointKey ?? null
     ]
   );
   return versionFromRow(result.rows[0]!);
@@ -920,17 +923,25 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
         );
         if (!locked.rows[0]) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
         const document = documentFromRow(locked.rows[0]);
+        if (input.checkpoint_key) {
+          const existing = await client.query<StudioDocumentVersionRow>(
+            `SELECT * FROM studio_document_versions
+             WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3 AND checkpoint_key=$4`,
+            [scope.workspaceId, scope.ownerProfileId, documentId, input.checkpoint_key]
+          );
+          if (existing.rows[0]) return { version: versionFromRow(existing.rows[0]), inserted: false };
+        }
         if (document.revision !== input.expected_revision) throw new Error("STUDIO_DOCUMENT_STALE");
         const latest = await client.query<StudioDocumentVersionRow>(
           `SELECT * FROM studio_document_versions WHERE workspace_id=$1 AND owner_profile_id=$2 AND document_id=$3
            ORDER BY version_number DESC,id DESC LIMIT 1`, [scope.workspaceId, scope.ownerProfileId, documentId]
         );
-        if (latest.rows[0] && sameCheckpoint(versionFromRow(latest.rows[0]), document)) {
+        if (!input.checkpoint_key && latest.rows[0] && sameCheckpoint(versionFromRow(latest.rows[0]), document)) {
           return { version: versionFromRow(latest.rows[0]), inserted: false };
         }
         const version = await insertVersion(client, { ...scope, documentId, title: document.title, bodyJson: document.bodyJson,
           bodyText: document.bodyText, origin: "user", actorProfileId, aiRunId: null, checkpointReason: input.reason,
-          sourceRevision: document.revision, isLegacy: false });
+          checkpointKey: input.checkpoint_key ?? null, sourceRevision: document.revision, isLegacy: false });
         await insertIndexJob(client, document);
         return { version, inserted: true };
       });
@@ -1060,7 +1071,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
 
     async listStructures(scope, input) {
       const params: unknown[] = [scope.workspaceId, scope.ownerProfileId];
-      const conditions = ["structures.workspace_id=$1", "structures.owner_profile_id=$2"];
+      const conditions = ["structures.workspace_id=$1", "structures.owner_profile_id=$2", "documents.status='active'"];
       if (input.documentId) { params.push(input.documentId); conditions.push(`structures.document_id=$${params.length}`); }
       if (input.kind) { params.push(input.kind); conditions.push(`structures.kind=$${params.length}`); }
       if (input.lifecycleStatus) { params.push(input.lifecycleStatus); conditions.push(`structures.lifecycle_status=$${params.length}`); }

@@ -66,6 +66,7 @@ export type StudioDocumentVersion = {
   createdAt: string;
   title?: string | null;
   checkpointReason?: StudioCheckpointReason | "legacy_autosave";
+  checkpointKey?: string | null;
   sourceRevision?: number | null;
   isLegacy?: boolean;
 };
@@ -369,6 +370,8 @@ export type RawStudioDocumentVersion = {
   title?: string | null;
   checkpoint_reason?: StudioCheckpointReason | "legacy_autosave";
   checkpointReason?: StudioCheckpointReason | "legacy_autosave";
+  checkpoint_key?: string | null;
+  checkpointKey?: string | null;
   source_revision?: number | null;
   sourceRevision?: number | null;
   is_legacy?: boolean;

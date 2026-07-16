@@ -226,6 +226,7 @@ export type StudioDocumentVersion = StudioOwnerScope & {
   createdAt: string;
   title?: string | null;
   checkpointReason?: StudioCheckpointReason | "legacy_autosave";
+  checkpointKey?: string | null;
   sourceRevision?: number | null;
   isLegacy?: boolean;
 };
@@ -236,7 +237,7 @@ export type StudioCheckpointReason =
 
 export type StudioVersionQuery = { cursor?: string; limit: number };
 export type StudioVersionPage = { items: StudioDocumentVersion[]; nextCursor: string | null };
-export type CreateStudioCheckpoint = { expected_revision: number; reason: StudioCheckpointReason };
+export type CreateStudioCheckpoint = { expected_revision: number; reason: StudioCheckpointReason; checkpoint_key?: string };
 export type StudioCheckpointResult = { version: StudioDocumentVersion; inserted: boolean };
 export type CreateStudioExitCheckpoint = { known_revision: number };
 export type StudioExitCheckpointResult = { document: StudioDocument; version: StudioDocumentVersion };

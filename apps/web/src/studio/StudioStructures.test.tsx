@@ -370,7 +370,11 @@ describe("StudioStructures", () => {
       }
       if (url.endsWith("/api/studio/documents/document_1/checkpoints") && init?.method === "POST") {
         sequence.push("checkpoint");
-        expect(JSON.parse(String(init.body))).toEqual({ expected_revision: 7, reason: "structure_changed" });
+        expect(JSON.parse(String(init.body))).toEqual({
+          expected_revision: 7,
+          reason: "structure_changed",
+          checkpoint_key: "structure_changed:decision:structure_decision:1"
+        });
         return response({ version: rawCheckpoint(7) }, 201);
       }
       return response({}, 404);
@@ -454,11 +458,11 @@ describe("StudioStructures", () => {
       const url = String(input);
       if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [decision], nextCursor: null });
       if (url.endsWith("/api/studio/structures/structure_decision") && init?.method === "DELETE") {
-        return response({ structure: { ...decision, lifecycleStatus: "archived", archivedAt: "2026-07-16T14:00:00.000Z" } });
+        return response({ structure: { ...decision, revision: 2, lifecycleStatus: "archived", archivedAt: "2026-07-16T14:00:00.000Z" } });
       }
       if (url.endsWith("/api/studio/documents/document_1") && !init?.method) return response({ document: rawDocument(4) });
       if (url.endsWith("/api/studio/documents/document_1/checkpoints") && init?.method === "POST") {
-        return response({ version: rawCheckpoint(4) }, 201);
+        return response({ version: rawCheckpoint(4, 2) }, 201);
       }
       return response({}, 404);
     });
@@ -475,6 +479,28 @@ describe("StudioStructures", () => {
     expect(screen.queryByRole("button", { name: "Arquivar decisão" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /estruturar este pensamento/i })).toBeInTheDocument();
     unsubscribe();
+  });
+
+  it("keeps an active structure visible and uses archive-specific copy when archiving fails", async () => {
+    const user = userEvent.setup();
+    const decision = decisionStructure();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures?") && !init?.method) return response({ structures: [decision], nextCursor: null });
+      if (url.endsWith("/api/studio/structures/structure_decision") && init?.method === "DELETE") {
+        return response({ error: { code: "TEMPORARY", message: "offline" } }, 503);
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioStructures documentId="document_1" documentTitle="Escolha" />);
+    const trigger = await screen.findByRole("button", { name: /decisão.*escolha/i });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Arquivar decisão" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/não foi possível arquivar.*continua ativa/i);
+    expect(screen.getByRole("button", { name: "Arquivar decisão" })).toBeInTheDocument();
+    expect(trigger).toHaveAccessibleName(/decisão.*escolha/i);
   });
 });
 
@@ -509,7 +535,7 @@ function rawDocument(revision: number) {
   };
 }
 
-function rawCheckpoint(revision: number) {
+function rawCheckpoint(revision: number, structureRevision = 1) {
   return {
     id: `version_${revision}`,
     workspace_id: "workspace_1",
@@ -523,6 +549,7 @@ function rawCheckpoint(revision: number) {
     ai_run_id: null,
     created_at: "2026-07-16T12:00:00.000Z",
     checkpoint_reason: "structure_changed",
+    checkpoint_key: `structure_changed:decision:structure_decision:${structureRevision}`,
     source_revision: revision,
     is_legacy: false
   };

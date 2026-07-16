@@ -94,7 +94,7 @@ it("contains focus, closes from Escape and the backdrop, and restores through co
     <StudioVersionDrawer documentId="doc_1" open onClose={onClose} onRestore={onRestore} />
   );
   const drawer = await screen.findByRole("dialog", { name: "Histórico de versões" });
-  await user.click(within(drawer).getByRole("button", { name: /Versão 3/u }));
+  await user.click(await within(drawer).findByRole("button", { name: /Versão 3/u }));
   await user.click(within(drawer).getByRole("button", { name: "Restaurar como nova versão" }));
   expect(window.confirm).toHaveBeenCalled();
   expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ versionNumber: 3 }));

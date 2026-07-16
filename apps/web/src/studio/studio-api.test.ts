@@ -332,6 +332,7 @@ describe("Studio API client", () => {
       created_at: "2026-07-15T10:00:00.000Z",
       title: "Plano anual",
       checkpoint_reason: "significant_pause",
+      checkpoint_key: "pause:document_1:4",
       source_revision: 4,
       is_legacy: false
     } as const;
@@ -339,10 +340,12 @@ describe("Studio API client", () => {
 
     await expect(createStudioCheckpoint("document / 1", {
       expected_revision: 4,
-      reason: "significant_pause"
+      reason: "significant_pause",
+      checkpoint_key: "pause:document_1:4"
     }, controller.signal, fetcher, { keepalive: true })).resolves.toMatchObject({
       id: "version_2",
       checkpointReason: "significant_pause",
+      checkpointKey: "pause:document_1:4",
       sourceRevision: 4
     });
 
@@ -352,7 +355,8 @@ describe("Studio API client", () => {
     );
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
       expected_revision: 4,
-      reason: "significant_pause"
+      reason: "significant_pause",
+      checkpoint_key: "pause:document_1:4"
     });
   });
 

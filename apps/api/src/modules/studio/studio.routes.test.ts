@@ -369,6 +369,41 @@ describe("Studio routes", () => {
       payload: { expected_revision: 2, reason: "invalid" }
     })).statusCode).toBe(400);
 
+    const structureMarker = await app.inject({
+      method: "POST", url: `/studio/documents/${documentId}/checkpoints`, headers: ownerA,
+      payload: {
+        expected_revision: 2,
+        reason: "structure_changed",
+        checkpoint_key: "structure_changed:decision:decision_1:1"
+      }
+    });
+    expect(structureMarker.statusCode).toBe(201);
+    expect(structureMarker.json().version).toMatchObject({
+      checkpointReason: "structure_changed",
+      checkpointKey: "structure_changed:decision:decision_1:1",
+      sourceRevision: 2
+    });
+    const markerRetry = await app.inject({
+      method: "POST", url: `/studio/documents/${documentId}/checkpoints`, headers: ownerA,
+      payload: {
+        expected_revision: 999,
+        reason: "structure_changed",
+        checkpoint_key: "structure_changed:decision:decision_1:1"
+      }
+    });
+    expect(markerRetry.statusCode).toBe(201);
+    expect(markerRetry.json().version.id).toBe(structureMarker.json().version.id);
+    const nextMarker = await app.inject({
+      method: "POST", url: `/studio/documents/${documentId}/checkpoints`, headers: ownerA,
+      payload: {
+        expected_revision: 2,
+        reason: "structure_changed",
+        checkpoint_key: "structure_changed:decision:decision_1:2"
+      }
+    });
+    expect(nextMarker.statusCode).toBe(201);
+    expect(nextMarker.json().version.id).not.toBe(structureMarker.json().version.id);
+
     const exitCheckpoint = await app.inject({
       method: "POST",
       url: `/studio/documents/${documentId}/exit-checkpoint`,
@@ -378,7 +413,11 @@ describe("Studio routes", () => {
     expect(exitCheckpoint.statusCode).toBe(200);
     expect(exitCheckpoint.json()).toMatchObject({
       document: { revision: 2 },
-      version: { checkpointReason: "significant_pause", sourceRevision: 2 }
+      version: {
+        checkpointReason: "structure_changed",
+        checkpointKey: "structure_changed:decision:decision_1:2",
+        sourceRevision: 2
+      }
     });
 
     const versionPage = await app.inject({

@@ -269,6 +269,7 @@ describe("StudioPage", () => {
           ai_run_id: null,
           created_at: "2026-07-16T14:00:00.000Z",
           checkpoint_reason: "structure_changed",
+          checkpoint_key: "structure_changed:decision:decision_immediate:1",
           source_revision: 5,
           is_legacy: false
         } }, 201);

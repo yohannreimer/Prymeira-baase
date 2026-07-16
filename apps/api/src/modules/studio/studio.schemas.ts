@@ -57,7 +57,8 @@ export const studioVersionListQuerySchema = z.object({
 }).strict();
 export const createStudioCheckpointSchema = z.object({
   expected_revision: z.number().int().positive(),
-  reason: z.enum(["significant_pause", "document_exit", "structure_changed", "accepted_ai_suggestion", "transcript_inserted", "restored", "manual"])
+  reason: z.enum(["significant_pause", "document_exit", "structure_changed", "accepted_ai_suggestion", "transcript_inserted", "restored", "manual"]),
+  checkpoint_key: z.string().trim().min(1).max(256).regex(/^[A-Za-z0-9:_-]+$/u).optional()
 }).strict();
 export const createStudioExitCheckpointSchema = z.object({
   known_revision: z.number().int().positive()

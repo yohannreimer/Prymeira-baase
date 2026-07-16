@@ -198,6 +198,18 @@ describe("Studio strategic structures", () => {
       method: "GET", url: "/studio/structures?document_id=owner_b_document&limit=4", headers: owner
     });
     expect(foreignDocument.json().structures).toEqual([]);
+    expect((await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/archive`, headers: owner
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "GET", url: "/studio/structures?kind=plan&lifecycle_status=active&limit=10", headers: owner
+    })).json().structures).toEqual([]);
+    expect((await app.inject({
+      method: "POST", url: `/studio/documents/${document.id}/restore`, headers: owner
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "GET", url: "/studio/structures?kind=plan&lifecycle_status=active&limit=10", headers: owner
+    })).json().structures).toEqual([expect.objectContaining({ id: structure.id })]);
     const archived = await app.inject({ method: "DELETE", url: `/studio/structures/${structure.id}`, headers: owner });
     const archivedAgain = await app.inject({ method: "DELETE", url: `/studio/structures/${structure.id}`, headers: owner });
     expect(archived.statusCode).toBe(200);
