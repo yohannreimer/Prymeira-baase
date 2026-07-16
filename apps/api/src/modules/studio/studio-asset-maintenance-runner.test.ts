@@ -68,6 +68,7 @@ describe("Studio asset maintenance runner", () => {
     const memoryProcessor = { processNext: vi.fn(async () => null) };
     const portabilityProcessor = { processNext: vi.fn(async () => null) };
     const trashProcessor = { processNext: vi.fn(async () => null) };
+    const ritualPreparationProcessor = { processNext: vi.fn(async () => null) };
     const runner = createStudioAssetMaintenanceRunner({
       assetProcessor: idle,
       cleanupProcessor: idle,
@@ -75,6 +76,7 @@ describe("Studio asset maintenance runner", () => {
       memoryProcessor,
       portabilityProcessor,
       trashProcessor,
+      ritualPreparationProcessor,
       logger: { error: vi.fn() },
       scavenge: vi.fn(async () => undefined)
     });
@@ -82,6 +84,7 @@ describe("Studio asset maintenance runner", () => {
     expect(memoryProcessor.processNext).toHaveBeenCalledTimes(1);
     expect(portabilityProcessor.processNext).toHaveBeenCalledTimes(1);
     expect(trashProcessor.processNext).toHaveBeenCalledTimes(1);
+    expect(ritualPreparationProcessor.processNext).toHaveBeenCalledTimes(1);
   });
 
   it("runs single-flight drains with a bounded item count", async () => {

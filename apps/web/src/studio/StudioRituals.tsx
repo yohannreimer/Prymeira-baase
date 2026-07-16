@@ -30,7 +30,6 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   const [mode, setMode] = useState<RitualMode>("list");
   const [selectedRitual, setSelectedRitual] = useState<StudioStructure | null>(null);
   const [session, setSession] = useState<StudioRitualSession | null>(null);
-  const [manualStart, setManualStart] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -55,12 +54,38 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
     return () => controller.abort();
   }, [initialRitualId, reloadKey]);
 
+  useEffect(() => {
+    if (!selectedRitual || !session || session.status !== "preparing") return;
+    const controller = new AbortController();
+    let timeout: number | undefined;
+    const poll = async () => {
+      try {
+        const page = await listStudioRitualSessions(
+          selectedRitual.id,
+          { limit: 1 },
+          controller.signal,
+          fetch
+        );
+        if (controller.signal.aborted) return;
+        const latest = page.items.find((item) => item.id === session.id);
+        if (latest) setSession((current) => !current || latest.revision > current.revision ? latest : current);
+      } catch {
+        // Polling is enhancement-only: answers remain usable and locally durable.
+      }
+      if (!controller.signal.aborted) timeout = window.setTimeout(() => void poll(), 1_000);
+    };
+    timeout = window.setTimeout(() => void poll(), 400);
+    return () => {
+      controller.abort();
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
+  }, [selectedRitual, session?.id, session?.status]);
+
   async function openSession(ritual: StudioStructure) {
     setBusy(true);
     setStartError(null);
     setSelectedRitual(ritual);
     setMode("session");
-    setManualStart(false);
     try {
       setSession(await startStudioRitualSession(ritual.id));
     } catch (error) {
@@ -74,7 +99,6 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
     setMode("list");
     setSession(null);
     setSelectedRitual(null);
-    setManualStart(false);
     setStartError(null);
   }
 
@@ -118,18 +142,10 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
             </div>
           ) : busy && !session ? (
             <RitualLoading />
-          ) : session?.status === "preparing" ? (
-            <PreparationPending ritual={selectedRitual} onRefresh={() => void openSession(selectedRitual)} />
-          ) : session?.status === "failed" && !manualStart ? (
-            <PreparationFailed
-              onManual={() => setManualStart(true)}
-              onRetry={() => void openSession(selectedRitual)}
-            />
           ) : session ? (
             <RitualSession
               ritual={selectedRitual}
               initialSession={session}
-              manual={manualStart}
               onSessionChange={setSession}
             />
           ) : null}
@@ -312,10 +328,9 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
   );
 }
 
-function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
+function RitualSession({ ritual, initialSession, onSessionChange }: {
   ritual: StudioStructure;
   initialSession: StudioRitualSession;
-  manual: boolean;
   onSessionChange(session: StudioRitualSession): void;
 }) {
   const [session, setSession] = useState(initialSession);
@@ -354,6 +369,17 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
   useEffect(() => {
     answerRef.current?.focus();
   }, [questionIndex]);
+
+  useEffect(() => {
+    if (initialSession.revision <= revisionRef.current) return;
+    revisionRef.current = initialSession.revision;
+    setSession(initialSession);
+    const merged = { ...initialSession.answersJson, ...answersRef.current };
+    answersRef.current = merged;
+    setAnswers(merged);
+    lastSavedRef.current = JSON.stringify(initialSession.answersJson);
+    if (JSON.stringify(merged) !== lastSavedRef.current) setSaveState("dirty");
+  }, [initialSession]);
 
   useEffect(() => {
     if (saveState !== "dirty") return;
@@ -507,13 +533,13 @@ function RitualSession({ ritual, initialSession, manual, onSessionChange }: {
     <article className="studio-ritual-session" aria-labelledby="studio-ritual-question">
       <header>
         <div>
-          <p className="mono">{manual ? "Sessão sem preparação" : `Pergunta ${questionIndex + 1} de ${questions.length}`}</p>
+          <p className="mono">Pergunta {questionIndex + 1} de {questions.length}</p>
           <h3>{preparationTitle(session) || ritualTitle(ritual)}</h3>
         </div>
         <SaveIndicator state={saveState} offlinePreserved={localDraftStored} />
       </header>
 
-      {!manual ? <PreparedContext session={session} /> : null}
+      <PreparedContext session={session} />
 
       <section className="studio-ritual-question" aria-label={`Pergunta ${questionIndex + 1}`}>
         <p className="studio-ritual-question__purpose">{question.purpose}</p>
@@ -568,6 +594,19 @@ function PreparedContext({ session }: { session: StudioRitualSession }) {
   const notes = stringList(proposal.preparation_notes);
   const context = asRecord(session.contextJson);
   const related = Array.isArray(context.related) ? context.related.map(asRecord) : [];
+  if (session.status === "preparing") return (
+    <div className="studio-ritual-context-status" role="status">
+      <i aria-hidden="true" className="ph-light ph-circle-notch" />
+      <span>Preparando contexto em segundo plano…</span>
+    </div>
+  );
+  const preparationFailureCode = session.failureCode ?? context.preparationFailureCode;
+  if (preparationFailureCode && session.preparationJson === null) return (
+    <div className="studio-ritual-context-status studio-ritual-context-status--failed" role="status">
+      <i aria-hidden="true" className="ph-light ph-cloud-slash" />
+      <span>O contexto da IA não ficou disponível. Suas respostas continuam funcionando normalmente.</span>
+    </div>
+  );
   return (
     <details className="studio-ritual-context">
       <summary>Ver contexto preparado</summary>
@@ -610,28 +649,6 @@ function CompletedRitual({ session, retrying, error, onRetry }: {
         </div>
       ) : null}
     </article>
-  );
-}
-
-function PreparationFailed({ onManual, onRetry }: { onManual(): void; onRetry(): void }) {
-  return (
-    <div className="studio-ritual-state" role="alert">
-      <i aria-hidden="true" className="ph-light ph-cloud-slash" />
-      <h3>A preparação está indisponível agora.</h3>
-      <p>O ritual e suas perguntas continuam salvos. Você pode começar sem o contexto da IA.</p>
-      <div><button className="primary" type="button" onClick={onManual}>Começar sem preparação</button><button type="button" onClick={onRetry}>Tentar preparar novamente</button></div>
-    </div>
-  );
-}
-
-function PreparationPending({ ritual, onRefresh }: { ritual: StudioStructure; onRefresh(): void }) {
-  return (
-    <div className="studio-ritual-state" role="status">
-      <i aria-hidden="true" className="ph-light ph-hourglass-medium" />
-      <h3>Preparando {ritualTitle(ritual)}</h3>
-      <p>Estamos reunindo apenas o contexto autorizado para este ritual.</p>
-      <button type="button" onClick={onRefresh}>Atualizar preparação</button>
-    </div>
   );
 }
 

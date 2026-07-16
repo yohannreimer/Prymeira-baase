@@ -1328,8 +1328,8 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                FOR UPDATE
              ), inserted AS (
                INSERT INTO studio_ritual_sessions
-                 (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at)
-               SELECT $1,$2,$3,$4,$5,$6 FROM active_ritual
+                 (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at,context_json)
+               SELECT $1,$2,$3,$4,$5,$6,$7::jsonb FROM active_ritual
                ON CONFLICT (workspace_id,owner_profile_id,ritual_id)
                  WHERE status IN ('preparing','ready','in_progress','failed') DO NOTHING
                RETURNING *
@@ -1342,12 +1342,46 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                AND sessions.status IN ('preparing','ready','in_progress','failed')
              ORDER BY created_at DESC,id DESC LIMIT 1`,
             [id, input.workspaceId, input.ownerProfileId, input.ritualId,
-              input.preparationToken, input.preparationLeaseExpiresAt]
+              input.preparationToken, input.preparationLeaseExpiresAt, JSON.stringify(input.contextJson ?? {})]
           );
           if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
         }
         throw new Error("STUDIO_RITUAL_NOT_FOUND");
       });
+    },
+
+    async claimNextRitualPreparation(at, leaseMs = 120_000, excludeOwnerKeys = []) {
+      const params: unknown[] = [at, generatedId("studio_ritual_preparation_claim"), leaseMs];
+      const exclusions = excludeOwnerKeys.length ? (() => {
+        params.push([...excludeOwnerKeys]);
+        return `AND NOT (sessions.workspace_id || '/' || sessions.owner_profile_id = ANY($${params.length}::text[]))`;
+      })() : "";
+      const result = await db.query<StudioRitualSessionRow>(
+        `WITH candidate AS (
+           SELECT sessions.id,sessions.workspace_id,sessions.owner_profile_id
+           FROM studio_ritual_sessions sessions
+           WHERE sessions.preparation_json IS NULL
+             AND sessions.status IN ('preparing','in_progress')
+             AND (sessions.preparation_token IS NULL OR sessions.preparation_lease_expires_at <= $1::timestamptz)
+             ${exclusions}
+           ORDER BY sessions.updated_at ASC,sessions.id ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1
+         )
+         UPDATE studio_ritual_sessions sessions SET
+           preparation_token=$2,
+           preparation_lease_expires_at=$1::timestamptz + ($3::bigint * INTERVAL '1 millisecond'),
+           failure_code=NULL,
+           revision=sessions.revision+1,
+           updated_at=NOW()
+         FROM candidate
+         WHERE sessions.id=candidate.id
+           AND sessions.workspace_id=candidate.workspace_id
+           AND sessions.owner_profile_id=candidate.owner_profile_id
+         RETURNING sessions.*`,
+        params
+      );
+      return result.rows[0] ? ritualSessionFromRow(result.rows[0]) : null;
     },
 
     async updateRitualSession(input, expectedRevision) {

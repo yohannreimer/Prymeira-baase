@@ -1061,7 +1061,7 @@ git commit -m "fix(studio): show honest connection states"
 - Test: `apps/api/src/modules/studio/studio-ritual.service.test.ts`
 - Test: `apps/web/src/studio/StudioRituals.test.tsx`
 
-- [ ] **Step 1: Write non-blocking start tests**
+- [x] **Step 1: Write non-blocking start tests**
 
 ```ts
 const session = await ritualService.startSession(scope, ritual.id);
@@ -1077,12 +1077,12 @@ expect(await screen.findByRole("textbox", { name: /Resposta/u })).toBeEnabled();
 expect(screen.getByText("Preparando contexto em segundo plano…")).toBeVisible();
 ```
 
-- [ ] **Step 2: Run and confirm start currently awaits AI**
+- [x] **Step 2: Run and confirm start currently awaits AI**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Persist a preparation job and poll session state**
+- [x] **Step 3: Persist a preparation job and poll session state**
 
 ```ts
 async startSession(scope, ritualId) {
@@ -1098,12 +1098,12 @@ async startSession(scope, ritualId) {
 
 Move AI generation into a maintenance processor. Keep base guide questions available from the ritual structure and merge preparation only if the session revision/claim is current.
 
-- [ ] **Step 4: Run ritual, maintenance, and UI tests**
+- [x] **Step 4: Run ritual, maintenance, and UI tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio-ritual.service.test.ts src/modules/studio/studio-asset-maintenance-runner.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioRituals.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio apps/web/src/studio/StudioRituals.tsx apps/web/src/studio/StudioRituals.test.tsx

@@ -13,6 +13,8 @@ import type {
   StudioRitualSessionQuery,
   StudioStructure
 } from "./studio.types";
+import type { StudioMaintenanceClaimBudget } from "./studio-maintenance-budget";
+import { tagStudioMaintenanceFailure } from "./studio-maintenance-budget";
 import { nextRitualRun } from "./studio.service";
 
 const PREPARATION_LEASE_MS = 120_000;
@@ -50,6 +52,10 @@ export type StudioRitualService = {
     requestSynthesis: boolean;
     signal?: AbortSignal;
   }): Promise<StudioRitualSession>;
+  processNextPreparation(
+    signal?: AbortSignal,
+    budget?: StudioMaintenanceClaimBudget
+  ): Promise<StudioRitualSession | null>;
 };
 
 type StudioRitualServiceOptions = {
@@ -67,7 +73,6 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
   const now = options.now ?? (() => new Date());
   const preparationTimeoutMs = operationTimeout(options.preparationTimeoutMs);
   const synthesisTimeoutMs = operationTimeout(options.synthesisTimeoutMs);
-  const preparationInFlight = new Map<string, Promise<StudioRitualSession>>();
   const synthesisInFlight = new Map<string, Promise<StudioRitualSession>>();
 
   return {
@@ -77,22 +82,32 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       return { ...page, items: page.items.map(assertSession) };
     },
 
-    startSession(scope, ritualId, input = {}) {
-      const key = scopeKey(scope, ritualId);
-      const current = preparationInFlight.get(key);
-      if (current) return current;
-      const operation = createDeadlineSignal(
-        input.signal,
-        preparationTimeoutMs,
-        "STUDIO_RITUAL_PREPARATION_TIMEOUT"
-      );
-      const pending = startSession(options, now, scope, ritualId, operation)
-        .finally(() => {
-          operation.cleanup();
-          if (preparationInFlight.get(key) === pending) preparationInFlight.delete(key);
-        });
-      preparationInFlight.set(key, pending);
-      return pending;
+    async startSession(scope, ritualId, input = {}) {
+      throwIfAborted(input.signal);
+      const ritual = await requireRitual(options.repository, scope, ritualId, true);
+      const contextJson = await baseRitualContext(options.repository, scope, ritual);
+      throwIfAborted(input.signal);
+      let session = assertSession(await options.repository.createRitualSession({
+        ...scope,
+        ritualId,
+        contextJson,
+        preparationToken: null,
+        preparationLeaseExpiresAt: null
+      }));
+      if (session.status !== "failed") return session;
+      try {
+        session = assertSession(await options.repository.updateRitualSession({
+          ...session,
+          status: "preparing",
+          failureCode: null,
+          preparationToken: null,
+          preparationLeaseExpiresAt: null
+        }, session.revision));
+      } catch (error) {
+        if (!isStale(error)) throw error;
+        session = await requireSession(options.repository, scope, session.id);
+      }
+      return session;
     },
 
     async updateSession(scope, sessionId, input) {
@@ -101,10 +116,8 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       if (current.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
       return assertSession(await options.repository.updateRitualSession({
         ...current,
-        status: "in_progress",
+        status: current.preparationJson === null ? "preparing" : "in_progress",
         answersJson: mergeAnswers(current.answersJson, input.answers),
-        preparationToken: null,
-        preparationLeaseExpiresAt: null,
         failureCode: null
       }, current.revision));
     },
@@ -144,6 +157,32 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
         });
       synthesisInFlight.set(key, pending);
       return pending;
+    },
+
+    async processNextPreparation(signal, budget) {
+      throwIfAborted(signal);
+      const startedAt = validDate(now());
+      const claimed = await options.repository.claimNextRitualPreparation(
+        startedAt.toISOString(),
+        PREPARATION_LEASE_MS,
+        budget?.excludeOwnerKeys
+      );
+      if (!claimed) return null;
+      const scope = { workspaceId: claimed.workspaceId, ownerProfileId: claimed.ownerProfileId };
+      const operation = createDeadlineSignal(
+        signal,
+        preparationTimeoutMs,
+        "STUDIO_RITUAL_PREPARATION_TIMEOUT"
+      );
+      try {
+        const ritual = await requireRitual(options.repository, scope, claimed.ritualId, false);
+        return await prepareClaimedSession(options, scope, ritual, assertSession(claimed), operation, startedAt);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        throw tagStudioMaintenanceFailure(error, scope);
+      } finally {
+        operation.cleanup();
+      }
     }
   };
 }
@@ -193,47 +232,19 @@ type DeadlineOperation = {
   cleanup(): void;
 };
 
-async function startSession(
+async function prepareClaimedSession(
   options: StudioRitualServiceOptions,
-  now: () => Date,
   scope: StudioOwnerScope,
-  ritualId: string,
-  operation: DeadlineOperation
+  ritual: StudioStructure,
+  session: StudioRitualSession,
+  operation: DeadlineOperation,
+  startedAt: Date
 ) {
-  throwIfAborted(operation.signal);
-  const ritual = await raceAbort(requireRitual(options.repository, scope, ritualId, true), operation.signal);
-  const preparationToken = randomUUID();
-  const startedAt = validDate(now());
-  let session = assertSession(await raceAbort(options.repository.createRitualSession({
-    ...scope,
-    ritualId,
-    preparationToken,
-    preparationLeaseExpiresAt: new Date(startedAt.getTime() + PREPARATION_LEASE_MS).toISOString()
-  }), operation.signal));
-  if (session.status === "ready" || session.status === "in_progress") return session;
-
-  const ownsPreparation = session.preparationToken === preparationToken;
-  const leaseExpired = session.preparationLeaseExpiresAt !== null
-    && new Date(session.preparationLeaseExpiresAt).getTime() <= startedAt.getTime();
-  if (!ownsPreparation && (session.status === "failed" || leaseExpired)) {
-    try {
-      session = assertSession(await raceAbort(options.repository.updateRitualSession({
-        ...session,
-        status: "preparing",
-        preparationToken,
-        preparationLeaseExpiresAt: new Date(startedAt.getTime() + PREPARATION_LEASE_MS).toISOString(),
-        failureCode: null
-      }, session.revision), operation.signal));
-    } catch (error) {
-      if (!isStale(error)) throw error;
-      return requireSession(options.repository, scope, session.id);
-    }
-  } else if (!ownsPreparation) {
-    return session;
-  }
-
+  const signal = operation.signal;
+  const preparationToken = session.preparationToken;
+  if (!preparationToken) throw new Error("STUDIO_RITUAL_PREPARATION_CLAIM_INVALID");
   try {
-    return await prepareSession(options, scope, ritual, session, operation.signal, startedAt);
+    return await prepareSession(options, scope, ritual, session, signal, startedAt);
   } catch (error) {
     const latest = await requireSession(options.repository, scope, session.id);
     if (latest.status !== "completed" && latest.preparationToken === preparationToken) {
@@ -243,24 +254,23 @@ async function startSession(
           ? "STUDIO_RITUAL_PREPARATION_CANCELLED"
           : "STUDIO_RITUAL_PREPARATION_FAILED";
       try {
-        session = assertSession(await options.repository.updateRitualSession({
+        const hasAnswers = Object.keys(latest.answersJson).length > 0;
+        return assertSession(await options.repository.updateRitualSession({
           ...latest,
-          status: "failed",
+          status: hasAnswers ? "in_progress" : "failed",
+          contextJson: hasAnswers
+            ? assertJsonBounds({ ...(latest.contextJson ?? {}), preparationFailureCode: failureCode })
+            : latest.contextJson,
           preparationToken: null,
           preparationLeaseExpiresAt: null,
-          failureCode
+          failureCode: hasAnswers ? null : failureCode
         }, latest.revision));
       } catch (updateError) {
         if (!isStale(updateError)) throw updateError;
-        session = await requireSession(options.repository, scope, session.id);
+        return requireSession(options.repository, scope, session.id);
       }
-    } else {
-      session = latest;
     }
-    if (operation.signal.aborted && !operation.timedOut()) {
-      throw operation.signal.reason ?? new Error("STUDIO_RITUAL_PREPARATION_CANCELLED");
-    }
-    return session;
+    return latest;
   }
 }
 
@@ -273,17 +283,16 @@ async function prepareSession(
   startedAt: Date
 ) {
   const properties = studioStructurePropertiesSchema("ritual").parse(ritual.propertiesJson);
-  const document = await raceAbort(options.repository.findDocument(scope, ritual.documentId), signal);
-  if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
-  const intent = boundedStudioText(
-    properties.intention?.trim() || document.title?.trim() || document.bodyText.trim() || "Revisar este ritual",
-    MAX_INTENTION_CODE_POINTS,
-    MAX_INTENTION_BYTES
-  ) || "Revisar este ritual";
-  const guideQuestions = (properties.guide_questions ?? [])
-    .slice(0, MAX_GUIDE_QUESTIONS)
-    .map((question) => boundedStudioText(question, MAX_GUIDE_QUESTION_CODE_POINTS, MAX_INTENTION_BYTES))
-    .filter(Boolean);
+  const base = await raceAbort(baseRitualContext(options.repository, scope, ritual), signal);
+  const ritualContext = base.ritual as {
+    id: string;
+    documentId: string;
+    intention: string;
+    guideQuestions: string[];
+    cadence: StudioStructure["cadenceJson"];
+    nextRunAt: string | null;
+  };
+  const intent = ritualContext.intention;
   const to = startedAt.toISOString().slice(0, 10);
   const from = new Date(startedAt.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
   const resourceTypes = [...new Set((properties.allowed_internal_sources ?? [])
@@ -308,12 +317,7 @@ async function prepareSession(
   const contextJson = assertJsonBounds({
     preparedAt: startedAt.toISOString(),
     ritual: {
-      id: ritual.id,
-      documentId: ritual.documentId,
-      intention: intent,
-      guideQuestions,
-      cadence: ritual.cadenceJson,
-      nextRunAt: ritual.nextRunAt
+      ...ritualContext
     },
     operational,
     related: related.map((match) => ({
@@ -324,10 +328,6 @@ async function prepareSession(
       updatedAt: match.updatedAt
     })).sort((left, right) => right.score - left.score || left.documentId.localeCompare(right.documentId))
   });
-  const withContext = assertSession(await raceAbort(options.repository.updateRitualSession({
-    ...session,
-    contextJson
-  }, session.revision), signal));
   const result = await raceAbort(options.harness.runStructured({
     workspaceId: scope.workspaceId,
     actorProfileId: scope.ownerProfileId,
@@ -345,15 +345,54 @@ async function prepareSession(
     signal
   }), signal);
   if (result.output.proposal.ritual_id !== ritual.id) throw new Error("AI_OUTPUT_VALIDATION_FAILED");
-  return assertSession(await raceAbort(options.repository.updateRitualSession({
-    ...withContext,
-    status: "ready",
-    preparationJson: assertJsonBounds(result.output),
-    prepareAiRunId: result.run.id,
-    preparationToken: null,
-    preparationLeaseExpiresAt: null,
-    failureCode: null
-  }, withContext.revision), signal));
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const latest = await raceAbort(requireSession(options.repository, scope, session.id), signal);
+    if (latest.status === "completed" || latest.preparationToken !== session.preparationToken) return latest;
+    try {
+      return assertSession(await raceAbort(options.repository.updateRitualSession({
+        ...latest,
+        status: Object.keys(latest.answersJson).length ? "in_progress" : "ready",
+        contextJson,
+        preparationJson: assertJsonBounds(result.output),
+        prepareAiRunId: result.run.id,
+        preparationToken: null,
+        preparationLeaseExpiresAt: null,
+        failureCode: null
+      }, latest.revision), signal));
+    } catch (error) {
+      if (!isStale(error)) throw error;
+    }
+  }
+  return requireSession(options.repository, scope, session.id);
+}
+
+async function baseRitualContext(
+  repository: StudioRepository,
+  scope: StudioOwnerScope,
+  ritual: StudioStructure
+) {
+  const properties = studioStructurePropertiesSchema("ritual").parse(ritual.propertiesJson);
+  const document = await repository.findDocument(scope, ritual.documentId);
+  if (!document) throw new Error("STUDIO_DOCUMENT_NOT_FOUND");
+  const intention = boundedStudioText(
+    properties.intention?.trim() || document.title?.trim() || document.bodyText.trim() || "Revisar este ritual",
+    MAX_INTENTION_CODE_POINTS,
+    MAX_INTENTION_BYTES
+  ) || "Revisar este ritual";
+  const guideQuestions = (properties.guide_questions ?? [])
+    .slice(0, MAX_GUIDE_QUESTIONS)
+    .map((question) => boundedStudioText(question, MAX_GUIDE_QUESTION_CODE_POINTS, MAX_INTENTION_BYTES))
+    .filter(Boolean);
+  return assertJsonBounds({
+    ritual: {
+      id: ritual.id,
+      documentId: ritual.documentId,
+      intention,
+      guideQuestions,
+      cadence: ritual.cadenceJson,
+      nextRunAt: ritual.nextRunAt
+    }
+  });
 }
 
 async function synthesizeCompletedSession(
@@ -464,7 +503,8 @@ function assertSession(session: StudioRitualSession) {
       || (session.status === "completed") !== (session.completedAt !== null)
       || (session.status === "failed") !== (session.failureCode !== null)
       || !preparationClaimPaired || !synthesisClaimPaired
-      || (session.status === "preparing") !== (session.preparationToken !== null)
+      || (session.preparationToken !== null && session.status !== "preparing" && session.status !== "in_progress")
+      || (session.status === "preparing" && session.preparationJson !== null)
       || (session.synthesisToken !== null && (session.status !== "completed" || session.synthesisJson !== null))
       || (session.synthesisFailureCode !== null
         && (session.status !== "completed" || session.synthesisJson !== null || session.synthesisToken !== null))) {

@@ -575,9 +575,15 @@ export type StudioRepository = {
   findRitualSession(scope: StudioOwnerScope, sessionId: string): Promise<StudioRitualSession | null>;
   createRitualSession(input: StudioOwnerScope & {
     ritualId: string;
-    preparationToken: string;
-    preparationLeaseExpiresAt: string;
+    preparationToken: string | null;
+    preparationLeaseExpiresAt: string | null;
+    contextJson?: Record<string, unknown>;
   }): Promise<StudioRitualSession>;
+  claimNextRitualPreparation(
+    now: string,
+    leaseMs?: number,
+    excludeOwnerKeys?: readonly string[]
+  ): Promise<StudioRitualSession | null>;
   updateRitualSession(input: StudioRitualSession, expectedRevision: number): Promise<StudioRitualSession>;
   listRitualSessions(scope: StudioOwnerScope, ritualId: string, query: StudioRitualSessionQuery): Promise<StudioRitualSessionPage>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;

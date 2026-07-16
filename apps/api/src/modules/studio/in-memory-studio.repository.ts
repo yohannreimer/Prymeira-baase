@@ -848,7 +848,7 @@ export function createInMemoryStudioRepository(
         id: `studio_ritual_session_${randomUUID()}`,
         status: "preparing",
         revision: 1,
-        contextJson: null,
+        contextJson: structuredClone(input.contextJson ?? {}),
         preparationJson: null,
         answersJson: {},
         synthesisJson: null,
@@ -866,6 +866,32 @@ export function createInMemoryStudioRepository(
       };
       ritualSessions.push(session);
       return cloneRitualSession(session);
+    },
+
+    async claimNextRitualPreparation(at, leaseMs = 120_000, excludeOwnerKeys = []) {
+      const claimedAt = new Date(at);
+      if (Number.isNaN(claimedAt.getTime())) throw new Error("STUDIO_RITUAL_PREPARATION_CLAIM_INVALID");
+      const excluded = new Set(excludeOwnerKeys);
+      const candidate = ritualSessions
+        .filter((session) => session.preparationJson === null
+          && (session.status === "preparing" || session.status === "in_progress")
+          && (session.preparationToken === null
+            || (session.preparationLeaseExpiresAt !== null
+              && new Date(session.preparationLeaseExpiresAt).getTime() <= claimedAt.getTime()))
+          && !excluded.has(`${session.workspaceId}/${session.ownerProfileId}`))
+        .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id))[0];
+      if (!candidate) return null;
+      const index = ritualSessions.indexOf(candidate);
+      const updated: StudioRitualSession = {
+        ...candidate,
+        preparationToken: randomUUID(),
+        preparationLeaseExpiresAt: new Date(claimedAt.getTime() + leaseMs).toISOString(),
+        failureCode: null,
+        revision: candidate.revision + 1,
+        updatedAt: nextTimestamp(now, candidate.updatedAt)
+      };
+      ritualSessions[index] = updated;
+      return cloneRitualSession(updated);
     },
 
     async updateRitualSession(input, expectedRevision) {

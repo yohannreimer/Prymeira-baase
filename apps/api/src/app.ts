@@ -505,7 +505,10 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioProactivityService,
     studioPortabilityService,
     studioPortabilityReconciliationProcessor,
-    studioTrashCleanupProcessor
+    studioTrashCleanupProcessor,
+    studioRitualPreparationProcessor: {
+      processNext: studioRitualService.processNextPreparation
+    }
   });
 }
 

@@ -1425,7 +1425,8 @@ describe("StudioPage", () => {
     expect(navigationStatus).toHaveTextContent("Seção Início aberta.");
     await user.click(await screen.findByRole("button", { name: "Iniciar Revisão semanal" }));
 
-    expect(await screen.findByRole("heading", { name: "A preparação está indisponível agora." })).toBeInTheDocument();
+    expect(await screen.findByText(/contexto da IA não ficou disponível/i)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toBeEnabled();
     expect(navigationStatus).toBeEmptyDOMElement();
     expect(within(screen.getByRole("navigation", { name: "Seções do Estúdio" }))
       .getByRole("button", { name: "Rituais" })).toHaveAttribute("aria-current", "page");

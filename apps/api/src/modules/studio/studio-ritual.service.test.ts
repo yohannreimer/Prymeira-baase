@@ -65,11 +65,15 @@ async function fixture(options: {
     score: 0.8, vectorScore: 0.8, lexicalScore: 0.2, recencyScore: 1,
     updatedAt: now, cursor: "cursor"
   }]));
-  const provider = options.failPreparation
+  const providerBase = options.failPreparation
     ? { ...createMockAiProvider(), generateStructured: vi.fn(async () => { throw new Error("PROVIDER_DOWN"); }) }
     : options.generateStructured
       ? { ...createMockAiProvider(), generateStructured: options.generateStructured }
       : createMockAiProvider({ structuredOutput: preparedOutput(ritual.id) });
+  const provider = {
+    ...providerBase,
+    generateStructured: vi.fn(providerBase.generateStructured.bind(providerBase))
+  };
   const service = createStudioRitualService({
     repository,
     harness: createAiHarness({ repository: createInMemoryAiRepository(), provider }),
@@ -79,10 +83,136 @@ async function fixture(options: {
     now: () => new Date(now),
     preparationTimeoutMs: options.preparationTimeoutMs
   });
-  return { repository, ritual, document, service, buildStudioContext, findRelated };
+  return { repository, ritual, document, service, buildStudioContext, findRelated, provider };
 }
 
 describe("Studio ritual sessions", () => {
+  it("persists a usable session immediately and prepares it only in maintenance", async () => {
+    const setup = await fixture();
+
+    const session = await setup.service.startSession(scope, setup.ritual.id);
+
+    expect(session).toMatchObject({
+      status: "preparing",
+      answersJson: {},
+      contextJson: { ritual: { guideQuestions: ["O que mudou?"] } }
+    });
+    expect(setup.provider.generateStructured).not.toHaveBeenCalled();
+
+    await setup.service.processNextPreparation();
+
+    expect(await setup.repository.findRitualSession(scope, session.id)).toMatchObject({
+      status: "ready",
+      preparationJson: { proposal: { ritual_id: setup.ritual.id } }
+    });
+  });
+
+  it("merges background preparation over answers saved during the worker run", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const setup = await fixture({
+      generateStructured: async (request) => {
+        await blocked;
+        return preparedOutput((request.input as { ritual: { id: string } }).ritual.id);
+      }
+    });
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    const processing = setup.service.processNextPreparation();
+    await vi.waitFor(() => expect(setup.provider.generateStructured).toHaveBeenCalled());
+    const answered = await setup.service.updateSession(scope, started.id, {
+      expectedRevision: (await setup.repository.findRitualSession(scope, started.id))!.revision,
+      answers: { "O que mudou?": "A margem melhorou." }
+    });
+    expect(answered.status).toBe("preparing");
+    release();
+    await processing;
+
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "in_progress",
+      answersJson: { "O que mudou?": "A margem melhorou." },
+      preparationJson: { proposal: { ritual_id: setup.ritual.id } }
+    });
+  });
+
+  it("preserves answers saved before any worker claims the queued preparation", async () => {
+    const setup = await fixture();
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    const answered = await setup.service.updateSession(scope, started.id, {
+      expectedRevision: started.revision,
+      answers: { "O que mudou?": "Resposta antes do worker." }
+    });
+    expect(answered).toMatchObject({ status: "preparing", preparationToken: null });
+
+    await setup.service.processNextPreparation();
+
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "in_progress",
+      answersJson: { "O que mudou?": "Resposta antes do worker." },
+      preparationJson: { proposal: { ritual_id: setup.ritual.id } }
+    });
+  });
+
+  it("keeps answers and exposes an honest state when a claimed provider fails", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const setup = await fixture({
+      generateStructured: async () => {
+        await blocked;
+        throw new Error("PROVIDER_UNAVAILABLE");
+      }
+    });
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    const processing = setup.service.processNextPreparation();
+    await vi.waitFor(() => expect(setup.provider.generateStructured).toHaveBeenCalledTimes(1));
+    const claimed = (await setup.repository.findRitualSession(scope, started.id))!;
+    await setup.service.updateSession(scope, started.id, {
+      expectedRevision: claimed.revision,
+      answers: { "O que mudou?": "Esta resposta não pode sumir." }
+    });
+    release();
+    await processing;
+
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "in_progress",
+      answersJson: { "O que mudou?": "Esta resposta não pode sumir." },
+      failureCode: null,
+      contextJson: { preparationFailureCode: "STUDIO_RITUAL_PREPARATION_FAILED" }
+    });
+  });
+
+  it("fences a stale worker after its expired claim is reclaimed", async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    const setup = await fixture({
+      generateStructured: async (request) => {
+        calls += 1;
+        const callNumber = calls;
+        if (callNumber === 1) await firstBlocked;
+        const output = preparedOutput((request.input as { ritual: { id: string } }).ritual.id);
+        output.proposal.title = `Worker ${callNumber}`;
+        return output;
+      }
+    });
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    const staleWorker = setup.service.processNextPreparation();
+    await vi.waitFor(() => expect(setup.provider.generateStructured).toHaveBeenCalledTimes(1));
+    const firstClaim = (await setup.repository.findRitualSession(scope, started.id))!;
+    await setup.repository.updateRitualSession({
+      ...firstClaim,
+      preparationLeaseExpiresAt: "2026-07-13T11:59:59.999Z"
+    }, firstClaim.revision);
+
+    await setup.service.processNextPreparation();
+    releaseFirst();
+    await staleWorker;
+
+    expect(await setup.repository.findRitualSession(scope, started.id)).toMatchObject({
+      status: "ready",
+      preparationJson: { proposal: { title: "Worker 2" } }
+    });
+  });
+
   it("creates one prepared owner-scoped session with deterministic bounded context", async () => {
     const setup = await fixture();
     const [left, right] = await Promise.all([
@@ -90,12 +220,14 @@ describe("Studio ritual sessions", () => {
       setup.service.startSession(scope, setup.ritual.id)
     ]);
     expect(left.id).toBe(right.id);
-    expect(left).toMatchObject({ ritualId: setup.ritual.id, status: "ready", revision: expect.any(Number) });
-    expect(left.contextJson).toMatchObject({
+    expect(left).toMatchObject({ ritualId: setup.ritual.id, status: "preparing", revision: expect.any(Number) });
+    await setup.service.processNextPreparation();
+    const prepared = (await setup.repository.findRitualSession(scope, left.id))!;
+    expect(prepared.contextJson).toMatchObject({
       ritual: { id: setup.ritual.id, nextRunAt: "2026-07-20T12:00:00.000Z" },
       operational: { period: { from: "2026-06-13", to: "2026-07-13" } }
     });
-    expect(left.preparationJson).toMatchObject({ proposal: { ritual_id: setup.ritual.id } });
+    expect(prepared.preparationJson).toMatchObject({ proposal: { ritual_id: setup.ritual.id } });
     expect(setup.buildStudioContext).toHaveBeenCalledWith(scope, {
       from: "2026-06-13", to: "2026-07-13", resourceTypes: ["dashboard", "task"], personIds: []
     }, { signal: expect.any(AbortSignal) });
@@ -116,8 +248,10 @@ describe("Studio ritual sessions", () => {
       }
     });
     const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const prepared = (await setup.repository.findRitualSession(scope, started.id))!;
     await setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: prepared.revision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: true
     });
@@ -126,12 +260,14 @@ describe("Studio ritual sessions", () => {
 
   it("keeps preparation failures retryable and never blocks manual partial answers", async () => {
     const setup = await fixture({ failPreparation: true });
-    const failed = await setup.service.startSession(scope, setup.ritual.id);
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const failed = (await setup.repository.findRitualSession(scope, started.id))!;
     expect(failed).toMatchObject({ status: "failed", failureCode: "STUDIO_RITUAL_PREPARATION_FAILED" });
     const answered = await setup.service.updateSession(scope, failed.id, {
       expectedRevision: failed.revision, answers: { "O que mudou?": "Contratamos uma pessoa." }
     });
-    expect(answered).toMatchObject({ status: "in_progress", answersJson: { "O que mudou?": "Contratamos uma pessoa." } });
+    expect(answered).toMatchObject({ status: "preparing", answersJson: { "O que mudou?": "Contratamos uma pessoa." } });
   });
 
   it("persists final answers before optional synthesis and prevents restarting a completed session", async () => {
@@ -241,11 +377,15 @@ describe("Studio ritual sessions", () => {
       }
     });
     const startedAt = Date.now();
-    const failed = await setup.service.startSession(scope, setup.ritual.id);
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const failed = (await setup.repository.findRitualSession(scope, started.id))!;
     expect(Date.now() - startedAt).toBeLessThan(500);
     expect(failed).toMatchObject({ status: "failed", failureCode: "STUDIO_RITUAL_PREPARATION_TIMEOUT" });
     expect(observedContextSignal?.aborted).toBe(true);
-    const retried = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const retried = (await setup.repository.findRitualSession(scope, started.id))!;
     expect(retried.status).toBe("ready");
     expect(calls).toBe(2);
   });
@@ -266,7 +406,9 @@ describe("Studio ritual sessions", () => {
       ...scope, ritualId: setup.ritual.id, preparationToken: "abandoned",
       preparationLeaseExpiresAt: "2026-07-13T11:59:59.000Z"
     });
-    const ready = await setup.service.startSession(scope, setup.ritual.id);
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const ready = (await setup.repository.findRitualSession(scope, started.id))!;
     expect(ready.status).toBe("ready");
     expect(seenSignals).toHaveLength(2);
     expect(seenSignals.every((signal) => !signal.aborted)).toBe(true);
@@ -322,7 +464,9 @@ describe("Studio ritual sessions", () => {
         return preparedOutput((request.input as { ritual: { id: string } }).ritual.id);
       }
     });
-    const session = await setup.service.startSession(scope, setup.ritual.id);
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const session = (await setup.repository.findRitualSession(scope, started.id))!;
     const intention = (session.contextJson?.ritual as { intention: string }).intention;
     expect(Buffer.byteLength(intention, "utf8")).toBeLessThanOrEqual(24_000);
     expect(memoryQuery).toBe(intention);
@@ -332,7 +476,9 @@ describe("Studio ritual sessions", () => {
 
   it("rejects semantically corrupt legacy ready and completed rows with a controlled error", async () => {
     const setup = await fixture();
-    const ready = await setup.service.startSession(scope, setup.ritual.id);
+    const started = await setup.service.startSession(scope, setup.ritual.id);
+    await setup.service.processNextPreparation();
+    const ready = (await setup.repository.findRitualSession(scope, started.id))!;
     setup.repository.findRitualSession = async () => ({ ...ready, preparationJson: {} });
     await expect(setup.service.updateSession(scope, ready.id, {
       expectedRevision: ready.revision, answers: { a: "b" }

@@ -3105,6 +3105,19 @@
 .studio-ritual-context p,
 .studio-ritual-context ul { margin: 0; }
 .studio-ritual-context ul { padding-left: 20px; }
+.studio-ritual-context-status {
+  align-items: center;
+  border-bottom: 1px solid var(--line2);
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  padding: 0 0 18px;
+}
+.studio-ritual-context-status i { color: var(--accent-ink); font-size: 15px; }
+.studio-ritual-context-status:not(.studio-ritual-context-status--failed) i { animation: studio-ritual-spin 1.4s linear infinite; }
+.studio-ritual-context-status--failed i { color: var(--warning, #9a6b2f); }
+@keyframes studio-ritual-spin { to { transform: rotate(360deg); } }
 .studio-ritual-question { display: grid; gap: 12px; padding: 20px 0 28px; }
 .studio-ritual-question__purpose { color: var(--muted); font-size: 12px; margin: 0; }
 .studio-ritual-question h4 { font-family: var(--font-serif, Georgia, serif); font-size: clamp(24px, 4vw, 36px); font-weight: 400; line-height: 1.2; margin: 0 0 12px; }

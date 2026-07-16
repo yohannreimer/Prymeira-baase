@@ -1514,6 +1514,69 @@ function repositoryContract(
       });
     });
 
+    it("claims ritual preparation once across workers and safely reclaims an expired lease", async () => {
+      await withRepository(async (repository) => {
+        const createQueued = async (ownerProfileId: string) => {
+          const ownerScope = { workspaceId: "workspace_claims", ownerProfileId };
+          const document = await repository.createDocument(documentInput(ownerScope));
+          const ritual = await repository.createStructure({
+            ...ownerScope,
+            documentId: document.id,
+            kind: "ritual",
+            lifecycleStatus: "active",
+            horizonAt: null,
+            metricJson: null,
+            cadenceJson: null,
+            nextRunAt: null,
+            propertiesJson: { guide_questions: ["O que mudou?"] }
+          });
+          const session = await repository.createRitualSession({
+            ...ownerScope,
+            ritualId: ritual.id,
+            preparationToken: null,
+            preparationLeaseExpiresAt: null,
+            contextJson: { ritual: { guideQuestions: ["O que mudou?"] } }
+          });
+          return { ownerScope, session };
+        };
+        const left = await createQueued("owner_a");
+        const right = await createQueued("owner_b");
+        const claimedAt = "2026-07-13T12:00:00.000Z";
+
+        const claims = await Promise.all([
+          repository.claimNextRitualPreparation(claimedAt),
+          repository.claimNextRitualPreparation(claimedAt)
+        ]);
+
+        expect(new Set(claims.map((claim) => claim?.id))).toEqual(new Set([left.session.id, right.session.id]));
+        expect(claims.every((claim) => claim?.preparationToken && claim.preparationLeaseExpiresAt)).toBe(true);
+        await expect(repository.claimNextRitualPreparation(claimedAt)).resolves.toBeNull();
+        expect(await repository.findRitualSession(
+          { ...left.ownerScope, ownerProfileId: "foreign_owner" },
+          left.session.id
+        )).toBeNull();
+
+        const first = claims.find((claim) => claim?.id === left.session.id)!;
+        const answered = await repository.updateRitualSession({
+          ...first,
+          answersJson: { "O que mudou?": "Resposta preservada" }
+        }, first.revision);
+        const excludedOtherOwners = claims
+          .filter((claim) => claim && claim.id !== left.session.id)
+          .map((claim) => `${claim!.workspaceId}/${claim!.ownerProfileId}`);
+        const reclaimed = await repository.claimNextRitualPreparation(
+          "2026-07-13T12:02:00.001Z",
+          120_000,
+          excludedOtherOwners
+        );
+        expect(reclaimed).toMatchObject({
+          id: left.session.id,
+          answersJson: { "O que mudou?": "Resposta preservada" }
+        });
+        expect(reclaimed?.preparationToken).not.toBe(answered.preparationToken);
+      });
+    });
+
     it("projects the next active scheduled ritual with its owner-scoped document title in one bounded query", async () => {
       await withRepository(async (repository) => {
         const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -2057,6 +2120,30 @@ describe("PostgreSQL repository bundle", () => {
     expect(attempts[0]).toContain("FOR UPDATE");
     expect(attempts[0]).toContain("ON CONFLICT");
     expect(statements).toContain("ROLLBACK");
+  });
+
+  it("claims one due ritual preparation with replica-safe locking and owner fairness", async () => {
+    const calls: Array<{ text: string; params?: unknown[] }> = [];
+    const pool: OperationalPool = {
+      async query<T>(text: string, params?: unknown[]) {
+        calls.push({ text, params });
+        return { rows: [] as T[] };
+      },
+      async connect() { throw new Error("connect should not be called"); }
+    };
+
+    await expect(createPostgresStudioRepository(pool).claimNextRitualPreparation(
+      "2026-07-13T12:00:00.000Z",
+      120_000,
+      ["workspace_a/owner_a"]
+    )).resolves.toBeNull();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain("FOR UPDATE SKIP LOCKED");
+    expect(calls[0]!.text).toContain("preparation_token IS NULL OR sessions.preparation_lease_expires_at <=");
+    expect(calls[0]!.text).toContain("NOT (sessions.workspace_id || '/' || sessions.owner_profile_id = ANY");
+    expect(calls[0]!.text).toContain("revision=sessions.revision+1");
+    expect(calls[0]!.params?.[3]).toEqual(["workspace_a/owner_a"]);
   });
 
   it("uses the relational Studio repository for either operational store", async () => {

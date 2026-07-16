@@ -30,16 +30,16 @@ async function setup() {
 }
 
 describe("Studio ritual routes", () => {
-  it("starts, lists, partially answers, and finishes a ritual session", async () => {
+  it("starts immediately, partially answers, and finishes without waiting for preparation", async () => {
     const { app, ritual } = await setup();
     const started = await app.inject({ method: "POST", url: `/studio/rituals/${ritual.id}/sessions`, headers: owner });
     expect(started.statusCode).toBe(201);
-    expect(started.json().session.status).toBe("ready");
+    expect(started.json().session.status).toBe("preparing");
     const session = started.json().session;
     const partial = await app.inject({ method: "PATCH", url: `/studio/ritual-sessions/${session.id}`, headers: owner,
       payload: { expected_revision: session.revision, answers: { "O que mudou?": "Crescemos." } } });
     expect(partial.statusCode).toBe(200);
-    expect(partial.json().session.status).toBe("in_progress");
+    expect(partial.json().session.status).toBe("preparing");
     const finished = await app.inject({ method: "POST", url: `/studio/ritual-sessions/${session.id}/finish`, headers: owner,
       payload: { expected_revision: partial.json().session.revision, answers: {}, request_synthesis: false } });
     expect(finished.statusCode).toBe(200);

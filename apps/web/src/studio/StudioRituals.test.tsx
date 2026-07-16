@@ -63,6 +63,44 @@ describe("StudioRituals", () => {
   beforeEach(() => installLocalStorage());
   afterEach(() => vi.restoreAllMocks());
 
+  it("opens answers immediately while preparation advances through abortable polling", async () => {
+    const user = userEvent.setup();
+    const preparing = {
+      ...readySession,
+      status: "preparing",
+      revision: 1,
+      preparationJson: null,
+      prepareAiRunId: null,
+      preparationToken: null,
+      preparationLeaseExpiresAt: null,
+      contextJson: { ritual: { guideQuestions: ["O que mudou?", "O que merece foco?"] } }
+    };
+    let polls = 0;
+    let pollSignal: AbortSignal | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.endsWith(`/api/studio/rituals/${ritual.id}/sessions`) && init?.method === "POST") {
+        return response({ session: preparing }, 201);
+      }
+      if (url.includes(`/api/studio/rituals/${ritual.id}/sessions?`) && !init?.method) {
+        polls += 1;
+        pollSignal = init?.signal as AbortSignal;
+        return response({ sessions: [{ ...readySession, revision: 2 }], nextCursor: null });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
+
+    expect(await screen.findByRole("textbox", { name: "Resposta para O que mudou?" })).toBeEnabled();
+    expect(screen.getByText("Preparando contexto em segundo plano…")).toBeVisible();
+    await waitFor(() => expect(screen.getByText("Ver contexto preparado")).toBeVisible(), { timeout: 2_500 });
+    expect(polls).toBeGreaterThan(0);
+    await waitFor(() => expect(pollSignal?.aborted).toBe(true));
+  });
+
   it("saves one visible question at a time and keeps final suggestions pending", async () => {
     const user = userEvent.setup();
     let revision = 1;
@@ -124,7 +162,7 @@ describe("StudioRituals", () => {
     expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes("ritual-sessions/session_1") && init?.method === "PATCH")).toHaveLength(2);
   });
 
-  it("starts manually when preparation fails", async () => {
+  it("keeps answers available when preparation fails", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -142,9 +180,10 @@ describe("StudioRituals", () => {
 
     render(<StudioRituals />);
     await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/preparação.*indisponível/i);
-    await user.click(screen.getByRole("button", { name: "Começar sem preparação" }));
+    expect(await screen.findByRole("status", { name: "Estado do salvamento do ritual" })).toBeVisible();
+    expect(screen.getByText(/contexto da IA não ficou disponível/i)).toBeVisible();
     expect(screen.getByRole("heading", { name: "O que mudou?" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toBeEnabled();
   });
 
   it("keeps an offline answer locally and retries without hiding the save state", async () => {

@@ -16,6 +16,7 @@ export function createStudioAssetMaintenanceRunner(options: {
   memoryProcessor?: Processor;
   portabilityProcessor?: Processor;
   trashProcessor?: Processor;
+  ritualPreparationProcessor?: Processor;
   logger: MaintenanceLogger;
   maxItemsPerProcessor?: number;
   intervalMs?: number;
@@ -83,6 +84,7 @@ export function createStudioAssetMaintenanceRunner(options: {
     if (options.memoryProcessor) processors.push(["memory indexing", options.memoryProcessor]);
     if (options.portabilityProcessor) processors.push(["private data reconciliation", options.portabilityProcessor]);
     if (options.trashProcessor) processors.push(["trash retention", options.trashProcessor]);
+    if (options.ritualPreparationProcessor) processors.push(["ritual preparation", options.ritualPreparationProcessor]);
     for (const [name, processor] of processors) {
       let processed = 0;
       let fairnessPass = true;
@@ -223,6 +225,7 @@ export function startStudioAssetMaintenance(input: {
   studioMemoryIndexProcessor?: Processor;
   studioPortabilityReconciliationProcessor?: Processor;
   studioTrashCleanupProcessor?: Processor;
+  studioRitualPreparationProcessor?: Processor;
   log: MaintenanceLogger;
 }, options: {
   maxItemsPerProcessor?: number;
@@ -242,6 +245,7 @@ export function startStudioAssetMaintenance(input: {
     memoryProcessor: input.studioMemoryIndexProcessor,
     portabilityProcessor: input.studioPortabilityReconciliationProcessor,
     trashProcessor: input.studioTrashCleanupProcessor,
+    ritualPreparationProcessor: input.studioRitualPreparationProcessor,
     logger: input.log,
     ...options
   });
