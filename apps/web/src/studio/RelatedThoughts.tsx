@@ -27,7 +27,8 @@ export default function RelatedThoughts({ documentId, onOpenDocument }: Props) {
         setThoughts(response.related);
         setIndex(response.index);
         setState("ready");
-        if (response.index.status === "pending" || response.index.status === "processing") {
+        if (response.index.status === "pending" || response.index.status === "processing"
+          || response.index.status === "stale") {
           poll = setTimeout(() => setReloadKey((key) => key + 1), 2_000);
         }
       }

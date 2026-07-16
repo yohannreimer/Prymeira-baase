@@ -1,9 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import RelatedThoughts from "./RelatedThoughts";
 
 describe("RelatedThoughts", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
   it("explains, opens and persists an owner-approved relation", async () => {
     const user = userEvent.setup();
     const open = vi.fn();
@@ -125,6 +129,51 @@ describe("RelatedThoughts", () => {
     await waitFor(() => expect(requestSignal).not.toBeNull());
     view.unmount();
     expect(requestSignal!.aborted).toBe(true);
+  });
+
+  it("polls a stale connection index until the current revision is ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(json({
+          index: { status: "stale", code: "STUDIO_MEMORY_INDEX_STALE", indexedVersionId: "version_old" },
+          related: []
+        }))
+        .mockResolvedValueOnce(json({ index: readyIndex(), related: [] }));
+      render(<RelatedThoughts documentId="source" />);
+      fireEvent.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByText("Este pensamento mudou desde a última conexão.")).toBeVisible();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByText("Nenhuma conexão encontrada")).toBeVisible();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["collapse", "unmount"] as const)("cancels stale polling on %s without a late request", async (exit) => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(json({
+        index: { status: "stale", code: "STUDIO_MEMORY_INDEX_STALE", indexedVersionId: "version_old" },
+        related: []
+      }));
+      const view = render(<RelatedThoughts documentId="source" />);
+      fireEvent.click(screen.getByRole("button", { name: "Encontrar conexões" }));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByText("Este pensamento mudou desde a última conexão.")).toBeVisible();
+
+      if (exit === "collapse") fireEvent.click(screen.getByRole("button", { name: "Recolher" }));
+      else view.unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
