@@ -291,6 +291,39 @@ describe("useStudioAutosave", () => {
     expect(save).toHaveBeenCalledTimes(3);
   });
 
+  it("never auto-runs a conflicted retry after an authoritative exit rebase", async () => {
+    const first = draft("Base salva antes do conflito");
+    const newer = draft("Draft em conflito que exige decisão explícita");
+    const authoritative = saved(first, 6);
+    const exit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
+    const save = vi.fn()
+      .mockResolvedValueOnce(saved(first, 5))
+      .mockRejectedValueOnce(new StudioApiError(409, "STUDIO_DOCUMENT_CHANGED", "Mudou no servidor."));
+    const { result } = renderHook(() => useStudioAutosave(document, save, {
+      exitCheckpoint: vi.fn(() => exit.promise)
+    }));
+
+    act(() => result.current.queueSave(first));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    act(() => result.current.queueSave(newer));
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+    expect(result.current.state).toBe("conflict");
+
+    await act(async () => exit.resolve(exitCheckpointResult(first, 6)));
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(result.current.document).toEqual(authoritative);
+    expect(result.current.state).toBe("conflict");
+    expect(result.current.conflictDraft).toEqual(newer);
+
+    act(() => result.current.resolveConflict(authoritative, true));
+    expect(result.current.state).toBe("saved");
+    expect(result.current.conflictDraft).toBeNull();
+    expect(result.current.currentDraft).toBeNull();
+  });
+
   it("ignores a late exit checkpoint result after switching documents", async () => {
     const pendingSave = deferred<StudioDocument>();
     const pendingExit = deferred<{ document: StudioDocument; version: StudioDocumentVersion }>();
