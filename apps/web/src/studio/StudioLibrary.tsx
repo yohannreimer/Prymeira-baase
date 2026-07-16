@@ -250,14 +250,16 @@ export default function StudioLibrary({
         const canonicalIds = new Set(canonical.map((collection) => collection.id));
         membershipActual.current.set(documentId, canonicalIds);
         const currentIntent = pending?.get(nextCollectionId);
+        const canonicalMatchesRequest = canonicalIds.has(nextCollectionId) === requestedIntent.value;
         if (currentIntent?.version === requestedIntent.version
-          && currentIntent.value === requestedIntent.value
-          && canonicalIds.has(nextCollectionId) === requestedIntent.value) {
+          && currentIntent.value === requestedIntent.value) {
           pending?.delete(nextCollectionId);
         }
         if (pending?.size === 0) membershipIntents.current.delete(documentId);
         reconcileDesiredMembership(documentId);
-        setLiveMessage(target ? "Documento adicionado à coleção." : "Documento removido da coleção.");
+        setLiveMessage(canonicalMatchesRequest
+          ? target ? "Documento adicionado à coleção." : "Documento removido da coleção."
+          : "Coleções sincronizadas com o estado mais recente do servidor.");
       } catch (error) {
         if (!controller.signal.aborted && queryGeneration.current === generation && !isAbortError(error)) {
           const currentIntent = pending?.get(nextCollectionId);

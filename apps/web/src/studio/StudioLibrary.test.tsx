@@ -224,6 +224,49 @@ describe("StudioLibrary", () => {
     expect(within(row).getByRole("checkbox", { name: "Conselho" })).not.toBeChecked();
   });
 
+  it.each([
+    {
+      label: "adição rejeitada pelo estado canônico",
+      initial: [] as StudioCollection[],
+      clickFromChecked: false,
+      addCanonical: [] as StudioCollection[],
+      removeCanonical: [] as StudioCollection[],
+      expectedChecked: false
+    },
+    {
+      label: "remoção rejeitada pelo estado canônico",
+      initial: [collections[0]!],
+      clickFromChecked: true,
+      addCanonical: [collections[0]!],
+      removeCanonical: [collections[0]!],
+      expectedChecked: true
+    }
+  ])("accepts the server as authoritative after $label without retrying", async ({ initial, clickFromChecked, addCanonical, removeCanonical, expectedChecked }) => {
+    const user = userEvent.setup();
+    const addMembership = vi.fn(async () => addCanonical);
+    const removeMembership = vi.fn(async () => removeCanonical);
+    render(
+      <StudioLibrary
+        query={{ status: "active" }}
+        loadDocuments={async () => ({ items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: initial } })}
+        loadCollections={async () => collections}
+        addMembership={addMembership}
+        removeMembership={removeMembership}
+        onOpenDocument={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    const strategy = within(row).getByRole("checkbox", { name: "Estratégia" });
+    expect(strategy).toHaveProperty("checked", clickFromChecked);
+    await user.click(strategy);
+    await waitFor(() => expect(strategy).toHaveProperty("checked", expectedChecked));
+    expect(addMembership).toHaveBeenCalledTimes(clickFromChecked ? 0 : 1);
+    expect(removeMembership).toHaveBeenCalledTimes(clickFromChecked ? 1 : 0);
+    expect(screen.getByRole("status")).toHaveTextContent("sincronizadas com o estado mais recente");
+  });
+
   it("keeps the newest same-collection intent and preserves later intents when a middle mutation fails", async () => {
     const user = userEvent.setup();
     const firstAdd = deferred<StudioCollection[]>();
