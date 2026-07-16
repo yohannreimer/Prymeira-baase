@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import StudioStructureLibrary from "./StudioStructureLibrary";
+import StudioStructureLibrary, { formatStudioCalendarDate } from "./StudioStructureLibrary";
 import { listStudioStructures } from "./studio-api";
 import type { StudioStructure } from "./studio.types";
 
@@ -45,7 +45,7 @@ describe("StudioStructureLibrary", () => {
 
   it("searches loaded titles and filters by a safe structure state", async () => {
     const user = userEvent.setup();
-    mockedList.mockResolvedValue({
+    mockedList.mockResolvedValueOnce({
       items: [
         structure({ id: "goal_1", documentId: "doc_1", documentTitle: "Abrir nova unidade", propertiesJson: { desired_outcome: "Operação pronta", state: "in_focus" } }),
         structure({ id: "goal_2", documentId: "doc_2", documentTitle: "Rever margem", propertiesJson: { desired_outcome: "Margem saudável", state: "waiting" } })
@@ -123,6 +123,37 @@ describe("StudioStructureLibrary", () => {
     await user.click(within(alert).getByRole("button", { name: "Tentar novamente" }));
     expect(await screen.findByText("Nenhuma decisão organizada ainda.")).toBeInTheDocument();
     expect(mockedList).toHaveBeenCalledTimes(2);
+  });
+
+  it("formats calendar dates without shifting the civil day in São Paulo", async () => {
+    expect(formatStudioCalendarDate("2026-12-31T00:00:00.000Z")).toBe("31 de dez. de 2026");
+    expect(formatStudioCalendarDate("2026-12-31")).toBe("31 de dez. de 2026");
+    expect(formatStudioCalendarDate("2026-02-29")).toBeNull();
+    expect(formatStudioCalendarDate("not-a-date")).toBeNull();
+
+    mockedList.mockResolvedValueOnce({
+      items: [structure({
+        id: "goal_calendar",
+        documentTitle: "Encerrar o ano",
+        horizonAt: "2026-12-31T00:00:00.000Z"
+      })],
+      nextCursor: null
+    });
+    const { rerender } = render(<StudioStructureLibrary kind="goal" onOpenDocument={vi.fn()} />);
+
+    expect(await screen.findByText("Horizonte 31 de dez. de 2026")).toBeInTheDocument();
+
+    mockedList.mockResolvedValueOnce({
+      items: [structure({
+        id: "decision_calendar",
+        kind: "decision",
+        documentTitle: "Revisar a escolha",
+        propertiesJson: { decision: "Manter o canal", review_date: "2026-12-31" }
+      })],
+      nextCursor: null
+    });
+    rerender(<StudioStructureLibrary kind="decision" onOpenDocument={vi.fn()} />);
+    expect(await screen.findByText("Revisar 31 de dez. de 2026")).toBeInTheDocument();
   });
 });
 

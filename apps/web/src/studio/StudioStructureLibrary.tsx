@@ -13,7 +13,12 @@ type LibraryState = "loading" | "ready" | "error";
 type SortMode = "updated" | "created" | "horizon";
 
 const PAGE_SIZE = 30;
-const dateFormatter = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" });
+const calendarDateFormatter = new Intl.DateTimeFormat("pt-BR", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC"
+});
 
 const COPY: Record<LibraryKind, {
   title: string;
@@ -270,14 +275,32 @@ function structureStatus(item: StudioStructure): { key: string; label: string } 
 }
 
 function structureRelevantDate(item: StudioStructure): { value: string; label: string } | null {
-  const candidate = item.kind === "decision" && typeof item.propertiesJson.review_date === "string"
-    ? item.propertiesJson.review_date
-    : item.horizonAt;
+  const reviewDate = typeof item.propertiesJson.review_date === "string" ? item.propertiesJson.review_date : null;
+  const decisionDate = typeof item.propertiesJson.decision_date === "string" ? item.propertiesJson.decision_date : null;
+  const candidate = item.kind === "decision" ? reviewDate ?? item.horizonAt ?? decisionDate : item.horizonAt;
   if (!candidate) return null;
-  const timestamp = Date.parse(candidate);
-  if (Number.isNaN(timestamp)) return null;
-  const prefix = item.kind === "decision" ? "Revisar" : "Horizonte";
-  return { value: candidate, label: `${prefix} ${dateFormatter.format(timestamp)}` };
+  const formatted = formatStudioCalendarDate(candidate);
+  if (!formatted) return null;
+  let prefix = "Horizonte";
+  if (item.kind === "decision") prefix = reviewDate || item.horizonAt ? "Revisar" : "Decidida";
+  return { value: candidate.slice(0, 10), label: `${prefix} ${formatted}` };
+}
+
+export function formatStudioCalendarDate(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/u.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) return null;
+  return calendarDateFormatter.format(date);
 }
 
 function safeStringList(value: unknown) {
