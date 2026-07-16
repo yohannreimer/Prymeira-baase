@@ -688,12 +688,13 @@ export async function addStudioDocumentToCollection(
   documentId: string,
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch
-): Promise<void> {
-  await studioRequest(
+): Promise<StudioCollection[]> {
+  const response = await studioRequest<{ collections: RawStudioCollection[] }>(
     `/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(documentId)}`,
     { method: "PUT", signal },
     fetcher
   );
+  return response.collections.map(mapStudioCollection);
 }
 
 export async function removeStudioDocumentFromCollection(
@@ -701,12 +702,13 @@ export async function removeStudioDocumentFromCollection(
   documentId: string,
   signal?: AbortSignal,
   fetcher: StudioFetcher = fetch
-): Promise<void> {
-  await studioRequest(
+): Promise<StudioCollection[]> {
+  const response = await studioRequest<{ collections: RawStudioCollection[] }>(
     `/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(documentId)}`,
     { method: "DELETE", signal },
     fetcher
   );
+  return response.collections.map(mapStudioCollection);
 }
 
 export async function listStudioDocumentVersions(

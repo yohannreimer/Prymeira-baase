@@ -575,6 +575,9 @@ describe("Studio routes", () => {
     });
     expect(membership.statusCode).toBe(200);
     expect(membership.json().membership).toMatchObject({ collectionId, documentId: document.id });
+    expect(membership.json().collections).toEqual([
+      expect.objectContaining({ id: collectionId, name: "Estratégia" })
+    ]);
 
     const ownerBMembership = await app.inject({
       method: "PUT",
@@ -589,7 +592,7 @@ describe("Studio routes", () => {
       headers: ownerA
     });
     expect(removed.statusCode).toBe(200);
-    expect(removed.json()).toEqual({ removed: true });
+    expect(removed.json()).toEqual({ removed: true, collections: [] });
 
     const list = await app.inject({ method: "GET", url: "/studio/collections", headers: ownerA });
     expect(list.statusCode).toBe(200);

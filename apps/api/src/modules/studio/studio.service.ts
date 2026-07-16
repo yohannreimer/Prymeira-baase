@@ -349,6 +349,11 @@ export function createStudioService(
       return collection;
     },
 
+    async listDocumentCollections(scope, documentId) {
+      await requireDocument(repository, scope, documentId);
+      return repository.listDocumentCollections(scope, documentId);
+    },
+
     async addDocumentToCollection(scope, actorProfileId, collectionId, documentId) {
       assertActor(scope, actorProfileId);
       await requireCollection(repository, scope, collectionId);

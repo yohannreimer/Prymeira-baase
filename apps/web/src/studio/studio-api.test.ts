@@ -501,14 +501,20 @@ describe("Studio API client", () => {
 
   it("archives, restores, and changes collection membership with encoded owner-scoped routes", async () => {
     const controller = new AbortController();
-    const fetcher = vi.fn(async (input: string, _init?: RequestInit) => input.includes("/collections/")
-      ? jsonResponse({ membership: {}, removed: true })
+    const rawCollection = {
+      id: "collection / 1", workspace_id: "workspace_a", owner_profile_id: "profile_owner",
+      name: "Estratégia", created_at: "2026-07-10", updated_at: "2026-07-11"
+    };
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => input.includes("/collections/")
+      ? jsonResponse({ membership: {}, removed: true, collections: init?.method === "DELETE" ? [] : [rawCollection] })
       : jsonResponse({ document: { ...rawDocument, status: input.endsWith("/archive") ? "archived" : "active" } }));
 
     await archiveStudioDocument("document / 1", controller.signal, fetcher);
     await restoreStudioDocument("document / 1", controller.signal, fetcher);
-    await addStudioDocumentToCollection("collection / 1", "document / 1", controller.signal, fetcher);
-    await removeStudioDocumentFromCollection("collection / 1", "document / 1", controller.signal, fetcher);
+    await expect(addStudioDocumentToCollection("collection / 1", "document / 1", controller.signal, fetcher))
+      .resolves.toEqual([expect.objectContaining({ id: "collection / 1", name: "Estratégia" })]);
+    await expect(removeStudioDocumentFromCollection("collection / 1", "document / 1", controller.signal, fetcher))
+      .resolves.toEqual([]);
 
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
       "/api/studio/documents/document%20%2F%201/archive",

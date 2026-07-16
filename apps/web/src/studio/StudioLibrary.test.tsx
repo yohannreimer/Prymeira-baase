@@ -66,8 +66,15 @@ describe("StudioLibrary", () => {
     const updateDocument = vi.fn(async (_id: string, input: { expected_revision: number }) => ({
       ...documents[0]!, revision: input.expected_revision + 1, inboxState: "reviewed" as const
     }));
-    const addMembership = vi.fn(async (_collectionId: string, _documentId: string, _signal?: AbortSignal) => undefined);
-    const removeMembership = vi.fn(async (_collectionId: string, _documentId: string, _signal?: AbortSignal) => undefined);
+    let canonical = [collections[0]!];
+    const addMembership = vi.fn(async (collectionId: string, _documentId: string, _signal?: AbortSignal) => {
+      canonical = collections.filter((item) => item.id === collectionId || canonical.some((current) => current.id === item.id));
+      return canonical;
+    });
+    const removeMembership = vi.fn(async (collectionId: string, _documentId: string, _signal?: AbortSignal) => {
+      canonical = canonical.filter((item) => item.id !== collectionId);
+      return canonical;
+    });
     render(
       <StudioLibrary
         query={{ status: "active", inbox_state: "pending_review" }}
@@ -104,9 +111,9 @@ describe("StudioLibrary", () => {
 
   it("serializes rapid collection changes and persists the latest desired state", async () => {
     const user = userEvent.setup();
-    const firstRemoval = deferred<void>();
+    const firstRemoval = deferred<StudioCollection[]>();
     const removeMembership = vi.fn(() => firstRemoval.promise);
-    const addMembership = vi.fn(async () => undefined);
+    const addMembership = vi.fn(async () => [collections[0]!]);
     render(
       <StudioLibrary
         query={{ status: "active" }}
@@ -132,10 +139,76 @@ describe("StudioLibrary", () => {
     expect(addMembership).not.toHaveBeenCalled();
     expect(checkbox).toBeChecked();
 
-    firstRemoval.resolve();
+    firstRemoval.resolve([]);
     await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(1));
     expect(removeMembership.mock.invocationCallOrder[0]).toBeLessThan(addMembership.mock.invocationCallOrder[0]!);
     expect(checkbox).toBeChecked();
+  });
+
+  it("rehydrates canonical collection membership after mutation and rerender", async () => {
+    const user = userEvent.setup();
+    let persisted: StudioCollection[] = [];
+    const loadDocuments = vi.fn(async (): Promise<StudioDocumentPage> => ({
+      items: [documents[0]!], nextCursor: null, collectionsByDocumentId: { document_1: persisted }
+    }));
+    const addMembership = vi.fn(async () => {
+      persisted = [collections[0]!];
+      return persisted;
+    });
+    const props = {
+      query: { status: "active" as const }, loadDocuments, loadCollections: async () => collections,
+      addMembership, removeMembership: async () => [], onOpenDocument: vi.fn()
+    };
+    const { rerender, unmount } = render(<StudioLibrary {...props} />);
+    let row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    await user.click(within(row).getByRole("checkbox", { name: "Estratégia" }));
+    await waitFor(() => expect(addMembership).toHaveBeenCalledTimes(1));
+
+    rerender(<StudioLibrary {...props} />);
+    row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    expect(within(row).getByRole("checkbox", { name: "Estratégia" })).toBeChecked();
+
+    unmount();
+    render(<StudioLibrary {...props} />);
+    row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    expect(within(row).getByRole("checkbox", { name: "Estratégia" })).toBeChecked();
+  });
+
+  it("rolls back failed membership and ignores a completed mutation after the document query changes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<StudioCollection[]>();
+    const addMembership = vi.fn(() => pending.promise);
+    const loadDocuments = vi.fn(async ({ status }: { status: StudioDocumentStatus }): Promise<StudioDocumentPage> => ({
+      items: status === "active" ? [documents[0]!] : [{ ...documents[1]!, status: "archived" }],
+      nextCursor: null,
+      collectionsByDocumentId: status === "active" ? { document_1: [] } : { document_2: [] }
+    }));
+    const props = {
+      loadDocuments, loadCollections: async () => collections, addMembership,
+      removeMembership: async () => [], onOpenDocument: vi.fn()
+    };
+    const { rerender } = render(<StudioLibrary {...props} query={{ status: "active" }} />);
+    const row = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(row).getByRole("button", { name: "Organizar em coleções" }));
+    await user.click(within(row).getByRole("checkbox", { name: "Estratégia" }));
+
+    rerender(<StudioLibrary {...props} query={{ status: "archived" }} />);
+    expect(await screen.findByRole("listitem", { name: "Decisão de margem" })).toBeInTheDocument();
+    pending.resolve([collections[0]!]);
+    await act(async () => pending.promise);
+    expect(screen.queryByRole("listitem", { name: "Plano de expansão" })).not.toBeInTheDocument();
+
+    const failedAdd = vi.fn(async () => { throw new Error("offline"); });
+    rerender(<StudioLibrary {...props} query={{ status: "active" }} addMembership={failedAdd} />);
+    const activeRow = await screen.findByRole("listitem", { name: "Plano de expansão" });
+    await user.click(within(activeRow).getByRole("button", { name: "Organizar em coleções" }));
+    const strategy = within(activeRow).getByRole("checkbox", { name: "Estratégia" });
+    await user.click(strategy);
+    await waitFor(() => expect(failedAdd).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(strategy).not.toBeChecked());
+    expect(screen.getByRole("status")).toHaveTextContent("seleção anterior foi restaurada");
   });
 
   it("archives optimistically, restores archived documents, rolls back failures, and announces status", async () => {

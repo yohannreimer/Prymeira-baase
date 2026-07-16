@@ -379,7 +379,7 @@ describe("StudioService collections", () => {
     const expectedCollectionIds = [strategy, decisions]
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
       .map((item) => item.id);
-    expect((await repository.listDocumentCollections(scope, document.id)).map((item) => item.id))
+    expect((await service.listDocumentCollections(scope, document.id)).map((item) => item.id))
       .toEqual(expectedCollectionIds);
 
     expect(await service.removeDocumentFromCollection(scope, "owner_a", strategy.id, document.id))
@@ -388,7 +388,9 @@ describe("StudioService collections", () => {
       .toBe(false);
     await service.deleteCollection(scope, "owner_a", decisions.id);
     expect(await service.getDocument(scope, document.id)).toMatchObject({ id: document.id });
-    expect(await repository.listDocumentCollections(scope, document.id)).toEqual([]);
+    expect(await service.listDocumentCollections(scope, document.id)).toEqual([]);
+    await expect(service.listDocumentCollections(scope, "studio_document_missing"))
+      .rejects.toThrow("STUDIO_DOCUMENT_NOT_FOUND");
   });
 
   it("isolates collection and membership operations by both owner scope fields", async () => {

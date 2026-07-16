@@ -506,14 +506,15 @@ export async function registerStudioRoutes(
     const params = studioCollectionDocumentParamsSchema.parse(request.params);
     readNoQuery(request);
     readNoBody(request);
-    return {
-      membership: await runStudioOperation(() => service.addDocumentToCollection(
-        scope,
-        scope.ownerProfileId,
-        params.collectionId,
-        params.documentId
-      ))
-    };
+    return runStudioOperation(async () => {
+      const membership = await service.addDocumentToCollection(
+        scope, scope.ownerProfileId, params.collectionId, params.documentId
+      );
+      return {
+        membership,
+        collections: await service.listDocumentCollections(scope, params.documentId)
+      };
+    });
   });
 
   app.delete("/studio/collections/:collectionId/documents/:documentId", async (request) => {
@@ -521,13 +522,14 @@ export async function registerStudioRoutes(
     const params = studioCollectionDocumentParamsSchema.parse(request.params);
     readNoQuery(request);
     readNoBody(request);
-    return {
-      removed: await runStudioOperation(() => service.removeDocumentFromCollection(
-        scope,
-        scope.ownerProfileId,
-        params.collectionId,
-        params.documentId
-      ))
-    };
+    return runStudioOperation(async () => {
+      const removed = await service.removeDocumentFromCollection(
+        scope, scope.ownerProfileId, params.collectionId, params.documentId
+      );
+      return {
+        removed,
+        collections: await service.listDocumentCollections(scope, params.documentId)
+      };
+    });
   });
 }

@@ -59,9 +59,10 @@ export default function StudioLibrary({
   const [liveMessage, setLiveMessage] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const operationControllers = useRef(new Set<AbortController>());
-  const membershipLocks = useRef(new Set<string>());
-  const membershipActual = useRef(new Map<string, boolean>());
-  const membershipDesired = useRef(new Map<string, boolean>());
+  const membershipLocks = useRef(new Map<string, number>());
+  const membershipActual = useRef(new Map<string, Set<string>>());
+  const membershipDesired = useRef(new Map<string, Set<string>>());
+  const membershipRevision = useRef(new Map<string, number>());
   const titleRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const pendingFocusIndex = useRef<number | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -80,6 +81,8 @@ export default function StudioLibrary({
     setDocuments([]);
     setCursor(null);
     setActiveIndex(0);
+    setExpandedCollectionsId(null);
+    setConfirmingId(null);
     void loadDocuments({ status: query.status, limit: PAGE_SIZE, inbox_state: query.inbox_state, collection_id: query.collection_id }, controller.signal).then((page) => {
       if (controller.signal.aborted || queryGeneration.current !== generation) return;
       setDocuments(uniqueDocuments(page.items));
@@ -111,6 +114,9 @@ export default function StudioLibrary({
     operationControllers.current.forEach((controller) => controller.abort());
     operationControllers.current.clear();
     membershipLocks.current.clear();
+    membershipActual.current.clear();
+    membershipDesired.current.clear();
+    membershipRevision.current.clear();
   }, [queryKey]);
 
   const visibleDocuments = useMemo(() => documents, [documents]);
@@ -219,25 +225,46 @@ export default function StudioLibrary({
   }
 
   async function toggleMembership(documentId: string, collectionId: string, checked: boolean) {
-    const lockKey = `${documentId}:${collectionId}`;
-    membershipDesired.current.set(lockKey, checked);
-    setMembershipValue(documentId, collectionId, checked);
-    if (membershipLocks.current.has(lockKey)) return;
-    membershipLocks.current.add(lockKey);
-    while (membershipActual.current.get(lockKey) !== membershipDesired.current.get(lockKey)) {
-      const target = membershipDesired.current.get(lockKey) ?? false;
+    const generation = queryGeneration.current;
+    const desired = new Set(membershipDesired.current.get(documentId) ?? memberships[documentId] ?? []);
+    if (checked) desired.add(collectionId);
+    else desired.delete(collectionId);
+    membershipDesired.current.set(documentId, desired);
+    membershipRevision.current.set(documentId, (membershipRevision.current.get(documentId) ?? 0) + 1);
+    setMembershipSet(documentId, desired);
+    if (membershipLocks.current.get(documentId) === generation) return;
+    membershipLocks.current.set(documentId, generation);
+
+    while (queryGeneration.current === generation) {
+      const actual = membershipActual.current.get(documentId) ?? new Set<string>();
+      const wanted = membershipDesired.current.get(documentId) ?? new Set<string>();
+      const addition = firstDifference(wanted, actual);
+      const removal = addition ? undefined : firstDifference(actual, wanted);
+      const nextCollectionId = addition ?? removal;
+      if (!nextCollectionId) break;
+      const target = Boolean(addition);
+      const requestedRevision = membershipRevision.current.get(documentId) ?? 0;
       const controller = trackController(operationControllers.current);
       try {
-        if (target) await addMembership(collectionId, documentId, controller.signal);
-        else await removeMembership(collectionId, documentId, controller.signal);
-        if (controller.signal.aborted) break;
-        membershipActual.current.set(lockKey, target);
+        const canonical = target
+          ? await addMembership(nextCollectionId, documentId, controller.signal)
+          : await removeMembership(nextCollectionId, documentId, controller.signal);
+        if (controller.signal.aborted || queryGeneration.current !== generation) break;
+        const canonicalIds = new Set(canonical.map((collection) => collection.id));
+        membershipActual.current.set(documentId, canonicalIds);
+        if ((membershipRevision.current.get(documentId) ?? 0) === requestedRevision) {
+          membershipDesired.current.set(documentId, new Set(canonicalIds));
+          setMembershipSet(documentId, canonicalIds);
+        } else {
+          setMembershipSet(documentId, membershipDesired.current.get(documentId) ?? canonicalIds);
+        }
         setLiveMessage(target ? "Documento adicionado à coleção." : "Documento removido da coleção.");
       } catch (error) {
-        if (!controller.signal.aborted && !isAbortError(error)) {
-          const actual = membershipActual.current.get(lockKey) ?? false;
-          membershipDesired.current.set(lockKey, actual);
-          setMembershipValue(documentId, collectionId, actual);
+        if (!controller.signal.aborted && queryGeneration.current === generation && !isAbortError(error)) {
+          const canonical = new Set(membershipActual.current.get(documentId) ?? []);
+          membershipDesired.current.set(documentId, canonical);
+          membershipRevision.current.set(documentId, (membershipRevision.current.get(documentId) ?? 0) + 1);
+          setMembershipSet(documentId, canonical);
           setLiveMessage("Não foi possível atualizar a coleção. A seleção anterior foi restaurada.");
         }
         break;
@@ -245,14 +272,12 @@ export default function StudioLibrary({
         operationControllers.current.delete(controller);
       }
     }
-    membershipLocks.current.delete(lockKey);
+    if (membershipLocks.current.get(documentId) === generation) membershipLocks.current.delete(documentId);
   }
 
-  function setMembershipValue(documentId: string, collectionId: string, checked: boolean) {
+  function setMembershipSet(documentId: string, selected: ReadonlySet<string>) {
     setMemberships((current) => {
-      const previous = current[documentId] ?? [];
-      const next = checked ? Array.from(new Set([...previous, collectionId])) : previous.filter((id) => id !== collectionId);
-      return { ...current, [documentId]: next };
+      return { ...current, [documentId]: Array.from(selected) };
     });
   }
 
@@ -260,13 +285,13 @@ export default function StudioLibrary({
     if (!merge) {
       membershipActual.current.clear();
       membershipDesired.current.clear();
+      membershipRevision.current.clear();
     }
     for (const [documentId, documentCollections] of Object.entries(context)) {
-      for (const collection of documentCollections) {
-        const key = `${documentId}:${collection.id}`;
-        membershipActual.current.set(key, true);
-        membershipDesired.current.set(key, true);
-      }
+      const ids = new Set(documentCollections.map((collection) => collection.id));
+      membershipActual.current.set(documentId, ids);
+      membershipDesired.current.set(documentId, new Set(ids));
+      membershipRevision.current.set(documentId, 0);
     }
     setMemberships((current) => {
       const next = merge ? { ...current } : {};
@@ -471,6 +496,11 @@ function uniqueDocuments(documents: StudioDocument[]) {
     seen.add(document.id);
     return true;
   });
+}
+
+function firstDifference(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  for (const value of left) if (!right.has(value)) return value;
+  return undefined;
 }
 
 function trackController(store: Set<AbortController>) {

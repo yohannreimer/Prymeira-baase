@@ -502,6 +502,7 @@ export type StudioService = {
   createCollection(scope: StudioOwnerScope, actorProfileId: string, input: CreateStudioCollection): Promise<StudioCollection>;
   renameCollection(scope: StudioOwnerScope, actorProfileId: string, id: string, input: UpdateStudioCollection): Promise<StudioCollection>;
   deleteCollection(scope: StudioOwnerScope, actorProfileId: string, id: string): Promise<StudioCollection>;
+  listDocumentCollections(scope: StudioOwnerScope, documentId: string): Promise<StudioCollection[]>;
   addDocumentToCollection(scope: StudioOwnerScope, actorProfileId: string, collectionId: string, documentId: string): Promise<StudioCollectionMembership>;
   removeDocumentFromCollection(scope: StudioOwnerScope, actorProfileId: string, collectionId: string, documentId: string): Promise<boolean>;
   relateDocuments(

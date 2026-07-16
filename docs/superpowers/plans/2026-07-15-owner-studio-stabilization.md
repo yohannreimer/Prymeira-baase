@@ -820,7 +820,7 @@ git commit -m "fix(studio): refresh libraries after structure changes"
 - Test: `apps/api/src/modules/studio/studio.routes.test.ts`
 - Test: `apps/web/src/studio/StudioLibrary.test.tsx`
 
-- [ ] **Step 1: Write reload and canonical-response tests**
+- [x] **Step 1: Write reload and canonical-response tests**
 
 ```ts
 expect((await app.inject({
@@ -845,12 +845,12 @@ rerender(<StudioLibrary {...libraryProps} />);
 expect(await screen.findByRole("checkbox", { name: "Estratégia" })).toBeChecked();
 ```
 
-- [ ] **Step 2: Run and confirm the mutation currently returns no canonical set**
+- [x] **Step 2: Run and confirm the mutation currently returns no canonical set**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`  
 Expected: FAIL.
 
-- [ ] **Step 3: Return and apply canonical memberships**
+- [x] **Step 3: Return and apply canonical memberships**
 
 ```ts
 const membership = await service.addDocumentToCollection(
@@ -869,12 +869,12 @@ Add `listDocumentCollections(scope, documentId)` to `StudioService` and delegate
 
 Map the returned collection IDs and replace `membershipActual`, `membershipDesired`, and component state after every successful mutation. Keep optimistic rollback for errors.
 
-- [ ] **Step 4: Run route, UI, and PostgreSQL tests**
+- [x] **Step 4: Run route, UI, and PostgreSQL tests**
 
 Run: `pnpm --filter @prymeira/baase-api test -- src/modules/studio/studio.routes.test.ts src/db/postgres.repositories.test.ts && pnpm --filter @prymeira/baase-web test -- src/studio/StudioLibrary.test.tsx`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/modules/studio/studio.routes.ts apps/web/src/studio/studio-api.ts apps/web/src/studio/StudioLibrary.tsx apps/api/src/modules/studio/studio.routes.test.ts apps/web/src/studio/StudioLibrary.test.tsx
