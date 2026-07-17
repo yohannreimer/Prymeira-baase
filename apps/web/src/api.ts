@@ -897,30 +897,31 @@ export async function loadBaaseWorkspace(
   overviewPeriod = operationalOverviewPeriod(date)
 ): Promise<BaaseWorkspaceBundle> {
   const headers = createBaaseHeaders(role);
+  const session = await readJson<BaaseSession>(fetcher, "/api/me", { headers });
+  const isEmployee = session.profile.role === "employee";
   const optionalResultsPromise = Promise.all([
-    role === "func"
+    isEmployee
       ? Promise.resolve<{ tasks: ApiTask[] }>({ tasks: [] })
       : optionalBootstrapValue((signal) => readJson<{ tasks: ApiTask[] }>(fetcher, "/api/approvals", { headers, signal }), { tasks: [] }),
     optionalBootstrapValue((signal) => readJson<{ trainings: ApiTraining[] }>(fetcher, "/api/trainings", { headers, signal }), { trainings: [] }),
-    role === "func"
+    isEmployee
       ? Promise.resolve<{ invites: ApiInvite[] }>({ invites: [] })
       : optionalBootstrapValue((signal) => readJson<{ invites: ApiInvite[] }>(fetcher, "/api/invites", { headers, signal }), { invites: [] }),
-    role === "func"
+    isEmployee
       ? Promise.resolve<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>({ templates: [], filters: { segments: [], areas: [], kinds: [] } })
       : optionalBootstrapValue((signal) => readJson<{ templates: ApiTemplate[]; filters: ApiTemplateFilters }>(fetcher, "/api/templates", { headers, signal }), { templates: [], filters: { segments: [], areas: [], kinds: [] } }),
     optionalBootstrapValue((signal) => readJson<ApiDashboard | Record<string, never>>(fetcher, `/api/dashboard?date=${encodeURIComponent(date)}`, { headers, signal }), {} as ApiDashboard | Record<string, never>),
-    role === "func"
+    isEmployee
       ? Promise.resolve<ApiOperationalOverview | null>(null)
       : optionalBootstrapValue(
         (signal) => readOperationalOverview(role, overviewPeriod, fetcher, signal),
         null
       ),
-    role === "func"
+    isEmployee
       ? Promise.resolve<{ suggestions: ApiProactiveSuggestion[] }>({ suggestions: [] })
       : optionalBootstrapValue((signal) => readJson<{ suggestions: ApiProactiveSuggestion[] }>(fetcher, "/api/ai/proactive-suggestions", { headers, signal }), { suggestions: [] })
   ]);
-  const [session, today, processes, routines, areas, roleTemplates, people] = await Promise.all([
-    readJson<BaaseSession>(fetcher, "/api/me", { headers }),
+  const [today, processes, routines, areas, roleTemplates, people] = await Promise.all([
     readJson<TodayResponse>(fetcher, `/api/today?date=${encodeURIComponent(date)}`, { headers }),
     readJson<{ processes: ApiProcess[] }>(fetcher, "/api/processes", { headers }),
     readJson<{ routines: ApiRoutine[] }>(fetcher, "/api/routines", { headers }),
@@ -987,19 +988,16 @@ export async function loadFirstRunState(
   date: string,
   fetcher: Fetcher = fetch
 ): Promise<FirstRunState> {
-  const onboardingSessionPromise = role === "dono"
+  const bundle = await loadBaaseWorkspace(role, date, fetcher);
+  const onboarding = bundle.session.profile.role === "owner"
     ? optionalBootstrapValue(
       (signal) => getOnboardingSession(role, fetcher, signal)
         .then((onboardingSession) => ({ onboardingSession, onboardingSessionLoadError: false })),
       { onboardingSession: null, onboardingSessionLoadError: true }
     )
     : Promise.resolve({ onboardingSession: null, onboardingSessionLoadError: false });
-  const [bundle, onboarding] = await Promise.all([
-    loadBaaseWorkspace(role, date, fetcher),
-    onboardingSessionPromise
-  ]);
 
-  return { bundle, ...onboarding };
+  return { bundle, ...await onboarding };
 }
 
 export async function useTemplate(role: UiRole, templateId: string, fetcher: Fetcher = fetch) {

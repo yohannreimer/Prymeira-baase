@@ -212,6 +212,31 @@ describe("Baase web API client", () => {
     expect(bundle.session.profile.role).toBe("manager");
   });
 
+  it("does not request management bootstrap resources for an authenticated employee", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { profile: { role: "employee" }, workspace: { id: "workspace_a" } },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/processes": { processes: [] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/dashboard?date=2026-07-07": {}
+      };
+      return new Response(JSON.stringify(dataByUrl[url]));
+    });
+
+    await loadFirstRunState("dono", "2026-07-07", fetcher);
+
+    expect(fetcher.mock.calls.some(([url]) => url === "/api/onboarding/session")).toBe(false);
+    for (const path of ["/api/approvals", "/api/invites", "/api/templates", "/api/ai/proactive-suggestions"]) {
+      expect(fetcher.mock.calls.some(([url]) => url === path)).toBe(false);
+    }
+    expect(fetcher.mock.calls.some(([url]) => String(url).startsWith("/api/operational-overview?"))).toBe(false);
+  });
+
   it("keeps the workspace bundle when proactive suggestions are unavailable", async () => {
     const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url === "/api/ai/proactive-suggestions") {
