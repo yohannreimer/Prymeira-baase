@@ -24,7 +24,7 @@ export function processSopHtml(input: { process: CompanyProcess; workspaceName: 
     ${process.summary ? `<p class="summary">${escapeHtml(process.summary)}</p>` : ""}
     <div class="meta"><span>${escapeHtml(input.areaName ?? "Empresa")}</span><span>Atualizado em ${formatDate(process.updatedAt)}</span></div></section>
     <main>${foundation ? `<section class="sop-foundation">${foundation}</section>` : ""}<section class="sop-flow"><div class="section-heading"><span>Como executar</span><h2>Etapas do processo</h2></div>${steps || '<p class="empty-note">Este processo ainda não possui etapas estruturadas.</p>'}</section>${materials}</main>
-    <footer><span>${escapeHtml(input.workspaceName)} · Manual de operação</span><span>Versão ${process.currentVersion.version}</span><span class="page-number">Página </span></footer>
+    <footer><span>${escapeHtml(input.workspaceName)} · Manual de operação</span><span>Versão ${process.currentVersion.version}</span><span aria-hidden="true"></span></footer>
   </body></html>`;
 }
 

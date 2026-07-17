@@ -24,8 +24,6 @@ export const editorialCss = `
   .material { border-bottom: 1px solid #eceeea; display: grid; gap: 12px; grid-template-columns: 1fr auto; padding: 9px 0; }
   .material small { color: #7a8078; }
   footer { align-items: center; border-top: 1px solid #e3e7e1; bottom: 0; color: #858b83; display: flex; font-size: 7.5pt; justify-content: space-between; left: 0; padding-top: 6px; position: fixed; right: 0; }
-  .page-number::after { content: counter(page); }
-
   .publication--studio .masthead .eyebrow { color: #92978f; margin-top: 4px; }
   .studio-sheet__opening { break-after: avoid; }
   .publication--studio h1 { font-size: 27pt; margin-top: 21px; max-width: 92%; }

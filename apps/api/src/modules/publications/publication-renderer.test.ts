@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createChromiumPublicationRenderer } from "./publication-renderer";
+import { createChromiumPublicationRenderer, publicationPdfOptions } from "./publication-renderer";
 
 describe("ChromiumPublicationRenderer", () => {
   const originalExecutable = process.env.BAASE_CHROMIUM_EXECUTABLE_PATH;
@@ -7,6 +7,12 @@ describe("ChromiumPublicationRenderer", () => {
   afterEach(() => {
     if (originalExecutable === undefined) delete process.env.BAASE_CHROMIUM_EXECUTABLE_PATH;
     else process.env.BAASE_CHROMIUM_EXECUTABLE_PATH = originalExecutable;
+  });
+
+  it("uses Chromium native page numbers instead of print CSS counters", () => {
+    expect(publicationPdfOptions).toMatchObject({ displayHeaderFooter: true });
+    expect(publicationPdfOptions.footerTemplate).toContain('class="pageNumber"');
+    expect(publicationPdfOptions.footerTemplate).toContain('class="totalPages"');
   });
 
   it("falls back to Chromium CLI when Playwright cannot render in the runtime image", async () => {

@@ -9,6 +9,15 @@ import type { PublicationRenderer } from "./publication.types";
 
 type RenderPdf = (executablePath: string, html: string) => Promise<Buffer>;
 
+export const publicationPdfOptions = {
+  format: "A4",
+  printBackground: true,
+  preferCSSPageSize: true,
+  displayHeaderFooter: true,
+  headerTemplate: "<span></span>",
+  footerTemplate: '<div style="box-sizing:border-box;color:#858b83;font-family:Arial,sans-serif;font-size:10px;padding:0 17mm;text-align:right;width:100%"><span class="pageNumber"></span> / <span class="totalPages"></span></div>'
+} as const;
+
 export function createChromiumPublicationRenderer(options: {
   executableExists?: (path: string) => boolean;
   renderWithPlaywright?: RenderPdf;
@@ -48,7 +57,7 @@ async function renderUsingPlaywright(executablePath: string, html: string) {
     await context.route("**/*", (route) => route.abort());
     const page = await context.newPage();
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    return Buffer.from(await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true }));
+    return Buffer.from(await page.pdf(publicationPdfOptions));
   } finally {
     await browser.close();
   }

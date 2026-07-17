@@ -14,7 +14,7 @@ export function studioSheetHtml(input: { document: StudioDocument; assets: Studi
     <section class="studio-sheet__opening"><h1>${escapeHtml(title)}</h1>
     <div class="meta"><span>Por ${escapeHtml(input.authorName)}</span><span>Atualizada em ${formatDate(input.document.updatedAt)}</span></div></section>
     <main class="studio-sheet__body">${body}${materials}</main>
-    <footer><span>${escapeHtml(input.workspaceName)} · Estúdio</span><span>Documento privado</span><span class="page-number">Página </span></footer>
+    <footer><span>${escapeHtml(input.workspaceName)} · Estúdio</span><span>Documento privado</span><span aria-hidden="true"></span></footer>
   </body></html>`;
 }
 
