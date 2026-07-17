@@ -12,6 +12,13 @@ export type ProcessSopDocument = {
   steps: ProcessSopStep[];
 };
 
+export type ParsedProcessSopBody = {
+  objective?: string;
+  trigger?: string;
+  operationalRule?: string;
+  steps: ProcessSopStep[];
+};
+
 function cleanText(value: string | null | undefined) {
   return value?.trim().replace(/\s+/g, " ") ?? "";
 }
@@ -78,4 +85,101 @@ export function defaultProcessSopBody(title: string) {
       }
     ]
   });
+}
+
+function readLabeledValue(line: string, label: string) {
+  const match = line.match(new RegExp(`^${label}:\\s*(.+)$`, "iu"));
+  return match?.[1]?.trim() ?? null;
+}
+
+function isExecutionPolicyLine(line: string) {
+  return /^Evid[eê]ncia:/iu.test(line) || /^Aprova[cç][aã]o:/iu.test(line);
+}
+
+function normalizedBodyLines(body: string) {
+  return body
+    .replace(/\r/gu, "")
+    .replace(/\s+(\d+[.)]\s+)/gu, "\n$1")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function parseProcessSopBody(body: string | null | undefined): ParsedProcessSopBody {
+  const parsed: ParsedProcessSopBody = { steps: [] };
+  const fallbackSteps: ProcessSopStep[] = [];
+  let currentStep: ProcessSopStep | null = null;
+  let readingAttentionPoints = false;
+
+  const commitCurrentStep = () => {
+    if (!currentStep) return;
+    currentStep.title = cleanText(currentStep.title);
+    currentStep.instruction = cleanText(currentStep.instruction);
+    currentStep.expectedResult = cleanText(currentStep.expectedResult) || undefined;
+    currentStep.attentionPoints = cleanList(currentStep.attentionPoints);
+    if (currentStep.title) parsed.steps.push(currentStep);
+    currentStep = null;
+  };
+
+  for (const line of normalizedBodyLines(body ?? "")) {
+    const objective = readLabeledValue(line, "Objetivo");
+    if (objective) { parsed.objective = objective; continue; }
+
+    const trigger = readLabeledValue(line, "Gatilho");
+    if (trigger) { parsed.trigger = trigger; continue; }
+
+    const rule = readLabeledValue(line, "Regra operacional");
+    if (rule) { parsed.operationalRule = rule; continue; }
+
+    if (/^Fluxo sugerido:?$/iu.test(line) || isExecutionPolicyLine(line)) {
+      readingAttentionPoints = false;
+      continue;
+    }
+
+    const step = /^(\d+)[.)]\s*(.+)$/u.exec(line);
+    if (step?.[2]) {
+      commitCurrentStep();
+      currentStep = { title: step[2], instruction: "", attentionPoints: [] };
+      readingAttentionPoints = false;
+      continue;
+    }
+
+    const instruction = readLabeledValue(line, "Instrução");
+    if (instruction && currentStep) {
+      currentStep.instruction = instruction;
+      readingAttentionPoints = false;
+      continue;
+    }
+
+    const expectedResult = readLabeledValue(line, "Resultado esperado");
+    if (expectedResult && currentStep) {
+      currentStep.expectedResult = expectedResult;
+      readingAttentionPoints = false;
+      continue;
+    }
+
+    if (/^Pontos de aten[cç][aã]o:?$/iu.test(line) && currentStep) {
+      readingAttentionPoints = true;
+      continue;
+    }
+
+    if (readingAttentionPoints && currentStep) {
+      currentStep.attentionPoints = [
+        ...(currentStep.attentionPoints ?? []),
+        line.replace(/^[-•]\s*/u, "").trim()
+      ];
+      continue;
+    }
+
+    if (currentStep) {
+      currentStep.instruction = [currentStep.instruction, line].filter(Boolean).join(" ");
+      continue;
+    }
+
+    fallbackSteps.push({ title: line.replace(/^[-•]\s*/u, ""), instruction: "", attentionPoints: [] });
+  }
+
+  commitCurrentStep();
+  if (!parsed.steps.length) parsed.steps = fallbackSteps;
+  return parsed;
 }

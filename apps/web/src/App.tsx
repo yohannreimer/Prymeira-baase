@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { defaultProcessSopBody, formatProcessSopBody } from "@prymeira/baase-shared";
+import { defaultProcessSopBody, formatProcessSopBody, parseProcessSopBody } from "@prymeira/baase-shared";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import { createPublication, downloadPublication } from "./studio/publication-api";
 import {
@@ -879,24 +879,6 @@ function TrainingLessonBody({ body }: { body: string }) {
   );
 }
 
-function readLabeledValue(line: string, label: string) {
-  const match = line.match(new RegExp(`^${label}:\\s*(.+)$`, "i"));
-  return match?.[1]?.trim() ?? null;
-}
-
-function isProcessExecutionPolicyLine(line: string) {
-  return /^Evid[eê]ncia:/i.test(line) || /^Aprova[cç][aã]o:/i.test(line);
-}
-
-function normalizeProcessBodyLines(body: string) {
-  return body
-    .replace(/\r/g, "")
-    .replace(/\s+(\d+[.)]\s+)/g, "\n$1")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
 function parseProcessBody(body?: string | null): ParsedProcessBody {
   if (!body) {
     return {
@@ -908,94 +890,18 @@ function parseProcessBody(body?: string | null): ParsedProcessBody {
       ]
     };
   }
-
-  const parsed: ParsedProcessBody = { steps: [] };
-  const fallbackSteps: ProcessStepCard[] = [];
-  let currentStep: ProcessStepCard | null = null;
-  let readingAttentionPoints = false;
-
-  function commitCurrentStep() {
-    if (!currentStep) return;
-    parsed.steps.push(currentStep);
-    currentStep = null;
-  }
-
-  for (const line of normalizeProcessBodyLines(body)) {
-    const objective = readLabeledValue(line, "Objetivo");
-    if (objective) {
-      parsed.objective = objective;
-      continue;
-    }
-
-    const trigger = readLabeledValue(line, "Gatilho");
-    if (trigger) {
-      parsed.trigger = trigger;
-      continue;
-    }
-
-    const rule = readLabeledValue(line, "Regra operacional");
-    if (rule) {
-      parsed.rule = rule;
-      continue;
-    }
-
-    if (/^Fluxo sugerido:?$/i.test(line)) continue;
-
-    const stepMatch = line.match(/^(\d+)[.)]\s*(.+)$/);
-    if (stepMatch?.[2]) {
-      commitCurrentStep();
-      currentStep = { title: stepMatch[2].trim() };
-      readingAttentionPoints = false;
-      continue;
-    }
-
-    if (isProcessExecutionPolicyLine(line)) {
-      readingAttentionPoints = false;
-      continue;
-    }
-
-    const instruction = readLabeledValue(line, "Instrução");
-    if (instruction && currentStep) {
-      currentStep.detail = instruction;
-      readingAttentionPoints = false;
-      continue;
-    }
-
-    const expectedResult = readLabeledValue(line, "Resultado esperado");
-    if (expectedResult && currentStep) {
-      currentStep.expectedResult = expectedResult;
-      readingAttentionPoints = false;
-      continue;
-    }
-
-    if (/^Pontos de aten[cç][aã]o:?$/i.test(line) && currentStep) {
-      currentStep.attentionPoints = currentStep.attentionPoints ?? [];
-      readingAttentionPoints = true;
-      continue;
-    }
-
-    if (readingAttentionPoints && currentStep && /^[-•]\s+/.test(line)) {
-      currentStep.attentionPoints = [...(currentStep.attentionPoints ?? []), line.replace(/^[-•]\s+/, "").trim()];
-      continue;
-    }
-
-    if (currentStep) {
-      if (readingAttentionPoints) {
-        currentStep.attentionPoints = [...(currentStep.attentionPoints ?? []), line];
-      } else {
-        currentStep.detail = [currentStep.detail, line].filter(Boolean).join(" ");
-      }
-      continue;
-    }
-
-    if (!isProcessExecutionPolicyLine(line)) {
-      fallbackSteps.push({ title: line });
-    }
-  }
-
-  commitCurrentStep();
-  if (!parsed.steps.length) parsed.steps = fallbackSteps;
-  return parsed;
+  const parsed = parseProcessSopBody(body);
+  return {
+    objective: parsed.objective,
+    trigger: parsed.trigger,
+    rule: parsed.operationalRule,
+    steps: parsed.steps.map((step) => ({
+      title: step.title,
+      detail: step.instruction || undefined,
+      expectedResult: step.expectedResult ?? undefined,
+      attentionPoints: step.attentionPoints
+    }))
+  };
 }
 
 function processStepFromAiRecord(step: Record<string, unknown>, index: number) {
