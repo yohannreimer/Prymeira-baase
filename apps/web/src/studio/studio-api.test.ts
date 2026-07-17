@@ -36,6 +36,7 @@ import {
   createStudioExitCheckpoint,
   mapStudioDocument,
   mapStudioDocumentVersion,
+  studioRequestForRole,
   studioRequest,
   startStudioRitualSession,
   updateStudioDocument,
@@ -83,6 +84,15 @@ describe("Studio API client", () => {
 
     const init = fetcher.mock.calls[0]?.[1] as RequestInit;
     expect(new Headers(init.headers).has("content-type")).toBe(false);
+  });
+
+  it("uses the viewer role when a Studio request is made for a process reader", async () => {
+    const fetcher = vi.fn(async (_input: string, _init?: RequestInit) => jsonResponse({ ok: true }));
+
+    await studioRequestForRole("func", "/publications", { method: "POST", body: "{}" }, fetcher);
+
+    const init = fetcher.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get("x-baase-role")).toBe("employee");
   });
 
   it("maps the stable connection index projection without dropping related results", async () => {

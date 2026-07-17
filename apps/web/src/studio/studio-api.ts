@@ -1,4 +1,4 @@
-import { createBaaseHeaders, withConfiguredAuth } from "../api";
+import { createBaaseHeaders, withConfiguredAuth, type UiRole } from "../api";
 import type {
   RawStudioCollection,
   RawStudioAsset,
@@ -95,7 +95,16 @@ export async function studioRequest<T>(
   init: RequestInit = {},
   fetcher: StudioFetcher = fetch
 ): Promise<T> {
-  const headers = new Headers(createBaaseHeaders("dono"));
+  return studioRequestForRole("dono", path, init, fetcher);
+}
+
+export async function studioRequestForRole<T>(
+  role: UiRole,
+  path: string,
+  init: RequestInit = {},
+  fetcher: StudioFetcher = fetch
+): Promise<T> {
+  const headers = new Headers(createBaaseHeaders(role));
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const multipartBody = typeof FormData !== "undefined" && init.body instanceof FormData;
   if (multipartBody) headers.delete("content-type");

@@ -1229,9 +1229,9 @@ async function downloadProcessPdf(input: ProcessPdfInput) {
   await pdfMake.createPdf(processPdfDefinition(input)).download(processPdfFileName(input.title));
 }
 
-async function downloadEditorialProcessPdf(processId: string) {
-  const publication = await createPublication("process", processId, "pdf");
-  globalThis.location.assign(await downloadPublication(publication.id));
+async function downloadEditorialProcessPdf(processId: string, role: Role) {
+  const publication = await createPublication("process", processId, "pdf", role);
+  globalThis.location.assign(await downloadPublication(publication.id, role));
 }
 
 function templateMode(kind: ApiTemplateKind): CreateAiMode {
@@ -3516,6 +3516,7 @@ export function App({ initialRole = "dono", apiEnabled = true }: AppProps) {
           )}
           {screen === "processos" && (
             <ProcessesPage
+              role={role}
               canManage={canManageOperationalTasks}
               canManageWorkspace={canManageWorkspace}
               go={go}
@@ -4821,6 +4822,7 @@ function TeamPage({
 }
 
 function ProcessesPage({
+  role,
   canManage,
   canManageWorkspace,
   go,
@@ -4835,6 +4837,7 @@ function ProcessesPage({
   communicateProcess,
   actionBusy
 }: {
+  role: Role;
   canManage: boolean;
   canManageWorkspace: boolean;
   go: (screen: Screen) => void;
@@ -4916,7 +4919,7 @@ function ProcessesPage({
     setProcessExportMessage("");
     try {
       if (!selectedApiProcess) throw new Error("PROCESS_NOT_PERSISTED");
-      await downloadEditorialProcessPdf(selectedApiProcess.id);
+      await downloadEditorialProcessPdf(selectedApiProcess.id, role);
     } catch {
       setProcessExportMessage("Não foi possível preparar o PDF agora. Tente novamente.");
     } finally {

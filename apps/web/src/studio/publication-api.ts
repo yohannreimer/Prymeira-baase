@@ -1,4 +1,5 @@
-import { studioRequest } from "./studio-api";
+import type { UiRole } from "../api";
+import { studioRequest, studioRequestForRole } from "./studio-api";
 
 export type Publication = {
   id: string; resourceType: "studio_document" | "process"; resourceId: string;
@@ -6,16 +7,16 @@ export type Publication = {
   sizeBytes: number | null; createdAt: string;
 };
 
-export async function createPublication(resourceType: Publication["resourceType"], resourceId: string, format: Publication["format"]) {
-  const response = await studioRequest<{ publication: Publication }>("/publications", {
+export async function createPublication(resourceType: Publication["resourceType"], resourceId: string, format: Publication["format"], role: UiRole = "dono") {
+  const response = await studioRequestForRole<{ publication: Publication }>(role, "/publications", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId, format })
   });
   return response.publication;
 }
 
-export async function downloadPublication(publicationId: string) {
-  const response = await studioRequest<{ url: string }>(`/publications/${encodeURIComponent(publicationId)}/download`);
+export async function downloadPublication(publicationId: string, role: UiRole = "dono") {
+  const response = await studioRequestForRole<{ url: string }>(role, `/publications/${encodeURIComponent(publicationId)}/download`);
   return response.url;
 }
 
