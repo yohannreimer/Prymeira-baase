@@ -1,7 +1,7 @@
 # Rituais contínuos e modos de apoio da IA no Estúdio
 
 **Data:** 2026-07-17  
-**Status:** desenho aprovado, aguardando revisão final da especificação  
+**Status:** especificação aprovada
 **Escopo:** rituais privados do dono no Estúdio
 
 ## 1. Objetivo
