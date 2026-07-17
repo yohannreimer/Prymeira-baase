@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../app";
+import type { AuthenticatedRequest } from "../../http/auth-context";
 import { createInMemoryCompanyRepository } from "../company/in-memory-company.repository";
 import { createInMemoryProcessRepository } from "./in-memory-process.repository";
 
@@ -78,6 +79,68 @@ describe("process routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().processes).toHaveLength(1);
+  });
+
+  it("lists published processes from an employee's area without a task assignment", async () => {
+    const companyRepository = createInMemoryCompanyRepository();
+    const finance = await companyRepository.createArea({
+      workspaceId: "workspace_a",
+      name: "Financeiro e Controle",
+      description: null
+    });
+    const technical = await companyRepository.createArea({
+      workspaceId: "workspace_a",
+      name: "Técnico",
+      description: null
+    });
+    const employee = await companyRepository.createTeamMember({
+      workspaceId: "workspace_a",
+      name: "Teste",
+      email: "teste@example.com",
+      role: "employee",
+      areaId: finance.id,
+      areaAccessIds: [finance.id],
+      roleTemplateId: null,
+      accessScope: "assigned_only",
+      createdByProfileId: "seed"
+    });
+    const app = buildApp({ companyRepository, processRepository: createInMemoryProcessRepository() });
+    app.addHook("onRequest", async (request) => {
+      if (request.headers["x-test-as-employee"] !== "true") return;
+      (request as AuthenticatedRequest).baaseContext = {
+        workspaceId: "workspace_a",
+        role: "employee",
+        profileId: employee.id,
+        operationalMembership: {
+          person: employee,
+          personId: employee.id,
+          role: "employee",
+          accessScope: employee.accessScope,
+          areaAccessIds: employee.areaAccessIds
+        }
+      };
+    });
+
+    const create = async (title: string, areaId: string) => (await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: managerHeaders,
+      payload: { title, body: "Instrução operacional.", area_id: areaId }
+    })).json().process;
+    const financePublished = await create("Conferir fluxo financeiro", finance.id);
+    const technicalPublished = await create("Executar entrega técnica", technical.id);
+    await app.inject({ method: "POST", url: `/processes/${financePublished.id}/publish`, headers: managerHeaders });
+    await app.inject({ method: "POST", url: `/processes/${technicalPublished.id}/publish`, headers: managerHeaders });
+    await create("Rascunho financeiro", finance.id);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/processes",
+      headers: { ...employeeHeaders, "x-baase-profile-id": employee.id, "x-test-as-employee": "true" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().processes.map((process: { id: string }) => process.id)).toEqual([financePublished.id]);
   });
 
   it("creates versions and publishes processes", async () => {

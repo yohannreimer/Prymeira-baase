@@ -4,11 +4,10 @@ import { canManageKnowledge } from "@prymeira/baase-shared";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
 import { requireOperationalMembership } from "../../http/auth-context";
-import { canManageAreaResource, canReadAreaResource, canReadTask } from "../company/access-policy";
+import { canManageAreaResource, canReadAreaResource } from "../company/access-policy";
 import { createProcessService } from "./process.service";
 import type { ProcessRepository } from "./process.types";
 import type { CompanyRepository } from "../company/company.types";
-import type { RoutineRepository } from "../routines/routine.types";
 
 const createProcessSchema = z.object({
   title: z.string().min(1).max(120),
@@ -74,8 +73,7 @@ function processMutationError(error: unknown) {
 export async function registerProcessRoutes(
   app: FastifyInstance,
   repository: ProcessRepository,
-  companyRepository: CompanyRepository,
-  routineRepository: RoutineRepository
+  companyRepository: CompanyRepository
 ) {
   const service = createProcessService(repository, { companyRepository });
 
@@ -83,15 +81,8 @@ export async function registerProcessRoutes(
     const context = readRequestContext(request);
     const membership = requireOperationalMembership(request);
     const processes = await service.listProcesses(context.workspaceId);
-    const referencedProcessIds = membership.role === "employee" && membership.accessScope === "assigned_only"
-      ? new Set((await routineRepository.listTaskOccurrences(context.workspaceId))
-        .filter((task) => canReadTask(membership, { assigneeProfileId: task.assigneeProfileId, areaId: task.areaId }))
-        .map((task) => task.processId)
-        .filter((id): id is string => Boolean(id)))
-      : null;
     return { processes: processes.filter((process) => {
       if (membership.role === "employee" && process.status !== "published") return false;
-      if (referencedProcessIds) return referencedProcessIds.has(process.id);
       return canReadAreaResource(membership, process.areaId);
     }) };
   });

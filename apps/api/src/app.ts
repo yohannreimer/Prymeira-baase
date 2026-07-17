@@ -484,7 +484,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     aiRepository,
     aiProvider
   }));
-  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository, routineRepository));
+  app.register((routes) => registerProcessRoutes(routes, processRepository, companyRepository));
   app.register((routes) => registerProcessMaterialRoutes(routes, processRepository, objectStorage));
   app.register((routes) => registerRoutineRoutes(routes, routineRepository, {
     companyRepository,
