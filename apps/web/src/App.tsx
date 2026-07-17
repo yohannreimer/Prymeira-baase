@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { defaultProcessSopBody, formatProcessSopBody } from "@prymeira/baase-shared";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
+import { createPublication, downloadPublication } from "./studio/publication-api";
 import {
   archiveRoutine,
   approveTask,
@@ -1320,6 +1321,11 @@ async function downloadProcessPdf(input: ProcessPdfInput) {
   ]);
   pdfMake.addVirtualFileSystem(pdfFonts);
   await pdfMake.createPdf(processPdfDefinition(input)).download(processPdfFileName(input.title));
+}
+
+async function downloadEditorialProcessPdf(processId: string) {
+  const publication = await createPublication("process", processId, "pdf");
+  globalThis.location.assign(await downloadPublication(publication.id));
 }
 
 function templateMode(kind: ApiTemplateKind): CreateAiMode {
@@ -5015,7 +5021,7 @@ function ProcessesPage({
                 {canManageSelectedProcess ? <>
                 <button className="secondary-btn" type="button" onClick={() => selectedApiProcess && editProcess(selectedApiProcess)} disabled={!selectedApiProcess}><Icon name="ph-pencil-simple" />Editar</button>
                 </> : null}
-                <button className="secondary-btn" type="button" onClick={() => downloadProcessPdf({
+                <button className="secondary-btn" type="button" onClick={() => selectedApiProcess ? void downloadEditorialProcessPdf(selectedApiProcess.id) : void downloadProcessPdf({
                   title: cleanProcessTitle(selectedProcess.title),
                   summary: selectedProcess.summary ?? parsedProcessBody.objective ?? "SOP operacional",
                   area: selectedAreaLabel,
