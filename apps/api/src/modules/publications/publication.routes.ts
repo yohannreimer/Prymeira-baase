@@ -2,8 +2,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { canAccessOwnerStudio, canManageKnowledge } from "@prymeira/baase-shared";
 import { z } from "zod";
 import { ApiError, forbiddenError } from "../../http/api-error";
-import { readRequestContext } from "../../http/auth-context";
+import { readRequestContext, requireOperationalMembership } from "../../http/auth-context";
 import { attachmentContentDisposition } from "../../storage/object-storage";
+import { canReadAreaResource } from "../company/access-policy";
+import type { ProcessRepository } from "../processes/process.types";
 import type { Publication } from "./publication.types";
 import type { PublicationService } from "./publication.service";
 
@@ -16,7 +18,7 @@ const grantParams = idParams.extend({ grantId: z.string().trim().min(1).max(200)
 const tokenParams = z.object({ token: z.string().trim().min(20).max(200) }).strict();
 const grantBody = z.object({ expires_at: z.string().datetime() }).strict();
 
-export async function registerPublicationRoutes(app: FastifyInstance, service: PublicationService) {
+export async function registerPublicationRoutes(app: FastifyInstance, service: PublicationService, processRepository: ProcessRepository) {
   app.get("/publications/public/:token", async (request, reply) => {
     const { token } = tokenParams.parse(request.params);
     const resolved = await safe(() => service.resolveExternal(token));
@@ -25,7 +27,7 @@ export async function registerPublicationRoutes(app: FastifyInstance, service: P
   app.post("/studio/publications", async (request, reply) => {
     const context = readRequestContext(request);
     const body = createBody.parse(request.body);
-    assertCanPublish(request, body.resource_type);
+    await assertCanPublish(request, body.resource_type, body.resource_id, processRepository);
     const publication = await safe(() => service.create({
       workspaceId: context.workspaceId, ownerProfileId: context.profileId,
       resourceType: body.resource_type, resourceId: body.resource_id, format: body.format,
@@ -67,9 +69,22 @@ function sendPublication(
   return reply.send(object.body);
 }
 
-function assertCanPublish(request: FastifyRequest, resourceType: "studio_document" | "process") {
+async function assertCanPublish(
+  request: FastifyRequest,
+  resourceType: "studio_document" | "process",
+  resourceId: string,
+  processRepository: ProcessRepository
+) {
   const { role } = readRequestContext(request);
-  if (resourceType === "studio_document" ? !canAccessOwnerStudio(role) : !canManageKnowledge(role)) throw forbiddenError();
+  if (resourceType === "studio_document") {
+    if (!canAccessOwnerStudio(role)) throw forbiddenError();
+    return;
+  }
+  if (canManageKnowledge(role)) return;
+
+  const process = await processRepository.findProcess(readRequestContext(request).workspaceId, resourceId);
+  if (!process) throw new ApiError(404, "PROCESS_NOT_FOUND", "Processo não encontrado.");
+  if (process.status !== "published" || !canReadAreaResource(requireOperationalMembership(request), process.areaId)) throw forbiddenError();
 }
 async function safe<T>(operation: () => Promise<T>) { try { return await operation(); } catch (error) { throw routeError(error); } }
 function routeError(error: unknown) {

@@ -517,7 +517,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
   app.register((routes) => registerStudioPortabilityRoutes(routes, studioPortabilityService));
   app.register((routes) => registerStudioSharingRoutes(routes, studioSharingService));
-  app.register((routes) => registerPublicationRoutes(routes, publicationService));
+  app.register((routes) => registerPublicationRoutes(routes, publicationService, processRepository));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,

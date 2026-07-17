@@ -89,6 +89,73 @@ describe("Baase API app", () => {
     await app.close();
   });
 
+  it("lets an employee create and download a PDF for a published global process", async () => {
+    const app = buildApp({ publicationRenderer: { renderPdf: async () => Buffer.from("%PDF-process") } });
+    const ownerHeaders = {
+      "x-baase-workspace-id": "workspace_a",
+      "x-baase-profile-id": "owner_a",
+      "x-baase-role": "owner"
+    };
+    const employeeHeaders = {
+      "x-baase-workspace-id": "workspace_a",
+      "x-baase-profile-id": "employee_a",
+      "x-baase-role": "employee"
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: ownerHeaders,
+      payload: { title: "Política geral", body: "1. Ler", area_id: null }
+    });
+    expect(created.statusCode).toBe(201);
+    const processId = created.json().process.id as string;
+    expect((await app.inject({ method: "POST", url: `/processes/${processId}/publish`, headers: ownerHeaders })).statusCode).toBe(200);
+
+    const publication = await app.inject({
+      method: "POST",
+      url: "/studio/publications",
+      headers: employeeHeaders,
+      payload: { resource_type: "process", resource_id: processId, format: "pdf" }
+    });
+    expect(publication.statusCode).toBe(201);
+    const download = await app.inject({
+      method: "GET",
+      url: `/studio/publications/${publication.json().publication.id}/download`,
+      headers: employeeHeaders
+    });
+    expect(download.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("rejects an employee PDF request for a draft process", async () => {
+    const app = buildApp({ publicationRenderer: { renderPdf: async () => Buffer.from("%PDF-process") } });
+    const ownerHeaders = {
+      "x-baase-workspace-id": "workspace_a",
+      "x-baase-profile-id": "owner_a",
+      "x-baase-role": "owner"
+    };
+    const employeeHeaders = {
+      "x-baase-workspace-id": "workspace_a",
+      "x-baase-profile-id": "employee_a",
+      "x-baase-role": "employee"
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/processes",
+      headers: ownerHeaders,
+      payload: { title: "Rascunho", body: "1. Não publicar", area_id: null }
+    });
+
+    const publication = await app.inject({
+      method: "POST",
+      url: "/studio/publications",
+      headers: employeeHeaders,
+      payload: { resource_type: "process", resource_id: created.json().process.id, format: "pdf" }
+    });
+    expect(publication.statusCode).toBe(403);
+    await app.close();
+  });
+
   it("cleans only the deleted owner's ritual signals and due queue in the in-memory lifecycle", async () => {
     const now = new Date("2026-07-14T12:00:00.000Z");
     const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
