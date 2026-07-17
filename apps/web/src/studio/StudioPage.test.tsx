@@ -1424,6 +1424,7 @@ describe("StudioPage", () => {
     await user.click(screen.getByRole("button", { name: "Início" }));
     expect(navigationStatus).toHaveTextContent("Seção Início aberta.");
     await user.click(await screen.findByRole("button", { name: "Iniciar Revisão semanal" }));
+    await user.click(await screen.findByRole("button", { name: "Começar agora" }));
 
     expect(await screen.findByText(/contexto da IA não ficou disponível/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Resposta para O que mudou?" })).toBeEnabled();

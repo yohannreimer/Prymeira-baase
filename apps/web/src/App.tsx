@@ -4945,6 +4945,8 @@ function ProcessesPage({
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedVersionNumber, setSelectedVersionNumber] = useState<number | null>(null);
+  const [exportingProcess, setExportingProcess] = useState(false);
+  const [processExportMessage, setProcessExportMessage] = useState("");
   const fallbackProcesses: ApiProcess[] = [
     {
       id: "fallback_onboarding",
@@ -5002,6 +5004,20 @@ function ProcessesPage({
     setSelectedVersionNumber(null);
   }, [selectedProcess?.id]);
 
+  async function exportSelectedProcess() {
+    if (!selectedProcess) return;
+    setExportingProcess(true);
+    setProcessExportMessage("");
+    try {
+      if (!selectedApiProcess) throw new Error("PROCESS_NOT_PERSISTED");
+      await downloadEditorialProcessPdf(selectedApiProcess.id);
+    } catch {
+      setProcessExportMessage("Não foi possível preparar o PDF agora. Tente novamente.");
+    } finally {
+      setExportingProcess(false);
+    }
+  }
+
   return (
     <div className="screen split-page">
       <SideList title="Processos" icon={canManage ? "ph-plus" : undefined} items={items} onCreate={canManage ? createProcess : undefined} onSelect={setSelectedIndex} />
@@ -5021,14 +5037,7 @@ function ProcessesPage({
                 {canManageSelectedProcess ? <>
                 <button className="secondary-btn" type="button" onClick={() => selectedApiProcess && editProcess(selectedApiProcess)} disabled={!selectedApiProcess}><Icon name="ph-pencil-simple" />Editar</button>
                 </> : null}
-                <button className="secondary-btn" type="button" onClick={() => selectedApiProcess ? void downloadEditorialProcessPdf(selectedApiProcess.id) : void downloadProcessPdf({
-                  title: cleanProcessTitle(selectedProcess.title),
-                  summary: selectedProcess.summary ?? parsedProcessBody.objective ?? "SOP operacional",
-                  area: selectedAreaLabel,
-                  status: statusLabel(selectedProcess.status),
-                  version: `v${selectedVersionLabel}`,
-                  parsed: parsedProcessBody
-                })}><Icon name="ph-download-simple" />Baixar PDF</button>
+                <button className="secondary-btn" type="button" disabled={exportingProcess} onClick={() => void exportSelectedProcess()}><Icon name="ph-download-simple" />{exportingProcess ? "Preparando…" : "Baixar PDF"}</button>
                 {canManageSelectedProcess && (selectedProcess.status === "published" ? (
                   <button className="secondary-btn" type="button" disabled={actionBusy || !selectedApiProcess} onClick={() => selectedApiProcess && unpublishProcess(selectedApiProcess)}><Icon name="ph-eye-slash" />Despublicar</button>
                 ) : (
@@ -5040,6 +5049,7 @@ function ProcessesPage({
                 </> : null}
               </div>
             </header>
+            {processExportMessage ? <p className="form-error" role="alert">{processExportMessage}</p> : null}
             <div className="inline-meta">
               <span><Icon name="ph-users-three" />{selectedAreaLabel}</span>
               <span><Icon name="ph-user" />Responsável a definir</span>

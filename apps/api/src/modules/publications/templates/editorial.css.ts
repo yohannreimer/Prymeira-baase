@@ -19,7 +19,7 @@ export const editorialCss = `
   .materials { break-before: auto; margin-top: 30px; padding-top: 18px; border-top: 1px solid #dfe3dc; }
   .material { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 9px 0; border-bottom: 1px solid #eceeea; }
   .material small { color: #7a7f78; }
-  footer { position: fixed; bottom: -12mm; left: 0; right: 0; color: #888d86; font-size: 8pt; border-top: 1px solid #eceeea; padding-top: 7px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; color: #888d86; font-size: 8pt; border-top: 1px solid #eceeea; padding-top: 7px; }
 `;
 
 export function escapeHtml(value: string) {
