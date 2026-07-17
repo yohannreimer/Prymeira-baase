@@ -30,6 +30,21 @@ describe("StudioEditor", () => {
     expect(screen.getByRole("textbox", { name: "Conteúdo do documento" })).toBeInTheDocument();
   });
 
+  it("expands the writing layout while Copilot is closed and supports a multiline title", async () => {
+    window.localStorage.setItem("baase:studio:copilot-open", "false");
+    const user = userEvent.setup();
+    const { container } = render(<StudioEditor document={document} onDocumentChange={vi.fn()} />);
+
+    const layout = container.querySelector(".studio-writing-layout");
+    await waitFor(() => expect(layout).toHaveAttribute("data-copilot-open", "false"));
+    expect(screen.getByRole("textbox", { name: "Título do documento" })).toHaveClass("studio-editor__title--multiline");
+
+    await user.click(await screen.findByRole("button", { name: "Abrir Copiloto" }));
+    await waitFor(() => expect(layout).toHaveAttribute("data-copilot-open", "true"));
+    await user.click(screen.getByRole("button", { name: "Recolher Copiloto" }));
+    await waitFor(() => expect(layout).toHaveAttribute("data-copilot-open", "false"));
+  });
+
   it("places the material region between the editable body and the supporting surfaces", async () => {
     const { container } = render(
       <StudioEditor

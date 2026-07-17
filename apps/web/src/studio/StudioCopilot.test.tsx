@@ -40,6 +40,19 @@ describe("Studio assistant SSE", () => {
 });
 
 describe("StudioCopilot", () => {
+  it("reports its initial and explicit visibility changes", async () => {
+    window.localStorage.setItem("baase:studio:copilot-open", "false");
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(<StudioCopilot document={document} onDocumentChange={vi.fn()} onOpenChange={onOpenChange} />);
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(false));
+    await user.click(screen.getByRole("button", { name: "Abrir Copiloto" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(true));
+    await user.click(screen.getByRole("button", { name: "Recolher Copiloto" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(false));
+  });
+
   it("persists the explicit open preference across remounts", async () => {
     const user = userEvent.setup();
     const first = render(<StudioCopilot document={document} onDocumentChange={vi.fn()} />);

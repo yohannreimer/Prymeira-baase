@@ -127,7 +127,9 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   ), [sourceDocument.id]);
   const autosave = useStudioAutosave(sourceDocument, save, { debounceMs, checkpoint, exitCheckpoint });
   const [title, setTitle] = useState(autosave.initialDraft?.title ?? sourceDocument.title ?? "");
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const titleRef = useRef(title);
+  const titleElementRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const notifiedRevisionRef = useRef(sourceDocument.revision);
   const appliedSourceRevisionRef = useRef(sourceDocument.revision);
@@ -143,6 +145,13 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   const [resolving, setResolving] = useState<"reload" | "copy" | null>(null);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
   const [versionFeedback, setVersionFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    const element = titleElementRef.current;
+    if (!element) return;
+    element.style.height = "0px";
+    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
+  }, [copilotOpen, title]);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [selectedText, setSelectedText] = useState("");
 
@@ -478,7 +487,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   }, []);
 
   return (
-    <div className="studio-writing-layout">
+    <div className="studio-writing-layout" data-copilot-open={copilotOpen}>
     <article className="studio-editor" aria-labelledby="studio-document-heading">
       <h2
         className="sr-only"
@@ -490,12 +499,14 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       <header className="studio-editor__header">
         <StudioDocumentMenu document={sourceDocument} access={accessScope} onImported={onImported} onExport={onExport} />
         <label className="sr-only" htmlFor="studio-document-title">Título do documento</label>
-        <input
+        <textarea
           id="studio-document-title"
-          className="studio-editor__title serif"
+          className="studio-editor__title studio-editor__title--multiline serif"
           aria-label="Título do documento"
+          ref={titleElementRef}
           value={title}
           placeholder="Sem título"
+          rows={1}
           readOnly={readOnly}
           onChange={(event) => {
             const nextTitle = event.currentTarget.value;
@@ -620,6 +631,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         document={autosave.document}
         selectedText={selectedText}
         onDocumentChange={(nextDocument) => applyDocument(nextDocument)}
+        onOpenChange={setCopilotOpen}
         suggestionAcceptance={{
           canAccept: canAcceptSuggestion,
           status: suggestionAcceptanceStatus,

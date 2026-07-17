@@ -21,6 +21,7 @@ type Props = {
   onDocumentChange(document: StudioDocument): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
   suggestionAcceptance?: StudioSuggestionAcceptanceGuard;
+  onOpenChange?(open: boolean): void;
 };
 
 export type StudioEditorAcceptanceSnapshot = {
@@ -64,7 +65,7 @@ const OPERATIONAL_RESOURCE_TYPES = [
   "dashboard", "task", "routine", "process", "training", "announcement", "people"
 ] as const;
 
-export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance }: Props) {
+export default function StudioCopilot({ document, selectedText = "", onDocumentChange, onOpenInternalSource, suggestionAcceptance, onOpenChange }: Props) {
   const [open, setOpenState] = useState(readOpenPreference);
   const setOpen = (next: boolean) => {
     setOpenState(next);
@@ -94,6 +95,10 @@ export default function StudioCopilot({ document, selectedText = "", onDocumentC
   const retryRef = useRef<StudioCopilotRequest | null>(null);
   const bufferedDeltasRef = useRef(new Map<number, string[]>());
   const deltaFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
 
   useEffect(() => {
     const media = window.matchMedia?.(COMPACT_MEDIA_QUERY);
