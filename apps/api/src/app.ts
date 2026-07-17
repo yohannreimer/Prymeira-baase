@@ -76,6 +76,12 @@ import {
 } from "./modules/studio/studio-operations-bridge";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import type { OperationalPool } from "./db/operational-repository-support";
+import { registerPublicationRoutes } from "./modules/publications/publication.routes";
+import { createPublicationService } from "./modules/publications/publication.service";
+import { createInMemoryPublicationStore } from "./modules/publications/publication.store";
+import { createPostgresPublicationStore } from "./modules/publications/postgres-publication.store";
+import { createChromiumPublicationRenderer } from "./modules/publications/publication-renderer";
+import type { PublicationRenderer, PublicationStore } from "./modules/publications/publication.types";
 import {
   createInMemoryStudioMemoryIndex,
   createStudioMemoryIndexProcessor,
@@ -112,6 +118,8 @@ export type BuildAppOptions = {
   studioProactivityStore?: StudioProactivityStore;
   studioPortabilityStore?: StudioPortabilityStore;
   studioSharingStore?: StudioSharingStore;
+  publicationStore?: PublicationStore;
+  publicationRenderer?: PublicationRenderer;
   studioMemoryModel?: string;
   studioMemoryDimensions?: number;
   studioVectorPersistent?: boolean;
@@ -292,6 +300,17 @@ export function buildApp(options: BuildAppOptions = {}) {
     studioService,
     companyRepository,
     now: options.now ? () => options.now!().toISOString() : undefined
+  });
+  const publicationStore = options.publicationStore ?? (options.studioMemoryPool
+    ? createPostgresPublicationStore(options.studioMemoryPool)
+    : createInMemoryPublicationStore(options.now));
+  const publicationService = createPublicationService({
+    store: publicationStore,
+    renderer: options.publicationRenderer ?? createChromiumPublicationRenderer(),
+    objectStorage,
+    studioRepository,
+    processRepository,
+    now: options.now
   });
   const studioPortabilityReconciliationProcessor = {
     async processNext(signal?: AbortSignal, budget?: { excludeOwnerKeys?: readonly string[] }) {
@@ -498,6 +517,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
   app.register((routes) => registerStudioPortabilityRoutes(routes, studioPortabilityService));
   app.register((routes) => registerStudioSharingRoutes(routes, studioSharingService));
+  app.register((routes) => registerPublicationRoutes(routes, publicationService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,

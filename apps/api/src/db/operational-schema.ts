@@ -1704,6 +1704,40 @@ const migrations: Migration[] = [{
     CREATE INDEX IF NOT EXISTS studio_document_imports_source_idx
       ON studio_document_imports (source_workspace_id,source_owner_profile_id,source_document_id);
   `
+}, {
+  version: 34,
+  name: "editorial_publications_and_external_grants",
+  sql: `
+    CREATE TABLE IF NOT EXISTS publications (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      resource_type TEXT NOT NULL CHECK (resource_type IN ('studio_document','process')),
+      resource_id TEXT NOT NULL,
+      format TEXT NOT NULL CHECK (format IN ('pdf','zip')),
+      status TEXT NOT NULL CHECK (status IN ('ready','failed')),
+      title TEXT NOT NULL,
+      object_key TEXT,
+      content_type TEXT,
+      size_bytes BIGINT CHECK (size_bytes IS NULL OR size_bytes >= 0),
+      error_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK ((status='ready')=(object_key IS NOT NULL))
+    );
+    CREATE INDEX IF NOT EXISTS publications_owner_idx
+      ON publications (workspace_id,owner_profile_id,created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS publication_external_grants (
+      id TEXT PRIMARY KEY,
+      publication_id TEXT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS publication_external_grants_publication_idx
+      ON publication_external_grants (publication_id,created_at DESC);
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
