@@ -15,10 +15,11 @@ describe("PublicationService", () => {
       isFocused: true, status: "active", trashedAt: null, preTrashStatus: null
     });
     let rendered = "";
+    const objectStorage = createInMemoryObjectStorage();
     const service = createPublicationService({
       store: createInMemoryPublicationStore(() => date),
       renderer: { async renderPdf(html) { rendered = html; return Buffer.from("pdf-test"); } },
-      objectStorage: createInMemoryObjectStorage(), studioRepository,
+      objectStorage, studioRepository,
       processRepository: createInMemoryProcessRepository(), now: () => date
     });
     const scope = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };
@@ -32,5 +33,14 @@ describe("PublicationService", () => {
     expect((await service.resolveExternal(external.token)).publication.id).toBe(publication.id);
     await service.revokeExternalGrant(scope, publication.id, external.grant.id);
     await expect(service.resolveExternal(external.token)).rejects.toMatchObject({ message: "PUBLICATION_LINK_UNAVAILABLE" });
+
+    const bundle = await service.create({ ...scope, resourceType: "studio_document", resourceId: document.id,
+      format: "zip", workspaceName: "Acme", profileName: "Ana" });
+    const stored = await objectStorage.get(bundle.objectKey!);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stored.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const zip = Buffer.concat(chunks);
+    expect(zip.subarray(0, 4).toString("hex")).toBe("504b0304");
+    expect(zip.toString("utf8")).toContain("Plano-2027.pdf");
   });
 });

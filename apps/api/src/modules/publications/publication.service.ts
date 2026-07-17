@@ -6,6 +6,7 @@ import type { ObjectStorage } from "../../storage/object-storage";
 import { processSopHtml } from "./templates/process-sop";
 import { studioSheetHtml } from "./templates/studio-sheet";
 import type { Publication, PublicationFormat, PublicationRenderer, PublicationResourceType, PublicationStore } from "./publication.types";
+import { createStoredZip, type ZipEntry } from "./publication-zip";
 
 export type CreatePublicationInput = StudioOwnerScope & {
   resourceType: PublicationResourceType;
@@ -26,16 +27,20 @@ export function createPublicationService(dependencies: {
   const now = dependencies.now ?? (() => new Date());
   return {
     async create(input: CreatePublicationInput): Promise<Publication> {
-      if (input.format !== "pdf") throw publicationError("PUBLICATION_FORMAT_UNSUPPORTED");
       const source = await loadSource(input);
       try {
         const pdf = await dependencies.renderer.renderPdf(source.html);
-        const objectKey = `publications/${input.workspaceId}/${input.ownerProfileId}/${randomBytes(12).toString("hex")}.pdf`;
-        await dependencies.objectStorage.put({ key: objectKey, body: Readable.from(pdf), contentType: "application/pdf", sizeBytes: pdf.length });
+        const output = input.format === "pdf" ? pdf : createStoredZip([
+          { name: `${safeFilename(source.title)}.pdf`, body: pdf },
+          ...await source.bundleEntries()
+        ], now());
+        const contentType = input.format === "pdf" ? "application/pdf" : "application/zip";
+        const objectKey = `publications/${input.workspaceId}/${input.ownerProfileId}/${randomBytes(12).toString("hex")}.${input.format}`;
+        await dependencies.objectStorage.put({ key: objectKey, body: Readable.from(output), contentType, sizeBytes: output.length });
         return dependencies.store.create({
           workspaceId: input.workspaceId, ownerProfileId: input.ownerProfileId,
           resourceType: input.resourceType, resourceId: input.resourceId, format: input.format,
-          status: "ready", title: source.title, objectKey, contentType: "application/pdf", sizeBytes: pdf.length, errorCode: null
+          status: "ready", title: source.title, objectKey, contentType, sizeBytes: output.length, errorCode: null
         });
       } catch (error) {
         await dependencies.store.create({
@@ -94,13 +99,51 @@ export function createPublicationService(dependencies: {
       if (!document || document.status === "trashed") throw publicationError("PUBLICATION_SOURCE_NOT_FOUND");
       const assets = (await dependencies.studioRepository.listDocumentAssets(scope, document.id))
         .filter((asset) => asset.lifecycleStatus === "active");
-      return { title: document.title?.trim() || "Folha sem título", html: studioSheetHtml({
-        document, assets, workspaceName: input.workspaceName, authorName: input.profileName
-      }) };
+      return {
+        title: document.title?.trim() || "Folha sem título",
+        html: studioSheetHtml({ document, assets, workspaceName: input.workspaceName, authorName: input.profileName }),
+        bundleEntries: async () => bundleStudioAssets(assets)
+      };
     }
     const process = await dependencies.processRepository.findProcess(input.workspaceId, input.resourceId);
     if (!process) throw publicationError("PUBLICATION_SOURCE_NOT_FOUND");
-    return { title: process.title, html: processSopHtml({ process, workspaceName: input.workspaceName }) };
+    return {
+      title: process.title,
+      html: processSopHtml({ process, workspaceName: input.workspaceName }),
+      bundleEntries: async () => {
+        const files: ZipEntry[] = [];
+        const links: string[] = [];
+        for (const material of process.materials ?? []) {
+          if (material.objectKey) files.push({ name: `materiais/${safeFilename(material.title)}`, body: await readObject(material.objectKey) });
+          else if (material.url) links.push(`${material.title}\n${material.url}`);
+        }
+        if (links.length) files.push({ name: "materiais/links.txt", body: Buffer.from(`${links.join("\n\n")}\n`, "utf8") });
+        return files;
+      }
+    };
+  }
+
+  async function bundleStudioAssets(assets: Awaited<ReturnType<StudioRepository["listDocumentAssets"]>>) {
+    const entries: ZipEntry[] = [];
+    const links: string[] = [];
+    const used = new Map<string, number>();
+    for (const asset of assets) {
+      if (asset.objectKey) {
+        const base = safeFilename(asset.displayName);
+        const count = used.get(base) ?? 0; used.set(base, count + 1);
+        const name = count ? `${base}-${count + 1}` : base;
+        entries.push({ name: `materiais/${name}`, body: await readObject(asset.objectKey) });
+      } else if (asset.finalUrl ?? asset.sourceUrl) links.push(`${asset.displayName}\n${asset.finalUrl ?? asset.sourceUrl}`);
+    }
+    if (links.length) entries.push({ name: "materiais/links.txt", body: Buffer.from(`${links.join("\n\n")}\n`, "utf8") });
+    return entries;
+  }
+
+  async function readObject(key: string) {
+    const object = await dependencies.objectStorage.get(key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of object.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks);
   }
 }
 

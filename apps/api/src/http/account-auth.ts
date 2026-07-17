@@ -116,6 +116,7 @@ function isPublicRequest(request: FastifyRequest) {
   if (method === "OPTIONS") return true;
   if (publicRoutes.has(`${method} ${path}`)) return true;
   if (method === "GET" && /^\/invites\/[^/]+$/.test(path)) return true;
+  if (method === "GET" && /^\/publications\/public\/[^/]+$/.test(path)) return true;
   if (method === "POST" && /^\/invites\/[^/]+\/accept$/.test(path)) return true;
   return false;
 }

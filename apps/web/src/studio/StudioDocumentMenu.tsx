@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import StudioSharePanel from "./StudioSharePanel";
+import StudioExportPanel from "./StudioExportPanel";
 import type { StudioDocument } from "./studio.types";
 
 export default function StudioDocumentMenu({ document, access, onImported, onExport }: {
@@ -10,6 +11,7 @@ export default function StudioDocumentMenu({ document, access, onImported, onExp
 }) {
   const [open, setOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -22,12 +24,12 @@ export default function StudioDocumentMenu({ document, access, onImported, onExp
       <button type="button" aria-label="Mais opções da folha" aria-expanded={open} onClick={() => setOpen((value) => !value)}><i className="ph-light ph-dots-three" aria-hidden="true" /></button>
       {open ? <div className="studio-document-menu__popover" role="menu">
         <button type="button" role="menuitem" onClick={() => { setOpen(false); setSharing(true); }}><i className="ph-light ph-users" aria-hidden="true" />{access === "owned" ? "Compartilhar" : "Comentários e importação"}</button>
-        {access === "owned" ? <button type="button" role="menuitem" onClick={() => { setOpen(false); onExport?.(); }}><i className="ph-light ph-export" aria-hidden="true" />Exportar</button> : null}
+        {access === "owned" ? <button type="button" role="menuitem" onClick={() => { setOpen(false); if (onExport) onExport(); else setExporting(true); }}><i className="ph-light ph-export" aria-hidden="true" />Exportar</button> : null}
       </div> : null}
     </div>
     {sharing ? <StudioSharePanel document={document} access={access} onClose={() => setSharing(false)} onImported={onImported} /> : null}
+    {exporting ? <StudioExportPanel documentId={document.id} title={document.title || "Folha sem título"} onClose={() => setExporting(false)} /> : null}
   </>;
 }
 
 function documentGlobal() { return globalThis.document; }
-

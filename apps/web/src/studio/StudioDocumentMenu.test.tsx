@@ -30,5 +30,13 @@ describe("StudioDocumentMenu", () => {
     expect(screen.getByRole("menuitem", { name: /Comentários e importação/ })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: /Exportar/ })).not.toBeInTheDocument();
   });
-});
 
+  it("opens the compact export panel when the page uses the built-in flow", async () => {
+    const user = userEvent.setup();
+    render(<StudioDocumentMenu document={document} access="owned" />);
+    await user.click(screen.getByRole("button", { name: "Mais opções da folha" }));
+    await user.click(screen.getByRole("menuitem", { name: /Exportar/ }));
+    expect(screen.getByRole("dialog", { name: "Exportar folha" })).toBeVisible();
+    expect(screen.getByText("Pacote completo")).toBeVisible();
+  });
+});

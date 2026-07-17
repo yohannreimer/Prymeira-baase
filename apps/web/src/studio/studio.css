@@ -702,6 +702,29 @@
   .studio-export-card__spinner { animation: none; }
 }
 
+.studio-export-panel {
+  position: fixed; z-index: 90; inset: 50% auto auto 50%; transform: translate(-50%, -50%);
+  width: min(92vw, 560px); max-height: 88vh; overflow: auto; border: 1px solid var(--line, #deded8);
+  border-radius: 18px; background: #fff; box-shadow: 0 24px 80px rgb(31 35 31 / 18%); color: #2a2c29;
+}
+.studio-export-panel::before { content: ""; position: fixed; inset: -100vh -100vw; z-index: -1; background: rgb(27 30 27 / 28%); }
+.studio-export-panel > header { display: flex; justify-content: space-between; gap: 20px; padding: 24px 26px 18px; border-bottom: 1px solid #ecece7; }
+.studio-export-panel h3 { margin: 5px 0 0; font-size: 21px; }
+.studio-export-panel header button { border: 0; background: transparent; font-size: 20px; }
+.studio-export-panel > section { padding: 24px 26px 28px; }
+.studio-export-panel h4 { margin: 0 0 16px; font-size: 15px; }
+.studio-export-panel label { display: flex; align-items: flex-start; gap: 12px; padding: 15px 0; border-bottom: 1px solid #efefeb; cursor: pointer; }
+.studio-export-panel label span { display: grid; gap: 4px; }
+.studio-export-panel label small { color: #777c75; line-height: 1.4; }
+.studio-export-panel button { border: 1px solid #dcded9; border-radius: 10px; padding: 10px 14px; background: #fff; font-weight: 650; }
+.studio-export-panel__primary { margin-top: 20px; border-color: #467b66 !important; background: #467b66 !important; color: #fff; }
+.studio-export-panel__ready { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 20px; }
+.studio-export-panel__ready p { flex: 1 0 100%; margin: 0; color: #39715c; }
+.studio-export-panel__ready .studio-export-panel__primary { margin-top: 0; }
+.studio-export-panel__link { display: flex; gap: 8px; margin-top: 16px; }
+.studio-export-panel__link input { min-width: 0; flex: 1; border: 1px solid #dcded9; border-radius: 9px; padding: 10px; }
+.studio-export-panel__message { margin: 14px 0 0; color: #646961; }
+
 .studio-document-menu { margin-left: auto; position: relative; width: max-content; }
 .studio-document-menu > button,
 .studio-share-panel header > button { align-items: center; background: transparent; border: 1px solid var(--line); border-radius: 10px; display: inline-flex; height: 38px; justify-content: center; width: 38px; }
