@@ -8,11 +8,14 @@ import StudioSearch from "./StudioSearch";
 import StudioCollections from "./StudioCollections";
 import StudioStructureLibrary from "./StudioStructureLibrary";
 import StudioTrash from "./StudioTrash";
+import StudioSharedLibrary from "./StudioSharedLibrary";
+import StudioImportNotice from "./StudioImportNotice";
 import {
   archiveStudioDocument,
   createStudioCheckpoint,
   getStudioDocument,
   getStudioDocumentAssets,
+  getSharedStudioDocument,
   restoreStudioDocument,
   trashStudioDocument,
   StudioApiError
@@ -20,7 +23,7 @@ import {
 import { sweepExpiredStudioDraftQuarantines } from "./studio-draft-storage";
 import { publishStudioEvent } from "./studio-events";
 import { useStudioCollections } from "./useStudioCollections";
-import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget } from "./studio.types";
+import type { StudioAsset, StudioCitation, StudioDocument, StudioInternalCitationTarget, StudioSharedDocument } from "./studio.types";
 import type { StudioCaptureOutcome } from "./UniversalCaptureComposer";
 import type { StudioEditorHandle, StudioEditorInsertionSnapshot } from "./StudioEditor";
 import "./studio.css";
@@ -142,6 +145,8 @@ export default function StudioPage({ onOpenInternalSource }: {
   const [sectionAnnouncement, setSectionAnnouncement] = useState("");
   const [selectedRitualId, setSelectedRitualId] = useState<string | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<StudioDocument | null>(null);
+  const [documentAccess, setDocumentAccess] = useState<"owned" | "shared_read_comment">("owned");
+  const [allFilter, setAllFilter] = useState<"mine" | "shared">("mine");
   const [assetState, setAssetState] = useState<DocumentAssetState>({
     documentId: null,
     assets: [],
@@ -266,14 +271,15 @@ export default function StudioPage({ onOpenInternalSource }: {
     searchOpenController.current?.abort();
     searchOpenController.current = null;
     setDocumentOpenError(null);
-    showDocument(document, outcome);
+    showDocument(document, outcome, "owned");
     if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(document.id)}`);
   }
 
-  function showDocument(document: StudioDocument, outcome?: StudioCaptureOutcome) {
+  function showDocument(document: StudioDocument, outcome?: StudioCaptureOutcome, access: "owned" | "shared_read_comment" = "owned") {
     setSectionAnnouncement("");
     selectedDocumentId.current = document.id;
     setSelectedDocument(document);
+    setDocumentAccess(access);
     setAssetState({
       documentId: document.id,
       assets: outcome?.asset ? [outcome.asset] : [],
@@ -281,6 +287,13 @@ export default function StudioPage({ onOpenInternalSource }: {
       error: false
     });
     setSection("document");
+  }
+
+  function openSharedDocument(item: StudioSharedDocument) {
+    documentRequestGeneration.current += 1;
+    setDocumentOpenError(null);
+    showDocument(item.document, undefined, "shared_read_comment");
+    window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(item.document.id)}`);
   }
 
   function navigateSection(next: Exclude<StudioSection, "document">) {
@@ -331,9 +344,18 @@ export default function StudioPage({ onOpenInternalSource }: {
     setDocumentOpenError(null);
     if (syncHistory) window.history.pushState(null, "", `#estudio/document/${encodeURIComponent(documentId)}`);
     try {
-      const document = await getStudioDocument(documentId, fetch, controller.signal);
+      let document: StudioDocument;
+      let access: "owned" | "shared_read_comment" = "owned";
+      try { document = await getStudioDocument(documentId, fetch, controller.signal); }
+      catch (error) {
+        const status = studioErrorStatus(error);
+        if (status !== 403 && status !== 404) throw error;
+        const shared = await getSharedStudioDocument(documentId, fetch, controller.signal);
+        document = shared.document;
+        access = "shared_read_comment";
+      }
       if (!isCurrentDocumentRequest(controller, generation, documentId)) return;
-      showDocument(document);
+      showDocument(document, undefined, access);
     } catch (error) {
       if (isCurrentDocumentRequest(controller, generation, documentId)) {
         const status = studioErrorStatus(error);
@@ -392,7 +414,7 @@ export default function StudioPage({ onOpenInternalSource }: {
   }, [documentOpenError]);
 
   useEffect(() => {
-    if (section !== "document" || !selectedDocument) return;
+    if (section !== "document" || !selectedDocument || documentAccess === "shared_read_comment") return;
     const controller = new AbortController();
     const documentId = selectedDocument.id;
     setAssetState((current) => ({
@@ -415,7 +437,7 @@ export default function StudioPage({ onOpenInternalSource }: {
       }
     });
     return () => controller.abort();
-  }, [assetsReloadKey, section, selectedDocument?.id]);
+  }, [assetsReloadKey, documentAccess, section, selectedDocument?.id]);
 
   function attachDocumentAsset(asset: StudioAsset) {
     if (!pageMountedRef.current) return;
@@ -474,11 +496,13 @@ export default function StudioPage({ onOpenInternalSource }: {
         <section className="studio-content" aria-label="Conteúdo da seção">
           {section === "home" ? <StudioHome onOpenDocument={openDocument} onOpenRitual={openRitual} /> : section === "document" ? (
             selectedDocument ? <>
+              {documentAccess === "owned" ? <StudioImportNotice documentId={selectedDocument.id} onImported={(document) => openDocument(document)} /> : null}
               <Suspense fallback={<StudioEditorSkeleton />}>
                 <StudioEditor
                   key={selectedDocument.id}
                   ref={editorRef}
                   document={selectedDocument}
+                  accessScope={documentAccess}
                   focusHeadingOnMount
                   onDocumentChange={(document) => {
                     selectedDocumentId.current = document.id;
@@ -486,7 +510,8 @@ export default function StudioPage({ onOpenInternalSource }: {
                   }}
                   onOpenDocument={(documentId) => void openDocumentById(documentId)}
                   onOpenInternalSource={onOpenInternalSource}
-                  materialRegion={(
+                  onImported={(document) => openDocument(document)}
+                  materialRegion={documentAccess === "owned" ? (
                     <DocumentAssets
                       documentId={selectedDocument.id}
                       documentTitle={selectedDocument.title || "Sem título"}
@@ -498,7 +523,7 @@ export default function StudioPage({ onOpenInternalSource }: {
                       onInsertTranscript={insertTranscript}
                       onDeleted={removeDocumentAsset}
                     />
-                  )}
+                  ) : undefined}
                 />
               </Suspense>
             </> : documentOpenError ? (
@@ -518,7 +543,13 @@ export default function StudioPage({ onOpenInternalSource }: {
             <>
               <StudioSectionHeading item={active} />
               <StudioSearch onOpenDocument={(documentId) => void openDocumentById(documentId)} />
-              <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} trashDocument={trashDocument} />
+              <div className="studio-library-filter" role="group" aria-label="Origem das folhas">
+                <button type="button" aria-pressed={allFilter === "mine"} onClick={() => setAllFilter("mine")}>Minhas folhas</button>
+                <button type="button" aria-pressed={allFilter === "shared"} onClick={() => setAllFilter("shared")}>Compartilhadas comigo</button>
+              </div>
+              {allFilter === "mine"
+                ? <StudioLibrary collections={collectionStore.collections} query={{ status: "active" }} onOpenDocument={openDocument} archiveDocument={archiveDocument} restoreDocument={restoreDocument} trashDocument={trashDocument} />
+                : <StudioSharedLibrary onOpen={openSharedDocument} />}
             </>
           ) : section === "goals" || section === "decisions" || section === "plans" ? (
             <StudioStructureLibrary

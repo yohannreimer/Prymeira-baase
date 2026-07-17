@@ -24,6 +24,7 @@ import { useStudioAutosave, type AutosaveState, type StudioDocumentDraft } from 
 import RelatedThoughts from "./RelatedThoughts";
 import StudioStructures from "./StudioStructures";
 import StudioVersionDrawer from "./StudioVersionDrawer";
+import StudioDocumentMenu from "./StudioDocumentMenu";
 
 const StudioCopilot = lazy(() => import("./StudioCopilot"));
 
@@ -35,6 +36,9 @@ type StudioEditorProps = {
   onOpenDocument?(documentId: string): void;
   onOpenInternalSource?(target: StudioInternalCitationTarget, citation: StudioCitation): void;
   materialRegion?: ReactNode;
+  accessScope?: "owned" | "shared_read_comment";
+  onImported?(document: StudioDocument): void;
+  onExport?(): void;
 };
 
 export type StudioEditorHandle = {
@@ -95,8 +99,12 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
   debounceMs,
   onOpenDocument,
   onOpenInternalSource,
-  materialRegion
+  materialRegion,
+  accessScope = "owned",
+  onImported,
+  onExport
 }: StudioEditorProps, ref) {
+  const readOnly = accessScope === "shared_read_comment";
   const save = useCallback((draft: StudioDocumentDraft, expectedRevision: number, signal?: AbortSignal) => (
     updateStudioDocument(sourceDocument.id, {
       expected_revision: expectedRevision,
@@ -143,6 +151,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
 
   const editor = useEditor({
     immediatelyRender: false,
+    editable: !readOnly,
     extensions: createStudioEditorExtensions(),
     content: documentContent(sourceDocument, autosave.initialDraft),
     editorProps: {
@@ -479,6 +488,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       >{autosave.document.title || "Captura sem título"}</h2>
 
       <header className="studio-editor__header">
+        <StudioDocumentMenu document={sourceDocument} access={accessScope} onImported={onImported} onExport={onExport} />
         <label className="sr-only" htmlFor="studio-document-title">Título do documento</label>
         <input
           id="studio-document-title"
@@ -486,6 +496,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
           aria-label="Título do documento"
           value={title}
           placeholder="Sem título"
+          readOnly={readOnly}
           onChange={(event) => {
             const nextTitle = event.currentTarget.value;
             titleRef.current = nextTitle;
@@ -496,9 +507,9 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         <div className="studio-editor__save-line">
           <span className="studio-editor__save-status" role="status" aria-live="polite" aria-atomic="true" aria-label="Estado do salvamento" data-state={autosave.state}>
             <i aria-hidden="true" className={`ph-light ${autosave.state === "saving" ? "ph-circle-notch" : autosave.state === "saved" ? "ph-check" : "ph-cloud"}`} />
-            {saveLabel}
+            {readOnly ? "Somente leitura" : saveLabel}
           </span>
-          <button
+          {!readOnly ? <button
             type="button"
             className="studio-editor__history-trigger"
             ref={versionsTriggerRef}
@@ -508,12 +519,12 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
           >
             <i aria-hidden="true" className="ph-light ph-clock-counter-clockwise" />
             Ver histórico de versões
-          </button>
+          </button> : null}
         </div>
-        <StudioStructures documentId={sourceDocument.id} documentTitle={title.trim() || null} />
+        {!readOnly ? <StudioStructures documentId={sourceDocument.id} documentTitle={title.trim() || null} /> : null}
       </header>
 
-      <div className="studio-editor__toolbar" role="toolbar" aria-label="Formatação do documento">
+      {!readOnly ? <div className="studio-editor__toolbar" role="toolbar" aria-label="Formatação do documento">
         <button type="button" aria-label="Negrito" aria-pressed={toolbarState?.bold ?? false} onClick={() => editor?.chain().focus().toggleBold().run()}>
           <i aria-hidden="true" className="ph-bold ph-text-b" />
         </button>
@@ -526,7 +537,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
         <button type="button" aria-label="Formatar hyperlink no texto" aria-expanded={linkFieldOpen} aria-pressed={toolbarState?.link ?? false} onClick={() => setLinkFieldOpen((open) => !open)}>
           <i aria-hidden="true" className="ph-bold ph-link" />
         </button>
-      </div>
+      </div> : null}
       {linkFieldOpen ? (
         <div className="studio-editor__link-field">
           <label htmlFor="studio-editor-link">Endereço do link</label>
@@ -592,19 +603,19 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
       {resolutionError ? <p className="studio-editor__resolution-error" role="alert">{resolutionError}</p> : null}
       {versionFeedback ? <p className="studio-editor__version-feedback" role="status">{versionFeedback}</p> : null}
 
-      <StudioVersionDrawer
+      {!readOnly ? <StudioVersionDrawer
         documentId={sourceDocument.id}
         open={versionsOpen}
         onClose={closeVersions}
         onRestore={restoreVersion}
         canRestore={!hasUnsavedChanges}
-      />
+      /> : null}
       {materialRegion}
     </article>
-    <aside className="studio-editor__context" aria-label="Conexões deste documento">
+    {!readOnly ? <aside className="studio-editor__context" aria-label="Conexões deste documento">
       <RelatedThoughts documentId={sourceDocument.id} onOpenDocument={onOpenDocument} />
-    </aside>
-    <Suspense fallback={<div className="studio-copilot-skeleton" role="status" aria-label="Abrindo copiloto"><span /><span /><span /></div>}>
+    </aside> : null}
+    {!readOnly ? <Suspense fallback={<div className="studio-copilot-skeleton" role="status" aria-label="Abrindo copiloto"><span /><span /><span /></div>}>
       <StudioCopilot
         document={autosave.document}
         selectedText={selectedText}
@@ -624,7 +635,7 @@ const StudioEditorSession = forwardRef<StudioEditorHandle, StudioEditorProps>(fu
           else onOpenInternalSource?.(target, citation);
         }}
       />
-    </Suspense>
+    </Suspense> : null}
     </div>
   );
 });

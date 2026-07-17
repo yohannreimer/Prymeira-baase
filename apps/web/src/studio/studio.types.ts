@@ -57,6 +57,43 @@ export type StudioDocument = {
   preTrashStatus?: Exclude<StudioDocumentStatus, "trashed"> | null;
 };
 
+export type StudioShareAudience = { type: "owner"; profileId: string } | { type: "all_owners" };
+export type StudioShare = {
+  id: string;
+  workspaceId: string;
+  ownerProfileId: string;
+  documentId: string;
+  audience: StudioShareAudience;
+  createdAt: string;
+};
+export type StudioComment = {
+  id: string;
+  documentId: string;
+  authorProfileId: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type StudioSharedDocument = {
+  document: StudioDocument;
+  author: { profileId: string; name: string };
+  access: "shared_read_comment";
+};
+export type StudioImportUpdate = {
+  importedDocumentId: string;
+  status: "current" | "updated" | "dismissed" | "unavailable";
+  sourceDocument: StudioDocument | null;
+  source: {
+    documentId: string;
+    ownerProfileId: string;
+    ownerName: string;
+    title: string | null;
+    importedRevision: number;
+    currentRevision: number | null;
+  };
+};
+
 export type StudioDocumentVersion = {
   id: string;
   workspaceId: string;

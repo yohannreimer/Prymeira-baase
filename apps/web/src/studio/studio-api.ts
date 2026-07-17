@@ -48,6 +48,7 @@ import type {
   StudioOperationPreview,
   StudioOperationalLink
 } from "./studio.types";
+import type { StudioComment, StudioImportUpdate, StudioShare, StudioShareAudience, StudioSharedDocument } from "./studio.types";
 
 export type StudioFetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -544,6 +545,63 @@ export async function getStudioDocument(
     fetcher
   );
   return mapStudioDocument(response.document);
+}
+
+export async function listSharedStudioDocuments(fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioSharedDocument[]> {
+  const response = await studioRequest<{ documents: Array<{ document: RawStudioDocument; author: { profileId: string; name: string }; access: "shared_read_comment" }> }>(
+    "/documents/shared", { signal }, fetcher
+  );
+  return response.documents.map((item) => ({ ...item, document: mapStudioDocument(item.document) }));
+}
+
+export async function getSharedStudioDocument(documentId: string, fetcher: StudioFetcher = fetch, signal?: AbortSignal): Promise<StudioSharedDocument> {
+  const response = await studioRequest<{ document: RawStudioDocument; author: { profileId: string; name: string }; access: "shared_read_comment" }>(
+    `/shared-documents/${encodeURIComponent(documentId)}`, { signal }, fetcher
+  );
+  return { ...response, document: mapStudioDocument(response.document) };
+}
+
+export async function getStudioShares(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioShare[]> {
+  const response = await studioRequest<{ shares: StudioShare[] }>(`/documents/${encodeURIComponent(documentId)}/shares`, {}, fetcher);
+  return response.shares;
+}
+
+export async function replaceStudioShares(documentId: string, audiences: StudioShareAudience[], fetcher: StudioFetcher = fetch): Promise<StudioShare[]> {
+  const response = await studioRequest<{ shares: StudioShare[] }>(`/documents/${encodeURIComponent(documentId)}/shares`, {
+    method: "PUT", body: JSON.stringify({ audiences })
+  }, fetcher);
+  return response.shares;
+}
+
+export async function listStudioComments(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioComment[]> {
+  const response = await studioRequest<{ comments: StudioComment[] }>(`/documents/${encodeURIComponent(documentId)}/comments`, {}, fetcher);
+  return response.comments;
+}
+
+export async function addStudioComment(documentId: string, body: string, fetcher: StudioFetcher = fetch): Promise<StudioComment> {
+  const response = await studioRequest<{ comment: StudioComment }>(`/documents/${encodeURIComponent(documentId)}/comments`, {
+    method: "POST", body: JSON.stringify({ body })
+  }, fetcher);
+  return response.comment;
+}
+
+export async function importSharedStudioDocument(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioDocument> {
+  const response = await studioRequest<RawStudioDocumentResponse>(`/documents/${encodeURIComponent(documentId)}/import`, {
+    method: "POST", headers: { "idempotency-key": globalThis.crypto?.randomUUID?.() ?? `${Date.now()}` }
+  }, fetcher);
+  return mapStudioDocument(response.document);
+}
+
+export async function getStudioImportUpdate(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioImportUpdate> {
+  const response = await studioRequest<{ update: StudioImportUpdate }>(`/documents/${encodeURIComponent(documentId)}/import-update`, {}, fetcher);
+  return { ...response.update, sourceDocument: response.update.sourceDocument ? mapStudioDocument(response.update.sourceDocument as unknown as RawStudioDocument) : null };
+}
+
+export async function dismissStudioImportUpdate(documentId: string, fetcher: StudioFetcher = fetch): Promise<StudioImportUpdate> {
+  const response = await studioRequest<{ update: StudioImportUpdate }>(`/documents/${encodeURIComponent(documentId)}/import-update/dismiss`, {
+    method: "POST"
+  }, fetcher);
+  return { ...response.update, sourceDocument: response.update.sourceDocument ? mapStudioDocument(response.update.sourceDocument as unknown as RawStudioDocument) : null };
 }
 
 export type UpdateStudioDocumentInput = {
