@@ -57,6 +57,10 @@ import {
 import { createPostgresStudioProactivityStore } from "./modules/studio/postgres-studio-proactivity.store";
 import { registerStudioAssistantRoutes } from "./modules/studio/studio-assistant.routes";
 import { registerStudioPortabilityRoutes } from "./modules/studio/studio-portability.routes";
+import { registerStudioSharingRoutes } from "./modules/studio/studio-sharing.routes";
+import { createStudioSharingService } from "./modules/studio/studio-sharing.service";
+import { createInMemoryStudioSharingStore, type StudioSharingStore } from "./modules/studio/studio-sharing.store";
+import { createPostgresStudioSharingStore } from "./modules/studio/postgres-studio-sharing.store";
 import {
   createInMemoryStudioPortabilityStore,
   createStudioPortabilityService,
@@ -107,6 +111,7 @@ export type BuildAppOptions = {
   studioMemoryPool?: OperationalPool;
   studioProactivityStore?: StudioProactivityStore;
   studioPortabilityStore?: StudioPortabilityStore;
+  studioSharingStore?: StudioSharingStore;
   studioMemoryModel?: string;
   studioMemoryDimensions?: number;
   studioVectorPersistent?: boolean;
@@ -277,6 +282,16 @@ export function buildApp(options: BuildAppOptions = {}) {
       if (!member && actor.workspaceId === "local_workspace" && actor.profileId === "local_profile") return true;
       return member?.role === "owner" && member.status === "active";
     }
+  });
+  const studioSharingStore = options.studioSharingStore ?? (options.studioMemoryPool
+    ? createPostgresStudioSharingStore(options.studioMemoryPool)
+    : createInMemoryStudioSharingStore());
+  const studioSharingService = createStudioSharingService({
+    store: studioSharingStore,
+    repository: studioRepository,
+    studioService,
+    companyRepository,
+    now: options.now ? () => options.now!().toISOString() : undefined
   });
   const studioPortabilityReconciliationProcessor = {
     async processNext(signal?: AbortSignal, budget?: { excludeOwnerKeys?: readonly string[] }) {
@@ -482,6 +497,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register((routes) => registerStudioAssistantRoutes(routes, studioAssistantService, studioOperationsBridge));
   app.register((routes) => registerStudioProactivityRoutes(routes, studioProactivityService));
   app.register((routes) => registerStudioPortabilityRoutes(routes, studioPortabilityService));
+  app.register((routes) => registerStudioSharingRoutes(routes, studioSharingService));
   app.register((routes) => registerStudioAssetRoutes(routes, {
     repository: studioRepository,
     objectStorage,

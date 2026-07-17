@@ -1639,6 +1639,71 @@ const migrations: Migration[] = [{
       ON studio_ritual_sessions
         (workspace_id,owner_profile_id,ritual_id,occurrence_at DESC,id DESC);
   `
+}, {
+  version: 33,
+  name: "studio_owner_sharing_comments_imports",
+  sql: `
+    CREATE TABLE IF NOT EXISTS studio_document_shares (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      audience_type TEXT NOT NULL CHECK (audience_type IN ('owner','all_owners')),
+      recipient_profile_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK ((audience_type='owner')=(recipient_profile_id IS NOT NULL)),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_document_shares_audience_uidx
+      ON studio_document_shares
+        (workspace_id,owner_profile_id,document_id,audience_type,COALESCE(recipient_profile_id,''));
+    CREATE INDEX IF NOT EXISTS studio_document_shares_recipient_idx
+      ON studio_document_shares (workspace_id,recipient_profile_id,created_at DESC)
+      WHERE audience_type='owner';
+    CREATE INDEX IF NOT EXISTS studio_document_shares_all_owners_idx
+      ON studio_document_shares (workspace_id,created_at DESC)
+      WHERE audience_type='all_owners';
+
+    CREATE TABLE IF NOT EXISTS studio_document_comments (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      author_profile_id TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (workspace_id,owner_profile_id,document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS studio_document_comments_document_idx
+      ON studio_document_comments (workspace_id,owner_profile_id,document_id,created_at,id);
+
+    CREATE TABLE IF NOT EXISTS studio_document_imports (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_profile_id TEXT NOT NULL,
+      imported_document_id TEXT NOT NULL,
+      source_workspace_id TEXT NOT NULL,
+      source_owner_profile_id TEXT NOT NULL,
+      source_document_id TEXT NOT NULL,
+      source_owner_name TEXT NOT NULL,
+      source_title TEXT,
+      source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+      dismissed_revision INTEGER,
+      source_unavailable_at TIMESTAMPTZ,
+      idempotency_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (workspace_id,owner_profile_id,idempotency_key),
+      UNIQUE (workspace_id,owner_profile_id,imported_document_id),
+      FOREIGN KEY (workspace_id,owner_profile_id,imported_document_id)
+        REFERENCES studio_documents(workspace_id,owner_profile_id,id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS studio_document_imports_source_idx
+      ON studio_document_imports (source_workspace_id,source_owner_profile_id,source_document_id);
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {
