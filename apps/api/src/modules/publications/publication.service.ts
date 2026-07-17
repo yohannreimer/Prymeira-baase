@@ -28,27 +28,42 @@ export function createPublicationService(dependencies: {
   return {
     async create(input: CreatePublicationInput): Promise<Publication> {
       const source = await loadSource(input);
+      let stage = "render";
       try {
         const pdf = await dependencies.renderer.renderPdf(source.html);
+        stage = "package";
         const output = input.format === "pdf" ? pdf : createStoredZip([
           { name: `${safeFilename(source.title)}.pdf`, body: pdf },
           ...await source.bundleEntries()
         ], now());
         const contentType = input.format === "pdf" ? "application/pdf" : "application/zip";
         const objectKey = `publications/${input.workspaceId}/${input.ownerProfileId}/${randomBytes(12).toString("hex")}.${input.format}`;
+        stage = "storage";
         await dependencies.objectStorage.put({ key: objectKey, body: Readable.from(output), contentType, sizeBytes: output.length });
+        stage = "persistence";
         return dependencies.store.create({
           workspaceId: input.workspaceId, ownerProfileId: input.ownerProfileId,
           resourceType: input.resourceType, resourceId: input.resourceId, format: input.format,
           status: "ready", title: source.title, objectKey, contentType, sizeBytes: output.length, errorCode: null
         });
       } catch (error) {
-        await dependencies.store.create({
-          workspaceId: input.workspaceId, ownerProfileId: input.ownerProfileId,
-          resourceType: input.resourceType, resourceId: input.resourceId, format: input.format,
-          status: "failed", title: source.title, objectKey: null, contentType: null, sizeBytes: null,
-          errorCode: error instanceof Error ? error.message.slice(0, 120) : "PUBLICATION_RENDER_FAILED"
+        const cause = error instanceof Error ? error.message : "UNKNOWN";
+        console.error("[publication] generation failed", {
+          stage, resourceType: input.resourceType, format: input.format, cause
         });
+        try {
+          await dependencies.store.create({
+            workspaceId: input.workspaceId, ownerProfileId: input.ownerProfileId,
+            resourceType: input.resourceType, resourceId: input.resourceId, format: input.format,
+            status: "failed", title: source.title, objectKey: null, contentType: null, sizeBytes: null,
+            errorCode: `${stage}:${cause}`.slice(0, 120)
+          });
+        } catch (persistenceError) {
+          console.error("[publication] failed to persist generation failure", {
+            stage, resourceType: input.resourceType,
+            cause: persistenceError instanceof Error ? persistenceError.message : "UNKNOWN"
+          });
+        }
         throw publicationError("PUBLICATION_RENDER_FAILED");
       }
     },
