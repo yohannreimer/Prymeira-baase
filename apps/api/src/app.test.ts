@@ -41,6 +41,35 @@ function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput>
 }
 
 describe("Baase API app", () => {
+  it("serves authenticated publication creation at the Studio client path", async () => {
+    const repository = createInMemoryStudioRepository();
+    const document = await repository.createDocument({
+      workspaceId: "workspace_a", ownerProfileId: "owner_a", title: "Decisão editorial",
+      bodyJson: {}, bodyText: "Escolher o próximo passo.", captureMode: "text",
+      inboxState: "reviewed", isFocused: false, status: "active", trashedAt: null, preTrashStatus: null
+    });
+    const app = buildApp({
+      studioRepository: repository,
+      publicationRenderer: { renderPdf: async () => Buffer.from("%PDF-publication") }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/studio/publications",
+      headers: {
+        "x-baase-workspace-id": "workspace_a",
+        "x-baase-profile-id": "owner_a",
+        "x-baase-role": "owner"
+      },
+      payload: { resource_type: "studio_document", resource_id: document.id, format: "pdf" }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().publication).toMatchObject({
+      resourceType: "studio_document", resourceId: document.id, status: "ready"
+    });
+    await app.close();
+  });
+
   it("cleans only the deleted owner's ritual signals and due queue in the in-memory lifecycle", async () => {
     const now = new Date("2026-07-14T12:00:00.000Z");
     const ownerA = { workspaceId: "workspace_a", ownerProfileId: "owner_a" };

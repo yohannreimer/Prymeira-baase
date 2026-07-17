@@ -20,7 +20,7 @@ export async function registerPublicationRoutes(app: FastifyInstance, service: P
     const resolved = await safe(() => service.resolveExternal(token));
     return reply.redirect(resolved.url);
   });
-  app.post("/publications", async (request, reply) => {
+  app.post("/studio/publications", async (request, reply) => {
     const context = readRequestContext(request);
     const body = createBody.parse(request.body);
     assertCanPublish(request, body.resource_type);
@@ -31,21 +31,21 @@ export async function registerPublicationRoutes(app: FastifyInstance, service: P
     }));
     return reply.code(201).send({ publication });
   });
-  app.get("/publications/:id", async (request) => {
+  app.get("/studio/publications/:id", async (request) => {
     const context = readRequestContext(request); const { id } = idParams.parse(request.params);
     return { publication: await safe(() => service.find({ workspaceId: context.workspaceId, ownerProfileId: context.profileId }, id)) };
   });
-  app.get("/publications/:id/download", async (request) => {
+  app.get("/studio/publications/:id/download", async (request) => {
     const context = readRequestContext(request); const { id } = idParams.parse(request.params);
     return { url: await safe(() => service.createDownloadUrl({ workspaceId: context.workspaceId, ownerProfileId: context.profileId }, id)) };
   });
-  app.post("/publications/:id/external-links", async (request, reply) => {
+  app.post("/studio/publications/:id/external-links", async (request, reply) => {
     const context = readRequestContext(request); if (!canAccessOwnerStudio(context.role)) throw forbiddenError();
     const { id } = idParams.parse(request.params); const { expires_at } = grantBody.parse(request.body);
     const result = await safe(() => service.createExternalGrant({ workspaceId: context.workspaceId, ownerProfileId: context.profileId }, id, expires_at));
     return reply.code(201).send({ grant: result.grant, token: result.token });
   });
-  app.delete("/publications/:id/external-links/:grantId", async (request, reply) => {
+  app.delete("/studio/publications/:id/external-links/:grantId", async (request, reply) => {
     const context = readRequestContext(request); if (!canAccessOwnerStudio(context.role)) throw forbiddenError();
     const { id, grantId } = grantParams.parse(request.params);
     await safe(() => service.revokeExternalGrant({ workspaceId: context.workspaceId, ownerProfileId: context.profileId }, id, grantId));
