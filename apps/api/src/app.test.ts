@@ -67,6 +67,25 @@ describe("Baase API app", () => {
     expect(response.json().publication).toMatchObject({
       resourceType: "studio_document", resourceId: document.id, status: "ready"
     });
+    const publicationId = response.json().publication.id as string;
+    const download = await app.inject({
+      method: "GET", url: `/studio/publications/${publicationId}/download`,
+      headers: {
+        "x-baase-workspace-id": "workspace_a",
+        "x-baase-profile-id": "owner_a",
+        "x-baase-role": "owner"
+      }
+    });
+    expect(download.statusCode).toBe(200);
+    expect(download.json().url).toMatch(/^\/api\/publications\/public\//u);
+
+    const file = await app.inject({
+      method: "GET", url: download.json().url.replace(/^\/api/u, "")
+    });
+    expect(file.statusCode).toBe(200);
+    expect(file.headers["content-type"]).toBe("application/pdf");
+    expect(file.headers["content-disposition"]).toContain("Decisao editorial.pdf");
+    expect(file.rawPayload.toString()).toBe("%PDF-publication");
     await app.close();
   });
 

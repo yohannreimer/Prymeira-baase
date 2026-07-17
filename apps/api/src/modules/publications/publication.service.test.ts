@@ -27,7 +27,11 @@ describe("PublicationService", () => {
       format: "pdf", workspaceName: "Acme", profileName: "Ana" });
     expect(publication).toMatchObject({ status: "ready", format: "pdf", title: "Plano 2027", sizeBytes: 8 });
     expect(rendered).toContain("Plano 2027");
-    expect(await service.createDownloadUrl(scope, publication.id)).toContain("memory://publications");
+    const downloadUrl = await service.createDownloadUrl(scope, publication.id);
+    expect(downloadUrl).toMatch(/^\/api\/publications\/public\//u);
+    const downloadToken = downloadUrl.split("/").at(-1)!;
+    const download = await service.resolveExternal(downloadToken);
+    expect(download.publication.id).toBe(publication.id);
 
     const external = await service.createExternalGrant(scope, publication.id, "2026-07-20T12:00:00.000Z");
     expect((await service.resolveExternal(external.token)).publication.id).toBe(publication.id);

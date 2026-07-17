@@ -1,8 +1,10 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { canAccessOwnerStudio, canManageKnowledge } from "@prymeira/baase-shared";
 import { z } from "zod";
 import { ApiError, forbiddenError } from "../../http/api-error";
 import { readRequestContext } from "../../http/auth-context";
+import { attachmentContentDisposition } from "../../storage/object-storage";
+import type { Publication } from "./publication.types";
 import type { PublicationService } from "./publication.service";
 
 const createBody = z.object({
@@ -18,7 +20,7 @@ export async function registerPublicationRoutes(app: FastifyInstance, service: P
   app.get("/publications/public/:token", async (request, reply) => {
     const { token } = tokenParams.parse(request.params);
     const resolved = await safe(() => service.resolveExternal(token));
-    return reply.redirect(resolved.url);
+    return sendPublication(reply, resolved.publication, resolved.object);
   });
   app.post("/studio/publications", async (request, reply) => {
     const context = readRequestContext(request);
@@ -51,6 +53,18 @@ export async function registerPublicationRoutes(app: FastifyInstance, service: P
     await safe(() => service.revokeExternalGrant({ workspaceId: context.workspaceId, ownerProfileId: context.profileId }, id, grantId));
     return reply.code(204).send();
   });
+}
+
+function sendPublication(
+  reply: FastifyReply,
+  publication: Publication,
+  object: Awaited<ReturnType<PublicationService["resolveExternal"]>>["object"]
+) {
+  reply.header("Content-Type", object.contentType ?? publication.contentType ?? "application/octet-stream");
+  reply.header("Content-Disposition", attachmentContentDisposition(`${publication.title}.${publication.format}`));
+  reply.header("Cache-Control", "private, no-store");
+  if (object.sizeBytes !== null) reply.header("Content-Length", String(object.sizeBytes));
+  return reply.send(object.body);
 }
 
 function assertCanPublish(request: FastifyRequest, resourceType: "studio_document" | "process") {

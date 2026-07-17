@@ -75,9 +75,13 @@ export function createPublicationService(dependencies: {
     async createDownloadUrl(scope: StudioOwnerScope, publicationId: string) {
       const publication = await this.find(scope, publicationId);
       if (publication.status !== "ready" || !publication.objectKey) throw publicationError("PUBLICATION_NOT_READY");
-      return dependencies.objectStorage.createDownloadUrl(publication.objectKey, 300, {
-        downloadFilename: `${safeFilename(publication.title)}.${publication.format}`
+      const token = randomBytes(32).toString("base64url");
+      await dependencies.store.createGrant({
+        publicationId,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(now().getTime() + 300_000).toISOString()
       });
+      return `/api/publications/public/${token}`;
     },
     async createExternalGrant(scope: StudioOwnerScope, publicationId: string, expiresAt: string) {
       const publication = await this.find(scope, publicationId);
@@ -94,10 +98,8 @@ export function createPublicationService(dependencies: {
       const match = await dependencies.store.findGrantByHash(hashToken(token));
       if (!match || match.grant.revokedAt || new Date(match.grant.expiresAt) <= now()) throw publicationError("PUBLICATION_LINK_UNAVAILABLE");
       if (!match.publication.objectKey || match.publication.status !== "ready") throw publicationError("PUBLICATION_LINK_UNAVAILABLE");
-      const url = await dependencies.objectStorage.createDownloadUrl(match.publication.objectKey, 120, {
-        downloadFilename: `${safeFilename(match.publication.title)}.${match.publication.format}`
-      });
-      return { ...match, url };
+      const object = await dependencies.objectStorage.get(match.publication.objectKey);
+      return { ...match, object };
     },
     async revokeExternalGrant(scope: StudioOwnerScope, publicationId: string, grantId: string) {
       await this.find(scope, publicationId);
