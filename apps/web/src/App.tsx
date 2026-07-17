@@ -6618,10 +6618,15 @@ function ProcessForm({
   }) => void;
 }) {
   const process = modal.mode === "edit" ? modal.process : null;
+  const savedAreaIsAvailable = !process?.areaId || areas.some((area) => area.id === process.areaId);
   const [title, setTitle] = useState(process?.title ?? "");
   const [summary, setSummary] = useState(process?.summary ?? "");
   const [body, setBody] = useState(process?.currentVersion?.body ?? defaultProcessSopBody("Novo processo"));
-  const [areaId, setAreaId] = useState(process?.areaId ?? areas[0]?.id ?? "");
+  const [areaId, setAreaId] = useState(
+    process?.areaId && !savedAreaIsAvailable && canTargetWorkspace
+      ? ""
+      : process?.areaId ?? areas[0]?.id ?? ""
+  );
   const [ownerMode, setOwnerMode] = useState<"none" | "person" | "role">(process?.owner?.type ?? "none");
   const [ownerId, setOwnerId] = useState(process?.owner?.type === "person" ? process.owner.personId : process?.owner?.type === "role" ? process.owner.roleTemplateId : "");
   const [changeNote, setChangeNote] = useState("");

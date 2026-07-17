@@ -410,6 +410,55 @@ describe("Baase React app shell", () => {
     expect(screen.queryByText("area_legacy")).not.toBeInTheDocument();
   });
 
+  it("normalizes a removed process area to Sem área before saving", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/processes/process_orphan" && init?.method === "PATCH") {
+        return new Response(JSON.stringify({
+          process: {
+            id: "process_orphan",
+            title: "Processo histórico",
+            status: "draft",
+            areaId: null,
+            currentVersion: { version: 2, body: "Manual atualizado" }
+          }
+        }), { status: 200 });
+      }
+
+      const dataByUrl: Record<string, unknown> = {
+        "/api/me": { workspace: { id: "workspace_a", name: "Holand" }, profile: { id: "profile_owner", role: "owner", display_name: "Yohann Reimer", initials: "YR" }, home_route: "/painel" },
+        "/api/onboarding/session": { session: onboardingSessionFixture("completed") },
+        "/api/today?date=2026-07-07": { tasks: [] },
+        "/api/approvals": { tasks: [] },
+        "/api/processes": { processes: [{ id: "process_orphan", title: "Processo histórico", status: "draft", areaId: "area_legacy", currentVersion: { version: 1, body: "Manual original" } }] },
+        "/api/routines": { routines: [] },
+        "/api/trainings": { trainings: [] },
+        "/api/areas": { areas: [{ id: "area_ops", name: "Operações" }] },
+        "/api/roles": { role_templates: [] },
+        "/api/people": { people: [] },
+        "/api/invites": { invites: [] },
+        "/api/templates": { templates: [], filters: { segments: [], areas: [], kinds: [] } },
+        "/api/dashboard?date=2026-07-07": {},
+        "/api/ai/proactive-suggestions": { suggestions: [] }
+      };
+      return new Response(JSON.stringify(responseData(dataByUrl, url)), { status: 200 });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: /Processos/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Editar" }));
+    expect(screen.getByLabelText("Área")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("O que mudou?"), { target: { value: "Remove a área desativada." } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar alterações" }));
+
+    await waitFor(() => {
+      const request = fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/processes/process_orphan" && init?.method === "PATCH");
+      expect(request).toBeDefined();
+      expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ area_id: null });
+    });
+  });
+
   it("keeps setup-only onboarding review links out of the owner sidebar", () => {
     render(<App apiEnabled={false} />);
 
