@@ -1,4 +1,9 @@
-import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira/baase-shared";
+import type {
+  StudioRitualSupportMode,
+  StudioStructureKind as SharedStudioStructureKind
+} from "@prymeira/baase-shared";
+
+export type { StudioRitualSupportMode };
 
 export type StudioOwnerScope = { workspaceId: string; ownerProfileId: string };
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
@@ -303,6 +308,9 @@ export type StudioRitualSession = StudioOwnerScope & {
   ritualId: string;
   status: StudioRitualSessionStatus;
   revision: number;
+  answerRevision: number;
+  supportMode: StudioRitualSupportMode;
+  occurrenceAt: string;
   contextJson: Record<string, unknown> | null;
   preparationJson: Record<string, unknown> | null;
   answersJson: Record<string, string>;
@@ -575,6 +583,8 @@ export type StudioRepository = {
   findRitualSession(scope: StudioOwnerScope, sessionId: string): Promise<StudioRitualSession | null>;
   createRitualSession(input: StudioOwnerScope & {
     ritualId: string;
+    supportMode?: StudioRitualSupportMode;
+    occurrenceAt?: string;
     preparationToken: string | null;
     preparationLeaseExpiresAt: string | null;
     contextJson?: Record<string, unknown>;
@@ -585,6 +595,12 @@ export type StudioRepository = {
     excludeOwnerKeys?: readonly string[]
   ): Promise<StudioRitualSession | null>;
   updateRitualSession(input: StudioRitualSession, expectedRevision: number): Promise<StudioRitualSession>;
+  updateRitualSessionAnswers(
+    scope: StudioOwnerScope,
+    sessionId: string,
+    answers: Record<string, string>,
+    expectedAnswerRevision: number
+  ): Promise<StudioRitualSession>;
   listRitualSessions(scope: StudioOwnerScope, ritualId: string, query: StudioRitualSessionQuery): Promise<StudioRitualSessionPage>;
   appendVersion(input: Omit<StudioDocumentVersion, "id" | "versionNumber" | "createdAt">): Promise<StudioDocumentVersion>;
   searchDocuments(scope: StudioOwnerScope, input: StudioLexicalSearchQuery): Promise<StudioSearchDocument[]>;

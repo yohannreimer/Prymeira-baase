@@ -41,6 +41,8 @@ async function fixture(options: {
   title?: string | null;
   bodyText?: string;
   intention?: string;
+  frequency?: "daily" | "weekly" | "monthly";
+  supportMode?: "record_only" | "light_summary" | "guided_reflection";
 } = {}) {
   const repository = createInMemoryStudioRepository({ now: () => now });
   const studio = createStudioService(repository, { now: () => now });
@@ -50,10 +52,16 @@ async function fixture(options: {
   });
   const ritual = await studio.createStructure(scope, scope.ownerProfileId, document.id, {
     kind: "ritual",
-    cadence_json: { frequency: "weekly", weekdays: [1], local_time: "09:00", timezone: "America/Sao_Paulo" },
+    cadence_json: {
+      frequency: options.frequency ?? "weekly",
+      ...((options.frequency ?? "weekly") === "weekly" ? { weekdays: [1] } : {}),
+      ...((options.frequency ?? "weekly") === "monthly" ? { month_day: 13 } : {}),
+      local_time: "09:00", timezone: "America/Sao_Paulo"
+    },
     properties_json: {
       ...(options.intention === undefined ? { intention: "Decidir prioridades" } : options.intention ? { intention: options.intention } : {}),
       guide_questions: ["O que mudou?"],
+      ...(options.supportMode ? { support_mode: options.supportMode } : {}),
       allowed_internal_sources: ["dashboard", "task"]
     }
   });
@@ -87,6 +95,53 @@ async function fixture(options: {
 }
 
 describe("Studio ritual sessions", () => {
+  it("records a daily ritual without invoking AI", async () => {
+    const setup = await fixture({ frequency: "daily", supportMode: "record_only" });
+    const session = await setup.service.startSession(scope, setup.ritual.id);
+
+    expect(session).toMatchObject({
+      status: "ready",
+      supportMode: "record_only",
+      answerRevision: 1,
+      preparationJson: null
+    });
+    await expect(setup.service.processNextPreparation()).resolves.toBeNull();
+    const completed = await setup.service.finishSession(scope, session.id, {
+      expectedRevision: session.answerRevision,
+      answers: { "O que mudou?": "Publicar o vídeo principal." },
+      requestSynthesis: false
+    });
+    expect(completed).toMatchObject({ status: "completed", synthesisJson: null });
+    expect(setup.provider.generateStructured).not.toHaveBeenCalled();
+  });
+
+  it("lets the owner intentionally deepen a recorded ritual with AI", async () => {
+    const setup = await fixture({
+      frequency: "daily",
+      supportMode: "record_only",
+      generateStructured: async (request: AiStructuredProviderRequest) => (
+        request.taskKind === "studio_synthesize"
+          ? synthesisOutput()
+          : preparedOutput("unused")
+      )
+    });
+    const session = await setup.service.startSession(scope, setup.ritual.id);
+    const completed = await setup.service.finishSession(scope, session.id, {
+      expectedRevision: session.answerRevision,
+      answers: { "O que mudou?": "Publicar o vídeo principal." },
+      requestSynthesis: false
+    });
+
+    expect(setup.provider.generateStructured).not.toHaveBeenCalled();
+    const deepened = await setup.service.finishSession(scope, session.id, {
+      expectedRevision: completed.answerRevision,
+      answers: {},
+      requestSynthesis: true
+    });
+
+    expect(deepened.synthesisJson).toMatchObject({ summary: "A margem melhorou." });
+    expect(setup.provider.generateStructured).toHaveBeenCalledTimes(1);
+  });
   it("persists a usable session immediately and prepares it only in maintenance", async () => {
     const setup = await fixture();
 
@@ -120,7 +175,7 @@ describe("Studio ritual sessions", () => {
     const processing = setup.service.processNextPreparation();
     await vi.waitFor(() => expect(setup.provider.generateStructured).toHaveBeenCalled());
     const answered = await setup.service.updateSession(scope, started.id, {
-      expectedRevision: (await setup.repository.findRitualSession(scope, started.id))!.revision,
+      expectedRevision: (await setup.repository.findRitualSession(scope, started.id))!.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." }
     });
     expect(answered.status).toBe("preparing");
@@ -138,7 +193,7 @@ describe("Studio ritual sessions", () => {
     const setup = await fixture();
     const started = await setup.service.startSession(scope, setup.ritual.id);
     const answered = await setup.service.updateSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { "O que mudou?": "Resposta antes do worker." }
     });
     expect(answered).toMatchObject({ status: "preparing", preparationToken: null });
@@ -166,7 +221,7 @@ describe("Studio ritual sessions", () => {
     await vi.waitFor(() => expect(setup.provider.generateStructured).toHaveBeenCalledTimes(1));
     const claimed = (await setup.repository.findRitualSession(scope, started.id))!;
     await setup.service.updateSession(scope, started.id, {
-      expectedRevision: claimed.revision,
+      expectedRevision: claimed.answerRevision,
       answers: { "O que mudou?": "Esta resposta não pode sumir." }
     });
     release();
@@ -183,7 +238,7 @@ describe("Studio ritual sessions", () => {
 
     const failed = (await setup.repository.findRitualSession(scope, started.id))!;
     const edited = await setup.service.updateSession(scope, failed.id, {
-      expectedRevision: failed.revision,
+      expectedRevision: failed.answerRevision,
       answers: { "O que mudou?": "Resposta editada e ainda segura." }
     });
     expect(edited).toMatchObject({
@@ -280,7 +335,7 @@ describe("Studio ritual sessions", () => {
     await setup.service.processNextPreparation();
     const prepared = (await setup.repository.findRitualSession(scope, started.id))!;
     await setup.service.finishSession(scope, started.id, {
-      expectedRevision: prepared.revision,
+      expectedRevision: prepared.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: true
     });
@@ -294,7 +349,7 @@ describe("Studio ritual sessions", () => {
     const failed = (await setup.repository.findRitualSession(scope, started.id))!;
     expect(failed).toMatchObject({ status: "failed", failureCode: "STUDIO_RITUAL_PREPARATION_FAILED" });
     const answered = await setup.service.updateSession(scope, failed.id, {
-      expectedRevision: failed.revision, answers: { "O que mudou?": "Contratamos uma pessoa." }
+      expectedRevision: failed.answerRevision, answers: { "O que mudou?": "Contratamos uma pessoa." }
     });
     expect(answered).toMatchObject({
       status: "failed",
@@ -308,7 +363,7 @@ describe("Studio ritual sessions", () => {
     const setup = await fixture();
     const started = await setup.service.startSession(scope, setup.ritual.id);
     const completed = await setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: false
     });
@@ -316,10 +371,10 @@ describe("Studio ritual sessions", () => {
       status: "completed", answersJson: { "O que mudou?": "A margem melhorou." }, completedAt: now
     });
     await expect(setup.service.updateSession(scope, completed.id, {
-      expectedRevision: completed.revision, answers: { "O que mudou?": "Sobrescrever" }
+      expectedRevision: completed.answerRevision, answers: { "O que mudou?": "Sobrescrever" }
     })).rejects.toThrow("STUDIO_RITUAL_SESSION_COMPLETED");
     const repeated = await setup.service.finishSession(scope, completed.id, {
-      expectedRevision: completed.revision, answers: {}, requestSynthesis: false
+      expectedRevision: completed.answerRevision, answers: {}, requestSynthesis: false
     });
     expect(repeated).toEqual(completed);
   });
@@ -328,7 +383,7 @@ describe("Studio ritual sessions", () => {
     const setup = await fixture();
     const started = await setup.service.startSession(scope, setup.ritual.id);
     await setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: false
     });
@@ -350,7 +405,7 @@ describe("Studio ritual sessions", () => {
     };
 
     await expect(setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: false
     })).rejects.toThrow("DB_DOWN");
@@ -360,7 +415,7 @@ describe("Studio ritual sessions", () => {
     });
 
     const recovered = await setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { ignored: "não sobrescrever" },
       requestSynthesis: false
     });
@@ -370,7 +425,7 @@ describe("Studio ritual sessions", () => {
     });
 
     await setup.service.finishSession(scope, started.id, {
-      expectedRevision: recovered.revision,
+      expectedRevision: recovered.answerRevision,
       answers: {},
       requestSynthesis: false
     });
@@ -387,7 +442,7 @@ describe("Studio ritual sessions", () => {
     await expect(setup.service.listSessions(foreign, setup.ritual.id, { limit: 10 }))
       .rejects.toThrow("STUDIO_RITUAL_NOT_FOUND");
     await expect(setup.service.updateSession(foreign, session.id, {
-      expectedRevision: session.revision, answers: { x: "y" }
+      expectedRevision: session.answerRevision, answers: { x: "y" }
     })).rejects.toThrow("STUDIO_RITUAL_SESSION_NOT_FOUND");
 
     const archived = await setup.repository.updateStructure({
@@ -460,7 +515,7 @@ describe("Studio ritual sessions", () => {
     });
     const started = await setup.service.startSession(scope, setup.ritual.id);
     const first = await setup.service.finishSession(scope, started.id, {
-      expectedRevision: started.revision,
+      expectedRevision: started.answerRevision,
       answers: { "O que mudou?": "A margem melhorou." },
       requestSynthesis: true
     });
@@ -471,10 +526,10 @@ describe("Studio ritual sessions", () => {
     });
     const [retried, duplicate] = await Promise.all([
       setup.service.finishSession(scope, started.id, {
-        expectedRevision: started.revision, answers: { ignored: "must not overwrite" }, requestSynthesis: true
+        expectedRevision: started.answerRevision, answers: { ignored: "must not overwrite" }, requestSynthesis: true
       }),
       setup.service.finishSession(scope, started.id, {
-        expectedRevision: started.revision, answers: {}, requestSynthesis: true
+        expectedRevision: started.answerRevision, answers: {}, requestSynthesis: true
       })
     ]);
     expect(retried.id).toBe(duplicate.id);
@@ -515,7 +570,7 @@ describe("Studio ritual sessions", () => {
     const ready = (await setup.repository.findRitualSession(scope, started.id))!;
     setup.repository.findRitualSession = async () => ({ ...ready, preparationJson: {} });
     await expect(setup.service.updateSession(scope, ready.id, {
-      expectedRevision: ready.revision, answers: { a: "b" }
+      expectedRevision: ready.answerRevision, answers: { a: "b" }
     })).rejects.toThrow("STUDIO_RITUAL_SESSION_DATA_INVALID");
 
     setup.repository.findRitualSession = async () => ({
@@ -524,7 +579,7 @@ describe("Studio ritual sessions", () => {
       synthesisJson: { summary: 123 }, synthesisAiRunId: "run_bad"
     } as never);
     await expect(setup.service.finishSession(scope, ready.id, {
-      expectedRevision: ready.revision, answers: {}, requestSynthesis: false
+      expectedRevision: ready.answerRevision, answers: {}, requestSynthesis: false
     })).rejects.toThrow("STUDIO_RITUAL_SESSION_DATA_INVALID");
   });
 });

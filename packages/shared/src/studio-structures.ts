@@ -4,6 +4,14 @@ function field<Key extends string>(key: Key, label: string): StudioField<Key> {
   return Object.freeze({ key, label });
 }
 
+export const STUDIO_RITUAL_SUPPORT_MODES = Object.freeze([
+  "record_only",
+  "light_summary",
+  "guided_reflection"
+] as const);
+
+export type StudioRitualSupportMode = typeof STUDIO_RITUAL_SUPPORT_MODES[number];
+
 /**
  * Shared strategic vocabulary. Keys are the persisted API contract; labels are
  * the calm product language used by every Studio surface.
@@ -53,6 +61,7 @@ export const STUDIO_STRUCTURE_CONTRACT = Object.freeze({
     properties: Object.freeze({
       intention: field("intention", "Intenção"),
       guideQuestions: field("guide_questions", "Perguntas guia"),
+      supportMode: field("support_mode", "Apoio da IA"),
       allowedInternalSources: field("allowed_internal_sources", "Fontes internas autorizadas"),
       allowExternalResearch: field("allow_external_research", "Permitir pesquisa externa"),
       summaryFormat: field("summary_format", "Formato da síntese")

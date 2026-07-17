@@ -74,7 +74,7 @@ describe("operational schema", () => {
       "select version from baase_schema_migrations order by version"
     );
 
-    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
+    expect(result.rows.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
   });
 
   it("creates owner-scoped Studio tables", async () => {
@@ -319,6 +319,29 @@ describe("operational schema", () => {
     expect(sql).toContain("drop constraint if exists studio_ritual_sessions_synthesis_claim_pair_ck");
     expect(sql).toContain("add constraint studio_ritual_sessions_ready_preparation_ck");
     expect(sql).toContain("add constraint studio_ritual_sessions_synthesis_output_state_ck");
+  });
+
+  it("separates ritual answer revisions from background AI state in migration 32", async () => {
+    const statements: string[] = [];
+    const observedPool: OperationalSchemaPool = {
+      async connect() {
+        const client = await db.connect();
+        return {
+          query<T = unknown>(text: string, params?: unknown[]) {
+            statements.push(text);
+            return client.query(text, params) as unknown as Promise<{ rows: T[] }>;
+          },
+          release() { client.release(); }
+        };
+      }
+    };
+    await ensureOperationalSchema(observedPool);
+    const sql = statements.join("\n").toLowerCase();
+    expect(sql).toContain("add column if not exists support_mode text");
+    expect(sql).toContain("add column if not exists occurrence_at timestamptz");
+    expect(sql).toContain("add column if not exists answer_revision integer");
+    expect(sql).toContain("studio_ritual_sessions_support_mode_ck");
+    expect(sql).toContain("studio_ritual_sessions_answer_revision_ck");
   });
 
   it("adds owner-scoped idempotent operation previews and durable origin links in migration 18", async () => {

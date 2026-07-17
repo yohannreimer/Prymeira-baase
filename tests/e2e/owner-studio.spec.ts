@@ -116,7 +116,7 @@ test.describe("Owner Studio release acceptance", () => {
     await expect(external).toContainText("Fonte externa");
   });
 
-  test("6. prepared ritual: weekly review arrives prepared and produces a pending decision", async ({ page, request }) => {
+  test("6. weekly light summary stays separate from the owner's answers", async ({ page, request }) => {
     const document = await createDocument(request, ownerA, `Ritual de capacidade ${Date.now()}`, "Revisar decisões abertas toda semana.");
     const created = await api(request, ownerA, `/studio/documents/${document.id}/structures`, {
       method: "POST",
@@ -125,7 +125,8 @@ test.describe("Owner Studio release acceptance", () => {
         cadence_json: { frequency: "weekly", weekdays: [1], local_time: "09:00", timezone: "America/Sao_Paulo" },
         properties_json: {
           intention: "Revisar a capacidade e decisões abertas.",
-          guide_questions: ["O que mudou?", "Qual decisão precisa permanecer explícita?"]
+          guide_questions: ["O que mudou?", "Qual decisão precisa permanecer explícita?"],
+          support_mode: "light_summary"
         }
       }
     });
@@ -142,10 +143,76 @@ test.describe("Owner Studio release acceptance", () => {
     await page.getByRole("textbox", { name: "Resposta para Qual decisão precisa permanecer explícita?" }).fill("Revisar capacidade semanalmente.");
     await page.getByRole("button", { name: "Concluir ritual" }).click();
 
-    const pending = page.getByRole("region", { name: "Sugestões para revisar" });
-    await expect(pending).toContainText("Revisar a capacidade toda segunda-feira.");
-    await expect(pending).toContainText("Pendente");
+    await expect(page.getByRole("heading", { name: "Ritual registrado" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Resumo da IA" })).toContainText("A revisão tornou a decisão explícita");
+    await expect(page.getByRole("region", { name: "Respostas deste ritual" })).toContainText("Revisar capacidade semanalmente.");
+    await expect(page.getByRole("region", { name: "Pontos para continuar pensando" })).toHaveCount(0);
     expect(ritual.id).toBeTruthy();
+  });
+
+  test("6b. daily record keeps three answers in dated history and leaves AI optional", async ({ page, request }) => {
+    const document = await createDocument(request, ownerA, `Ritual diário ${Date.now()}`, "Registrar o foco do dia sem criar novas ações.");
+    const created = await api(request, ownerA, `/studio/documents/${document.id}/structures`, {
+      method: "POST",
+      data: {
+        kind: "ritual",
+        cadence_json: { frequency: "daily", local_time: "08:00", timezone: "America/Sao_Paulo" },
+        properties_json: {
+          intention: "Manter o foco do dia com os pés no chão.",
+          guide_questions: ["Qual é o foco principal?", "Quais são os dois apoios?", "O que você vai estudar?"],
+          support_mode: "record_only"
+        }
+      }
+    });
+    expect(created.status()).toBe(201);
+
+    await page.goto("/#estudio/rituals");
+    await page.getByRole("button", { name: new RegExp(`Iniciar ${escapeRegex(document.title)}`) }).click();
+    await page.getByRole("textbox", { name: "Resposta para Qual é o foco principal?" }).fill("Gravar o vídeo autoral.");
+    await page.getByRole("button", { name: "Salvar e continuar" }).click();
+    await page.getByRole("textbox", { name: "Resposta para Quais são os dois apoios?" }).fill("Roteiro e revisão comercial.");
+    await page.getByRole("button", { name: "Salvar e continuar" }).click();
+    await page.getByRole("textbox", { name: "Resposta para O que você vai estudar?" }).fill("Continuar Isso é Marketing.");
+    await page.getByRole("button", { name: "Concluir ritual" }).click();
+
+    await expect(page.getByRole("heading", { name: "Ritual registrado" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Aprofundar com IA" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Resumo da IA" })).toHaveCount(0);
+    await page.locator(".studio-rituals__back").click();
+    await page.locator(".studio-ritual-row__open").filter({ hasText: document.title }).click();
+    const history = page.getByRole("region", { name: "Histórico do ritual" });
+    await history.locator("summary").first().click();
+    await expect(history).toContainText("Gravar o vídeo autoral.");
+    await expect(history).toContainText("Continuar Isso é Marketing.");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", 390);
+  });
+
+  test("6c. monthly guided reflection offers a short set of thinking points", async ({ page, request }) => {
+    const document = await createDocument(request, ownerA, `Reflexão mensal ${Date.now()}`, "Revisar o rumo da empresa.");
+    const created = await api(request, ownerA, `/studio/documents/${document.id}/structures`, {
+      method: "POST",
+      data: {
+        kind: "ritual",
+        cadence_json: { frequency: "monthly", month_day: 14, local_time: "09:00", timezone: "America/Sao_Paulo" },
+        properties_json: {
+          intention: "Revisar o rumo da empresa.",
+          guide_questions: ["O que merece uma reflexão mais profunda?"],
+          support_mode: "guided_reflection"
+        }
+      }
+    });
+    expect(created.status()).toBe(201);
+
+    await page.goto("/#estudio/rituals");
+    await page.getByRole("button", { name: new RegExp(`Iniciar ${escapeRegex(document.title)}`) }).click();
+    await page.getByRole("textbox", { name: "Resposta para O que merece uma reflexão mais profunda?" }).fill("A capacidade sem perder qualidade.");
+    await page.getByRole("button", { name: "Concluir ritual" }).click();
+
+    const reflection = page.getByRole("region", { name: "Pontos para continuar pensando" });
+    await expect(reflection).toContainText("Revisar a capacidade toda segunda-feira.");
+    await expect(reflection.locator("li")).toHaveCount(2);
+    await expect(reflection).not.toContainText("Pendente");
   });
 
   test("7. idempotent task creation: edited UI preview survives a lost response and creates exactly one task", async ({ page, request }, testInfo) => {

@@ -173,7 +173,7 @@ describe("StudioRituals", () => {
 
     finishA.resolve(response({ session: { ...readySession, status: "completed", revision: 3, completedAt: "2026-07-14T12:20:00.000Z" } }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Resposta para Como está o caixa?" })).toHaveValue("Caixa protegido."));
-    expect(screen.queryByRole("heading", { name: "Ritual concluído" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Ritual registrado" })).not.toBeInTheDocument();
   });
 
   it("ignores a late preparation retry after switching rituals", async () => {
@@ -246,7 +246,7 @@ describe("StudioRituals", () => {
     await waitFor(() => expect(pollSignal?.aborted).toBe(true));
   });
 
-  it("saves one visible question at a time and keeps final suggestions pending", async () => {
+  it("saves one visible question at a time and presents calm guided reflections", async () => {
     const user = userEvent.setup();
     let revision = 1;
     let answers: Record<string, string> = {};
@@ -299,9 +299,9 @@ describe("StudioRituals", () => {
     await user.type(screen.getByRole("textbox", { name: "Resposta para O que merece foco?" }), "Proposta comercial.");
     await user.click(screen.getByRole("button", { name: "Concluir ritual" }));
 
-    expect(await screen.findByRole("heading", { name: "Ritual concluído" })).toBeInTheDocument();
-    const suggestions = screen.getByRole("region", { name: "Sugestões para revisar" });
-    expect(within(suggestions).getAllByText("Pendente").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "Ritual registrado" })).toBeInTheDocument();
+    const suggestions = screen.getByRole("region", { name: "Pontos para continuar pensando" });
+    expect(within(suggestions).queryByText("Pendente")).not.toBeInTheDocument();
     expect(within(suggestions).getByText("Revisar a proposta comercial")).toBeInTheDocument();
     expect(within(suggestions).queryByRole("button", { name: /aplicar|criar tarefa|publicar/i })).not.toBeInTheDocument();
     expect(fetchSpy.mock.calls.filter(([url, init]) => String(url).includes("ritual-sessions/session_1") && init?.method === "PATCH")).toHaveLength(2);
@@ -513,7 +513,7 @@ describe("StudioRituals", () => {
 
     render(<StudioRituals />);
     await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
-    await user.click(await screen.findByRole("button", { name: /tentar gerar síntese/i }));
+    await user.click(await screen.findByRole("button", { name: /tentar novamente/i }));
 
     expect(await screen.findByText("Síntese recuperada.")).toBeInTheDocument();
     expect(finishCalls).toBe(1);
@@ -547,10 +547,10 @@ describe("StudioRituals", () => {
 
     render(<StudioRituals />);
     await user.click(await screen.findByRole("button", { name: /iniciar revisar prioridades/i }));
-    const retry = await screen.findByRole("button", { name: /tentar gerar síntese/i });
+    const retry = await screen.findByRole("button", { name: /tentar novamente/i });
     await user.click(retry);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /tentar gerar síntese/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: /tentar novamente/i })).toBeEnabled());
     expect(finishCalls).toBe(1);
   });
 
@@ -642,7 +642,7 @@ describe("StudioRituals", () => {
       answersJson: storedAnswers
     } }));
 
-    await screen.findByRole("heading", { name: "Ritual concluído" });
+    await screen.findByRole("heading", { name: "Ritual registrado" });
     const finalPatchIndex = calls.findIndex((call) => call.kind === "patch"
       && (call.body.answers as Record<string, string>)["O que merece foco?"] === "Versão inicial e final");
     const finishIndex = calls.findIndex((call) => call.kind === "finish");
@@ -748,6 +748,55 @@ describe("StudioRituals", () => {
       return payload.kind === "ritual" && payload.properties_json.guide_questions.length === 2 && payload.cadence_json.timezone;
     })).toBe(true));
     expect(await screen.findByText("Revisão mensal")).toBeInTheDocument();
+  });
+
+  it("opens a ritual history without starting a new session", async () => {
+    const user = userEvent.setup();
+    const completed = {
+      ...readySession,
+      status: "completed",
+      supportMode: "light_summary",
+      occurrenceAt: "2026-07-13T12:00:00.000Z",
+      answersJson: { "O que mudou?": "A margem melhorou." },
+      completedAt: "2026-07-13T12:10:00.000Z",
+      synthesisJson: { summary: "A margem ganhou espaço.", decisions: [], open_questions: [], suggested_next_steps: [] }
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/studio/structures") && !init?.method) return response({ structures: [ritual], nextCursor: null });
+      if (url.includes(`/api/studio/rituals/${ritual.id}/sessions`) && !init?.method) {
+        return response({ sessions: [completed], nextCursor: null });
+      }
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: /^Revisar prioridades/u }));
+    expect(await screen.findByRole("region", { name: "Histórico do ritual" })).toHaveTextContent("A margem melhorou.");
+    expect(screen.getByText("A margem ganhou espaço.")).toBeInTheDocument();
+    expect(fetchSpy.mock.calls.some(([url, init]) => String(url).endsWith(`/rituals/${ritual.id}/sessions`) && init?.method === "POST")).toBe(false);
+    expect(screen.getByRole("button", { name: "Começar agora" })).toBeVisible();
+  });
+
+  it("suggests AI support from cadence but preserves an explicit owner choice", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/api/studio/structures")) return response({ structures: [], nextCursor: null });
+      return response({}, 404);
+    });
+
+    render(<StudioRituals />);
+    await user.click(await screen.findByRole("button", { name: "Criar ritual" }));
+    await user.click(screen.getByRole("button", { name: "Adicionar cadência" }));
+
+    const frequency = screen.getByRole("combobox", { name: "Frequência" });
+    await user.selectOptions(frequency, "daily");
+    expect(screen.getByRole("radio", { name: /Só registrar/u })).toBeChecked();
+    await user.selectOptions(frequency, "weekly");
+    expect(screen.getByRole("radio", { name: /Resumo leve/u })).toBeChecked();
+    await user.click(screen.getByRole("radio", { name: /Só registrar/u }));
+    await user.selectOptions(frequency, "monthly");
+    expect(screen.getByRole("radio", { name: /Só registrar/u })).toBeChecked();
   });
 });
 

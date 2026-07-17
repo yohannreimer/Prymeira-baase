@@ -8,10 +8,12 @@ import {
   listStudioStructures,
   startStudioRitualSession,
   StudioApiError,
+  updateStudioStructure,
   updateStudioRitualSession
 } from "./studio-api";
 import type {
   StudioRitualCadence,
+  StudioRitualSupportMode,
   StudioRitualSession,
   StudioStructure
 } from "./studio.types";
@@ -21,7 +23,7 @@ const SESSION_DRAFT_PREFIX = "baase:studio:ritual-draft:";
 const RITUAL_BUILDER_DRAFT_KEY = "baase:studio:ritual-builder-draft";
 
 type SaveState = "saved" | "dirty" | "saving" | "offline" | "conflict" | "error";
-type RitualMode = "list" | "builder" | "session";
+type RitualMode = "list" | "builder" | "detail" | "session";
 
 export default function StudioRituals({ initialRitualId }: { initialRitualId?: string | null }) {
   const [rituals, setRituals] = useState<StudioStructure[]>([]);
@@ -30,6 +32,9 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   const [mode, setMode] = useState<RitualMode>("list");
   const [selectedRitual, setSelectedRitual] = useState<StudioStructure | null>(null);
   const [session, setSession] = useState<StudioRitualSession | null>(null);
+  const [history, setHistory] = useState<StudioRitualSession[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("ready");
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -57,7 +62,7 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
         setLoadState("ready");
         if (initialRitualId) {
           const target = page.items.find((ritual) => ritual.id === initialRitualId);
-          if (target) void openSession(target);
+          if (target) void openDetail(target);
         }
       })
       .catch(() => { if (!controller.signal.aborted) setLoadState("error"); });
@@ -130,6 +135,45 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
     }
   }
 
+  async function openDetail(ritual: StudioStructure) {
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+    selectedRitualIdRef.current = ritual.id;
+    startControllerRef.current?.abort();
+    const controller = new AbortController();
+    startControllerRef.current = controller;
+    setSelectedRitual(ritual);
+    setSession(null);
+    setMode("detail");
+    setHistory([]);
+    setHistoryCursor(null);
+    setHistoryState("loading");
+    try {
+      const page = await listStudioRitualSessions(ritual.id, { limit: 20 }, controller.signal);
+      if (controller.signal.aborted || lifecycleGenerationRef.current !== generation) return;
+      setHistory(page.items);
+      setHistoryCursor(page.nextCursor);
+      setHistoryState("ready");
+    } catch {
+      if (!controller.signal.aborted && lifecycleGenerationRef.current === generation) setHistoryState("error");
+    } finally {
+      if (startControllerRef.current === controller) startControllerRef.current = null;
+    }
+  }
+
+  async function loadOlderHistory() {
+    if (!selectedRitual || !historyCursor || historyState === "loading") return;
+    setHistoryState("loading");
+    try {
+      const page = await listStudioRitualSessions(selectedRitual.id, { cursor: historyCursor, limit: 20 });
+      setHistory((current) => [...current, ...page.items.filter((item) => !current.some((existing) => existing.id === item.id))]);
+      setHistoryCursor(page.nextCursor);
+      setHistoryState("ready");
+    } catch {
+      setHistoryState("error");
+    }
+  }
+
   function returnToList() {
     lifecycleGenerationRef.current += 1;
     selectedRitualIdRef.current = null;
@@ -154,7 +198,29 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
           busy={busy}
           onRetry={() => setReloadKey((key) => key + 1)}
           onCreate={() => setMode("builder")}
+          onOpen={(ritual) => void openDetail(ritual)}
           onStart={(ritual) => void openSession(ritual)}
+        />
+      ) : null}
+
+      {mode === "detail" && selectedRitual ? (
+        <RitualDetail
+          ritual={selectedRitual}
+          history={history}
+          historyCursor={historyCursor}
+          historyState={historyState}
+          onBack={returnToList}
+          onStart={() => void openSession(selectedRitual)}
+          onLoadOlder={() => void loadOlderHistory()}
+          onModeChanged={(updated) => {
+            const merged = {
+              ...selectedRitual,
+              ...updated,
+              documentTitle: updated.documentTitle ?? selectedRitual.documentTitle
+            };
+            setSelectedRitual(merged);
+            setRituals((items) => items.map((item) => item.id === updated.id ? merged : item));
+          }}
         />
       ) : null}
 
@@ -206,13 +272,14 @@ export default function StudioRituals({ initialRitualId }: { initialRitualId?: s
   );
 }
 
-function RitualLibrary({ rituals, ritualNames, loadState, busy, onRetry, onCreate, onStart }: {
+function RitualLibrary({ rituals, ritualNames, loadState, busy, onRetry, onCreate, onOpen, onStart }: {
   rituals: StudioStructure[];
   ritualNames: Record<string, string>;
   loadState: "loading" | "ready" | "error";
   busy: boolean;
   onRetry(): void;
   onCreate(): void;
+  onOpen(ritual: StudioStructure): void;
   onStart(ritual: StudioStructure): void;
 }) {
   return (
@@ -246,13 +313,13 @@ function RitualLibrary({ rituals, ritualNames, loadState, busy, onRetry, onCreat
             const title = ritualNames[ritual.id] || ritualTitle(ritual);
             return (
               <article key={ritual.id} className="studio-ritual-row">
-                <div>
+                <button className="studio-ritual-row__open" type="button" onClick={() => onOpen(ritual)}>
                   <span className="studio-ritual-row__icon" aria-hidden="true"><i className="ph-light ph-calendar-check" /></span>
                   <div>
                     <h4>{title}</h4>
                     <p>{cadenceLabel(ritual)}</p>
                   </div>
-                </div>
+                </button>
                 <button type="button" disabled={busy} aria-label={`Iniciar ${title}`} onClick={() => onStart(ritual)}>Iniciar</button>
               </article>
             );
@@ -260,6 +327,79 @@ function RitualLibrary({ rituals, ritualNames, loadState, busy, onRetry, onCreat
         </div>
       ) : null}
     </section>
+  );
+}
+
+function RitualDetail({ ritual, history, historyCursor, historyState, onBack, onStart, onLoadOlder, onModeChanged }: {
+  ritual: StudioStructure;
+  history: StudioRitualSession[];
+  historyCursor: string | null;
+  historyState: "loading" | "ready" | "error";
+  onBack(): void;
+  onStart(): void;
+  onLoadOlder(): void;
+  onModeChanged(ritual: StudioStructure): void;
+}) {
+  const [savingMode, setSavingMode] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+  const title = ritualTitle(ritual);
+  const currentMode = supportModeForRitual(ritual);
+
+  async function changeMode(next: StudioRitualSupportMode) {
+    if (next === currentMode || savingMode) return;
+    setSavingMode(true);
+    setModeError(null);
+    try {
+      const updated = await updateStudioStructure(ritual.id, {
+        expected_revision: ritual.revision,
+        properties_json: { ...ritual.propertiesJson, [RITUAL_FIELDS.supportMode.key]: next }
+      });
+      onModeChanged(updated);
+    } catch (error) {
+      setModeError(ritualErrorMessage(error));
+    } finally {
+      setSavingMode(false);
+    }
+  }
+
+  return (
+    <section className="studio-ritual-detail" aria-label={`Ritual ${title}`}>
+      <button className="studio-rituals__back" type="button" onClick={onBack}>
+        <i aria-hidden="true" className="ph-light ph-arrow-left" /> Rituais
+      </button>
+      <header>
+        <div><p className="mono">Ritual privado</p><h3>{title}</h3><p>{cadenceLabel(ritual)}</p></div>
+        <button className="primary" type="button" onClick={onStart}>Começar agora</button>
+      </header>
+      <div className="studio-ritual-detail__mode">
+        <div><span>Apoio nesta rotina</span><strong>{supportModeLabel(currentMode)}</strong><small>Mudanças valem para as próximas execuções.</small></div>
+        <label><span className="sr-only">Modo de apoio</span><select aria-label="Modo de apoio" disabled={savingMode} value={currentMode} onChange={(event) => void changeMode(event.currentTarget.value as StudioRitualSupportMode)}>
+          {ritualSupportOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select></label>
+      </div>
+      {modeError ? <p className="studio-ritual-form-error" role="alert">{modeError}</p> : null}
+      <section className="studio-ritual-history" aria-label="Histórico do ritual">
+        <header><div><p className="mono">Histórico</p><h4>O que ficou registrado</h4></div></header>
+        {historyState === "loading" && history.length === 0 ? <RitualLoading /> : null}
+        {historyState === "error" && history.length === 0 ? <div className="studio-ritual-state" role="alert"><p>Não foi possível carregar o histórico.</p></div> : null}
+        {historyState === "ready" && history.length === 0 ? <div className="studio-ritual-state studio-ritual-state--empty"><h3>Seu primeiro registro começa aqui.</h3><p>Depois de concluir, suas respostas aparecerão nesta linha do tempo.</p></div> : null}
+        {history.length ? <div className="studio-ritual-timeline">{history.map((entry) => <RitualHistoryEntry key={entry.id} session={entry} />)}</div> : null}
+        {historyCursor ? <button type="button" disabled={historyState === "loading"} onClick={onLoadOlder}>{historyState === "loading" ? "Carregando…" : "Carregar anteriores"}</button> : null}
+      </section>
+    </section>
+  );
+}
+
+function RitualHistoryEntry({ session }: { session: StudioRitualSession }) {
+  const synthesis = asRecord(session.synthesisJson);
+  return (
+    <details className="studio-ritual-history-entry">
+      <summary><span><strong>{formatRitualDate(session.occurrenceAt)}</strong><small>{supportModeLabel(session.supportMode)}</small></span><span>{session.status === "completed" ? "Concluído" : "Em andamento"}</span></summary>
+      <div>
+        <section><h5>Suas respostas</h5>{Object.entries(session.answersJson).length ? <dl>{Object.entries(session.answersJson).map(([question, answer]) => <div key={question}><dt>{question}</dt><dd>{answer || "Sem resposta registrada"}</dd></div>)}</dl> : <p>Sem respostas registradas.</p>}</section>
+        {typeof synthesis.summary === "string" ? <section className="studio-ritual-history-entry__ai"><p className="mono">Gerado pela IA</p><h5>Reflexão</h5><p>{synthesis.summary}</p></section> : null}
+      </div>
+    </details>
   );
 }
 
@@ -280,6 +420,8 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
   const [weekday, setWeekday] = useState(initialDraft.weekday);
   const [monthDay, setMonthDay] = useState(initialDraft.monthDay);
   const [timezone, setTimezone] = useState(initialDraft.timezone);
+  const [supportMode, setSupportMode] = useState<StudioRitualSupportMode>(initialDraft.supportMode);
+  const [supportModeTouched, setSupportModeTouched] = useState(initialDraft.supportModeTouched);
   const [error, setError] = useState<string | null>(null);
   const documentIdRef = useRef<string | null>(initialDraft.documentId);
   const captureKeyRef = useRef(initialDraft.captureKey || createIdempotencyKey());
@@ -289,10 +431,11 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
   useEffect(() => {
     writeRitualBuilderDraft({
       name, intention, questions, scheduled, frequency, localTime, weekday, monthDay, timezone,
+      supportMode, supportModeTouched,
       documentId: documentIdRef.current,
       captureKey: captureKeyRef.current
     });
-  }, [frequency, intention, localTime, monthDay, name, questions, scheduled, timezone, weekday]);
+  }, [frequency, intention, localTime, monthDay, name, questions, scheduled, supportMode, supportModeTouched, timezone, weekday]);
 
   useEffect(() => {
     if (!name.trim() && !intention.trim() && !questions.trim()) return;
@@ -321,6 +464,7 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
         documentIdRef.current = document.id;
         writeRitualBuilderDraft({
           name, intention, questions, scheduled, frequency, localTime, weekday, monthDay, timezone,
+          supportMode, supportModeTouched,
           documentId: document.id,
           captureKey: captureKeyRef.current
         });
@@ -338,6 +482,7 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
         cadence_json: cadence,
         properties_json: {
           [RITUAL_FIELDS.intention.key]: intention.trim(),
+          [RITUAL_FIELDS.supportMode.key]: supportMode,
           ...(guideQuestions.length ? { [RITUAL_FIELDS.guideQuestions.key]: guideQuestions } : {})
         }
       });
@@ -360,11 +505,32 @@ function RitualBuilder({ busy, onCancel, onCreated, setBusy }: {
       <label><span>Intenção</span><textarea name="ritual-intention" autoComplete="off" value={intention} onChange={(event) => setIntention(event.currentTarget.value)} rows={3} required /></label>
       <label><span>Perguntas guia</span><textarea name="ritual-questions" autoComplete="off" value={questions} onChange={(event) => setQuestions(event.currentTarget.value)} rows={4} placeholder="Uma pergunta por linha" /></label>
 
+      <fieldset className="studio-ritual-support">
+        <legend>Apoio da IA</legend>
+        <p>Escolha o quanto a IA participa. Você pode mudar depois para as próximas execuções.</p>
+        {ritualSupportOptions.map((option) => (
+          <label key={option.value}>
+            <input
+              type="radio"
+              name="ritual-support-mode"
+              value={option.value}
+              checked={supportMode === option.value}
+              onChange={() => { setSupportMode(option.value); setSupportModeTouched(true); }}
+            />
+            <span><strong>{option.label}</strong><small>{option.description}</small></span>
+          </label>
+        ))}
+      </fieldset>
+
       {!scheduled ? <button className="studio-ritual-builder__optional" type="button" onClick={() => setScheduled(true)}>Adicionar cadência</button> : (
         <fieldset className="studio-ritual-cadence">
           <legend>Cadência</legend>
           <div className="studio-ritual-cadence__grid">
-            <label><span>Frequência</span><select value={frequency} onChange={(event) => setFrequency(event.currentTarget.value as StudioRitualCadence["frequency"])}><option value="daily">Diária</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option></select></label>
+            <label><span>Frequência</span><select aria-label="Frequência" value={frequency} onChange={(event) => {
+              const next = event.currentTarget.value as StudioRitualCadence["frequency"];
+              setFrequency(next);
+              if (!supportModeTouched) setSupportMode(suggestedSupportMode(next));
+            }}><option value="daily">Diária</option><option value="weekly">Semanal</option><option value="monthly">Mensal</option></select></label>
             {frequency === "weekly" ? <label><span>Dia da semana</span><select value={weekday} onChange={(event) => setWeekday(Number(event.currentTarget.value))}>{weekdays.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label> : null}
             {frequency === "monthly" ? <label><span>Dia do mês</span><input type="number" min={1} max={31} value={monthDay} onChange={(event) => setMonthDay(Number(event.currentTarget.value))} /></label> : null}
             <label><span>Horário</span><input aria-label="Horário do ritual" type="time" value={localTime} onChange={(event) => setLocalTime(event.currentTarget.value)} /></label>
@@ -401,7 +567,8 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   const [finishing, setFinishing] = useState(false);
   const [retryingPreparation, setRetryingPreparation] = useState(false);
   const [preparationRetryError, setPreparationRetryError] = useState<string | null>(null);
-  const revisionRef = useRef(initialSession.revision);
+  const answerRevisionRef = useRef(initialSession.answerRevision);
+  const systemRevisionRef = useRef(initialSession.revision);
   const answersRef = useRef(answers);
   const lastSavedRef = useRef(JSON.stringify(initialSession.answersJson));
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
@@ -439,10 +606,14 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   }, [questionIndex]);
 
   useEffect(() => {
-    if (initialSession.revision <= revisionRef.current) return;
-    revisionRef.current = initialSession.revision;
+    if (initialSession.revision <= systemRevisionRef.current) return;
+    systemRevisionRef.current = initialSession.revision;
+    const answersChangedRemotely = initialSession.answerRevision > answerRevisionRef.current;
+    if (answersChangedRemotely) answerRevisionRef.current = initialSession.answerRevision;
     setSession(initialSession);
-    const merged = { ...initialSession.answersJson, ...answersRef.current };
+    const merged = answersChangedRemotely
+      ? { ...initialSession.answersJson, ...answersRef.current }
+      : answersRef.current;
     answersRef.current = merged;
     setAnswers(merged);
     lastSavedRef.current = JSON.stringify(initialSession.answersJson);
@@ -476,7 +647,8 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
   function acceptSession(next: StudioRitualSession, isCurrent = () => mountedRef.current) {
     if (!isCurrent() || next.id !== sessionIdentityRef.current.sessionId
       || next.ritualId !== sessionIdentityRef.current.ritualId) return false;
-    revisionRef.current = next.revision;
+    systemRevisionRef.current = next.revision;
+    answerRevisionRef.current = next.answerRevision;
     setSession(next);
     onSessionChange(next);
     return true;
@@ -501,7 +673,7 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       while (operation.isCurrent() && JSON.stringify(answersRef.current) !== lastSavedRef.current) {
         const snapshot = { ...answersRef.current };
         const updated = await updateStudioRitualSession(session.id, {
-          expected_revision: revisionRef.current,
+          expected_revision: answerRevisionRef.current,
           answers: snapshot
         }, operation.controller.signal);
         if (!acceptSession(updated, operation.isCurrent)) return false;
@@ -516,7 +688,7 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       if (!operation.isCurrent()) return false;
       if (isRitualConflict(error)) {
         setSaveState("conflict");
-        setActionError("Esta sessão mudou em outra aba. Seu rascunho continua guardado; escolha qual versão deseja manter.");
+        setActionError("Estas respostas foram alteradas em outra edição. Seu rascunho continua guardado; escolha qual versão deseja manter.");
       } else if (isOfflineError(error)) {
         setSaveState("offline");
         setActionError(localDraftStoredRef.current
@@ -547,9 +719,9 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
     setSaveState("saving");
     try {
       const completed = await finishStudioRitualSession(session.id, {
-        expected_revision: revisionRef.current,
+        expected_revision: answerRevisionRef.current,
         answers: { ...answersRef.current },
-        request_synthesis: true
+        request_synthesis: session.supportMode !== "record_only"
       }, operation.controller.signal);
       if (!acceptSession(completed, operation.isCurrent)) return;
       lastSavedRef.current = JSON.stringify(completed.answersJson);
@@ -562,8 +734,28 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       else if (isOfflineError(error)) setSaveState("offline");
       else setSaveState("error");
       setActionError(isRitualConflict(error)
-        ? "Esta sessão mudou em outra aba. Recarregue antes de concluir."
+        ? "Estas respostas foram alteradas em outra edição. Recarregue antes de concluir."
         : ritualErrorMessage(error));
+    } finally {
+      endOperation(operation);
+      if (operation.isCurrent()) setFinishing(false);
+    }
+  }
+
+  async function requestReflection() {
+    if (finishing) return;
+    const operation = beginOperation();
+    setFinishing(true);
+    setActionError(null);
+    try {
+      const deepened = await finishStudioRitualSession(session.id, {
+        expected_revision: answerRevisionRef.current,
+        answers: {},
+        request_synthesis: true
+      }, operation.controller.signal);
+      acceptSession(deepened, operation.isCurrent);
+    } catch (error) {
+      if (operation.isCurrent()) setActionError(ritualErrorMessage(error));
     } finally {
       endOperation(operation);
       if (operation.isCurrent()) setFinishing(false);
@@ -659,7 +851,7 @@ function RitualSession({ ritual, initialSession, onSessionChange }: {
       session={session}
       retrying={finishing}
       error={actionError}
-      onRetry={() => void finish()}
+      onRequestReflection={() => void requestReflection()}
     />
   );
 
@@ -769,33 +961,51 @@ function PreparedContext({ session, retrying, retryError, onRetry }: {
   );
 }
 
-function CompletedRitual({ session, retrying, error, onRetry }: {
+function CompletedRitual({ session, retrying, error, onRequestReflection }: {
   session: StudioRitualSession;
   retrying: boolean;
   error: string | null;
-  onRetry(): void;
+  onRequestReflection(): void;
 }) {
   const synthesis = asRecord(session.synthesisJson);
   const suggestions = [
     ...stringList(synthesis.decisions),
     ...stringList(synthesis.suggested_next_steps)
-  ];
+  ].slice(0, 3);
+  const answers = Object.entries(session.answersJson).filter(([, answer]) => answer.trim());
+  const guided = session.supportMode === "guided_reflection";
   return (
     <article className="studio-ritual-complete">
       <i aria-hidden="true" className="ph-light ph-check-circle" />
       <p className="mono">Respostas preservadas</p>
-      <h3>Ritual concluído</h3>
-      {typeof synthesis.summary === "string" ? <p>{synthesis.summary}</p> : <p>Suas respostas foram salvas. Você pode retomar esta revisão quando quiser.</p>}
-      {suggestions.length ? (
-        <section aria-label="Sugestões para revisar">
-          <header><h4>Sugestões para revisar</h4><p>Nada foi aplicado automaticamente.</p></header>
-          <ul>{suggestions.map((suggestion, index) => <li key={`${suggestion}-${index}`}><span>{suggestion}</span><small>Pendente</small></li>)}</ul>
+      <h3>Ritual registrado</h3>
+      <p>Suas respostas ficaram salvas neste ritual e aparecem no histórico pela data de hoje.</p>
+      {answers.length ? (
+        <section aria-label="Respostas deste ritual" className="studio-ritual-complete__answers">
+          <header><h4>O que você registrou</h4></header>
+          <dl>{answers.map(([prompt, answer]) => <div key={prompt}><dt>{prompt}</dt><dd>{answer}</dd></div>)}</dl>
         </section>
       ) : null}
-      {session.synthesisJson === null && session.synthesisFailureCode ? (
-        <div className="studio-ritual-save-error" role={error ? "alert" : "status"}>
-          <p>{error || "Suas respostas estão seguras, mas a síntese não ficou pronta."}</p>
-          <button type="button" disabled={retrying} onClick={onRetry}>{retrying ? "Gerando síntese…" : "Tentar gerar síntese"}</button>
+      {typeof synthesis.summary === "string" ? (
+        <section aria-label="Resumo da IA">
+          <header><h4>Resumo da IA</h4><p>Uma leitura complementar, sem alterar suas respostas.</p></header>
+          <p>{synthesis.summary}</p>
+        </section>
+      ) : null}
+      {guided && suggestions.length ? (
+        <section aria-label="Pontos para continuar pensando">
+          <header><h4>Pontos para continuar pensando</h4><p>Use apenas o que fizer sentido.</p></header>
+          <ul>{suggestions.map((suggestion, index) => <li key={`${suggestion}-${index}`}>{suggestion}</li>)}</ul>
+        </section>
+      ) : null}
+      {session.synthesisJson === null ? (
+        <div className={session.synthesisFailureCode || error ? "studio-ritual-save-error" : "studio-ritual-deepen"} role={error ? "alert" : "status"}>
+          <p>{error || (session.synthesisFailureCode
+            ? "Suas respostas estão seguras, mas a leitura da IA não ficou pronta."
+            : "Quer uma segunda leitura? A IA só entra se você pedir.")}</p>
+          <button type="button" disabled={retrying} onClick={onRequestReflection}>
+            {retrying ? "Aprofundando…" : session.synthesisFailureCode ? "Tentar novamente" : "Aprofundar com IA"}
+          </button>
         </div>
       ) : null}
     </article>
@@ -812,7 +1022,7 @@ function SaveIndicator({ state, offlinePreserved }: { state: SaveState; offlineP
     dirty: "Alterações locais",
     saving: "Salvando…",
     offline: offlinePreserved ? "Offline, resposta preservada" : "Offline, mantenha a página aberta",
-    conflict: "Conflito entre abas",
+    conflict: "Respostas alteradas",
     error: "Falha ao salvar"
   };
   return <span className={`studio-ritual-save-state studio-ritual-save-state--${state}`} role="status" aria-label="Estado do salvamento do ritual"><i aria-hidden="true" className={`ph-light ${state === "saved" ? "ph-check" : state === "saving" ? "ph-circle-notch" : "ph-cloud-slash"}`} />{labels[state]}</span>;
@@ -861,6 +1071,24 @@ function cadenceLabel(ritual: StudioStructure) {
   }
 }
 
+function supportModeForRitual(ritual: StudioStructure): StudioRitualSupportMode {
+  const explicit = ritual.propertiesJson[RITUAL_FIELDS.supportMode.key];
+  if (explicit === "record_only" || explicit === "light_summary" || explicit === "guided_reflection") return explicit;
+  return ritual.cadenceJson ? suggestedSupportMode(ritual.cadenceJson.frequency) : "guided_reflection";
+}
+
+function supportModeLabel(mode: StudioRitualSupportMode) {
+  return ritualSupportOptions.find((option) => option.value === mode)?.label ?? "Reflexão com IA";
+}
+
+function formatRitualDate(value: string) {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "long", timeStyle: "short" }).format(new Date(value));
+  } catch {
+    return "Registro preservado";
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -871,7 +1099,7 @@ function stringList(value: unknown) {
 
 function ritualErrorMessage(error: unknown) {
   if (error instanceof StudioApiError) {
-    if (error.code === "STUDIO_RITUAL_SESSION_CHANGED") return "A sessão mudou em outra aba. Recarregue antes de continuar.";
+    if (error.code === "STUDIO_RITUAL_SESSION_CHANGED") return "Estas respostas foram alteradas em outra edição. Recarregue antes de continuar.";
     if (error.status === 403 || error.status === 404) return "Este ritual não está disponível neste espaço privado.";
     return error.message || "Não foi possível concluir esta ação agora.";
   }
@@ -927,6 +1155,8 @@ type RitualBuilderDraft = {
   weekday: number;
   monthDay: number;
   timezone: string;
+  supportMode: StudioRitualSupportMode;
+  supportModeTouched: boolean;
   documentId: string | null;
   captureKey: string;
 };
@@ -935,6 +1165,7 @@ function emptyRitualBuilderDraft(): RitualBuilderDraft {
   return {
     name: "", intention: "", questions: "", scheduled: false, frequency: "weekly", localTime: "09:00",
     weekday: new Date().getDay(), monthDay: new Date().getDate(), timezone: safeTimezone(),
+    supportMode: "light_summary", supportModeTouched: false,
     documentId: null, captureKey: createIdempotencyKey()
   };
 }
@@ -955,6 +1186,9 @@ function readRitualBuilderDraft(): RitualBuilderDraft {
       weekday: Number.isInteger(parsed.weekday) ? parsed.weekday! : fallback.weekday,
       monthDay: Number.isInteger(parsed.monthDay) ? parsed.monthDay! : fallback.monthDay,
       timezone: typeof parsed.timezone === "string" ? parsed.timezone : fallback.timezone,
+      supportMode: parsed.supportMode === "record_only" || parsed.supportMode === "light_summary" || parsed.supportMode === "guided_reflection"
+        ? parsed.supportMode : fallback.supportMode,
+      supportModeTouched: typeof parsed.supportModeTouched === "boolean" ? parsed.supportModeTouched : fallback.supportModeTouched,
       documentId: typeof parsed.documentId === "string" ? parsed.documentId : null,
       captureKey: typeof parsed.captureKey === "string" ? parsed.captureKey : fallback.captureKey
     };
@@ -978,3 +1212,15 @@ function createIdempotencyKey() {
 }
 
 const weekdays = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+
+const ritualSupportOptions: Array<{ value: StudioRitualSupportMode; label: string; description: string }> = [
+  { value: "record_only", label: "Só registrar", description: "Guarda suas respostas sem preparar ou resumir com IA." },
+  { value: "light_summary", label: "Resumo leve", description: "Organiza a leitura em poucas linhas, sem criar uma lista de ações." },
+  { value: "guided_reflection", label: "Reflexão com IA", description: "Conecta contexto e ajuda a aprofundar rituais estratégicos." }
+];
+
+function suggestedSupportMode(frequency: StudioRitualCadence["frequency"]): StudioRitualSupportMode {
+  if (frequency === "daily") return "record_only";
+  if (frequency === "weekly") return "light_summary";
+  return "guided_reflection";
+}

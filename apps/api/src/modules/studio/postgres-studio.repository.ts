@@ -173,7 +173,8 @@ type StudioStructureRow = {
 
 type StudioRitualSessionRow = {
   id: string; workspace_id: string; owner_profile_id: string; ritual_id: string;
-  status: StudioRitualSession["status"]; revision: number;
+  status: StudioRitualSession["status"]; revision: number; answer_revision: number;
+  support_mode: StudioRitualSession["supportMode"]; occurrence_at: string | Date;
   context_json: Record<string, unknown> | null; preparation_json: Record<string, unknown> | null;
   answers_json: Record<string, string>; synthesis_json: Record<string, unknown> | null;
   prepare_ai_run_id: string | null; synthesis_ai_run_id: string | null; failure_code: string | null;
@@ -417,6 +418,7 @@ function ritualSessionFromRow(row: StudioRitualSessionRow): StudioRitualSession 
   return {
     id: row.id, workspaceId: row.workspace_id, ownerProfileId: row.owner_profile_id,
     ritualId: row.ritual_id, status: row.status, revision: row.revision,
+    answerRevision: row.answer_revision, supportMode: row.support_mode, occurrenceAt: iso(row.occurrence_at),
     contextJson: row.context_json === null ? null : structuredClone(row.context_json),
     preparationJson: row.preparation_json === null ? null : structuredClone(row.preparation_json),
     answersJson: structuredClone(row.answers_json),
@@ -1328,8 +1330,9 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                FOR UPDATE
              ), inserted AS (
                INSERT INTO studio_ritual_sessions
-                 (id,workspace_id,owner_profile_id,ritual_id,preparation_token,preparation_lease_expires_at,context_json)
-               SELECT $1,$2,$3,$4,$5,$6,$7::jsonb FROM active_ritual
+                 (id,workspace_id,owner_profile_id,ritual_id,status,support_mode,occurrence_at,
+                  preparation_token,preparation_lease_expires_at,context_json)
+               SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb FROM active_ritual
                ON CONFLICT (workspace_id,owner_profile_id,ritual_id)
                  WHERE status IN ('preparing','ready','in_progress','failed') DO NOTHING
                RETURNING *
@@ -1342,6 +1345,7 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
                AND sessions.status IN ('preparing','ready','in_progress','failed')
              ORDER BY created_at DESC,id DESC LIMIT 1`,
             [id, input.workspaceId, input.ownerProfileId, input.ritualId,
+              input.supportMode === "record_only" ? "ready" : "preparing", input.supportMode ?? "guided_reflection", input.occurrenceAt ?? new Date().toISOString(),
               input.preparationToken, input.preparationLeaseExpiresAt, JSON.stringify(input.contextJson ?? {})]
           );
           if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
@@ -1413,6 +1417,34 @@ export function createPostgresStudioRepository(db: OperationalPool): StudioRepos
       if (existing.rows[0].status === "completed" && input.status !== "completed") {
         throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
       }
+      throw new Error("STUDIO_RITUAL_SESSION_STALE");
+    },
+
+    async updateRitualSessionAnswers(scope, sessionId, answers, expectedAnswerRevision) {
+      const result = await db.query<StudioRitualSessionRow>(
+        `UPDATE studio_ritual_sessions SET
+           answers_json=$5::jsonb,
+           status=CASE
+             WHEN status='failed' THEN 'failed'
+             WHEN support_mode='record_only' OR preparation_json IS NOT NULL THEN 'in_progress'
+             ELSE 'preparing'
+           END,
+           answer_revision=answer_revision+1,
+           revision=revision+1,
+           updated_at=NOW()
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3
+           AND answer_revision=$4 AND status<>'completed'
+         RETURNING *`,
+        [scope.workspaceId, scope.ownerProfileId, sessionId, expectedAnswerRevision, JSON.stringify(answers)]
+      );
+      if (result.rows[0]) return ritualSessionFromRow(result.rows[0]);
+      const existing = await db.query<{ answer_revision: number; status: StudioRitualSession["status"] }>(
+        `SELECT answer_revision,status FROM studio_ritual_sessions
+         WHERE workspace_id=$1 AND owner_profile_id=$2 AND id=$3`,
+        [scope.workspaceId, scope.ownerProfileId, sessionId]
+      );
+      if (!existing.rows[0]) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+      if (existing.rows[0].status === "completed") throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
       throw new Error("STUDIO_RITUAL_SESSION_STALE");
     },
 

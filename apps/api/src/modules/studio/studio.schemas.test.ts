@@ -138,7 +138,13 @@ describe("Studio schemas", () => {
       .toMatchObject({ decision: "Contratar" });
     expect(studioStructurePropertiesSchema("plan").parse({ direction: "Expandir" }))
       .toMatchObject({ direction: "Expandir" });
-    expect(studioStructurePropertiesSchema("ritual").parse({ intention: "Revisar a semana" }))
-      .toMatchObject({ intention: "Revisar a semana" });
+    expect(studioStructurePropertiesSchema("ritual").parse({
+      intention: "Revisar a semana",
+      support_mode: "light_summary"
+    })).toMatchObject({ intention: "Revisar a semana", support_mode: "light_summary" });
+    expect(() => studioStructurePropertiesSchema("ritual").parse({
+      intention: "Revisar a semana",
+      support_mode: "automatic"
+    })).toThrow();
   });
 });

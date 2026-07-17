@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { STUDIO_STRUCTURE_CONTRACT, STUDIO_STRUCTURE_KIND_ORDER } from "@prymeira/baase-shared";
+import {
+  STUDIO_RITUAL_SUPPORT_MODES,
+  STUDIO_STRUCTURE_CONTRACT,
+  STUDIO_STRUCTURE_KIND_ORDER
+} from "@prymeira/baase-shared";
 import type { StudioStructureKind } from "./studio.types";
 
 const editorJsonSchema = z.record(z.string(), z.unknown());
@@ -188,6 +192,7 @@ const planPropertiesSchema = z.object({
 const ritualPropertiesSchema = z.object({
   [ritualFields.intention.key]: structureTextSchema.optional(),
   [ritualFields.guideQuestions.key]: structureTextListSchema.optional(),
+  [ritualFields.supportMode.key]: z.enum(STUDIO_RITUAL_SUPPORT_MODES).optional(),
   [ritualFields.allowedInternalSources.key]: structureTextListSchema.optional(),
   [ritualFields.allowExternalResearch.key]: z.boolean().optional(),
   [ritualFields.summaryFormat.key]: structureTextSchema.optional()

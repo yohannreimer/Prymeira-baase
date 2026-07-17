@@ -846,8 +846,11 @@ export function createInMemoryStudioRepository(
       const session: StudioRitualSession = {
         ...input,
         id: `studio_ritual_session_${randomUUID()}`,
-        status: "preparing",
+        status: input.supportMode === "record_only" ? "ready" : "preparing",
         revision: 1,
+        answerRevision: 1,
+        supportMode: input.supportMode ?? "guided_reflection",
+        occurrenceAt: input.occurrenceAt ?? timestamp,
         contextJson: structuredClone(input.contextJson ?? {}),
         preparationJson: null,
         answersJson: {},
@@ -889,6 +892,27 @@ export function createInMemoryStudioRepository(
         failureCode: null,
         revision: candidate.revision + 1,
         updatedAt: nextTimestamp(now, candidate.updatedAt)
+      };
+      ritualSessions[index] = updated;
+      return cloneRitualSession(updated);
+    },
+
+    async updateRitualSessionAnswers(scope, sessionId, answers, expectedAnswerRevision) {
+      const index = ritualSessions.findIndex((session) => session.workspaceId === scope.workspaceId
+        && session.ownerProfileId === scope.ownerProfileId && session.id === sessionId);
+      if (index < 0) throw new Error("STUDIO_RITUAL_SESSION_NOT_FOUND");
+      const persisted = ritualSessions[index]!;
+      if (persisted.status === "completed") throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
+      if (persisted.answerRevision !== expectedAnswerRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+      const updated: StudioRitualSession = {
+        ...persisted,
+        answersJson: structuredClone(answers),
+        status: persisted.status === "failed"
+          ? "failed"
+          : persisted.supportMode === "record_only" || persisted.preparationJson !== null ? "in_progress" : "preparing",
+        answerRevision: persisted.answerRevision + 1,
+        revision: persisted.revision + 1,
+        updatedAt: nextTimestamp(now, persisted.updatedAt)
       };
       ritualSessions[index] = updated;
       return cloneRitualSession(updated);

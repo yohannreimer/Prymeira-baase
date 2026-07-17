@@ -1,4 +1,9 @@
-import type { StudioStructureKind as SharedStudioStructureKind } from "@prymeira/baase-shared";
+import type {
+  StudioRitualSupportMode,
+  StudioStructureKind as SharedStudioStructureKind
+} from "@prymeira/baase-shared";
+
+export type { StudioRitualSupportMode };
 
 export type StudioCaptureMode = "text" | "audio" | "file" | "image" | "link" | "mixed";
 export type StudioDocumentStatus = "active" | "archived" | "trashed";
@@ -99,6 +104,9 @@ export type StudioRitualSession = {
   ritualId: string;
   status: StudioRitualSessionStatus;
   revision: number;
+  answerRevision: number;
+  supportMode: StudioRitualSupportMode;
+  occurrenceAt: string;
   contextJson: Record<string, unknown> | null;
   preparationJson: Record<string, unknown> | null;
   answersJson: Record<string, string>;
@@ -431,6 +439,12 @@ export type RawStudioRitualSession = {
   ritualId?: string;
   status: StudioRitualSessionStatus;
   revision: number;
+  answer_revision?: number;
+  answerRevision?: number;
+  support_mode?: StudioRitualSupportMode;
+  supportMode?: StudioRitualSupportMode;
+  occurrence_at?: string;
+  occurrenceAt?: string;
   context_json?: Record<string, unknown> | null;
   contextJson?: Record<string, unknown> | null;
   preparation_json?: Record<string, unknown> | null;

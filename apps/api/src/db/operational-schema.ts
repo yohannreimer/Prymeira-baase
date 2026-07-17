@@ -1606,6 +1606,39 @@ const migrations: Migration[] = [{
     ALTER TABLE studio_portability_exports
       ALTER COLUMN filename SET NOT NULL;
   `
+}, {
+  version: 32,
+  name: "studio_continuous_ritual_sessions",
+  sql: `
+    ALTER TABLE studio_ritual_sessions
+      ADD COLUMN IF NOT EXISTS support_mode TEXT,
+      ADD COLUMN IF NOT EXISTS occurrence_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS answer_revision INTEGER NOT NULL DEFAULT 1;
+
+    UPDATE studio_ritual_sessions
+       SET support_mode=COALESCE(support_mode,'guided_reflection'),
+           occurrence_at=COALESCE(occurrence_at,created_at);
+
+    ALTER TABLE studio_ritual_sessions
+      ALTER COLUMN support_mode SET NOT NULL,
+      ALTER COLUMN occurrence_at SET NOT NULL,
+      DROP CONSTRAINT IF EXISTS studio_ritual_sessions_ready_preparation_ck,
+      DROP CONSTRAINT IF EXISTS studio_ritual_sessions_support_mode_ck,
+      DROP CONSTRAINT IF EXISTS studio_ritual_sessions_answer_revision_ck;
+
+    ALTER TABLE studio_ritual_sessions
+      ADD CONSTRAINT studio_ritual_sessions_ready_preparation_ck
+        CHECK (status<>'ready' OR support_mode='record_only'
+          OR (preparation_json IS NOT NULL AND prepare_ai_run_id IS NOT NULL)),
+      ADD CONSTRAINT studio_ritual_sessions_support_mode_ck
+        CHECK (support_mode IN ('record_only','light_summary','guided_reflection')),
+      ADD CONSTRAINT studio_ritual_sessions_answer_revision_ck
+        CHECK (answer_revision > 0);
+
+    CREATE INDEX IF NOT EXISTS studio_ritual_sessions_occurrence_idx
+      ON studio_ritual_sessions
+        (workspace_id,owner_profile_id,ritual_id,occurrence_at DESC,id DESC);
+  `
 }];
 
 export async function ensureOperationalSchema(pool: OperationalSchemaPool): Promise<void> {

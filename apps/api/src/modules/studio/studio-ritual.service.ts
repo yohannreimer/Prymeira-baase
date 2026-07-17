@@ -8,6 +8,7 @@ import type { StudioMemoryIndex } from "./studio-memory";
 import type {
   StudioOwnerScope,
   StudioRepository,
+  StudioRitualSupportMode,
   StudioRitualSession,
   StudioRitualSessionPage,
   StudioRitualSessionQuery,
@@ -86,10 +87,13 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
       throwIfAborted(input.signal);
       const ritual = await requireRitual(options.repository, scope, ritualId, true);
       const contextJson = await baseRitualContext(options.repository, scope, ritual);
+      const supportMode = resolveRitualSupportMode(ritual);
       throwIfAborted(input.signal);
       let session = assertSession(await options.repository.createRitualSession({
         ...scope,
         ritualId,
+        supportMode,
+        occurrenceAt: ritual.nextRunAt ?? timestamp(now),
         contextJson,
         preparationToken: null,
         preparationLeaseExpiresAt: null
@@ -113,33 +117,45 @@ export function createStudioRitualService(options: StudioRitualServiceOptions): 
     async updateSession(scope, sessionId, input) {
       const current = await requireSession(options.repository, scope, sessionId);
       if (current.status === "completed") throw new Error("STUDIO_RITUAL_SESSION_COMPLETED");
-      if (current.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
-      return assertSession(await options.repository.updateRitualSession({
-        ...current,
-        status: current.status === "failed"
-          ? "failed"
-          : current.preparationJson === null ? "preparing" : "in_progress",
-        answersJson: mergeAnswers(current.answersJson, input.answers),
-        failureCode: current.status === "failed" ? current.failureCode : null
-      }, current.revision));
+      if (current.answerRevision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+      return assertSession(await options.repository.updateRitualSessionAnswers(
+        scope,
+        sessionId,
+        mergeAnswers(current.answersJson, input.answers),
+        input.expectedRevision
+      ));
     },
 
     async finishSession(scope, sessionId, input) {
       throwIfAborted(input.signal);
       let completed = await requireSession(options.repository, scope, sessionId);
       if (completed.status !== "completed") {
-        if (completed.revision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
+        if (completed.answerRevision !== input.expectedRevision) throw new Error("STUDIO_RITUAL_SESSION_STALE");
         const ritual = await requireRitual(options.repository, scope, completed.ritualId, false);
-        completed = assertSession(await options.repository.updateRitualSession({
-          ...completed,
-          status: "completed",
-          answersJson: mergeAnswers(completed.answersJson, input.answers),
-          contextJson: withCadenceOccurrence(completed.contextJson, ritual.nextRunAt),
-          preparationToken: null,
-          preparationLeaseExpiresAt: null,
-          failureCode: null,
-          completedAt: timestamp(now)
-        }, completed.revision));
+        completed = assertSession(await options.repository.updateRitualSessionAnswers(
+          scope,
+          sessionId,
+          mergeAnswers(completed.answersJson, input.answers),
+          input.expectedRevision
+        ));
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          try {
+            completed = assertSession(await options.repository.updateRitualSession({
+              ...completed,
+              status: "completed",
+              contextJson: withCadenceOccurrence(completed.contextJson, ritual.nextRunAt),
+              preparationToken: null,
+              preparationLeaseExpiresAt: null,
+              failureCode: null,
+              completedAt: timestamp(now)
+            }, completed.revision));
+            break;
+          } catch (error) {
+            if (!isStale(error)) throw error;
+            completed = await requireSession(options.repository, scope, sessionId);
+          }
+        }
+        if (completed.status !== "completed") throw new Error("STUDIO_RITUAL_SESSION_STALE");
       }
       await reconcileRitualCadence(options.repository, scope, completed);
       if (!input.requestSynthesis || completed.synthesisJson !== null) return completed;
@@ -226,6 +242,16 @@ function cadenceOccurrence(context: Record<string, unknown> | null) {
     throw new Error("STUDIO_RITUAL_SESSION_DATA_INVALID");
   }
   return new Date(value).toISOString();
+}
+
+export function resolveRitualSupportMode(ritual: StudioStructure): StudioRitualSupportMode {
+  const explicit = ritual.propertiesJson.support_mode;
+  if (explicit === "record_only" || explicit === "light_summary" || explicit === "guided_reflection") {
+    return explicit;
+  }
+  if (ritual.cadenceJson?.frequency === "daily") return "record_only";
+  if (ritual.cadenceJson?.frequency === "weekly") return "light_summary";
+  return "guided_reflection";
 }
 
 type DeadlineOperation = {
@@ -498,6 +524,9 @@ function assertSession(session: StudioRitualSession) {
     const synthesisClaimPaired = (session.synthesisToken === null) === (session.synthesisLeaseExpiresAt === null);
     if (!(["preparing", "ready", "in_progress", "completed", "failed"] as string[]).includes(session.status)
       || !Number.isSafeInteger(session.revision) || session.revision < 1
+      || !Number.isSafeInteger(session.answerRevision) || session.answerRevision < 1
+      || !(session.supportMode === "record_only" || session.supportMode === "light_summary" || session.supportMode === "guided_reflection")
+      || Number.isNaN(new Date(session.occurrenceAt).getTime())
       || (session.status === "completed") !== (session.completedAt !== null)
       || (session.status === "failed") !== (session.failureCode !== null)
       || !preparationClaimPaired || !synthesisClaimPaired
@@ -513,7 +542,7 @@ function assertSession(session: StudioRitualSession) {
     if (session.preparationJson !== null) {
       const preparation = studioRitualPrepareSchema.parse(assertJsonBounds(session.preparationJson));
       if (preparation.proposal.ritual_id !== session.ritualId || session.prepareAiRunId === null) throw new Error();
-    } else if (session.prepareAiRunId !== null || session.status === "ready") {
+    } else if (session.prepareAiRunId !== null || (session.status === "ready" && session.supportMode !== "record_only")) {
       throw new Error();
     }
     if (session.synthesisJson !== null) {
