@@ -5,6 +5,38 @@ import { tagStudioMaintenanceFailure } from "./studio-maintenance-budget";
 const idle = { processNext: vi.fn(async () => null) };
 
 describe("Studio asset maintenance runner", () => {
+  it("reports fixed operations, keeps logging, and continues when monitoring fails", async () => {
+    const logger = { error: vi.fn() };
+    const cleanupProcessor = { processNext: vi.fn(async () => null) };
+    const reportUnexpectedError = vi.fn(() => {
+      throw new Error("monitoring unavailable");
+    });
+    const runner = createStudioAssetMaintenanceRunner({
+      assetProcessor: {
+        processNext: vi.fn(async () => {
+          throw new Error("private processor failure");
+        })
+      },
+      cleanupProcessor,
+      uploadCleanupProcessor: idle,
+      logger,
+      reportUnexpectedError,
+      maxItemsPerProcessor: 1,
+      scavenge: vi.fn(async () => undefined)
+    });
+
+    await expect(runner.runOnce()).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.any(Error),
+      "Studio asset extraction maintenance failed"
+    );
+    expect(reportUnexpectedError).toHaveBeenCalledWith(
+      expect.any(Error),
+      "asset-extraction"
+    );
+    expect(cleanupProcessor.processNext).toHaveBeenCalledTimes(1);
+  });
+
   it("gives every owner a turn in every private queue before filling the batch", async () => {
     const claimed: Record<string, string[]> = {};
     const fairProcessor = (name: string) => {

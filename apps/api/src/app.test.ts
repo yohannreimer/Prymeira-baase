@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app";
 import type { BaaseRuntimeConfig } from "./config/runtime";
+import { ApiError } from "./http/api-error";
 import { createInMemoryCompanyRepository } from "./modules/company/in-memory-company.repository";
 import { createInMemoryOnboardingRepository } from "./modules/onboarding/in-memory-onboarding.repository";
 import type { CreateOnboardingSessionInput } from "./modules/onboarding/onboarding.types";
@@ -41,6 +43,91 @@ function onboardingSessionInput(overrides: Partial<CreateOnboardingSessionInput>
 }
 
 describe("Baase API app", () => {
+  it("reports an unexpected failure once with only the route template and method", async () => {
+    const reportUnexpectedError = vi.fn();
+    const app = buildApp({ reportUnexpectedError });
+    app.get("/__test/unexpected/:recordId", async () => {
+      throw new Error("database unavailable for private record");
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/__test/unexpected/123?workspace=private"
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "Erro interno na API Baase.",
+        details: {}
+      }
+    });
+    expect(reportUnexpectedError).toHaveBeenCalledTimes(1);
+    expect(reportUnexpectedError).toHaveBeenCalledWith(expect.any(Error), {
+      component: "http",
+      method: "GET",
+      route: "/__test/unexpected/:recordId"
+    });
+    await app.close();
+  });
+
+  it("does not report expected API, validation, conflict, payload, or explicit 4xx failures", async () => {
+    const reportUnexpectedError = vi.fn();
+    const app = buildApp({ reportUnexpectedError });
+    app.get("/__test/api-error", async () => {
+      throw new ApiError(403, "FORBIDDEN", "Operação não permitida.");
+    });
+    app.get("/__test/validation", async () => z.string().parse(123));
+    app.get("/__test/conflict", async () => {
+      throw new Error("PROCESS_STALE");
+    });
+    app.get("/__test/payload", async () => {
+      throw Object.assign(new Error("too large"), { statusCode: 413 });
+    });
+    app.get("/__test/client-error", async () => {
+      throw Object.assign(new Error("rate limited"), {
+        statusCode: 429,
+        code: "RATE_LIMITED"
+      });
+    });
+    app.get("/__test/provider", async () => {
+      throw new Error("AI_PROVIDER_UNAVAILABLE");
+    });
+
+    for (const path of [
+      "/__test/api-error",
+      "/__test/validation",
+      "/__test/conflict",
+      "/__test/payload",
+      "/__test/client-error",
+      "/__test/provider"
+    ]) {
+      const response = await app.inject({ method: "GET", url: path });
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+      expect(response.statusCode).toBeLessThan(500 + (path.endsWith("provider") ? 100 : 0));
+    }
+
+    expect(reportUnexpectedError).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("keeps the generic 500 response when the monitoring reporter fails", async () => {
+    const app = buildApp({
+      reportUnexpectedError() {
+        throw new Error("monitoring unavailable");
+      }
+    });
+    app.get("/__test/reporter-failure", async () => {
+      throw new Error("application failure");
+    });
+
+    const response = await app.inject({ method: "GET", url: "/__test/reporter-failure" });
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe("INTERNAL_ERROR");
+    await app.close();
+  });
+
   it("serves authenticated publication creation at the Studio client path", async () => {
     const repository = createInMemoryStudioRepository();
     const document = await repository.createDocument({

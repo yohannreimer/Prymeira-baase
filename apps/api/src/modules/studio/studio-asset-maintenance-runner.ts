@@ -27,6 +27,7 @@ export function createStudioAssetMaintenanceRunner(options: {
   now?: () => number;
   random?: () => number;
   scavenge?: Scavenge;
+  reportUnexpectedError?: (error: unknown, operation: string) => void;
 }) {
   const maxItems = options.maxItemsPerProcessor ?? 10;
   const intervalMs = options.intervalMs ?? 30_000;
@@ -36,18 +37,33 @@ export function createStudioAssetMaintenanceRunner(options: {
   const scavengeIntervalMs = options.scavengeIntervalMs ?? 60 * 60_000;
   const now = options.now ?? Date.now;
   const random = options.random ?? Math.random;
-  const reportError = (error: unknown, message: string) => {
+  const reportError = (
+    error: unknown,
+    message: string,
+    operation: string,
+    loggerError: unknown = error
+  ) => {
     try {
-      options.logger.error(error, message);
+      options.logger.error(loggerError, message);
     } catch {
       // Maintenance must keep scheduling even if a custom logger fails.
+    }
+    try {
+      options.reportUnexpectedError?.(error, operation);
+    } catch {
+      // Maintenance must keep scheduling even if monitoring fails.
     }
   };
   const scavenge: Scavenge = options.scavenge ?? ((input) => scavengeStaleStudioUploadDirectories({
     cursor: input?.cursor,
     signal: input?.signal,
     onError(error, path) {
-      reportError({ err: error, path }, "Studio upload scavenger failed");
+      reportError(
+        error,
+        "Studio upload scavenger failed",
+        "upload-scavenge",
+        { err: error, path }
+      );
     }
   }));
   let activeRun: Promise<void> | null = null;
@@ -73,19 +89,37 @@ export function createStudioAssetMaintenanceRunner(options: {
           scavengeCursor = (result as { nextCursor?: string | null }).nextCursor ?? null;
         }
       } catch (error) {
-        if (!signal.aborted) reportError(error, "Studio upload scavenger failed");
+        if (!signal.aborted) {
+          reportError(error, "Studio upload scavenger failed", "upload-scavenge");
+        }
       }
     }
-    const processors: Array<readonly [string, Processor]> = [
-      ["asset extraction", options.assetProcessor],
-      ["asset deletion", options.cleanupProcessor],
-      ["upload intent cleanup", options.uploadCleanupProcessor]
+    const processors: Array<readonly [string, string, Processor]> = [
+      ["asset extraction", "asset-extraction", options.assetProcessor],
+      ["asset deletion", "asset-deletion", options.cleanupProcessor],
+      ["upload intent cleanup", "upload-intent-cleanup", options.uploadCleanupProcessor]
     ];
-    if (options.memoryProcessor) processors.push(["memory indexing", options.memoryProcessor]);
-    if (options.portabilityProcessor) processors.push(["private data reconciliation", options.portabilityProcessor]);
-    if (options.trashProcessor) processors.push(["trash retention", options.trashProcessor]);
-    if (options.ritualPreparationProcessor) processors.push(["ritual preparation", options.ritualPreparationProcessor]);
-    for (const [name, processor] of processors) {
+    if (options.memoryProcessor) {
+      processors.push(["memory indexing", "memory-indexing", options.memoryProcessor]);
+    }
+    if (options.portabilityProcessor) {
+      processors.push([
+        "private data reconciliation",
+        "private-data-reconciliation",
+        options.portabilityProcessor
+      ]);
+    }
+    if (options.trashProcessor) {
+      processors.push(["trash retention", "trash-retention", options.trashProcessor]);
+    }
+    if (options.ritualPreparationProcessor) {
+      processors.push([
+        "ritual preparation",
+        "ritual-preparation",
+        options.ritualPreparationProcessor
+      ]);
+    }
+    for (const [name, operation, processor] of processors) {
       let processed = 0;
       let fairnessPass = true;
       const ownersSeen = new Set<string>();
@@ -118,7 +152,9 @@ export function createStudioAssetMaintenanceRunner(options: {
             const owner = readStudioMaintenanceOwnerKey(error);
             if (owner) ownersSeen.add(owner);
           }
-          if (!signal.aborted) reportError(error, `Studio ${name} maintenance failed`);
+          if (!signal.aborted) {
+            reportError(error, `Studio ${name} maintenance failed`, operation);
+          }
         }
       }
       if (signal.aborted) break;
@@ -153,7 +189,7 @@ export function createStudioAssetMaintenanceRunner(options: {
     try {
       await runOnce();
     } catch (error) {
-      reportError(error, "Studio maintenance run failed");
+      reportError(error, "Studio maintenance run failed", "maintenance-run");
     } finally {
       scheduleNext();
     }
@@ -177,7 +213,7 @@ export function createStudioAssetMaintenanceRunner(options: {
       let deadline: ReturnType<typeof setTimeout> | undefined;
       const finished = await Promise.race([
         running.then(() => true, (error) => {
-          reportError(error, "Studio maintenance shutdown failed");
+          reportError(error, "Studio maintenance shutdown failed", "maintenance-shutdown");
           return true;
         }),
         new Promise<false>((resolve) => {
@@ -188,7 +224,8 @@ export function createStudioAssetMaintenanceRunner(options: {
       if (deadline) clearTimeout(deadline);
       if (!finished) {
         reportError(new Error("STUDIO_ASSET_MAINTENANCE_SHUTDOWN_TIMEOUT"),
-          "Studio maintenance shutdown deadline exceeded");
+          "Studio maintenance shutdown deadline exceeded",
+          "maintenance-shutdown-timeout");
       }
     }
   };
@@ -237,6 +274,7 @@ export function startStudioAssetMaintenance(input: {
   now?: () => number;
   random?: () => number;
   scavenge?: Scavenge;
+  reportUnexpectedError?: (error: unknown, operation: string) => void;
 } = {}) {
   const runner = createStudioAssetMaintenanceRunner({
     assetProcessor: input.studioAssetProcessor,
