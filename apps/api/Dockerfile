@@ -25,4 +25,4 @@ ENV BAASE_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 EXPOSE 3090
 
-CMD ["pnpm", "--filter", "@prymeira/baase-api", "exec", "tsx", "src/server.ts"]
+CMD ["pnpm", "--filter", "@prymeira/baase-api", "start"]
