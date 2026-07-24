@@ -36,7 +36,8 @@ DSN de `baase-api` somente em `BAASE_API_GLITCHTIP_DSN`. Ambos vazios
 desabilitam toda a integração sem rollback de código.
 
 O DSN do navegador é um identificador público de ingestão. Ele não substitui
-token administrativo e não concede acesso ao painel.
+token administrativo e não concede acesso ao painel. PostgreSQL, MinIO e o
+bootstrap de storage não recebem DSN.
 
 ## Token de source maps
 
@@ -64,7 +65,8 @@ source maps ocultos.
 1. Faça merge do commit revisado.
 2. Aguarde as imagens web/API pelo SHA e o upload de source maps.
 3. Registre SHA e digests.
-4. No Portainer, informe o mesmo SHA em `BAASE_IMAGE_TAG`, os dois DSNs e
+4. No Portainer, informe o SHA completo em `BAASE_IMAGE_TAG` (a stack não aceita
+   `latest`), os dois DSNs e
    `BAASE_GLITCHTIP_TRACES_SAMPLE_RATE=0.01`.
 5. Reimplante e acompanhe tarefas/logs.
 6. Verifique health, readiness, login e um fluxo normal do proprietário.

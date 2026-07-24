@@ -155,6 +155,55 @@ describe("production compose object storage contract", () => {
 });
 
 describe("production stack operator configuration contract", () => {
+  it("uses immutable releases and isolates GlitchTip runtime configuration", () => {
+    const compose = readFileSync(composePath, "utf8");
+    const envExample = readFileSync(productionEnvExamplePath, "utf8");
+    const api = serviceBlock(compose, "prymeira_baase_api");
+    const web = serviceBlock(compose, "prymeira_baase_web");
+    const postgres = serviceBlock(compose, "prymeira_baase_postgres");
+    const minio = serviceBlock(compose, "prymeira_baase_minio");
+    const bootstrap = serviceBlock(compose, "prymeira_baase_minio_bootstrap");
+
+    expect(api).toContain(
+      "image: ghcr.io/yohannreimer/prymeira-baase-api:${BAASE_IMAGE_TAG:?BAASE_IMAGE_TAG_must_be_a_Git_SHA}"
+    );
+    expect(web).toContain(
+      "image: ghcr.io/yohannreimer/prymeira-baase-web:${BAASE_IMAGE_TAG:?BAASE_IMAGE_TAG_must_be_a_Git_SHA}"
+    );
+    expect(bootstrap).toContain(
+      "image: ghcr.io/yohannreimer/prymeira-baase-api:${BAASE_IMAGE_TAG:?BAASE_IMAGE_TAG_must_be_a_Git_SHA}"
+    );
+    expect(compose).not.toContain(":-latest");
+
+    expect(api).toContain("SENTRY_DSN: ${BAASE_API_GLITCHTIP_DSN:-}");
+    expect(api).toContain("SENTRY_ENVIRONMENT: production");
+    expect(api).toContain("SENTRY_RELEASE: ${BAASE_IMAGE_TAG}");
+    expect(api).toContain(
+      "SENTRY_TRACES_SAMPLE_RATE: ${BAASE_GLITCHTIP_TRACES_SAMPLE_RATE:-0.01}"
+    );
+    expect(web).toContain("VITE_GLITCHTIP_DSN: ${BAASE_WEB_GLITCHTIP_DSN:-}");
+    expect(web).toContain("VITE_BAASE_ENVIRONMENT: production");
+    expect(web).toContain("VITE_BAASE_RELEASE: ${BAASE_IMAGE_TAG}");
+    expect(web).toContain(
+      "VITE_GLITCHTIP_TRACES_SAMPLE_RATE: ${BAASE_GLITCHTIP_TRACES_SAMPLE_RATE:-0.01}"
+    );
+    expect(api).not.toContain("BAASE_WEB_GLITCHTIP_DSN");
+    expect(web).not.toContain("BAASE_API_GLITCHTIP_DSN");
+
+    for (const service of [postgres, minio, bootstrap]) {
+      expect(service).not.toMatch(/(?:SENTRY_DSN|VITE_GLITCHTIP_DSN):/);
+    }
+    for (const service of [api, web]) {
+      expect(service).not.toMatch(/(?:GLITCHTIP_AUTH_TOKEN|ADMIN_TOKEN|SOURCE_MAP)/);
+    }
+
+    expect(envExample).toMatch(/^BAASE_IMAGE_TAG=$/m);
+    expect(envExample).toMatch(/^BAASE_WEB_GLITCHTIP_DSN=$/m);
+    expect(envExample).toMatch(/^BAASE_API_GLITCHTIP_DSN=$/m);
+    expect(envExample).toMatch(/^BAASE_GLITCHTIP_TRACES_SAMPLE_RATE=0\.01$/m);
+    expect(envExample).not.toContain("GLITCHTIP_AUTH_TOKEN");
+  });
+
   it("exposes only BAASE_MINIO credentials as operator-managed storage inputs", () => {
     const envExample = readFileSync(productionEnvExamplePath, "utf8");
     const readme = readFileSync(readmePath, "utf8");
