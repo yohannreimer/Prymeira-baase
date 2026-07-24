@@ -45,6 +45,12 @@ Crie no GlitchTip um token com o menor acesso disponível para releases e upload
 de arquivos no projeto `prymeira/baase-web`. Salve-o como secret do repositório
 GitHub `GLITCHTIP_AUTH_TOKEN`. Não configure esse token no Portainer.
 
+O build web envia source maps ocultos somente quando
+`GLITCHTIP_SOURCEMAPS_UPLOAD=true`. O token é lido por um secret temporário do
+BuildKit, nunca por `ARG` ou `ENV`; uma falha de token ou upload interrompe a
+publicação da imagem. Depois do upload, os arquivos `.map` são removidos antes
+da imagem nginx. Builds locais usam `false` e não precisam do token.
+
 ## Verificação antes da produção
 
 Execute:
