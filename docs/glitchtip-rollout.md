@@ -2,22 +2,22 @@
 
 Este rollout é incremental sobre um Baase já ativo em produção. A plataforma
 central definida em `Prymeira-observability` precisa estar saudável, com
-projetos, alertas e recuperação verificados, antes de qualquer atualização da
+projetos e recuperação verificados, antes de qualquer atualização da
 stack Baase.
 
 ## Pré-condições
 
 - GlitchTip saudável por HTTPS;
-- organização `Prymeira`;
+- organização `Prymeira` com slug `prymeira-digital`;
 - projetos `baase-web` e `baase-api`;
-- workflow n8n → Evolution validado;
+- webhook n8n → Evolution é opcional e pode ser configurado depois do rollout;
 - backup recente da Droplet;
 - pelo menos 5 GB livres;
 - commit e imagens de rollback registrados.
 
 ## Baseline de produção
 
-Verificação pública em `2026-07-24T14:27:55Z`:
+Baseline reconfirmada antes do rollout em `2026-07-29T20:06:31-03:00`:
 
 | Sinal | Resultado |
 | --- | --- |
@@ -25,9 +25,22 @@ Verificação pública em `2026-07-24T14:27:55Z`:
 | `/api/health` | HTTP 200, serviço `baase-api` |
 | `/api/readiness` | HTTP 200, produção, PostgreSQL, S3 e Studio prontos |
 
-Os digests atuais de `prymeira_baase_web` e `prymeira_baase_api` serão
-registrados por `docker service inspect` assim que o acesso autenticado ao
-`manager01` estiver disponível. Não copie ambiente ou segredos do container.
+Estado observado no Portainer:
+
+| Serviço | Réplicas |
+| --- | --- |
+| `baase_prymeira_baase_web` | `1/1` |
+| `baase_prymeira_baase_api` | `1/1` |
+| `baase_prymeira_baase_postgres` | `1/1` |
+| `baase_prymeira_baase_minio` | `1/1` |
+| `baase_prymeira_baase_minio_bootstrap` | `0/1` (job de bootstrap, sem tráfego) |
+
+Digests de rollback registrados antes do rollout:
+
+- `prymeira_baase_web`: `sha256:a290f14ee02e8b6c8053bd9000f23e488dad3835f479f32a25b9d77869ff8d81`;
+- `prymeira_baase_api`: `sha256:52213626442fc0edabd7ea1f24704391322793d6912c65f6af1af33d0980b7bd`.
+
+Não copie ambiente ou segredos do container.
 
 ## Projetos e DSNs
 
@@ -42,7 +55,7 @@ bootstrap de storage não recebem DSN.
 ## Token de source maps
 
 Crie no GlitchTip um token com o menor acesso disponível para releases e upload
-de arquivos no projeto `prymeira/baase-web`. Salve-o como secret do repositório
+de arquivos no projeto `prymeira-digital/baase-web`. Salve-o como secret do repositório
 GitHub `GLITCHTIP_AUTH_TOKEN`. Não configure esse token no Portainer.
 
 O build web envia source maps ocultos somente quando
@@ -83,7 +96,8 @@ source maps ocultos.
 - gere um erro controlado no navegador;
 - confira release, stack TypeScript e ausência de dados pessoais;
 - confirme que `4xx` esperados não criam incidentes;
-- confirme WhatsApp sem stack trace ou conteúdo do cliente.
+- confirme que os incidentes permanecem armazenados no GlitchTip mesmo sem
+  webhook configurado.
 
 ## Rollback
 
@@ -106,7 +120,7 @@ Registre no momento do rollout, em +1 hora e +24 horas:
 - contagem de eventos/transações;
 - CPU/RAM do GlitchTip e PostgreSQL;
 - uso do disco raiz;
-- ruído e cooldown dos alertas.
+- ruído e volume dos incidentes.
 
 Se o volume for excessivo, defina
 `BAASE_GLITCHTIP_TRACES_SAMPLE_RATE=0`, mantendo captura de erros.

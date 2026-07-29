@@ -9,9 +9,17 @@ const config = readApiMonitoringConfig(process.env);
 
 export const apiMonitoringEnabled = initializeApiMonitoringWith(config, {
   init(options: ApiMonitoringOptions) {
-    const { beforeSend, beforeSendTransaction, ...baseOptions } = options;
+    const {
+      beforeSend,
+      beforeSendTransaction,
+      integrations,
+      ...baseOptions
+    } = options;
     Sentry.init({
       ...baseOptions,
+      integrations(defaultIntegrations) {
+        return integrations(defaultIntegrations);
+      },
       beforeSend(event) {
         return beforeSend(event as unknown as Record<string, unknown>) as unknown as typeof event;
       },

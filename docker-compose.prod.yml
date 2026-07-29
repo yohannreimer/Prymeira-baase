@@ -34,6 +34,7 @@ services:
 
   prymeira_baase_api:
     image: ghcr.io/yohannreimer/prymeira-baase-api:${BAASE_IMAGE_TAG:?BAASE_IMAGE_TAG_must_be_a_Git_SHA}
+    stop_grace_period: 15s
     networks:
       prymeira_baase_internal:
         aliases:

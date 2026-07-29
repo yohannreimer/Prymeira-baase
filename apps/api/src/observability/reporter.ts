@@ -15,6 +15,7 @@ export type UnexpectedErrorContext = {
 
 type MonitoringTags = Record<string, string>;
 type CaptureContext = { tags: MonitoringTags };
+type MonitoringIntegration = { name: string };
 
 export type ApiMonitoringOptions = {
   dsn: string;
@@ -26,6 +27,7 @@ export type ApiMonitoringOptions = {
   maxBreadcrumbs: 0;
   transportOptions: { bufferSize: 10 };
   registerEsmLoaderHooks: true;
+  integrations: <T extends MonitoringIntegration>(defaultIntegrations: T[]) => T[];
   beforeSend: (event: ObservabilityEvent) => ObservabilityEvent;
   beforeSendTransaction: (event: ObservabilityEvent) => ObservabilityEvent;
 };
@@ -52,6 +54,7 @@ export function initializeApiMonitoringWith(
       maxBreadcrumbs: 0,
       transportOptions: { bufferSize: 10 },
       registerEsmLoaderHooks: true,
+      integrations: excludeSessionIntegrations,
       beforeSend: sanitizeObservabilityEvent,
       beforeSendTransaction: sanitizeObservabilityEvent
     });
@@ -108,6 +111,14 @@ export async function flushMonitoringWith(
   } catch {
     return false;
   }
+}
+
+function excludeSessionIntegrations<T extends MonitoringIntegration>(
+  defaultIntegrations: T[]
+): T[] {
+  return defaultIntegrations.filter(
+    ({ name }) => name !== "ProcessSession" && name !== "BrowserSession"
+  );
 }
 
 function sanitizeMethod(value: string | undefined): string | null {

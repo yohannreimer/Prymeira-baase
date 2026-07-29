@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { readApiMonitoringConfig } from "./config";
 
+const validRelease = "0123456789abcdef0123456789abcdef01234567";
 const productionEnv = {
   NODE_ENV: "production",
   SENTRY_DSN: "https://public-key@glitchtip.prymeiradigital.com.br/2",
   SENTRY_ENVIRONMENT: "production",
-  SENTRY_RELEASE: "abc123"
+  SENTRY_RELEASE: validRelease
 };
 
 describe("readApiMonitoringConfig", () => {
   it("stays disabled without a DSN", () => {
-    expect(readApiMonitoringConfig({ NODE_ENV: "production", SENTRY_RELEASE: "abc123" }))
+    expect(readApiMonitoringConfig({ NODE_ENV: "production", SENTRY_RELEASE: validRelease }))
       .toMatchObject({ enabled: false, dsn: null });
   });
 
@@ -30,17 +31,21 @@ describe("readApiMonitoringConfig", () => {
     }
   });
 
-  it("requires a release and trims environment values", () => {
+  it("requires a full Git SHA release and trims environment values", () => {
     expect(readApiMonitoringConfig({ ...productionEnv, SENTRY_RELEASE: " " }).enabled).toBe(false);
+    for (const release of ["abc123", `${validRelease}0`, "g".repeat(40)]) {
+      expect(readApiMonitoringConfig({ ...productionEnv, SENTRY_RELEASE: release }).enabled)
+        .toBe(false);
+    }
     expect(readApiMonitoringConfig({
       ...productionEnv,
       SENTRY_DSN: ` ${productionEnv.SENTRY_DSN} `,
-      SENTRY_RELEASE: " abc123 ",
+      SENTRY_RELEASE: ` ${validRelease} `,
       SENTRY_ENVIRONMENT: " production "
     })).toMatchObject({
       enabled: true,
       dsn: productionEnv.SENTRY_DSN,
-      release: "abc123",
+      release: validRelease,
       environment: "production"
     });
   });

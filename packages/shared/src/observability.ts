@@ -1,13 +1,11 @@
 export type ObservabilityEvent = Record<string, unknown>;
 
 const topLevelPrimitiveKeys = [
-  "event_id",
   "timestamp",
   "platform",
   "level",
   "logger",
   "server_name",
-  "release",
   "environment",
   "dist",
   "start_timestamp"
@@ -26,10 +24,17 @@ const safeContextFieldKeys = new Set([
   "sampled"
 ]);
 
+const eventIdPattern = /^[0-9a-f]{32}$/i;
+const releaseShaPattern = /^[0-9a-f]{40}$/i;
+const traceIdPattern = eventIdPattern;
+const spanIdPattern = /^[0-9a-f]{16}$/i;
+const debugIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ulidPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 const emailPattern = /^[^/\s@]+@[^/\s@]+\.[^/\s@]+$/;
 const opaquePattern = /^[A-Za-z0-9_-]{25,}$/;
+const operationPattern = /^[a-z0-9][a-z0-9._/-]{0,99}$/i;
+const exceptionTypePattern = /^[A-Za-z_$][A-Za-z0-9_$]*(?:[.:][A-Za-z_$][A-Za-z0-9_$]*)*$/;
 
 export function sanitizeObservabilityEvent(event: ObservabilityEvent): ObservabilityEvent {
   const sanitized: ObservabilityEvent = {};
@@ -39,8 +44,16 @@ export function sanitizeObservabilityEvent(event: ObservabilityEvent): Observabi
     if (isPrimitive(value)) sanitized[key] = sanitizePrimitive(value);
   }
 
+  if (typeof event.event_id === "string" && eventIdPattern.test(event.event_id)) {
+    sanitized.event_id = event.event_id.toLowerCase();
+  }
+  if (typeof event.release === "string" && releaseShaPattern.test(event.release)) {
+    sanitized.release = event.release.toLowerCase();
+  }
+  if (event.type === "transaction") sanitized.type = event.type;
+
   if (typeof event.message === "string") {
-    sanitized.message = sanitizeDiagnosticString(event.message);
+    sanitized.message = "[redacted]";
   }
   if (typeof event.transaction === "string") {
     sanitized.transaction = normalizeObservabilityPath(event.transaction);
@@ -60,6 +73,9 @@ export function sanitizeObservabilityEvent(event: ObservabilityEvent): Observabi
 
   const spans = sanitizeSpans(event.spans);
   if (spans) sanitized.spans = spans;
+
+  const debugMeta = sanitizeDebugMeta(event.debug_meta);
+  if (debugMeta) sanitized.debug_meta = debugMeta;
 
   return sanitized;
 }
@@ -102,6 +118,11 @@ function sanitizeContexts(value: unknown): Record<string, unknown> | null {
       if (!safeContextFieldKeys.has(key) || !isPrimitive(field)) continue;
       safeContext[key] = sanitizePrimitive(field);
     }
+    if (contextKey === "trace") {
+      addProtocolId(safeContext, "trace_id", context.trace_id, traceIdPattern);
+      addProtocolId(safeContext, "span_id", context.span_id, spanIdPattern);
+      addProtocolId(safeContext, "parent_span_id", context.parent_span_id, spanIdPattern);
+    }
     if (Object.keys(safeContext).length > 0) contexts[contextKey] = safeContext;
   }
   return Object.keys(contexts).length > 0 ? contexts : null;
@@ -114,6 +135,16 @@ function sanitizeTags(value: unknown): Record<string, unknown> | null {
     const field = value[key];
     if (isPrimitive(field)) tags[key] = sanitizePrimitive(field);
   }
+  if (typeof value.route === "string") {
+    const route = normalizeObservabilityPath(value.route);
+    if (route) tags.route = route;
+  }
+  if (typeof value.method === "string" && /^[A-Za-z]{1,16}$/.test(value.method)) {
+    tags.method = value.method.toUpperCase();
+  }
+  if (typeof value.operation === "string" && operationPattern.test(value.operation)) {
+    tags.operation = value.operation;
+  }
   return Object.keys(tags).length > 0 ? tags : null;
 }
 
@@ -122,8 +153,10 @@ function sanitizeException(value: unknown): Record<string, unknown> | null {
   const values = value.values.flatMap((entry) => {
     if (!isRecord(entry)) return [];
     const safe: Record<string, unknown> = {};
-    if (typeof entry.type === "string") safe.type = sanitizeDiagnosticString(entry.type);
-    if (typeof entry.value === "string") safe.value = sanitizeDiagnosticString(entry.value);
+    if (typeof entry.type === "string" && exceptionTypePattern.test(entry.type)) {
+      safe.type = entry.type.slice(0, 100);
+    }
+    if (typeof entry.value === "string") safe.value = "[redacted]";
     const stacktrace = sanitizeStacktrace(entry.stacktrace);
     if (stacktrace) safe.stacktrace = stacktrace;
     return Object.keys(safe).length > 0 ? [safe] : [];
@@ -136,9 +169,9 @@ function sanitizeStacktrace(value: unknown): Record<string, unknown> | null {
   const frames = value.frames.flatMap((frame) => {
     if (!isRecord(frame)) return [];
     const safe: Record<string, unknown> = {};
-    for (const key of ["filename", "function", "module", "lineno", "colno", "in_app"]) {
+    for (const key of ["filename", "abs_path", "function", "module", "lineno", "colno", "in_app"]) {
       const field = frame[key];
-      if (isPrimitive(field)) safe[key] = key === "filename" && typeof field === "string"
+      if (isPrimitive(field)) safe[key] = (key === "filename" || key === "abs_path") && typeof field === "string"
         ? sanitizeFileName(field)
         : sanitizePrimitive(field);
     }
@@ -152,6 +185,9 @@ function sanitizeSpans(value: unknown): Array<Record<string, unknown>> | null {
   const spans = value.flatMap((span) => {
     if (!isRecord(span)) return [];
     const safe: Record<string, unknown> = {};
+    addProtocolId(safe, "trace_id", span.trace_id, traceIdPattern);
+    addProtocolId(safe, "span_id", span.span_id, spanIdPattern);
+    addProtocolId(safe, "parent_span_id", span.parent_span_id, spanIdPattern);
     for (const key of ["op", "start_timestamp", "timestamp", "status"]) {
       const field = span[key];
       if (isPrimitive(field)) safe[key] = sanitizePrimitive(field);
@@ -164,6 +200,36 @@ function sanitizeSpans(value: unknown): Array<Record<string, unknown>> | null {
   return spans.length > 0 ? spans : null;
 }
 
+function sanitizeDebugMeta(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !Array.isArray(value.images)) return null;
+  const images = value.images.flatMap((image) => {
+    if (
+      !isRecord(image)
+      || image.type !== "sourcemap"
+      || typeof image.code_file !== "string"
+      || typeof image.debug_id !== "string"
+      || !debugIdPattern.test(image.debug_id)
+    ) {
+      return [];
+    }
+    const codeFile = sanitizeCodeFile(image.code_file);
+    if (!codeFile) return [];
+    return [{
+      type: "sourcemap",
+      code_file: codeFile,
+      debug_id: image.debug_id.toLowerCase()
+    }];
+  });
+  return images.length > 0 ? { images } : null;
+}
+
+function sanitizeCodeFile(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 2_000) return "";
+  if (/^https?:\/\//i.test(trimmed)) return sanitizeUrl(trimmed);
+  return normalizeObservabilityPath(trimmed).slice(0, 500);
+}
+
 function sanitizeUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -174,7 +240,7 @@ function sanitizeUrl(value: string): string {
 }
 
 function sanitizeFileName(value: string): string {
-  return (value.split(/[?#]/, 1)[0] ?? "").slice(0, 500);
+  return sanitizeCodeFile(value);
 }
 
 function sanitizeDiagnosticString(value: string): string {
@@ -201,6 +267,17 @@ function shouldRedactSegment(segment: string): boolean {
 
 function sanitizePrimitive(value: string | number | boolean | null): string | number | boolean | null {
   return typeof value === "string" ? sanitizeDiagnosticString(value) : value;
+}
+
+function addProtocolId(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  pattern: RegExp
+): void {
+  if (typeof value === "string" && pattern.test(value)) {
+    target[key] = value.toLowerCase();
+  }
 }
 
 function isPrimitive(value: unknown): value is string | number | boolean | null {

@@ -16,7 +16,10 @@ export function readWebMonitoringConfig(
   const env = { ...buildEnv, ...runtimeEnv };
   const dsnValue = normalizeOptional(env.VITE_GLITCHTIP_DSN);
   const dsn = dsnValue && isValidDsn(dsnValue) ? dsnValue : null;
-  const release = normalizeOptional(env.VITE_BAASE_RELEASE);
+  const releaseValue = normalizeOptional(env.VITE_BAASE_RELEASE);
+  const release = releaseValue && isValidRelease(releaseValue)
+    ? releaseValue.toLowerCase()
+    : null;
   const environment = normalizeOptional(env.VITE_BAASE_ENVIRONMENT)
     ?? (isProductionBuild ? "production" : "development");
   const sampleValue = normalizeOptional(env.VITE_GLITCHTIP_TRACES_SAMPLE_RATE);
@@ -34,6 +37,10 @@ export function readWebMonitoringConfig(
     release,
     tracesSampleRate: validSampleRate ? tracesSampleRate : 0
   };
+}
+
+function isValidRelease(value: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(value);
 }
 
 function readRuntimeConfig(): EnvRecord {

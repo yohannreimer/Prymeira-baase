@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { buildApp } from "./app";
+import { buildApp, type BuildAppOptions } from "./app";
 import { readRuntimeConfig } from "./config/runtime";
 import { createPostgresPool } from "./db/postgres";
 import {
@@ -12,74 +12,52 @@ import {
   captureUnexpectedError,
   flushMonitoring
 } from "./observability/reporter";
+import { runApiServer } from "./server-lifecycle";
 
-const port = Number(process.env.PORT ?? 3090);
-const host = process.env.HOST ?? "0.0.0.0";
-const databaseUrl = process.env.DATABASE_URL;
-const runtimeConfig = readRuntimeConfig(process.env);
-assertStudioVectorProductionPrerequisite(runtimeConfig, databaseUrl);
-const objectStorage = await initializeRuntimeObjectStorage(runtimeConfig);
-
-const pool = databaseUrl ? createPostgresPool(databaseUrl) : null;
-const repositoryBundle = pool
-  ? await initializePostgresRuntime(pool, runtimeConfig.operationalStore, undefined, runtimeConfig.studio)
-  : null;
-
-const app = repositoryBundle
-  ? buildApp({
-      ...repositoryBundle,
-      runtimeConfig,
-      objectStorage
-    })
-  : buildApp({
-      seedDemoData: runtimeConfig.demoSeedEnabled,
-      runtimeConfig,
-      objectStorage
-    });
-let maintenanceRunner: ReturnType<typeof startStudioAssetMaintenance> | null = null;
-let shutdownStarted = false;
-
-async function shutdown(): Promise<number> {
-  let shutdownError: unknown = null;
-  for (const close of [
-    () => maintenanceRunner?.stop(),
-    () => app.close(),
-    () => pool?.end()
-  ]) {
-    try {
-      await close();
-    } catch (error) {
-      shutdownError ??= error;
-    }
+await runApiServer(process.env, {
+  readRuntimeConfig,
+  assertStudioVectorProductionPrerequisite,
+  initializeRuntimeObjectStorage,
+  createPostgresPool,
+  initializePostgresRuntime(pool, operationalStore, studio) {
+    return initializePostgresRuntime(
+      pool as ReturnType<typeof createPostgresPool>,
+      operationalStore,
+      undefined,
+      studio
+    );
+  },
+  buildApp({ repositoryBundle, runtimeConfig, objectStorage }) {
+    return repositoryBundle
+      ? buildApp({
+          ...(repositoryBundle as BuildAppOptions),
+          runtimeConfig,
+          objectStorage: objectStorage as BuildAppOptions["objectStorage"]
+        })
+      : buildApp({
+          seedDemoData: runtimeConfig.demoSeedEnabled,
+          runtimeConfig,
+          objectStorage: objectStorage as BuildAppOptions["objectStorage"]
+        });
+  },
+  startStudioAssetMaintenance(app, options) {
+    return startStudioAssetMaintenance(
+      app as unknown as Parameters<typeof startStudioAssetMaintenance>[0],
+      options
+    );
+  },
+  async closePool(pool) {
+    await (pool as ReturnType<typeof createPostgresPool>).end();
+  },
+  captureUnexpectedError,
+  flushMonitoring,
+  registerSignalHandler(signal, handler) {
+    process.once(signal, handler);
+  },
+  exit(code) {
+    process.exit(code);
+  },
+  logStartupError(error) {
+    console.error(error);
   }
-  if (shutdownError) {
-    captureUnexpectedError(shutdownError, { component: "shutdown" });
-    app.log.error(shutdownError);
-  }
-  await flushMonitoring(2000);
-  return shutdownError ? 1 : 0;
-}
-
-function handleShutdownSignal() {
-  if (shutdownStarted) return;
-  shutdownStarted = true;
-  void shutdown().then((exitCode) => process.exit(exitCode));
-}
-
-process.once("SIGINT", handleShutdownSignal);
-process.once("SIGTERM", handleShutdownSignal);
-
-try {
-  await app.listen({ port, host });
-  maintenanceRunner = startStudioAssetMaintenance(app, {
-    reportUnexpectedError(error, operation) {
-      captureUnexpectedError(error, { component: "maintenance", operation });
-    }
-  });
-  app.log.info(`Baase API listening on ${host}:${port}`);
-} catch (error) {
-  captureUnexpectedError(error, { component: "startup" });
-  app.log.error(error);
-  await flushMonitoring(2000);
-  process.exit(1);
-}
+});

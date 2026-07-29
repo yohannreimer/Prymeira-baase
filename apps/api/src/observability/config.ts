@@ -13,7 +13,8 @@ export function readApiMonitoringConfig(
 ): ApiMonitoringConfig {
   const dsn = trimToNull(env.SENTRY_DSN);
   const environment = trimToNull(env.SENTRY_ENVIRONMENT) ?? "production";
-  const release = trimToNull(env.SENTRY_RELEASE);
+  const releaseValue = trimToNull(env.SENTRY_RELEASE);
+  const release = isValidRelease(releaseValue) ? releaseValue.toLowerCase() : null;
   const sample = readSampleRate(env.SENTRY_TRACES_SAMPLE_RATE);
   const enabled = env.NODE_ENV?.trim() === "production"
     && isValidDsn(dsn)
@@ -27,6 +28,10 @@ export function readApiMonitoringConfig(
     release,
     tracesSampleRate: sample.value
   };
+}
+
+function isValidRelease(value: string | null): value is string {
+  return value !== null && /^[0-9a-f]{40}$/i.test(value);
 }
 
 function readSampleRate(value: string | undefined): {

@@ -663,7 +663,7 @@ The test must assert:
 - the Linux x86-64 binary SHA-256 is
   `de1c035aa61931a6265d7b29b1614781dfee925466142a907508cb097082dfef`;
 - the CLI injects and uploads from `/app/apps/web/dist`;
-- upload uses organization `prymeira`, project `baase-web`, and the build release;
+- upload uses organization `prymeira-digital`, project `baase-web`, and the build release;
 - auth token is read from `/run/secrets/glitchtip_auth_token`;
 - `.map` files are deleted before the nginx stage;
 - workflow passes `${{ github.sha }}` as `VITE_BAASE_RELEASE`;
@@ -703,7 +703,7 @@ After Vite build, conditionally:
    glitchtip-cli sourcemaps inject /app/apps/web/dist
    glitchtip-cli sourcemaps upload /app/apps/web/dist \
      --release "$VITE_BAASE_RELEASE" \
-     --org prymeira \
+     --org prymeira-digital \
      --project baase-web
    ```
 
@@ -737,7 +737,7 @@ Retain both existing GHCR tags during the transition, but production compose may
 
 - [ ] **Step 5: Document token bootstrap**
 
-In GlitchTip, create a least-privilege API token able to create releases and upload files for `prymeira/baase-web`. Save it as GitHub Actions repository secret `GLITCHTIP_AUTH_TOKEN`. Do not put it in Portainer.
+In GlitchTip, create a least-privilege API token able to create releases and upload files for `prymeira-digital/baase-web`. Save it as GitHub Actions repository secret `GLITCHTIP_AUTH_TOKEN`. Do not put it in Portainer.
 
 - [ ] **Step 6: Verify locally without uploading**
 
@@ -964,9 +964,12 @@ Temporarily set both DSNs to an unroutable HTTPS host in a non-production local 
 
 Do not intentionally break production DNS or stop the production GlitchTip service for this test.
 
-- [ ] **Step 7: Verify WhatsApp alert**
+- [ ] **Step 7 (optional, deferred): Verify WhatsApp alert**
 
-Allow the synthetic issues through the configured alert rule. Confirm GlitchTip → n8n → Evolution → WhatsApp and verify the message contains no stack trace or customer content.
+Only after the separate webhook rollout is approved, allow synthetic issues
+through the configured alert rule. Confirm GlitchTip → n8n → Evolution →
+WhatsApp and verify the message contains no stack trace or customer content.
+This step is not a prerequisite for storing incidents in GlitchTip.
 
 ## Task 13: Observe for 24 hours and close the rollout
 
@@ -1021,6 +1024,7 @@ If privacy or product behavior fails, remove both DSNs and follow rollback immed
 - [ ] Shared sanitizer removes every prohibited data class.
 - [ ] Errors are sampled at 100%; performance is sampled at 1%; Replay/logs are absent.
 - [ ] Source maps resolve TypeScript while `.map` files are not publicly served.
-- [ ] GlitchTip/n8n/Evolution failure cannot break Baase.
-- [ ] WhatsApp delivery works without leaking stack traces or user content.
+- [ ] GlitchTip failure cannot break Baase.
+- [ ] (Optional, deferred) n8n/Evolution failure cannot break Baase and
+      WhatsApp delivery works without leaking stack traces or user content.
 - [ ] Rollback to the prior exact SHA is documented and tested operationally.

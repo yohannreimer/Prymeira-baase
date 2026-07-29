@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as Sentry from "@sentry/node";
 import type { ApiMonitoringConfig } from "./config";
 import {
   captureUnexpectedErrorWith,
@@ -10,7 +11,7 @@ const config: ApiMonitoringConfig = {
   enabled: true,
   dsn: "https://public-key@glitchtip.prymeiradigital.com.br/2",
   environment: "production",
-  release: "abc123",
+  release: "0123456789abcdef0123456789abcdef01234567",
   tracesSampleRate: 0.01
 };
 
@@ -28,19 +29,33 @@ describe("API monitoring reporter", () => {
     expect(options).toEqual(expect.objectContaining({
       dsn: config.dsn,
       environment: "production",
-      release: "abc123",
+      release: config.release,
       tracesSampleRate: 0.01,
       sendDefaultPii: false,
       autoSessionTracking: false,
       maxBreadcrumbs: 0,
       transportOptions: { bufferSize: 10 },
-      registerEsmLoaderHooks: true
+      registerEsmLoaderHooks: true,
+      integrations: expect.any(Function)
     }));
+    const http = { name: "Http", setupOnce: vi.fn() };
+    const processSession = { name: "ProcessSession", setupOnce: vi.fn() };
+    const browserSession = { name: "BrowserSession", setupOnce: vi.fn() };
+    const modules = { name: "Modules", setupOnce: vi.fn() };
+    expect(options.integrations([http, processSession, browserSession, modules]))
+      .toEqual([http, modules]);
+    const defaultIntegrations = Sentry.getDefaultIntegrations({});
+    expect(defaultIntegrations.map(({ name }) => name)).toContain("ProcessSession");
+    expect(options.integrations(defaultIntegrations)).toEqual(
+      defaultIntegrations.filter(
+        ({ name }) => name !== "ProcessSession" && name !== "BrowserSession"
+      )
+    );
     expect(options.beforeSend({
       user: { email: "employee@prymeira.test" },
       exception: { values: [{ type: "Error", value: "safe failure" }] }
     })).toEqual({
-      exception: { values: [{ type: "Error", value: "safe failure" }] }
+      exception: { values: [{ type: "Error", value: "[redacted]" }] }
     });
     expect(options.beforeSendTransaction({
       transaction: "/workspaces/123?token=private",

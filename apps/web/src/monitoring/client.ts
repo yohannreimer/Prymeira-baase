@@ -2,6 +2,8 @@ import { sanitizeObservabilityEvent, type ObservabilityEvent } from "@prymeira/b
 import * as Sentry from "@sentry/react";
 import { readWebMonitoringConfig, type WebMonitoringConfig } from "./config";
 
+type MonitoringIntegration = { name: string };
+
 type WebMonitoringOptions = {
   dsn: string;
   environment: string;
@@ -11,6 +13,7 @@ type WebMonitoringOptions = {
   autoSessionTracking: false;
   maxBreadcrumbs: 0;
   transportOptions: { bufferSize: 10 };
+  integrations: <T extends MonitoringIntegration>(defaultIntegrations: T[]) => T[];
   beforeSend: (event: ObservabilityEvent) => ObservabilityEvent;
   beforeSendTransaction: (event: ObservabilityEvent) => ObservabilityEvent;
 };
@@ -26,9 +29,17 @@ export function initializeWebMonitoring(): boolean {
   const config = readWebMonitoringConfig(import.meta.env);
   const enabled = initializeWebMonitoringWith(config, {
     init(options) {
-      const { beforeSend, beforeSendTransaction, ...baseOptions } = options;
+      const {
+        beforeSend,
+        beforeSendTransaction,
+        integrations,
+        ...baseOptions
+      } = options;
       Sentry.init({
         ...baseOptions,
+        integrations(defaultIntegrations) {
+          return integrations(defaultIntegrations);
+        },
         beforeSend(event) {
           return beforeSend(event as unknown as ObservabilityEvent) as unknown as typeof event;
         },
@@ -59,6 +70,7 @@ export function initializeWebMonitoringWith(
       autoSessionTracking: false,
       maxBreadcrumbs: 0,
       transportOptions: { bufferSize: 10 },
+      integrations: excludeSessionIntegrations,
       beforeSend: sanitizeObservabilityEvent,
       beforeSendTransaction: sanitizeObservabilityEvent
     });
@@ -66,6 +78,14 @@ export function initializeWebMonitoringWith(
   } catch {
     return false;
   }
+}
+
+function excludeSessionIntegrations<T extends MonitoringIntegration>(
+  defaultIntegrations: T[]
+): T[] {
+  return defaultIntegrations.filter(
+    ({ name }) => name !== "ProcessSession" && name !== "BrowserSession"
+  );
 }
 
 export { Sentry as WebMonitoring };

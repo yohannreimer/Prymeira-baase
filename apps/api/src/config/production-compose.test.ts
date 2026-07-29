@@ -155,6 +155,13 @@ describe("production compose object storage contract", () => {
 });
 
 describe("production stack operator configuration contract", () => {
+  it("gives the API enough stop grace for bounded shutdown and monitoring flush", () => {
+    const compose = readFileSync(composePath, "utf8");
+    const api = serviceBlock(compose, "prymeira_baase_api");
+
+    expect(api).toMatch(/^    stop_grace_period: 15s$/m);
+  });
+
   it("uses immutable releases and isolates GlitchTip runtime configuration", () => {
     const compose = readFileSync(composePath, "utf8");
     const envExample = readFileSync(productionEnvExamplePath, "utf8");

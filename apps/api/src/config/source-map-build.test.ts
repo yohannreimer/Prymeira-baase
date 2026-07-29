@@ -25,7 +25,7 @@ describe("private frontend source-map build contract", () => {
       "glitchtip-cli sourcemaps inject /app/apps/web/dist"
     );
     expect(dockerfile).toMatch(
-      /glitchtip-cli sourcemaps upload \/app\/apps\/web\/dist[\s\\]+--release "\$VITE_BAASE_RELEASE"[\s\\]+--org prymeira[\s\\]+--project baase-web/
+      /glitchtip-cli sourcemaps upload \/app\/apps\/web\/dist[\s\\]+--release "\$VITE_BAASE_RELEASE"[\s\\]+--org prymeira-digital[\s\\]+--project baase-web/
     );
     expect(dockerfile).toContain(
       "SENTRY_URL=https://glitchtip.prymeiradigital.com.br"

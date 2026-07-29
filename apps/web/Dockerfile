@@ -37,7 +37,7 @@ RUN --mount=type=secret,id=glitchtip_auth_token \
       SENTRY_URL=https://glitchtip.prymeiradigital.com.br \
       glitchtip-cli sourcemaps upload /app/apps/web/dist \
         --release "$VITE_BAASE_RELEASE" \
-        --org prymeira \
+        --org prymeira-digital \
         --project baase-web; \
   elif [ "$GLITCHTIP_SOURCEMAPS_UPLOAD" != "false" ]; then \
     echo "GLITCHTIP_SOURCEMAPS_UPLOAD must be true or false" >&2; \
