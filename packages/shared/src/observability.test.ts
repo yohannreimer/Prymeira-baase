@@ -16,6 +16,7 @@ const privateValues = [
   "minio-private",
   "clerk-private",
   "evolution-private",
+  "developer-laptop.example.local",
   "customer invoice renderer failed for Acme",
   "Customer Acme invoice 123 could not be rendered"
 ];
@@ -28,6 +29,7 @@ function sensitiveEvent() {
     level: "error",
     release: "0123456789abcdef0123456789abcdef01234567",
     environment: "production",
+    server_name: "developer-laptop.example.local",
     type: "transaction",
     message: "Customer Acme invoice 123 could not be rendered",
     user: {
@@ -164,6 +166,7 @@ describe("observability privacy sanitizer", () => {
     expect(sanitized).not.toHaveProperty("extra");
     expect(sanitized).not.toHaveProperty("breadcrumbs");
     expect(sanitized).not.toHaveProperty("attachments");
+    expect(sanitized).not.toHaveProperty("server_name");
     expect(sanitized.request).toEqual({
       method: "POST",
       url: "https://baase.prymeiradigital.com.br/api/workspaces/:id/documents/:id"
