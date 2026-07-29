@@ -20,9 +20,11 @@ jobs:
           - name: api
             image: ghcr.io/yohannreimer/prymeira-baase-api
             dockerfile: apps/api/Dockerfile
+            sourcemaps: "false"
           - name: web
             image: ghcr.io/yohannreimer/prymeira-baase-web
             dockerfile: apps/web/Dockerfile
+            sourcemaps: "true"
 
     steps:
       - name: Checkout
@@ -47,5 +49,10 @@ jobs:
           tags: |
             ${{ matrix.image }}:latest
             ${{ matrix.image }}:${{ github.sha }}
+          build-args: |
+            VITE_BAASE_RELEASE=${{ github.sha }}
+            GLITCHTIP_SOURCEMAPS_UPLOAD=${{ matrix.sourcemaps }}
+          secrets: |
+            glitchtip_auth_token=${{ secrets.GLITCHTIP_AUTH_TOKEN }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}

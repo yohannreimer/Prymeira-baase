@@ -9,6 +9,10 @@ import {
   initializeRuntimeObjectStorage
 } from "../server-initialization";
 import { createStudioAssetMaintenanceRunner } from "../modules/studio/studio-asset-maintenance-runner";
+import {
+  captureUnexpectedError,
+  flushMonitoring
+} from "../observability/reporter";
 
 type Processor = { processNext(signal?: AbortSignal): Promise<unknown | null> };
 type Logger = { error(error: unknown, message?: string): void };
@@ -26,6 +30,7 @@ export type StudioMaintenanceDependencies = {
     }>;
   };
   log: Logger;
+  reportUnexpectedError?: (error: unknown, operation: string) => void;
 };
 
 export async function runStudioMaintenanceOnce(
@@ -43,6 +48,7 @@ export async function runStudioMaintenanceOnce(
     uploadCleanupProcessor: dependencies.studioAssetUploadCleanupProcessor,
     memoryProcessor: dependencies.studioMemoryIndexProcessor,
     logger: dependencies.log,
+    reportUnexpectedError: dependencies.reportUnexpectedError,
     maxItemsPerProcessor: options.maxItemsPerProcessor,
     scavenge: options.scavenge
   });
@@ -75,7 +81,17 @@ export async function runConfiguredStudioMaintenance() {
           objectStorage
         });
     try {
-      return await runStudioMaintenanceOnce(app);
+      return await runStudioMaintenanceOnce({
+        studioAssetProcessor: app.studioAssetProcessor,
+        studioAssetCleanupProcessor: app.studioAssetCleanupProcessor,
+        studioAssetUploadCleanupProcessor: app.studioAssetUploadCleanupProcessor,
+        studioMemoryIndexProcessor: app.studioMemoryIndexProcessor,
+        studioProactivityService: app.studioProactivityService,
+        log: app.log,
+        reportUnexpectedError(error, operation) {
+          captureUnexpectedError(error, { component: "maintenance", operation });
+        }
+      });
     } finally {
       await app.close();
     }
@@ -86,8 +102,13 @@ export async function runConfiguredStudioMaintenance() {
 
 const entrypoint = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (entrypoint === import.meta.url) {
-  runConfiguredStudioMaintenance().catch((error) => {
+  runConfiguredStudioMaintenance().catch(async (error) => {
+    captureUnexpectedError(error, {
+      component: "maintenance",
+      operation: "maintenance-command"
+    });
     console.error("Studio maintenance infrastructure failure", error);
+    await flushMonitoring(2000);
     process.exitCode = 1;
   });
 }

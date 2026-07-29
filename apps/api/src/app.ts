@@ -76,6 +76,10 @@ import {
 } from "./modules/studio/studio-operations-bridge";
 import type { StudioRepository } from "./modules/studio/studio.types";
 import type { OperationalPool } from "./db/operational-repository-support";
+import {
+  captureUnexpectedError,
+  type UnexpectedErrorContext
+} from "./observability/reporter";
 import { registerPublicationRoutes } from "./modules/publications/publication.routes";
 import { createPublicationService } from "./modules/publications/publication.service";
 import { createInMemoryPublicationStore } from "./modules/publications/publication.store";
@@ -137,6 +141,10 @@ export type BuildAppOptions = {
   now?: () => Date;
   accountAccessFetch?: typeof fetch;
   accountTeamFetch?: typeof fetch;
+  reportUnexpectedError?: (
+    error: unknown,
+    context: UnexpectedErrorContext
+  ) => void;
 };
 
 const API_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
@@ -346,7 +354,7 @@ export function buildApp(options: BuildAppOptions = {}) {
     fetcher: options.accountAccessFetch
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof ApiError) {
       return reply.status(error.statusCode).send({
         error: {
@@ -424,6 +432,16 @@ export function buildApp(options: BuildAppOptions = {}) {
           details: {}
         }
       });
+    }
+
+    try {
+      (options.reportUnexpectedError ?? captureUnexpectedError)(error, {
+        component: "http",
+        method: request.method,
+        route: request.routeOptions.url
+      });
+    } catch {
+      // Monitoring must never change the API response.
     }
 
     return reply.status(500).send({

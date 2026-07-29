@@ -1,5 +1,18 @@
 # Baase
 
+## Imagens e observabilidade em produção
+
+A stack de produção exige `BAASE_IMAGE_TAG` com o SHA exato do commit publicado;
+não existe fallback para `latest`. O mesmo SHA identifica as imagens web/API e
+o release exibido no GlitchTip.
+
+O operador pode definir DSNs separados em `BAASE_WEB_GLITCHTIP_DSN` e
+`BAASE_API_GLITCHTIP_DSN`. Deixe ambos vazios para manter o monitoramento
+desativado. `BAASE_GLITCHTIP_TRACES_SAMPLE_RATE` usa `0.01` por padrão e pode
+ser alterado para `0` sem desligar a captura de erros. Tokens administrativos e
+de source maps nunca pertencem ao ambiente do Portainer; consulte
+`docs/glitchtip-rollout.md`.
+
 ## Evidências anexadas
 
 Os anexos de evidência são enviados pelo adaptador S3 compatível já usado pela
