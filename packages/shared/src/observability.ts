@@ -5,7 +5,6 @@ const topLevelPrimitiveKeys = [
   "platform",
   "level",
   "logger",
-  "server_name",
   "environment",
   "dist",
   "start_timestamp"
